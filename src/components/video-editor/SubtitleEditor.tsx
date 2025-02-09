@@ -7,9 +7,10 @@ interface SubtitleEditorProps {
   subtitles: Subtitle[];
   selectedSubtitleId?: string | null;
   onSave?: (subtitle: Subtitle) => void;
+  onSubtitleClick?: (subtitle: Subtitle) => void;
 }
 
-export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave }: SubtitleEditorProps) {
+export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick }: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
 
@@ -69,8 +70,9 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave }: Subtit
         subtitles.map(subtitle => (
           <div 
             key={subtitle.id}
-            className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors
+            className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
               ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
+            onClick={() => onSubtitleClick?.(subtitle)}
           >
             <div className="flex justify-between text-sm text-gray-400">
               <span>Inicio: {formatTime(subtitle.startTime)}</span>
@@ -84,7 +86,11 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave }: Subtit
               className="bg-gray-600 rounded p-2 text-white resize-none overflow-hidden"
               value={editingText[subtitle.id] || ''}
               onChange={(e) => handleTextChange(subtitle, e.target.value)}
-              onClick={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSubtitleClick?.(subtitle);
+              }}
+              onFocus={() => onSubtitleClick?.(subtitle)}
               onMouseDown={(e) => e.stopPropagation()}
               placeholder="Escribe el texto del subtítulo aquí..."
               rows={1}
