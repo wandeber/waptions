@@ -300,7 +300,7 @@ export function VideoViewport({
             {activeSubtitles.map(subtitle => (
               <div
                 key={subtitle.id}
-                className="bg-black/75 text-white px-4 py-2 rounded-lg mb-2 text-center max-w-[80%]"
+                className="bg-black/75 text-white px-4 py-2 rounded-lg mb-2 text-center max-w-[80%] whitespace-pre-wrap"
               >
                 {subtitle.text}
               </div>

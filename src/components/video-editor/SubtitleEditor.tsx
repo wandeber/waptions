@@ -63,6 +63,21 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => {
     if (e.key === 'Enter') {
+      if (e.ctrlKey) {
+        // Permitir el comportamiento por defecto para insertar salto de línea
+        const textarea = e.currentTarget;
+        const cursorPosition = textarea.selectionStart;
+        const currentText = editingText[subtitle.id] || '';
+        const newText = currentText.slice(0, cursorPosition) + '\n' + currentText.slice(cursorPosition);
+        handleTextChange(subtitle, newText);
+        
+        // Mover el cursor después del salto de línea
+        requestAnimationFrame(() => {
+          textarea.setSelectionRange(cursorPosition + 1, cursorPosition + 1);
+        });
+        return;
+      }
+
       e.preventDefault();
       
       const textarea = e.currentTarget;
