@@ -1,14 +1,18 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback } from 'react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { toBlobURL } from '@ffmpeg/util';
 
 interface VideoViewportProps {
-  onVideoLoad?: (duration: number) => void;
+  onVideoLoad?: (duration: number, fps: number) => void;
   onTimeUpdate?: (currentTime: number) => void;
   currentTime?: number;
   videoRef?: React.RefObject<HTMLVideoElement>;
   isPlaying?: boolean;
   onPlayPause?: () => void;
+  fps?: number;
+  onFpsChange?: (fps: number) => void;
 }
 
 export function VideoViewport({ 
@@ -17,28 +21,110 @@ export function VideoViewport({
   currentTime,
   videoRef: externalVideoRef,
   isPlaying,
-  onPlayPause
+  onPlayPause,
+  fps,
+  onFpsChange
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
+  const [isFFmpegLoaded, setIsFFmpegLoaded] = useState(false);
   const internalVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
   const lastUpdateRef = useRef<number>(0);
+  const [detectedFps, setDetectedFps] = useState<number | null>(null);
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Inicializar FFmpeg solo en el cliente
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setFFmpeg(new FFmpeg());
+    }
+  }, []);
+
+  // Cargar FFmpeg
+  useEffect(() => {
+    if (!ffmpeg) return;
+
+    const loadFFmpeg = async () => {
+      try {
+        // Cargar FFmpeg con las rutas correctas
+        await ffmpeg.load({
+          coreURL: '/ffmpeg-core.js',
+          wasmURL: '/ffmpeg-core.wasm',
+        });
+        setIsFFmpegLoaded(true);
+      } catch (error) {
+        console.error('Error al cargar FFmpeg:', error);
+      }
+    };
+    loadFFmpeg();
+  }, [ffmpeg]);
+
+  const detectVideoFps = async (file: File): Promise<number> => {
+    if (!isFFmpegLoaded || !ffmpeg) {
+      console.warn('FFmpeg no está cargado, usando valor por defecto');
+      return 30;
+    }
+
+    try {
+      // Convertir el archivo a ArrayBuffer
+      const buffer = await file.arrayBuffer();
+      
+      // Escribir el archivo al sistema de archivos virtual de FFmpeg
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(buffer));
+      
+      // Ejecutar FFprobe para obtener información del video
+      const { stderr } = await ffmpeg.exec(['-i', 'input.mp4']);
+      console.log('FFmpeg stderr:', stderr);
+      
+      // Buscar los FPS en la salida
+      const fpsMatch = stderr.match(/(\d+(?:\.\d+)?) fps/);
+      const detectedFps = fpsMatch ? Math.round(parseFloat(fpsMatch[1])) : 30;
+      
+      // Limpiar el archivo
+      await ffmpeg.deleteFile('input.mp4');
+      
+      return detectedFps > 0 ? detectedFps : 30;
+    } catch (error) {
+      console.error('Error al detectar FPS con FFmpeg:', error);
+      return 30;
+    }
+  };
+
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       const url = URL.createObjectURL(file);
       setVideoUrl(url);
+      
+      // Detectar FPS usando FFmpeg
+      const detectedFps = await detectVideoFps(file);
+      setDetectedFps(detectedFps);
+      
+      if (videoRef.current) {
+        videoRef.current.onloadedmetadata = () => {
+          onVideoLoad?.(videoRef.current!.duration, detectedFps);
+        };
+      }
     }
   };
 
-  const handleDrop = (event: React.DragEvent) => {
+  const handleDrop = async (event: React.DragEvent) => {
     event.preventDefault();
     const file = event.dataTransfer.files?.[0];
     if (file?.type.startsWith('video/')) {
       const url = URL.createObjectURL(file);
       setVideoUrl(url);
+      
+      // Detectar FPS usando FFmpeg
+      const detectedFps = await detectVideoFps(file);
+      setDetectedFps(detectedFps);
+      
+      if (videoRef.current) {
+        videoRef.current.onloadedmetadata = () => {
+          onVideoLoad?.(videoRef.current!.duration, detectedFps);
+        };
+      }
     }
   };
 
@@ -46,21 +132,17 @@ export function VideoViewport({
     event.preventDefault();
   };
 
-  const handleVideoLoad = () => {
-    if (videoRef.current && onVideoLoad) {
-      onVideoLoad(videoRef.current.duration);
+  const handleFpsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newFps = parseInt(e.target.value, 10);
+    if (!isNaN(newFps) && newFps > 0) {
+      onFpsChange?.(newFps);
     }
   };
 
   // Optimizar las actualizaciones de tiempo
   const handleTimeUpdate = useCallback(() => {
     if (!videoRef.current || !onTimeUpdate) return;
-
-    const now = performance.now();
-    if (now - lastUpdateRef.current > 32) { // Limitar a ~30fps
-      onTimeUpdate(videoRef.current.currentTime);
-      lastUpdateRef.current = now;
-    }
+    onTimeUpdate(videoRef.current.currentTime);
   }, [onTimeUpdate]);
 
   // Actualizar el tiempo del video cuando cambia externamente
@@ -68,7 +150,7 @@ export function VideoViewport({
     if (!videoRef.current || currentTime === undefined) return;
 
     const diff = Math.abs(videoRef.current.currentTime - currentTime);
-    if (diff > 0.1) { // Solo actualizar si la diferencia es significativa
+    if (diff > 0.01) { // Hacemos la diferencia más pequeña para mayor precisión
       videoRef.current.currentTime = currentTime;
     }
   }, [currentTime]);
@@ -77,14 +159,16 @@ export function VideoViewport({
   useEffect(() => {
     if (!videoRef.current) return;
 
-    const playPromise = isPlaying ? videoRef.current.play() : Promise.resolve();
-    playPromise.then(() => {
-      if (!isPlaying) {
-        videoRef.current?.pause();
+    if (isPlaying) {
+      const playPromise = videoRef.current.play();
+      if (playPromise) {
+        playPromise.catch(error => {
+          console.error('Error al reproducir el video:', error);
+        });
       }
-    }).catch(error => {
-      console.error('Error al reproducir el video:', error);
-    });
+    } else {
+      videoRef.current.pause();
+    }
   }, [isPlaying]);
 
   // Limpiar URL al desmontar
@@ -112,14 +196,32 @@ export function VideoViewport({
       />
       
       {videoUrl ? (
-        <div className="w-full h-full flex items-center justify-center">
-          <video
-            ref={videoRef}
-            src={videoUrl}
-            className="max-h-full max-w-full object-contain"
-            onLoadedMetadata={handleVideoLoad}
-            onTimeUpdate={handleTimeUpdate}
-          />
+        <div className="w-full h-full relative">
+          <div className="w-full h-full flex items-center justify-center">
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              className="w-full h-full object-contain"
+              onTimeUpdate={handleTimeUpdate}
+              onLoadedMetadata={() => {
+                if (videoRef.current) {
+                  onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
+                }
+              }}
+            />
+          </div>
+          {detectedFps && (
+            <div className="absolute bottom-2 right-2 flex items-center gap-2 bg-black/50 p-2 rounded">
+              <span className="text-xs text-gray-300">FPS:</span>
+              <input
+                type="number"
+                min="1"
+                value={fps || detectedFps}
+                onChange={handleFpsChange}
+                className="w-16 px-1 py-0.5 bg-gray-800 border border-gray-600 rounded text-xs text-white"
+              />
+            </div>
+          )}
         </div>
       ) : (
         <div className="text-gray-500 cursor-pointer p-8 text-center">

@@ -12,10 +12,16 @@ export default function Home() {
   const [selectedSubtitle, setSelectedSubtitle] = useState<Subtitle | null>(null);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [fps, setFps] = useState(30);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const handleTimeUpdate = (time: number) => {
     setCurrentTime(time);
+  };
+
+  const handleVideoLoad = (videoDuration: number, detectedFps: number) => {
+    setDuration(videoDuration);
+    setFps(detectedFps);
   };
 
   const handleSubtitleClick = (subtitle: Subtitle) => {
@@ -51,6 +57,10 @@ export default function Home() {
     setIsPlaying(!isPlaying);
   };
 
+  const handleFpsChange = (newFps: number) => {
+    setFps(newFps);
+  };
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
       {/* Header */}
@@ -63,12 +73,14 @@ export default function Home() {
         <div className="h-full flex gap-4">
           <div className="flex-1 flex flex-col gap-4 min-h-0">
             <VideoViewport 
-              onVideoLoad={setDuration}
+              onVideoLoad={handleVideoLoad}
               onTimeUpdate={handleTimeUpdate}
               currentTime={currentTime}
               videoRef={videoRef}
               isPlaying={isPlaying}
               onPlayPause={handlePlayPause}
+              fps={fps}
+              onFpsChange={handleFpsChange}
             />
             <Timeline 
               duration={duration}
@@ -80,6 +92,7 @@ export default function Home() {
               selectedSubtitleId={selectedSubtitle?.id}
               isPlaying={isPlaying}
               onPlayPause={handlePlayPause}
+              fps={fps}
             />
           </div>
           <div className="w-80 flex-none">

@@ -29,7 +29,6 @@ export function SubtitleTrack({
   selectedSubtitleId
 }: SubtitleTrackProps) {
   const [dragMode, setDragMode] = useState<DragMode>(null);
-  const [dragStartX, setDragStartX] = useState<number>(0);
   const [dragStartTime, setDragStartTime] = useState<number>(0);
   const [draggedSubtitle, setDraggedSubtitle] = useState<Subtitle | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -37,7 +36,7 @@ export function SubtitleTrack({
   const getTimeFromX = useCallback((x: number) => {
     if (!trackRef.current) return 0;
     const rect = trackRef.current.getBoundingClientRect();
-    const percentage = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+    const percentage = Math.max(0, Math.min(1, x / rect.width));
     return percentage * duration;
   }, [duration]);
 
@@ -45,10 +44,10 @@ export function SubtitleTrack({
     if (!trackRef.current) return;
 
     const rect = trackRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
     const subtitleLeft = (subtitle.startTime / duration) * rect.width;
     const subtitleRight = (subtitle.endTime / duration) * rect.width;
-    const x = e.clientX - rect.left;
-    const handleWidth = 10; // Ancho del área para redimensionar
+    const handleWidth = 10;
 
     // Determinar el modo de arrastre
     if (Math.abs(x - subtitleLeft) <= handleWidth) {
@@ -59,16 +58,15 @@ export function SubtitleTrack({
       setDragMode('move');
     }
 
-    setDragStartX(e.clientX);
-    setDragStartTime(getTimeFromX(e.clientX));
+    setDragStartTime(getTimeFromX(e.clientX - rect.left));
     setDraggedSubtitle(subtitle);
     onSubtitleClick?.(subtitle);
   };
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragMode || !draggedSubtitle || !onSubtitlesChange) return;
+    if (!dragMode || !draggedSubtitle || !onSubtitlesChange || !trackRef.current) return;
 
-    const currentTime = getTimeFromX(e.clientX);
+    const currentTime = getTimeFromX(e.clientX - trackRef.current.getBoundingClientRect().left);
     const timeDiff = currentTime - dragStartTime;
 
     const updatedSubtitle = { ...draggedSubtitle };
@@ -152,12 +150,6 @@ export function SubtitleTrack({
           }}
         />
       ))}
-      
-      {/* Indicador de tiempo actual */}
-      <div 
-        className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 pointer-events-none"
-        style={{ left: `${(currentTime / duration) * 100}%` }}
-      />
     </div>
   );
 } 

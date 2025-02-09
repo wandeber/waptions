@@ -6,9 +6,13 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "postinstall": "mkdir -p public && cp node_modules/@ffmpeg/core/dist/ffmpeg-core.* public/"
   },
   "dependencies": {
+    "@ffmpeg/core": "^0.12.3",
+    "@ffmpeg/ffmpeg": "^0.12.7",
+    "@ffmpeg/util": "^0.12.1",
     "autoprefixer": "^10.4.20",
     "next": "^15.1.6",
     "react": "^19.0.0",
