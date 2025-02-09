@@ -100,10 +100,10 @@ export function Timeline({
           className="absolute border-l border-gray-400"
           style={{
             left: `${(second / duration) * 100}%`,
-            height: '24px'
+            height: '32px'
           }}
         >
-          <span className="absolute top-6 left-0 transform -translate-x-1/2 text-xs text-gray-400">
+          <span className="absolute bottom-0 left-2 text-xs text-gray-400">
             {second}s
           </span>
         </div>
@@ -120,7 +120,7 @@ export function Timeline({
           className="absolute border-l border-gray-600"
           style={{
             left: `${(time / duration) * 100}%`,
-            height: '12px'
+            height: '8px'
           }}
         />
       );
