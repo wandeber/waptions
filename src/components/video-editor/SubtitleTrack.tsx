@@ -153,14 +153,16 @@ export function SubtitleTrack({
           <div
             key={subtitle.id}
             className={`absolute top-0 h-full bg-blue-600 opacity-75 rounded group
-              hover:opacity-90 transition-opacity flex items-center overflow-hidden
-              ${isSelected ? 'ring-2 ring-white' : ''}`}
+              hover:opacity-90 transition-opacity flex items-center overflow-hidden`}
             style={{
               left: `${(subtitle.startTime / duration) * 100}%`,
               width: `${((subtitle.endTime - subtitle.startTime) / duration) * 100}%`,
               cursor: dragMode && draggedSubtitle?.id === subtitle.id 
                 ? dragMode === 'move' ? 'move' : dragMode === 'resize-start' ? 'w-resize' : 'e-resize'
-                : 'pointer'
+                : 'pointer',
+              boxShadow: isSelected 
+                ? 'inset 0 0 0 2px white' 
+                : 'inset 0 0 0 1px rgba(255, 255, 255, 0.3)'
             }}
             onMouseDown={(e) => handleMouseDown(e, subtitle)}
             onMouseMove={(e) => {
