@@ -2,7 +2,6 @@
 
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { toBlobURL } from '@ffmpeg/util';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number) => void;
@@ -10,7 +9,6 @@ interface VideoViewportProps {
   currentTime?: number;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   isPlaying?: boolean;
-  onPlayPause?: () => void;
   fps?: number | null;
   onFpsChange?: (fps: number) => void;
   subtitles?: Array<{
@@ -27,7 +25,6 @@ export function VideoViewport({
   currentTime = 0,
   videoRef: externalVideoRef,
   isPlaying,
-  onPlayPause,
   fps,
   onFpsChange,
   subtitles = []
@@ -172,14 +169,13 @@ export function VideoViewport({
     event.preventDefault();
     const file = event.dataTransfer.files?.[0];
     if (file?.type.startsWith('video/') && !isLoading) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.files = event.dataTransfer.files;
+      
       const fakeEvent = {
-        target: {
-          files: [file],
-          value: '',
-          name: 'fileInput',
-          type: 'file'
-        } as HTMLInputElement
-      } as unknown as React.ChangeEvent<HTMLInputElement>;
+        target: input
+      } as React.ChangeEvent<HTMLInputElement>;
       
       await handleFileSelect(fakeEvent);
     }
@@ -197,6 +193,7 @@ export function VideoViewport({
   };
 
   // Función para actualizar el tiempo usando requestAnimationFrame
+  /* eslint-disable react-hooks/exhaustive-deps */
   const updateTime = useCallback(() => {
     if (videoRef.current && onTimeUpdate) {
       onTimeUpdate(videoRef.current.currentTime);
@@ -344,13 +341,11 @@ export function VideoViewport({
     let top: number;
     
     if (containerRatio > videoRatio) {
-      // El video está limitado por la altura
       height = containerRect.height;
       width = height * videoRatio;
       top = 0;
       left = (containerRect.width - width) / 2;
     } else {
-      // El video está limitado por el ancho
       width = containerRect.width;
       height = width / videoRatio;
       left = 0;

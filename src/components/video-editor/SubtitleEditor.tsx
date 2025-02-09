@@ -16,15 +16,23 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     const newEditingText: {[key: string]: string} = {};
+    let needsUpdate = false;
+
     subtitles.forEach(subtitle => {
-      if (!editingText[subtitle.id]) {
+      if (!(subtitle.id in editingText)) {
         newEditingText[subtitle.id] = subtitle.text;
+        needsUpdate = true;
       }
     });
-    setEditingText(prev => ({...prev, ...newEditingText}));
+
+    if (needsUpdate) {
+      setEditingText(prev => ({...prev, ...newEditingText}));
+    }
   }, [subtitles]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const adjustTextareaHeight = (textarea: HTMLTextAreaElement) => {
     textarea.style.height = 'auto';
@@ -210,9 +218,10 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
 
       // Actualizar el estado local de edición
       setEditingText(prev => {
-        const { [subtitle.id]: _, ...rest } = prev;
+        const newState = { ...prev };
+        delete newState[subtitle.id];
         return {
-          ...rest,
+          ...newState,
           [previousSubtitle.id]: combinedText
         };
       });

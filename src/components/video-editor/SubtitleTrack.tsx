@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 export interface Subtitle {
   id: string;
@@ -23,7 +23,7 @@ interface SubtitleTrackProps {
 
 export function SubtitleTrack({ 
   duration, 
-  currentTime, 
+  currentTime,
   onSubtitleClick,
   subtitles,
   onSubtitlesChange,
@@ -152,6 +152,12 @@ export function SubtitleTrack({
     return 'move';
   }, [duration]);
 
+  // Añadir un efecto para manejar la posición del cursor de reproducción
+  useEffect(() => {
+    // Aquí podemos usar currentTime para actualizar cualquier indicador visual
+    // del tiempo actual si es necesario
+  }, [currentTime]);
+
   return (
     <div 
       ref={trackRef}
@@ -160,6 +166,14 @@ export function SubtitleTrack({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
+      {/* Indicador de tiempo actual */}
+      <div 
+        className="absolute top-0 bottom-0 w-px bg-white z-10"
+        style={{
+          left: `${(currentTime / duration) * 100}%`,
+          pointerEvents: 'none'
+        }}
+      />
       {subtitles.map(subtitle => {
         const isSelected = subtitle.id === selectedSubtitleId;
         return (

@@ -79,7 +79,6 @@ export default function Home() {
               currentTime={currentTime}
               videoRef={videoRef}
               isPlaying={isPlaying}
-              onPlayPause={handlePlayPause}
               fps={fps}
               onFpsChange={handleFpsChange}
               subtitles={subtitles}
