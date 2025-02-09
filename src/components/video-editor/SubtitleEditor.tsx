@@ -67,6 +67,11 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
       const textarea = e.currentTarget;
       const cursorPosition = textarea.selectionStart;
       const currentText = editingText[subtitle.id] || '';
+
+      // No crear nuevo subtítulo si el texto está vacío
+      if (!currentText.trim()) {
+        return;
+      }
       
       // Dividir el texto en dos partes según la posición del cursor y limpiar espacios en la zona del split
       const firstPart = currentText.slice(0, cursorPosition).replace(/\s+$/, '');
@@ -75,36 +80,79 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
       // Calcular los tiempos para los dos nuevos subtítulos
       const originalDuration = subtitle.endTime - subtitle.startTime;
       const splitRatio = cursorPosition / currentText.length;
-      const splitTime = subtitle.startTime + (originalDuration * splitRatio);
+
+      // Si estamos al final del texto, asegurar una duración mínima de 1 segundo para el nuevo subtítulo
+      const isAtEnd = cursorPosition >= currentText.length;
+      const minDuration = 1; // 1 segundo
       
-      // Actualizar el subtítulo original con la primera parte
-      const updatedOriginal: Subtitle = {
-        ...subtitle,
-        text: firstPart,
-        endTime: splitTime
-      };
+      let splitTime: number;
+      let newSubtitle: Subtitle;
       
-      // Crear el nuevo subtítulo con la segunda parte
-      const newSubtitle: Subtitle = {
-        id: Date.now().toString(),
-        startTime: splitTime,
-        endTime: subtitle.endTime,
-        text: secondPart
-      };
-      
-      // Actualizar el estado local de edición
-      setEditingText(prev => ({
-        ...prev,
-        [updatedOriginal.id]: firstPart,
-        [newSubtitle.id]: secondPart
-      }));
-      
-      // Guardar ambos subtítulos
-      onSave?.(updatedOriginal);
-      onSave?.(newSubtitle);
-      
-      // Seleccionar el nuevo subtítulo
-      onSubtitleClick?.(newSubtitle);
+      if (isAtEnd) {
+        splitTime = subtitle.endTime;
+        // Ajustar el tiempo final del nuevo subtítulo para asegurar la duración mínima
+        const newEndTime = splitTime + minDuration;
+        
+        // Actualizar el subtítulo original (sin cambios en su duración)
+        const updatedOriginal: Subtitle = {
+          ...subtitle,
+          text: firstPart
+        };
+        
+        // Crear el nuevo subtítulo con la duración mínima
+        newSubtitle = {
+          id: Date.now().toString(),
+          startTime: splitTime,
+          endTime: newEndTime,
+          text: secondPart
+        };
+        
+        // Actualizar el estado local de edición
+        setEditingText(prev => ({
+          ...prev,
+          [updatedOriginal.id]: firstPart,
+          [newSubtitle.id]: secondPart
+        }));
+        
+        // Guardar ambos subtítulos
+        onSave?.(updatedOriginal);
+        onSave?.(newSubtitle);
+        
+        // Seleccionar el nuevo subtítulo
+        onSubtitleClick?.(newSubtitle);
+      } else {
+        // Comportamiento normal para división en medio del texto
+        splitTime = subtitle.startTime + (originalDuration * splitRatio);
+        
+        // Actualizar el subtítulo original con la primera parte
+        const updatedOriginal: Subtitle = {
+          ...subtitle,
+          text: firstPart,
+          endTime: splitTime
+        };
+        
+        // Crear el nuevo subtítulo con la segunda parte
+        newSubtitle = {
+          id: Date.now().toString(),
+          startTime: splitTime,
+          endTime: subtitle.endTime,
+          text: secondPart
+        };
+        
+        // Actualizar el estado local de edición
+        setEditingText(prev => ({
+          ...prev,
+          [updatedOriginal.id]: firstPart,
+          [newSubtitle.id]: secondPart
+        }));
+        
+        // Guardar ambos subtítulos
+        onSave?.(updatedOriginal);
+        onSave?.(newSubtitle);
+        
+        // Seleccionar el nuevo subtítulo
+        onSubtitleClick?.(newSubtitle);
+      }
 
       // Mover el foco al nuevo textarea después de que se renderice
       requestAnimationFrame(() => {
