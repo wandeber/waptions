@@ -67,36 +67,47 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
           No hay subtítulos añadidos
         </div>
       ) : (
-        subtitles.map(subtitle => (
-          <div 
-            key={subtitle.id}
-            className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
-              ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
-            onClick={() => onSubtitleClick?.(subtitle)}
-          >
-            <div className="flex justify-between text-sm text-gray-400">
-              <span>Inicio: {formatTime(subtitle.startTime)}</span>
-              <span>Fin: {formatTime(subtitle.endTime)}</span>
+        [...subtitles]
+          .sort((a, b) => {
+            // Primero ordenar por tiempo de inicio
+            if (a.startTime !== b.startTime) {
+              return a.startTime - b.startTime;
+            }
+            // Si tienen el mismo tiempo de inicio, ordenar por duración
+            const aDuration = a.endTime - a.startTime;
+            const bDuration = b.endTime - b.startTime;
+            return aDuration - bDuration;
+          })
+          .map(subtitle => (
+            <div 
+              key={subtitle.id}
+              className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
+                ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
+              onClick={() => onSubtitleClick?.(subtitle)}
+            >
+              <div className="flex justify-between text-sm text-gray-400">
+                <span>Inicio: {formatTime(subtitle.startTime)}</span>
+                <span>Fin: {formatTime(subtitle.endTime)}</span>
+              </div>
+              
+              <textarea
+                ref={el => {
+                  textAreasRef.current[subtitle.id] = el;
+                }}
+                className="bg-gray-600 rounded p-2 text-white resize-none overflow-hidden"
+                value={editingText[subtitle.id] || ''}
+                onChange={(e) => handleTextChange(subtitle, e.target.value)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSubtitleClick?.(subtitle);
+                }}
+                onFocus={() => onSubtitleClick?.(subtitle)}
+                onMouseDown={(e) => e.stopPropagation()}
+                placeholder="Escribe el texto del subtítulo aquí..."
+                rows={1}
+              />
             </div>
-            
-            <textarea
-              ref={el => {
-                textAreasRef.current[subtitle.id] = el;
-              }}
-              className="bg-gray-600 rounded p-2 text-white resize-none overflow-hidden"
-              value={editingText[subtitle.id] || ''}
-              onChange={(e) => handleTextChange(subtitle, e.target.value)}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSubtitleClick?.(subtitle);
-              }}
-              onFocus={() => onSubtitleClick?.(subtitle)}
-              onMouseDown={(e) => e.stopPropagation()}
-              placeholder="Escribe el texto del subtítulo aquí..."
-              rows={1}
-            />
-          </div>
-        ))
+          ))
       )}
     </div>
   );
