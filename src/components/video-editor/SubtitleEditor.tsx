@@ -105,6 +105,16 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
       
       // Seleccionar el nuevo subtítulo
       onSubtitleClick?.(newSubtitle);
+
+      // Mover el foco al nuevo textarea después de que se renderice
+      requestAnimationFrame(() => {
+        const newTextarea = textAreasRef.current[newSubtitle.id];
+        if (newTextarea) {
+          newTextarea.focus();
+          // Posicionar el cursor al inicio del nuevo textarea
+          newTextarea.setSelectionRange(0, 0);
+        }
+      });
     }
   };
 
