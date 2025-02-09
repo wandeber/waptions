@@ -11,7 +11,10 @@ const nextConfig = {
   },
   reactStrictMode: false,
   experimental: {
-    serverActions: false,
+    serverActions: {
+      allowedOrigins: ['localhost:3000'],
+      bodySizeLimit: '2mb'
+    }
   },
   async headers() {
     return [

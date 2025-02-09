@@ -8,10 +8,10 @@ interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number) => void;
   onTimeUpdate?: (currentTime: number) => void;
   currentTime?: number;
-  videoRef?: React.RefObject<HTMLVideoElement>;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
   isPlaying?: boolean;
   onPlayPause?: () => void;
-  fps?: number;
+  fps?: number | null;
   onFpsChange?: (fps: number) => void;
   subtitles?: Array<{
     id: string;
@@ -41,9 +41,8 @@ export function VideoViewport({
   const internalVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
-  const timelineRef = useRef<number>();
+  const timelineRef = useRef<number | undefined>(undefined);
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
-  const [isVideoLoaded, setIsVideoLoaded] = useState(false);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -96,7 +95,8 @@ export function VideoViewport({
       const buffer = await file.arrayBuffer();
       await ffmpeg.writeFile('input.mp4', new Uint8Array(buffer));
       
-      const { stderr } = await ffmpeg.exec(['-i', 'input.mp4']);
+      const result = await ffmpeg.exec(['-i', 'input.mp4']);
+      const stderr = result.toString();
       console.log('FFmpeg stderr completo:', stderr);
       
       // Buscar FPS
@@ -113,10 +113,9 @@ export function VideoViewport({
       
       await ffmpeg.deleteFile('input.mp4');
       
-      console.log('Video metadata detectada:', { fps, width, height });
       return { fps, width, height };
     } catch (error) {
-      console.error('Error al detectar metadata con FFmpeg:', error);
+      console.error('Error al detectar metadatos del video:', error);
       return { fps: 30, width: 1920, height: 1080 };
     }
   };
@@ -169,20 +168,29 @@ export function VideoViewport({
     }
   };
 
-  const handleDrop = async (event: React.DragEvent) => {
+  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const file = event.dataTransfer.files?.[0];
     if (file?.type.startsWith('video/') && !isLoading) {
-      await handleFileSelect({ target: { files: [file] } } as any);
+      const fakeEvent = {
+        target: {
+          files: [file],
+          value: '',
+          name: 'fileInput',
+          type: 'file'
+        } as HTMLInputElement
+      } as unknown as React.ChangeEvent<HTMLInputElement>;
+      
+      await handleFileSelect(fakeEvent);
     }
   };
 
-  const handleDragOver = (event: React.DragEvent) => {
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
   };
 
   const handleFpsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newFps = parseInt(e.target.value, 10);
+    const newFps = parseInt(e.target.value);
     if (!isNaN(newFps) && newFps > 0) {
       onFpsChange?.(newFps);
     }
@@ -353,39 +361,17 @@ export function VideoViewport({
   }, []);
 
   const handleExport = async () => {
-    console.log('Estado actual:', {
-      videoRef: !!videoRef.current,
-      ffmpeg: !!ffmpeg,
-      isFFmpegLoaded,
-      videoUrl: !!videoUrl,
-      subtitlesLength: subtitles.length,
-      ffmpegInstance: ffmpeg
-    });
-
-    if (!videoRef.current) {
-      console.error('No hay referencia al video');
-      return;
-    }
-    if (!ffmpeg) {
-      console.error('FFmpeg no está inicializado');
-      return;
-    }
-    if (!isFFmpegLoaded) {
-      console.error('FFmpeg no está cargado');
-      return;
-    }
-    if (!videoUrl) {
-      console.error('No hay URL del video');
-      return;
-    }
-    if (!subtitles.length) {
-      console.error('No hay subtítulos');
-      return;
-    }
+    if (!videoRef.current || !ffmpeg || !videoUrl) return;
 
     try {
       setIsExporting(true);
-      console.log('Iniciando exportación...');
+      const videoBlob = await fetch(videoUrl).then(r => r.blob());
+      const videoArrayBuffer = await videoBlob.arrayBuffer();
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(videoArrayBuffer));
+
+      const result1 = await ffmpeg.exec(['-i', 'input.mp4']);
+      const output1 = result1.toString();
+      console.log('FFmpeg output inicial:', output1);
 
       // Crear archivo de subtítulos SRT
       let srtContent = '';
@@ -404,7 +390,6 @@ export function VideoViewport({
 
       // Escribir archivos en FFmpeg
       console.log('Escribiendo archivos en FFmpeg...');
-      await ffmpeg.writeFile('input.mp4', new Uint8Array(videoBuffer));
       await ffmpeg.writeFile('subtitles.srt', srtContent);
 
       // Configurar el comando FFmpeg para mantener la calidad original
@@ -420,8 +405,9 @@ export function VideoViewport({
       ];
 
       console.log('Ejecutando FFmpeg con comando:', command.join(' '));
-      const { stderr } = await ffmpeg.exec(command);
-      console.log('Salida de FFmpeg:', stderr);
+      const result2 = await ffmpeg.exec(command);
+      const output2 = result2.toString();
+      console.log('FFmpeg output final:', output2);
 
       // Leer el archivo resultante
       console.log('Leyendo archivo resultante...');
@@ -448,7 +434,7 @@ export function VideoViewport({
 
       console.log('Exportación completada con éxito');
     } catch (error) {
-      console.error('Error al exportar el video:', error);
+      console.error('Error durante la exportación:', error);
     } finally {
       setIsExporting(false);
     }
@@ -549,7 +535,7 @@ export function VideoViewport({
                           height: videoRef.current.videoHeight
                         });
                       }
-                      onVideoLoad?.(videoRef.current.duration, detectedFps);
+                      onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
                     }
                   }}
                   onCanPlayThrough={() => {
@@ -560,7 +546,6 @@ export function VideoViewport({
                         end: videoRef.current!.seekable.end(i)
                       })));
                     }
-                    setIsVideoLoaded(true);
                   }}
                   onProgress={() => {
                     if (videoRef.current) {
