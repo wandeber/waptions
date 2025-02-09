@@ -103,7 +103,7 @@ export function Timeline({
             height: '32px'
           }}
         >
-          <span className="absolute bottom-0 left-2 text-xs text-gray-400">
+          <span className="absolute bottom-0 left-2 text-xs text-gray-400 select-none">
             {second}s
           </span>
         </div>
@@ -230,7 +230,7 @@ export function Timeline({
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-4">
         <button
-          className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700 select-none"
           onClick={onPlayPause}
           title={isPlaying ? "Pausar" : "Reproducir"}
         >
@@ -246,13 +246,13 @@ export function Timeline({
           )}
         </button>
 
-        <div className="text-sm text-gray-300">
+        <div className="text-sm text-gray-300 select-none">
           {formatTime(localTime)} / {formatTime(duration)}
         </div>
 
         <div className="flex gap-2 ml-auto">
           <button
-            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed select-none"
             onClick={handleDeleteSubtitle}
             disabled={!selectedSubtitleId}
             title="Eliminar subtítulo seleccionado"
@@ -260,7 +260,7 @@ export function Timeline({
             Eliminar Subtítulo
           </button>
           <button
-            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 select-none"
             onClick={handleAddSubtitle}
             title="Añadir un nuevo subtítulo en la posición actual"
           >

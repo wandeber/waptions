@@ -67,7 +67,7 @@ export default function Home() {
     <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
       {/* Header */}
       <header className="flex-none p-4 bg-gray-800 flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Waptions</h1>
+        <h1 className="text-2xl font-bold select-none">Waptions</h1>
         <ExportButton
           videoRef={videoRef}
           subtitles={subtitles}

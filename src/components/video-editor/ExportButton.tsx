@@ -136,7 +136,7 @@ export function ExportButton({ videoRef, subtitles }: ExportButtonProps) {
     <button
       onClick={handleExport}
       disabled={!videoRef.current?.src || subtitles.length === 0 || isExporting}
-      className={`px-3 py-1 rounded text-sm transition-colors flex items-center gap-2
+      className={`px-3 py-1 rounded text-sm transition-colors flex items-center gap-2 select-none
         ${videoRef.current?.src && subtitles.length > 0 && !isExporting
           ? 'bg-green-600 text-white hover:bg-green-700'
           : 'bg-gray-500 text-gray-400 cursor-not-allowed'

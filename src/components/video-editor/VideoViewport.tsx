@@ -356,12 +356,12 @@ export function VideoViewport({
   }, []);
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-800 rounded-lg overflow-hidden">
+    <div className="flex-1 flex flex-col bg-gray-800 rounded-lg overflow-hidden select-none">
       {/* Barra de herramientas del viewport */}
       <div className="flex-none flex items-center gap-2 p-2 bg-gray-700">
         <button
           onClick={() => setShowThirdsGuide(prev => !prev)}
-          className={`px-3 py-1 rounded text-sm transition-colors ${
+          className={`px-3 py-1 rounded text-sm transition-colors select-none ${
             showThirdsGuide 
               ? 'bg-blue-600 text-white hover:bg-blue-700' 
               : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
@@ -372,7 +372,7 @@ export function VideoViewport({
         </button>
         <button
           onClick={() => setShowMetaInfo(prev => !prev)}
-          className={`px-3 py-1 rounded text-sm transition-colors ${
+          className={`px-3 py-1 rounded text-sm transition-colors select-none ${
             showMetaInfo 
               ? 'bg-blue-600 text-white hover:bg-blue-700' 
               : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
@@ -504,7 +504,7 @@ export function VideoViewport({
                   min="1"
                   value={fps || detectedFps}
                   onChange={handleFpsChange}
-                  className="w-16 px-1 py-0.5 bg-gray-800 border border-gray-600 rounded text-xs text-white"
+                  className="w-16 px-1 py-0.5 bg-gray-800 border border-gray-600 rounded text-xs text-white select-text"
                 />
               </div>
             )}
@@ -514,7 +514,7 @@ export function VideoViewport({
             <button
               onClick={() => !isLoading && fileInputRef.current?.click()}
               disabled={isLoading}
-              className={`px-6 py-3 bg-blue-600 text-white rounded-lg transition-colors flex items-center gap-2
+              className={`px-6 py-3 bg-blue-600 text-white rounded-lg transition-colors flex items-center gap-2 select-none
                 ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
             >
               {isLoading ? (
@@ -534,7 +534,7 @@ export function VideoViewport({
                 </>
               )}
             </button>
-            <p className="text-sm">
+            <p className="text-sm select-none">
               {isLoading ? 'Por favor espera...' : 'o arrastra y suelta un archivo de video aquí'}
             </p>
           </div>

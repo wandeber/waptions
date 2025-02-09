@@ -271,8 +271,8 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
               onClick={() => onSubtitleClick?.(subtitle)}
             >
               <div className="flex justify-between text-sm text-gray-400">
-                <span>Inicio: {formatTime(subtitle.startTime)}</span>
-                <span>Fin: {formatTime(subtitle.endTime)}</span>
+                <span className="select-none">Inicio: {formatTime(subtitle.startTime)}</span>
+                <span className="select-none">Fin: {formatTime(subtitle.endTime)}</span>
               </div>
               
               <textarea
