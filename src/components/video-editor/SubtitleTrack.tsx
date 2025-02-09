@@ -18,6 +18,7 @@ interface SubtitleTrackProps {
   subtitles: Subtitle[];
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
   selectedSubtitleId?: string | null;
+  fps: number;
 }
 
 export function SubtitleTrack({ 
@@ -26,7 +27,8 @@ export function SubtitleTrack({
   onSubtitleClick,
   subtitles,
   onSubtitlesChange,
-  selectedSubtitleId
+  selectedSubtitleId,
+  fps
 }: SubtitleTrackProps) {
   const [dragMode, setDragMode] = useState<DragMode>(null);
   const [dragStartTime, setDragStartTime] = useState<number>(0);
@@ -37,8 +39,11 @@ export function SubtitleTrack({
     if (!trackRef.current) return 0;
     const rect = trackRef.current.getBoundingClientRect();
     const percentage = Math.max(0, Math.min(1, x / rect.width));
-    return percentage * duration;
-  }, [duration]);
+    const exactTime = percentage * duration;
+    // Ajustamos al frame más cercano
+    const frameCount = Math.round(exactTime * fps);
+    return Number((frameCount / fps).toFixed(3));
+  }, [duration, fps]);
 
   const handleMouseDown = (e: React.MouseEvent, subtitle: Subtitle) => {
     if (!trackRef.current) return;
@@ -47,7 +52,7 @@ export function SubtitleTrack({
     const x = e.clientX - rect.left;
     const subtitleLeft = (subtitle.startTime / duration) * rect.width;
     const subtitleRight = (subtitle.endTime / duration) * rect.width;
-    const handleWidth = 10;
+    const handleWidth = 10; // Ancho del área para redimensionar
 
     // Determinar el modo de arrastre
     if (Math.abs(x - subtitleLeft) <= handleWidth) {
@@ -68,33 +73,48 @@ export function SubtitleTrack({
 
     const currentTime = getTimeFromX(e.clientX - trackRef.current.getBoundingClientRect().left);
     const timeDiff = currentTime - dragStartTime;
-
+    
     const updatedSubtitle = { ...draggedSubtitle };
     
     switch (dragMode) {
-      case 'move':
+      case 'move': {
         const duration = draggedSubtitle.endTime - draggedSubtitle.startTime;
-        updatedSubtitle.startTime = Math.max(0, draggedSubtitle.startTime + timeDiff);
-        updatedSubtitle.endTime = updatedSubtitle.startTime + duration;
+        const newStartFrame = Math.round((draggedSubtitle.startTime + timeDiff) * fps);
+        const newStartTime = Number((newStartFrame / fps).toFixed(3));
+        
+        // Asegurarnos de que no se salga de los límites
+        if (newStartTime >= 0) {
+          updatedSubtitle.startTime = newStartTime;
+          updatedSubtitle.endTime = Number((newStartTime + duration).toFixed(3));
+        }
         break;
-      case 'resize-start':
-        updatedSubtitle.startTime = Math.min(
-          Math.max(0, currentTime),
-          draggedSubtitle.endTime - 0.1
-        );
+      }
+      case 'resize-start': {
+        const newStartFrame = Math.round(currentTime * fps);
+        const endFrame = Math.round(draggedSubtitle.endTime * fps);
+        
+        // Asegurar un mínimo de 1 frame entre inicio y fin
+        if (newStartFrame < endFrame - 1) {
+          updatedSubtitle.startTime = Number((newStartFrame / fps).toFixed(3));
+        }
         break;
-      case 'resize-end':
-        updatedSubtitle.endTime = Math.max(
-          draggedSubtitle.startTime + 0.1,
-          currentTime
-        );
+      }
+      case 'resize-end': {
+        const startFrame = Math.round(draggedSubtitle.startTime * fps);
+        const newEndFrame = Math.round(currentTime * fps);
+        
+        // Asegurar un mínimo de 1 frame entre inicio y fin
+        if (newEndFrame > startFrame + 1) {
+          updatedSubtitle.endTime = Number((newEndFrame / fps).toFixed(3));
+        }
         break;
+      }
     }
 
     onSubtitlesChange(
       subtitles.map(s => s.id === draggedSubtitle.id ? updatedSubtitle : s)
     );
-  }, [dragMode, draggedSubtitle, dragStartTime, onSubtitlesChange, subtitles, getTimeFromX]);
+  }, [dragMode, draggedSubtitle, dragStartTime, onSubtitlesChange, subtitles, getTimeFromX, fps]);
 
   const handleMouseUp = () => {
     setDragMode(null);
@@ -125,31 +145,38 @@ export function SubtitleTrack({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {subtitles.map(subtitle => (
-        <div
-          key={subtitle.id}
-          className={`absolute top-0 h-full bg-blue-600 opacity-75 rounded
-            hover:opacity-90 transition-opacity
-            ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
-          style={{
-            left: `${(subtitle.startTime / duration) * 100}%`,
-            width: `${((subtitle.endTime - subtitle.startTime) / duration) * 100}%`,
-            cursor: dragMode && draggedSubtitle?.id === subtitle.id 
-              ? dragMode === 'move' ? 'move' : dragMode === 'resize-start' ? 'w-resize' : 'e-resize'
-              : 'pointer'
-          }}
-          onMouseDown={(e) => handleMouseDown(e, subtitle)}
-          onMouseMove={(e) => {
-            if (!dragMode) {
-              const rect = trackRef.current?.getBoundingClientRect();
-              if (rect) {
-                const x = e.clientX - rect.left;
-                e.currentTarget.style.cursor = getSubtitleCursor(subtitle, x);
+      {subtitles.map(subtitle => {
+        const isSelected = subtitle.id === selectedSubtitleId;
+        return (
+          <div
+            key={subtitle.id}
+            className={`absolute top-0 h-full bg-blue-600 opacity-75 rounded group
+              hover:opacity-90 transition-opacity
+              ${isSelected ? 'ring-2 ring-white' : ''}`}
+            style={{
+              left: `${(subtitle.startTime / duration) * 100}%`,
+              width: `${((subtitle.endTime - subtitle.startTime) / duration) * 100}%`,
+              cursor: dragMode && draggedSubtitle?.id === subtitle.id 
+                ? dragMode === 'move' ? 'move' : dragMode === 'resize-start' ? 'w-resize' : 'e-resize'
+                : 'pointer'
+            }}
+            onMouseDown={(e) => handleMouseDown(e, subtitle)}
+            onMouseMove={(e) => {
+              if (!dragMode) {
+                const rect = trackRef.current?.getBoundingClientRect();
+                if (rect) {
+                  const x = e.clientX - rect.left;
+                  e.currentTarget.style.cursor = getSubtitleCursor(subtitle, x);
+                }
               }
-            }
-          }}
-        />
-      ))}
+            }}
+          >
+            {/* Indicadores visuales para los bordes redimensionables */}
+            <div className="absolute left-0 top-0 bottom-0 w-1 bg-white opacity-0 group-hover:opacity-50 cursor-w-resize" />
+            <div className="absolute right-0 top-0 bottom-0 w-1 bg-white opacity-0 group-hover:opacity-50 cursor-e-resize" />
+          </div>
+        );
+      })}
     </div>
   );
 } 

@@ -263,6 +263,7 @@ export function Timeline({
               subtitles={subtitles}
               onSubtitlesChange={onSubtitlesChange}
               selectedSubtitleId={selectedSubtitleId}
+              fps={fps}
             />
           </div>
         </div>
