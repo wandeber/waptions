@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number) => void;
@@ -23,6 +23,7 @@ export function VideoViewport({
   const internalVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
+  const lastUpdateRef = useRef<number>(0);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -51,30 +52,49 @@ export function VideoViewport({
     }
   };
 
+  // Optimizar las actualizaciones de tiempo
+  const handleTimeUpdate = useCallback(() => {
+    if (!videoRef.current || !onTimeUpdate) return;
+
+    const now = performance.now();
+    if (now - lastUpdateRef.current > 32) { // Limitar a ~30fps
+      onTimeUpdate(videoRef.current.currentTime);
+      lastUpdateRef.current = now;
+    }
+  }, [onTimeUpdate]);
+
   // Actualizar el tiempo del video cuando cambia externamente
   useEffect(() => {
-    if (videoRef.current && currentTime !== undefined) {
+    if (!videoRef.current || currentTime === undefined) return;
+
+    const diff = Math.abs(videoRef.current.currentTime - currentTime);
+    if (diff > 0.1) { // Solo actualizar si la diferencia es significativa
       videoRef.current.currentTime = currentTime;
     }
-  }, [currentTime, videoRef]);
-
-  // Manejar actualizaciones de tiempo durante la reproducción
-  const handleTimeUpdate = () => {
-    if (videoRef.current && onTimeUpdate) {
-      onTimeUpdate(videoRef.current.currentTime);
-    }
-  };
+  }, [currentTime]);
 
   // Manejar el estado de reproducción
   useEffect(() => {
     if (!videoRef.current) return;
 
-    if (isPlaying) {
-      videoRef.current.play();
-    } else {
-      videoRef.current.pause();
-    }
-  }, [isPlaying, videoRef]);
+    const playPromise = isPlaying ? videoRef.current.play() : Promise.resolve();
+    playPromise.then(() => {
+      if (!isPlaying) {
+        videoRef.current?.pause();
+      }
+    }).catch(error => {
+      console.error('Error al reproducir el video:', error);
+    });
+  }, [isPlaying]);
+
+  // Limpiar URL al desmontar
+  useEffect(() => {
+    return () => {
+      if (videoUrl) {
+        URL.revokeObjectURL(videoUrl);
+      }
+    };
+  }, [videoUrl]);
 
   return (
     <div
