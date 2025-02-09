@@ -103,6 +103,7 @@ export default function Home() {
               selectedSubtitleId={selectedSubtitle?.id}
               onSave={handleSubtitleSave}
               onSubtitleClick={handleSubtitleClick}
+              onDelete={handleSubtitleDelete}
             />
           </div>
         </div>

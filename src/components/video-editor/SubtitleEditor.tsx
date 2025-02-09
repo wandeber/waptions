@@ -8,9 +8,10 @@ interface SubtitleEditorProps {
   selectedSubtitleId?: string | null;
   onSave?: (subtitle: Subtitle) => void;
   onSubtitleClick?: (subtitle: Subtitle) => void;
+  onDelete?: (subtitleId: string) => void;
 }
 
-export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick }: SubtitleEditorProps) {
+export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick, onDelete }: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
 
@@ -161,6 +162,60 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
           newTextarea.focus();
           // Posicionar el cursor al inicio del nuevo textarea
           newTextarea.setSelectionRange(0, 0);
+        }
+      });
+    } else if (e.key === 'Backspace') {
+      const textarea = e.currentTarget;
+      // Solo proceder si estamos al inicio del texto
+      if (textarea.selectionStart !== 0 || textarea.selectionEnd !== 0) {
+        return;
+      }
+
+      // Encontrar el subtítulo anterior
+      const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+      const currentIndex = sortedSubtitles.findIndex(s => s.id === subtitle.id);
+      if (currentIndex <= 0) {
+        return; // No hay subtítulo anterior
+      }
+
+      e.preventDefault();
+      const previousSubtitle = sortedSubtitles[currentIndex - 1];
+      const currentText = editingText[subtitle.id] || '';
+      const previousText = editingText[previousSubtitle.id] || '';
+
+      // Unir los textos con un espacio, eliminando espacios extra
+      const combinedText = `${previousText.trim()} ${currentText.trim()}`.trim();
+
+      // Actualizar el subtítulo anterior con el texto combinado y la nueva duración
+      const updatedPrevious: Subtitle = {
+        ...previousSubtitle,
+        text: combinedText,
+        endTime: subtitle.endTime
+      };
+
+      // Actualizar el estado local de edición
+      setEditingText(prev => {
+        const { [subtitle.id]: _, ...rest } = prev;
+        return {
+          ...rest,
+          [previousSubtitle.id]: combinedText
+        };
+      });
+
+      // Guardar el subtítulo actualizado y eliminar el actual
+      onSave?.(updatedPrevious);
+      onSubtitleClick?.(updatedPrevious);
+      onDelete?.(subtitle.id);
+
+      // Calcular la posición del cursor donde ocurre el join
+      const joinPosition = previousText.length;
+
+      // Mover el foco al textarea anterior y posicionar el cursor en el punto de unión
+      requestAnimationFrame(() => {
+        const previousTextarea = textAreasRef.current[previousSubtitle.id];
+        if (previousTextarea) {
+          previousTextarea.focus();
+          previousTextarea.setSelectionRange(joinPosition, joinPosition);
         }
       });
     }
