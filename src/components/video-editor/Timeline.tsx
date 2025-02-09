@@ -227,8 +227,8 @@ export function Timeline({
   }, [moveFrame]);
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-4 px-4">
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-4">
         <button
           className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
           onClick={onPlayPause}
