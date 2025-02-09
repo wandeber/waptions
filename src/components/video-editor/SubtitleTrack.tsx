@@ -151,7 +151,7 @@ export function SubtitleTrack({
           <div
             key={subtitle.id}
             className={`absolute top-0 h-full bg-blue-600 opacity-75 rounded group
-              hover:opacity-90 transition-opacity
+              hover:opacity-90 transition-opacity flex items-center overflow-hidden
               ${isSelected ? 'ring-2 ring-white' : ''}`}
             style={{
               left: `${(subtitle.startTime / duration) * 100}%`,
@@ -174,6 +174,11 @@ export function SubtitleTrack({
             {/* Indicadores visuales para los bordes redimensionables */}
             <div className="absolute left-0 top-0 bottom-0 w-1 bg-white opacity-0 group-hover:opacity-50 cursor-w-resize" />
             <div className="absolute right-0 top-0 bottom-0 w-1 bg-white opacity-0 group-hover:opacity-50 cursor-e-resize" />
+            
+            {/* Texto del subtítulo */}
+            <div className="px-2 text-xs text-white font-medium truncate select-none pointer-events-none">
+              {subtitle.text || '(Sin texto)'}
+            </div>
           </div>
         );
       })}
