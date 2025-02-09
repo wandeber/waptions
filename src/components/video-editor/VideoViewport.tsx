@@ -33,6 +33,7 @@ export function VideoViewport({
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
   const [isFFmpegLoaded, setIsFFmpegLoaded] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
+  const [showMetaInfo, setShowMetaInfo] = useState(true);
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const internalVideoRef = useRef<HTMLVideoElement>(null);
@@ -369,6 +370,17 @@ export function VideoViewport({
         >
           Guías de tercios
         </button>
+        <button
+          onClick={() => setShowMetaInfo(prev => !prev)}
+          className={`px-3 py-1 rounded text-sm transition-colors ${
+            showMetaInfo 
+              ? 'bg-blue-600 text-white hover:bg-blue-700' 
+              : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+          }`}
+          title="Mostrar/ocultar información del vídeo"
+        >
+          Meta Info
+        </button>
       </div>
 
       {/* Contenedor principal del video */}
@@ -388,12 +400,14 @@ export function VideoViewport({
         {videoUrl ? (
           <div className="w-full h-full relative">
             {/* Panel de información del video */}
-            <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20">
-              <div>Dimensiones originales: {videoDimensions ? `${videoDimensions.width}x${videoDimensions.height}` : 'No disponible'}</div>
-              <div>FPS: {detectedFps || 'No detectado'}</div>
-              <div>Duración: {videoRef.current?.duration.toFixed(2)}s</div>
-              <div>Dimensiones en viewport: {videoRef.current?.videoWidth}x{videoRef.current?.videoHeight}</div>
-            </div>
+            {showMetaInfo && (
+              <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20">
+                <div>Dimensiones originales: {videoDimensions ? `${videoDimensions.width}x${videoDimensions.height}` : 'No disponible'}</div>
+                <div>FPS: {detectedFps || 'No detectado'}</div>
+                <div>Duración: {videoRef.current?.duration.toFixed(2)}s</div>
+                <div>Dimensiones en viewport: {videoRef.current?.videoWidth}x{videoRef.current?.videoHeight}</div>
+              </div>
+            )}
 
             <div className="w-full h-full flex items-center justify-center">
               <div 
