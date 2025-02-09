@@ -33,6 +33,7 @@ export function VideoViewport({
   const videoRef = externalVideoRef || internalVideoRef;
   const timelineRef = useRef<number>();
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
+  const [isVideoLoaded, setIsVideoLoaded] = useState(false);
 
   // Inicializar FFmpeg solo en el cliente
   useEffect(() => {
@@ -102,7 +103,9 @@ export function VideoViewport({
       setDetectedFps(detectedFps);
       
       if (videoRef.current) {
+        videoRef.current.load(); // Forzar la recarga del video
         videoRef.current.onloadedmetadata = () => {
+          console.log('Video metadata loaded. Duration:', videoRef.current?.duration);
           onVideoLoad?.(videoRef.current!.duration, detectedFps);
         };
       }
@@ -166,8 +169,20 @@ export function VideoViewport({
 
   // Efecto para sincronizar el tiempo del video
   useEffect(() => {
-    if (videoRef.current && Math.abs(videoRef.current.currentTime - currentTime) > 0.01) {
-      videoRef.current.currentTime = currentTime;
+    if (!videoRef.current) return;
+
+    const video = videoRef.current;
+    if (Math.abs(video.currentTime - currentTime) > 0.01) {
+      if (video.seekable.length > 0) {
+        const seekableEnd = video.seekable.end(video.seekable.length - 1);
+        if (currentTime <= seekableEnd) {
+          video.currentTime = currentTime;
+        } else {
+          console.log(`No se puede buscar más allá de ${seekableEnd}s`);
+        }
+      } else {
+        console.log('El video no es buscable todavía');
+      }
     }
   }, [currentTime]);
 
@@ -196,6 +211,22 @@ export function VideoViewport({
     };
   }, [videoUrl]);
 
+  useEffect(() => {
+    if (!videoRef.current || !videoUrl) return;
+
+    const video = videoRef.current;
+
+    const handleProgress = () => {
+      if (video.buffered.length > 0) {
+        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+        console.log('Video buffered until:', bufferedEnd);
+      }
+    };
+
+    video.addEventListener('progress', handleProgress);
+    return () => video.removeEventListener('progress', handleProgress);
+  }, [videoUrl]);
+
   return (
     <div
       className="flex-1 bg-black rounded-lg flex items-center justify-center relative min-h-0"
@@ -221,9 +252,34 @@ export function VideoViewport({
               onTimeUpdate={updateTime}
               onLoadedMetadata={() => {
                 if (videoRef.current) {
+                  console.log('Metadata loaded. Duration:', videoRef.current.duration);
+                  console.log('Seekable ranges:', Array.from({length: videoRef.current.seekable.length}, (_, i) => ({
+                    start: videoRef.current!.seekable.start(i),
+                    end: videoRef.current!.seekable.end(i)
+                  })));
                   onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
                 }
               }}
+              onCanPlayThrough={() => {
+                if (videoRef.current) {
+                  console.log('Video can play through completely. Duration:', videoRef.current.duration);
+                  console.log('Seekable ranges:', Array.from({length: videoRef.current.seekable.length}, (_, i) => ({
+                    start: videoRef.current!.seekable.start(i),
+                    end: videoRef.current!.seekable.end(i)
+                  })));
+                }
+                setIsVideoLoaded(true);
+              }}
+              onProgress={() => {
+                if (videoRef.current) {
+                  const buffered = videoRef.current.buffered;
+                  if (buffered.length > 0) {
+                    console.log('Buffered until:', buffered.end(buffered.length - 1));
+                  }
+                }
+              }}
+              preload="auto"
+              playsInline
             />
           </div>
           {detectedFps && (

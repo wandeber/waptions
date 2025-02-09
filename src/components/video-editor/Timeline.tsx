@@ -46,15 +46,17 @@ export function Timeline({
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, x / rect.width));
     const exactTime = percentage * duration;
-    const frameCount = Math.floor(exactTime * fps);
-    return Math.max(0, Math.min(duration, frameCount / fps));
+    const frameCount = Math.round(exactTime * fps);
+    // Convertimos a tiempo usando división entera y luego a decimal
+    return Number((frameCount / fps).toFixed(3));
   }, [duration, fps, localTime]);
 
   const getCurrentFrame = useCallback(() => {
     const frameCount = Math.floor(localTime * fps);
+    const totalFrames = Math.floor(duration * fps);
     const frameStart = frameCount / fps;
     const frameEnd = Math.min((frameCount + 1) / fps, duration);
-    const frameWidth = 1 / fps;
+    const frameWidth = frameEnd - frameStart;
 
     return {
       start: frameStart,
@@ -153,6 +155,47 @@ export function Timeline({
     document.addEventListener('mousemove', handleGlobalMouseMove);
     document.addEventListener('mouseup', handleGlobalMouseUp);
   };
+
+  const moveFrame = useCallback((direction: 'next' | 'prev') => {
+    if (!onTimeUpdate) return;
+
+    const video = document.querySelector('video');
+    if (!video) return;
+
+    // Trabajamos con frames enteros para evitar problemas de precisión
+    const currentFrame = Math.round(localTime * fps);
+    const totalFrames = Math.floor(duration * fps);
+    
+    let newFrame;
+    if (direction === 'next' && currentFrame < totalFrames - 1) {
+      newFrame = currentFrame + 1;
+    } else if (direction === 'prev' && currentFrame > 0) {
+      newFrame = currentFrame - 1;
+    } else {
+      console.log(`No se puede mover ${direction}. Frame actual: ${currentFrame}, Total frames: ${totalFrames}`);
+      return;
+    }
+
+    // Convertimos el frame a tiempo usando división entera y luego a decimal
+    const newTime = Number((newFrame / fps).toFixed(3));
+    console.log(`Frame ${currentFrame} -> ${newFrame} (${newTime}s)`);
+    
+    setLocalTime(newTime);
+    onTimeUpdate(newTime);
+  }, [fps, localTime, duration, onTimeUpdate]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowRight') {
+        moveFrame('next');
+      } else if (event.key === 'ArrowLeft') {
+        moveFrame('prev');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [moveFrame]);
 
   return (
     <div className="flex flex-col gap-2">
