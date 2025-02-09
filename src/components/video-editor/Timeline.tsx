@@ -269,7 +269,7 @@ export function Timeline({
         </div>
       </div>
 
-      <div className="h-32 bg-gray-800 rounded-lg overflow-hidden">
+      <div className="h-[88px] bg-gray-800 rounded-lg overflow-hidden">
         <div 
           ref={timelineRef}
           className="w-full h-full relative timeline-track"

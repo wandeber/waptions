@@ -161,7 +161,7 @@ export function SubtitleTrack({
   return (
     <div 
       ref={trackRef}
-      className="absolute top-8 left-0 w-full h-12 bg-gray-800 border-t border-b border-gray-600"
+      className="absolute top-9 left-0 w-full h-12 bg-gray-800"
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
@@ -187,7 +187,7 @@ export function SubtitleTrack({
         return (
           <div
             key={subtitle.id}
-            className={`absolute top-0 h-full bg-blue-600 opacity-75 rounded group
+            className={`absolute top-1 bottom-1 bg-blue-600 opacity-75 rounded group
               hover:opacity-90 transition-opacity flex items-center overflow-hidden`}
             style={{
               left: `${(subtitle.startTime / duration) * 100}%`,
