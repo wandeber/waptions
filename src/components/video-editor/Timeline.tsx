@@ -126,6 +126,34 @@ export function Timeline({
 
   const currentFrame = getCurrentFrame();
 
+  // Funciones globales para seguir el ratón
+  const handleGlobalMouseMove = useCallback((event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const newTime = getTimeFromClick(event.clientX);
+    setLocalTime(newTime);
+    onTimeUpdate?.(newTime);
+  }, [getTimeFromClick, onTimeUpdate]);
+
+  const handleGlobalMouseUp = useCallback((event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsSeeking(false);
+    document.removeEventListener('mousemove', handleGlobalMouseMove);
+    document.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, [handleGlobalMouseMove]);
+
+  const handleMouseDownLocal = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsSeeking(true);
+    const finalTime = getTimeFromClick(event.clientX);
+    setLocalTime(finalTime);
+    onTimeUpdate?.(finalTime);
+    document.addEventListener('mousemove', handleGlobalMouseMove);
+    document.addEventListener('mouseup', handleGlobalMouseUp);
+  };
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-4 px-4">
@@ -163,33 +191,7 @@ export function Timeline({
         <div 
           ref={timelineRef}
           className="w-full h-full relative"
-          onMouseDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setIsSeeking(true);
-            const finalTime = getTimeFromClick(event.clientX);
-            setLocalTime(finalTime);
-            onTimeUpdate?.(finalTime);
-          }}
-          onMouseUp={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setIsSeeking(false);
-          }}
-          onMouseLeave={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setIsSeeking(false);
-          }}
-          onMouseMove={(event) => {
-            if (isSeeking) {
-              event.preventDefault();
-              event.stopPropagation();
-              const newTime = getTimeFromClick(event.clientX);
-              setLocalTime(newTime);
-              onTimeUpdate?.(newTime);
-            }
-          }}
+          onMouseDown={handleMouseDownLocal}
         >
           <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 rounded-t">
             <div className="absolute top-0 left-0 w-full h-full overflow-hidden">
