@@ -181,6 +181,15 @@ export function Timeline({
             event.stopPropagation();
             setIsSeeking(false);
           }}
+          onMouseMove={(event) => {
+            if (isSeeking) {
+              event.preventDefault();
+              event.stopPropagation();
+              const newTime = getTimeFromClick(event.clientX);
+              setLocalTime(newTime);
+              onTimeUpdate?.(newTime);
+            }
+          }}
         >
           <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 rounded-t">
             <div className="absolute top-0 left-0 w-full h-full overflow-hidden">
