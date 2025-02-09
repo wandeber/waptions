@@ -77,6 +77,7 @@ export function SubtitleTrack({
     const timeDiff = currentTime - dragStartTime;
     
     const updatedSubtitle = { ...draggedSubtitle };
+    let shouldUpdate = false;
     
     switch (dragMode) {
       case 'move': {
@@ -88,6 +89,7 @@ export function SubtitleTrack({
         if (newStartTime >= 0) {
           updatedSubtitle.startTime = newStartTime;
           updatedSubtitle.endTime = Number((newStartTime + duration).toFixed(3));
+          shouldUpdate = true;
         }
         break;
       }
@@ -98,6 +100,7 @@ export function SubtitleTrack({
         // Asegurar un mínimo de 1 frame entre inicio y fin
         if (newStartFrame < endFrame - 1) {
           updatedSubtitle.startTime = Number((newStartFrame / fps).toFixed(3));
+          shouldUpdate = true;
         }
         break;
       }
@@ -108,14 +111,24 @@ export function SubtitleTrack({
         // Asegurar un mínimo de 1 frame entre inicio y fin
         if (newEndFrame > startFrame + 1) {
           updatedSubtitle.endTime = Number((newEndFrame / fps).toFixed(3));
+          shouldUpdate = true;
         }
         break;
       }
     }
 
-    onSubtitlesChange(
-      subtitles.map(s => s.id === draggedSubtitle.id ? updatedSubtitle : s)
-    );
+    if (shouldUpdate) {
+      // Verificar si realmente hay un cambio antes de actualizar
+      const currentSubtitle = subtitles.find(s => s.id === draggedSubtitle.id);
+      if (currentSubtitle && (
+        currentSubtitle.startTime !== updatedSubtitle.startTime ||
+        currentSubtitle.endTime !== updatedSubtitle.endTime
+      )) {
+        onSubtitlesChange(
+          subtitles.map(s => s.id === draggedSubtitle.id ? updatedSubtitle : s)
+        );
+      }
+    }
   }, [dragMode, draggedSubtitle, dragStartTime, onSubtitlesChange, subtitles, getTimeFromX, fps]);
 
   const handleMouseUp = () => {

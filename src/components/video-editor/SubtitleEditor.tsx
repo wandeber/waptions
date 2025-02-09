@@ -1,39 +1,56 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Subtitle } from './SubtitleTrack';
 
 interface SubtitleEditorProps {
-  subtitle: Subtitle | null;
+  subtitles: Subtitle[];
+  selectedSubtitleId?: string | null;
   onSave?: (subtitle: Subtitle) => void;
 }
 
-export function SubtitleEditor({ subtitle, onSave }: SubtitleEditorProps) {
-  const [text, setText] = useState('');
+export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave }: SubtitleEditorProps) {
+  const [editingText, setEditingText] = useState<{[key: string]: string}>({});
+  const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
 
-  // Actualizar el texto cuando se selecciona un nuevo subtítulo
+  // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
   useEffect(() => {
-    if (subtitle) {
-      setText(subtitle.text);
-    } else {
-      setText('');
-    }
-  }, [subtitle]);
+    const newEditingText: {[key: string]: string} = {};
+    subtitles.forEach(subtitle => {
+      if (!editingText[subtitle.id]) {
+        newEditingText[subtitle.id] = subtitle.text;
+      }
+    });
+    setEditingText(prev => ({...prev, ...newEditingText}));
+  }, [subtitles]);
 
-  // Guardar cambios cuando el texto cambia
-  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const newText = e.target.value;
-    setText(newText);
-    
-    if (subtitle) {
-      onSave?.({
-        ...subtitle,
-        text: newText
-      });
+  const adjustTextareaHeight = (textarea: HTMLTextAreaElement) => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  };
+
+  const handleTextChange = (subtitle: Subtitle, newText: string) => {
+    setEditingText(prev => ({...prev, [subtitle.id]: newText}));
+    onSave?.({
+      ...subtitle,
+      text: newText
+    });
+
+    // Ajustar altura después de cambiar el texto
+    const textarea = textAreasRef.current[subtitle.id];
+    if (textarea) {
+      adjustTextareaHeight(textarea);
     }
   };
+
+  // Ajustar altura inicial cuando se monta el componente o cambia el texto
+  useEffect(() => {
+    Object.values(textAreasRef.current).forEach(textarea => {
+      if (textarea) {
+        adjustTextareaHeight(textarea);
+      }
+    });
+  }, [editingText]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -42,29 +59,39 @@ export function SubtitleEditor({ subtitle, onSave }: SubtitleEditorProps) {
     return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
   };
 
-  if (!subtitle) {
-    return (
-      <div className="h-full bg-gray-800 rounded-lg p-4 flex items-center justify-center text-gray-500">
-        Selecciona un subtítulo para editar
-      </div>
-    );
-  }
-
   return (
-    <div className="h-full bg-gray-800 rounded-lg p-4 flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
-      <div className="flex justify-between text-sm text-gray-400">
-        <span>Inicio: {formatTime(subtitle.startTime)}</span>
-        <span>Fin: {formatTime(subtitle.endTime)}</span>
-      </div>
-      
-      <textarea
-        className="flex-1 bg-gray-700 rounded p-2 text-white resize-none min-h-0"
-        value={text}
-        onChange={handleTextChange}
-        onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        placeholder="Escribe el texto del subtítulo aquí..."
-      />
+    <div className="h-full bg-gray-800 rounded-lg p-4 flex flex-col gap-4 overflow-y-auto">
+      {subtitles.length === 0 ? (
+        <div className="text-gray-500 text-center">
+          No hay subtítulos añadidos
+        </div>
+      ) : (
+        subtitles.map(subtitle => (
+          <div 
+            key={subtitle.id}
+            className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors
+              ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
+          >
+            <div className="flex justify-between text-sm text-gray-400">
+              <span>Inicio: {formatTime(subtitle.startTime)}</span>
+              <span>Fin: {formatTime(subtitle.endTime)}</span>
+            </div>
+            
+            <textarea
+              ref={el => {
+                textAreasRef.current[subtitle.id] = el;
+              }}
+              className="bg-gray-600 rounded p-2 text-white resize-none overflow-hidden"
+              value={editingText[subtitle.id] || ''}
+              onChange={(e) => handleTextChange(subtitle, e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              placeholder="Escribe el texto del subtítulo aquí..."
+              rows={1}
+            />
+          </div>
+        ))
+      )}
     </div>
   );
 } 

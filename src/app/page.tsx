@@ -99,9 +99,9 @@ export default function Home() {
           </div>
           <div className="w-80 flex-none">
             <SubtitleEditor
-              subtitle={selectedSubtitle}
+              subtitles={subtitles}
+              selectedSubtitleId={selectedSubtitle?.id}
               onSave={handleSubtitleSave}
-              onDelete={handleSubtitleDelete}
             />
           </div>
         </div>
