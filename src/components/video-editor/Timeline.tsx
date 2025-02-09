@@ -52,18 +52,19 @@ export function Timeline({
   }, [duration, fps, localTime]);
 
   const getCurrentFrame = useCallback(() => {
-    const frameCount = Math.floor(localTime * fps);
-    const totalFrames = Math.floor(duration * fps);
-    const frameStart = frameCount / fps;
-    const frameEnd = Math.min((frameCount + 1) / fps, duration);
+    // Asegurarnos de que trabajamos con frames enteros
+    const frameCount = Math.round(localTime * fps);
+    const frameStart = Number((frameCount / fps).toFixed(3));
+    const frameEnd = Number(((frameCount + 1) / fps).toFixed(3));
     const frameWidth = frameEnd - frameStart;
 
     return {
       start: frameStart,
       end: frameEnd,
-      width: frameWidth
+      width: frameWidth,
+      current: frameCount
     };
-  }, [localTime, duration, fps]);
+  }, [localTime, fps]);
 
   const handleAddSubtitle = () => {
     if (!onSubtitlesChange || !onSubtitleClick) return;
@@ -178,30 +179,39 @@ export function Timeline({
   const moveFrame = useCallback((direction: 'next' | 'prev') => {
     if (!onTimeUpdate) return;
 
-    const video = document.querySelector('video');
-    if (!video) return;
-
-    // Trabajamos con frames enteros para evitar problemas de precisión
-    const currentFrame = Math.round(localTime * fps);
+    const currentFrame = getCurrentFrame();
     const totalFrames = Math.floor(duration * fps);
     
     let newFrame;
-    if (direction === 'next' && currentFrame < totalFrames - 1) {
-      newFrame = currentFrame + 1;
-    } else if (direction === 'prev' && currentFrame > 0) {
-      newFrame = currentFrame - 1;
+    if (direction === 'next' && currentFrame.current < totalFrames - 1) {
+      newFrame = currentFrame.current + 1;
+    } else if (direction === 'prev' && currentFrame.current > 0) {
+      newFrame = currentFrame.current - 1;
     } else {
-      console.log(`No se puede mover ${direction}. Frame actual: ${currentFrame}, Total frames: ${totalFrames}`);
+      console.log(`No se puede mover ${direction}. Frame actual: ${currentFrame.current}, Total frames: ${totalFrames}`);
       return;
     }
 
     // Convertimos el frame a tiempo usando división entera y luego a decimal
     const newTime = Number((newFrame / fps).toFixed(3));
-    console.log(`Frame ${currentFrame} -> ${newFrame} (${newTime}s)`);
+    console.log(`Frame ${currentFrame.current} -> ${newFrame} (${newTime}s)`);
     
     setLocalTime(newTime);
     onTimeUpdate(newTime);
-  }, [fps, localTime, duration, onTimeUpdate]);
+  }, [fps, getCurrentFrame, duration, onTimeUpdate]);
+
+  // Efecto para sincronizar el tiempo local con el tiempo del video
+  useEffect(() => {
+    if (!isSeeking) {
+      const frameFromCurrent = Math.round(currentTime * fps);
+      const frameFromLocal = Math.round(localTime * fps);
+      
+      // Solo actualizamos si hay diferencia de frames
+      if (frameFromCurrent !== frameFromLocal) {
+        setLocalTime(Number((frameFromCurrent / fps).toFixed(3)));
+      }
+    }
+  }, [currentTime, fps, isSeeking, localTime]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
