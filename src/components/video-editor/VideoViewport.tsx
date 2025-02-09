@@ -18,7 +18,7 @@ interface VideoViewportProps {
 export function VideoViewport({ 
   onVideoLoad, 
   onTimeUpdate, 
-  currentTime,
+  currentTime = 0,
   videoRef: externalVideoRef,
   isPlaying,
   onPlayPause,
@@ -31,7 +31,7 @@ export function VideoViewport({
   const internalVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
-  const lastUpdateRef = useRef<number>(0);
+  const timelineRef = useRef<number>();
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
 
   // Inicializar FFmpeg solo en el cliente
@@ -139,18 +139,34 @@ export function VideoViewport({
     }
   };
 
-  // Optimizar las actualizaciones de tiempo
-  const handleTimeUpdate = useCallback(() => {
-    if (!videoRef.current || !onTimeUpdate) return;
-    onTimeUpdate(videoRef.current.currentTime);
-  }, [onTimeUpdate]);
+  // Función para actualizar el tiempo usando requestAnimationFrame
+  const updateTime = useCallback(() => {
+    if (videoRef.current && onTimeUpdate) {
+      onTimeUpdate(videoRef.current.currentTime);
+    }
+    if (isPlaying) {
+      timelineRef.current = requestAnimationFrame(updateTime);
+    }
+  }, [isPlaying, onTimeUpdate]);
 
-  // Actualizar el tiempo del video cuando cambia externamente
+  // Efecto para manejar la actualización del tiempo
   useEffect(() => {
-    if (!videoRef.current || currentTime === undefined) return;
+    if (isPlaying) {
+      timelineRef.current = requestAnimationFrame(updateTime);
+    } else if (timelineRef.current) {
+      cancelAnimationFrame(timelineRef.current);
+    }
 
-    const diff = Math.abs(videoRef.current.currentTime - currentTime);
-    if (diff > 0.01) { // Hacemos la diferencia más pequeña para mayor precisión
+    return () => {
+      if (timelineRef.current) {
+        cancelAnimationFrame(timelineRef.current);
+      }
+    };
+  }, [isPlaying, updateTime]);
+
+  // Efecto para sincronizar el tiempo del video
+  useEffect(() => {
+    if (videoRef.current && Math.abs(videoRef.current.currentTime - currentTime) > 0.01) {
       videoRef.current.currentTime = currentTime;
     }
   }, [currentTime]);
@@ -202,7 +218,7 @@ export function VideoViewport({
               ref={videoRef}
               src={videoUrl}
               className="w-full h-full object-contain"
-              onTimeUpdate={handleTimeUpdate}
+              onTimeUpdate={updateTime}
               onLoadedMetadata={() => {
                 if (videoRef.current) {
                   onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
