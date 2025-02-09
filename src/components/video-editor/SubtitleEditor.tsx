@@ -60,6 +60,54 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
     return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      
+      const textarea = e.currentTarget;
+      const cursorPosition = textarea.selectionStart;
+      const currentText = editingText[subtitle.id] || '';
+      
+      // Dividir el texto en dos partes según la posición del cursor
+      const firstPart = currentText.slice(0, cursorPosition);
+      const secondPart = currentText.slice(cursorPosition);
+      
+      // Calcular los tiempos para los dos nuevos subtítulos
+      const originalDuration = subtitle.endTime - subtitle.startTime;
+      const splitRatio = cursorPosition / currentText.length;
+      const splitTime = subtitle.startTime + (originalDuration * splitRatio);
+      
+      // Actualizar el subtítulo original con la primera parte
+      const updatedOriginal: Subtitle = {
+        ...subtitle,
+        text: firstPart,
+        endTime: splitTime
+      };
+      
+      // Crear el nuevo subtítulo con la segunda parte
+      const newSubtitle: Subtitle = {
+        id: Date.now().toString(),
+        startTime: splitTime,
+        endTime: subtitle.endTime,
+        text: secondPart
+      };
+      
+      // Actualizar el estado local de edición
+      setEditingText(prev => ({
+        ...prev,
+        [updatedOriginal.id]: firstPart,
+        [newSubtitle.id]: secondPart
+      }));
+      
+      // Guardar ambos subtítulos
+      onSave?.(updatedOriginal);
+      onSave?.(newSubtitle);
+      
+      // Seleccionar el nuevo subtítulo
+      onSubtitleClick?.(newSubtitle);
+    }
+  };
+
   return (
     <div className="h-full bg-gray-800 rounded-lg p-4 flex flex-col gap-4 overflow-y-auto">
       {subtitles.length === 0 ? (
@@ -103,6 +151,7 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
                 }}
                 onFocus={() => onSubtitleClick?.(subtitle)}
                 onMouseDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => handleKeyDown(e, subtitle)}
                 placeholder="Escribe el texto del subtítulo aquí..."
                 rows={1}
               />
