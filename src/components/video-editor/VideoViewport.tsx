@@ -13,6 +13,12 @@ interface VideoViewportProps {
   onPlayPause?: () => void;
   fps?: number;
   onFpsChange?: (fps: number) => void;
+  subtitles?: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+  }>;
 }
 
 export function VideoViewport({ 
@@ -23,7 +29,8 @@ export function VideoViewport({
   isPlaying,
   onPlayPause,
   fps,
-  onFpsChange
+  onFpsChange,
+  subtitles = []
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
@@ -227,6 +234,11 @@ export function VideoViewport({
     return () => video.removeEventListener('progress', handleProgress);
   }, [videoUrl]);
 
+  // Encontrar los subtítulos activos para el tiempo actual
+  const activeSubtitles = subtitles.filter(
+    subtitle => currentTime >= subtitle.startTime && currentTime <= subtitle.endTime
+  );
+
   return (
     <div
       className="flex-1 bg-black rounded-lg flex items-center justify-center relative min-h-0"
@@ -282,6 +294,19 @@ export function VideoViewport({
               playsInline
             />
           </div>
+
+          {/* Overlay para los subtítulos */}
+          <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center">
+            {activeSubtitles.map(subtitle => (
+              <div
+                key={subtitle.id}
+                className="bg-black/75 text-white px-4 py-2 rounded-lg mb-2 text-center max-w-[80%]"
+              >
+                {subtitle.text}
+              </div>
+            ))}
+          </div>
+
           {detectedFps && (
             <div className="absolute bottom-2 right-2 flex items-center gap-2 bg-black/50 p-2 rounded">
               <span className="text-xs text-gray-300">FPS:</span>

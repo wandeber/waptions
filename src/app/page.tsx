@@ -82,6 +82,7 @@ export default function Home() {
               onPlayPause={handlePlayPause}
               fps={fps}
               onFpsChange={handleFpsChange}
+              subtitles={subtitles}
             />
             <Timeline 
               duration={duration}
