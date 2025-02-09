@@ -166,9 +166,17 @@ export function SubtitleTrack({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
+      {/* Resaltado del frame actual */}
+      <div 
+        className="absolute top-0 bottom-0 bg-white/10 pointer-events-none border-l border-r border-white/20"
+        style={{
+          left: `${(currentTime / duration) * 100}%`,
+          width: `${(1 / fps / duration) * 100}%`
+        }}
+      />
       {/* Indicador de tiempo actual */}
       <div 
-        className="absolute top-0 bottom-0 w-px bg-white z-10"
+        className="absolute top-0 bottom-0 w-px bg-red-500 z-10"
         style={{
           left: `${(currentTime / duration) * 100}%`,
           pointerEvents: 'none'
