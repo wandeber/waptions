@@ -24,8 +24,10 @@ export default function Home() {
     setFps(detectedFps);
   };
 
-  const handleSubtitleClick = (subtitle: Subtitle) => {
-    setSelectedSubtitle(subtitle);
+  const handleSubtitleClick = (subtitle: Subtitle | null) => {
+    if (subtitle !== null || !selectedSubtitle) {
+      setSelectedSubtitle(subtitle);
+    }
   };
 
   const handleSubtitleSave = (subtitle: Subtitle) => {
@@ -38,7 +40,6 @@ export default function Home() {
       newSubtitles[index] = subtitle;
       return newSubtitles;
     });
-    setSelectedSubtitle(null);
   };
 
   const handleSubtitleDelete = (subtitleId: string) => {

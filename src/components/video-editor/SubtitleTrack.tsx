@@ -46,6 +46,8 @@ export function SubtitleTrack({
   }, [duration, fps]);
 
   const handleMouseDown = (e: React.MouseEvent, subtitle: Subtitle) => {
+    e.stopPropagation(); // Evitar que el evento llegue al timeline
+    
     if (!trackRef.current) return;
 
     const rect = trackRef.current.getBoundingClientRect();

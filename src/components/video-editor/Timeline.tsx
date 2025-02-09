@@ -7,7 +7,7 @@ interface TimelineProps {
   duration: number;
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
-  onSubtitleClick?: (subtitle: Subtitle) => void;
+  onSubtitleClick?: (subtitle: Subtitle | null) => void;
   subtitles: Subtitle[];
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
   selectedSubtitleId?: string | null;
@@ -66,7 +66,7 @@ export function Timeline({
   }, [localTime, duration, fps]);
 
   const handleAddSubtitle = () => {
-    if (!onSubtitlesChange) return;
+    if (!onSubtitlesChange || !onSubtitleClick) return;
     
     const newSubtitle: Subtitle = {
       id: Date.now().toString(),
@@ -76,6 +76,8 @@ export function Timeline({
     };
 
     onSubtitlesChange([...subtitles, newSubtitle]);
+    // Seleccionar automáticamente el nuevo subtítulo
+    onSubtitleClick(newSubtitle);
   };
 
   const formatTime = (seconds: number) => {
@@ -146,6 +148,15 @@ export function Timeline({
   }, [handleGlobalMouseMove]);
 
   const handleMouseDownLocal = (event: React.MouseEvent<HTMLDivElement>) => {
+    // Solo deseleccionar si el clic fue directamente en el área de track o en el área de marcadores
+    const target = event.target as HTMLElement;
+    const isEmptyArea = target.classList.contains('timeline-track') || 
+                       target.classList.contains('timeline-markers');
+
+    if (isEmptyArea && onSubtitleClick) {
+      onSubtitleClick(null);
+    }
+
     event.preventDefault();
     event.stopPropagation();
     setIsSeeking(true);
@@ -154,6 +165,14 @@ export function Timeline({
     onTimeUpdate?.(finalTime);
     document.addEventListener('mousemove', handleGlobalMouseMove);
     document.addEventListener('mouseup', handleGlobalMouseUp);
+  };
+
+  const handleDeleteSubtitle = () => {
+    if (!selectedSubtitleId || !onSubtitlesChange) return;
+    onSubtitlesChange(subtitles.filter(s => s.id !== selectedSubtitleId));
+    if (onSubtitleClick) {
+      onSubtitleClick(null);
+    }
   };
 
   const moveFrame = useCallback((direction: 'next' | 'prev') => {
@@ -221,23 +240,33 @@ export function Timeline({
           {formatTime(localTime)} / {formatTime(duration)}
         </div>
 
-        <button
-          className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 ml-auto"
-          onClick={handleAddSubtitle}
-          title="Añadir un nuevo subtítulo en la posición actual"
-        >
-          Añadir Subtítulo
-        </button>
+        <div className="flex gap-2 ml-auto">
+          <button
+            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleDeleteSubtitle}
+            disabled={!selectedSubtitleId}
+            title="Eliminar subtítulo seleccionado"
+          >
+            Eliminar Subtítulo
+          </button>
+          <button
+            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+            onClick={handleAddSubtitle}
+            title="Añadir un nuevo subtítulo en la posición actual"
+          >
+            Añadir Subtítulo
+          </button>
+        </div>
       </div>
 
       <div className="h-32 bg-gray-800 rounded-lg p-4">
         <div 
           ref={timelineRef}
-          className="w-full h-full relative"
+          className="w-full h-full relative timeline-track"
           onMouseDown={handleMouseDownLocal}
         >
-          <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 rounded-t">
-            <div className="absolute top-0 left-0 w-full h-full overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 rounded-t timeline-markers">
+            <div className="absolute top-0 left-0 w-full h-full overflow-hidden timeline-markers">
               {getTimeMarkers()}
             </div>
           </div>
