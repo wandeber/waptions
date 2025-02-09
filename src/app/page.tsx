@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 import { VideoViewport } from '@/components/video-editor/VideoViewport';
 import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/SubtitleEditor';
+import { ExportButton } from '@/components/video-editor/ExportButton';
 import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
 
 export default function Home() {
@@ -65,8 +66,12 @@ export default function Home() {
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
       {/* Header */}
-      <header className="flex-none p-4 bg-gray-800">
-        <h1 className="text-2xl font-bold">Editor de Subtítulos</h1>
+      <header className="flex-none p-4 bg-gray-800 flex justify-between items-center">
+        <h1 className="text-2xl font-bold">Waptions</h1>
+        <ExportButton
+          videoRef={videoRef}
+          subtitles={subtitles}
+        />
       </header>
 
       {/* Main content */}
