@@ -356,7 +356,7 @@ export function VideoViewport({
   }, []);
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-800 rounded-lg overflow-hidden select-none">
+    <div className="flex-1 flex flex-col bg-gray-800 rounded-t-lg overflow-hidden select-none">
       {/* Barra de herramientas del viewport */}
       <div className="flex-none flex items-center gap-2 p-2 bg-gray-700">
         <button

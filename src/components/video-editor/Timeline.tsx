@@ -269,13 +269,13 @@ export function Timeline({
         </div>
       </div>
 
-      <div className="h-[88px] bg-gray-800 rounded-lg overflow-hidden">
+      <div className="h-[88px] bg-gray-800 rounded-b-lg overflow-hidden">
         <div 
           ref={timelineRef}
           className="w-full h-full relative timeline-track"
           onMouseDown={handleMouseDownLocal}
         >
-          <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 rounded-t timeline-markers">
+          <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 timeline-markers">
             <div className="absolute top-0 left-0 w-full h-full overflow-hidden timeline-markers">
               {getTimeMarkers()}
             </div>
