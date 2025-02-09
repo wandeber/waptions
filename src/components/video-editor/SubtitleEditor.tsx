@@ -68,9 +68,9 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
       const cursorPosition = textarea.selectionStart;
       const currentText = editingText[subtitle.id] || '';
       
-      // Dividir el texto en dos partes según la posición del cursor
-      const firstPart = currentText.slice(0, cursorPosition);
-      const secondPart = currentText.slice(cursorPosition);
+      // Dividir el texto en dos partes según la posición del cursor y limpiar espacios en la zona del split
+      const firstPart = currentText.slice(0, cursorPosition).replace(/\s+$/, '');
+      const secondPart = currentText.slice(cursorPosition).replace(/^\s+/, '');
       
       // Calcular los tiempos para los dos nuevos subtítulos
       const originalDuration = subtitle.endTime - subtitle.startTime;
