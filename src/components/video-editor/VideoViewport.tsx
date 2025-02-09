@@ -37,6 +37,7 @@ export function VideoViewport({
   const [isFFmpegLoaded, setIsFFmpegLoaded] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const internalVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
@@ -44,32 +45,46 @@ export function VideoViewport({
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [isVideoLoaded, setIsVideoLoaded] = useState(false);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Inicializar FFmpeg solo en el cliente
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setFFmpeg(new FFmpeg());
-    }
-  }, []);
-
-  // Cargar FFmpeg
-  useEffect(() => {
-    if (!ffmpeg) return;
-
     const loadFFmpeg = async () => {
       try {
-        // Cargar FFmpeg con las rutas correctas
-        await ffmpeg.load({
+        const ffmpegInstance = new FFmpeg();
+        console.log('FFmpeg instancia creada');
+        
+        // Configurar el logger antes de cargar
+        ffmpegInstance.on('log', ({ message }) => {
+          console.log('FFmpeg Log:', message);
+        });
+        
+        console.log('Iniciando carga de FFmpeg...');
+        await ffmpegInstance.load({
           coreURL: '/ffmpeg-core.js',
           wasmURL: '/ffmpeg-core.wasm',
+          workerURL: '/ffmpeg-core.worker.js'
         });
+        
+        console.log('FFmpeg cargado exitosamente');
+        setFFmpeg(ffmpegInstance);
         setIsFFmpegLoaded(true);
       } catch (error) {
         console.error('Error al cargar FFmpeg:', error);
+        if (error instanceof Error) {
+          console.error('Detalles del error:', {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+          });
+        }
       }
     };
-    loadFFmpeg();
-  }, [ffmpeg]);
+
+    if (typeof window !== 'undefined') {
+      loadFFmpeg();
+    }
+  }, []);
 
   const detectVideoMetadata = async (file: File): Promise<{ fps: number; width: number; height: number }> => {
     if (!isFFmpegLoaded || !ffmpeg) {
@@ -108,60 +123,57 @@ export function VideoViewport({
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
+    if (!file || isLoading) return;
+
+    try {
+      setIsLoading(true);
+      console.log('Iniciando carga de video:', file.name);
+      
+      // Primero detectar metadata con FFmpeg
+      const { fps: detectedFps, width, height } = await detectVideoMetadata(file);
+      console.log('Metadata detectada:', { fps: detectedFps, width, height });
+      
+      // Luego crear la URL del video
       const url = URL.createObjectURL(file);
       setVideoUrl(url);
-      
-      // Detectar metadata usando FFmpeg
-      const { fps: detectedFps, width, height } = await detectVideoMetadata(file);
       setDetectedFps(detectedFps);
       setVideoDimensions({ width, height });
       
+      // Esperar a que el video se cargue
       if (videoRef.current) {
         videoRef.current.load();
-        videoRef.current.onloadedmetadata = () => {
-          console.log('Video metadata loaded:', {
-            duration: videoRef.current?.duration,
-            width: videoRef.current?.videoWidth,
-            height: videoRef.current?.videoHeight
-          });
-          // Usar las dimensiones reales del video
-          if (videoRef.current) {
-            setVideoDimensions({
-              width: videoRef.current.videoWidth,
-              height: videoRef.current.videoHeight
+        await new Promise((resolve) => {
+          if (!videoRef.current) return;
+          videoRef.current.onloadedmetadata = () => {
+            console.log('Video cargado:', {
+              duration: videoRef.current?.duration,
+              width: videoRef.current?.videoWidth,
+              height: videoRef.current?.videoHeight
             });
-          }
-          onVideoLoad?.(videoRef.current!.duration, detectedFps);
-        };
+            
+            if (videoRef.current) {
+              setVideoDimensions({
+                width: videoRef.current.videoWidth,
+                height: videoRef.current.videoHeight
+              });
+              onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
+            }
+            resolve(null);
+          };
+        });
       }
+    } catch (error) {
+      console.error('Error al cargar el video:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleDrop = async (event: React.DragEvent) => {
     event.preventDefault();
     const file = event.dataTransfer.files?.[0];
-    if (file?.type.startsWith('video/')) {
-      const url = URL.createObjectURL(file);
-      setVideoUrl(url);
-      
-      // Detectar metadata usando FFmpeg
-      const { fps: detectedFps, width, height } = await detectVideoMetadata(file);
-      setDetectedFps(detectedFps);
-      setVideoDimensions({ width, height });
-      
-      if (videoRef.current) {
-        videoRef.current.onloadedmetadata = () => {
-          // Usar las dimensiones reales del video
-          if (videoRef.current) {
-            setVideoDimensions({
-              width: videoRef.current.videoWidth,
-              height: videoRef.current.videoHeight
-            });
-          }
-          onVideoLoad?.(videoRef.current!.duration, detectedFps);
-        };
-      }
+    if (file?.type.startsWith('video/') && !isLoading) {
+      await handleFileSelect({ target: { files: [file] } } as any);
     }
   };
 
@@ -340,6 +352,108 @@ export function VideoViewport({
     return { width, height, left, top };
   }, []);
 
+  const handleExport = async () => {
+    console.log('Estado actual:', {
+      videoRef: !!videoRef.current,
+      ffmpeg: !!ffmpeg,
+      isFFmpegLoaded,
+      videoUrl: !!videoUrl,
+      subtitlesLength: subtitles.length,
+      ffmpegInstance: ffmpeg
+    });
+
+    if (!videoRef.current) {
+      console.error('No hay referencia al video');
+      return;
+    }
+    if (!ffmpeg) {
+      console.error('FFmpeg no está inicializado');
+      return;
+    }
+    if (!isFFmpegLoaded) {
+      console.error('FFmpeg no está cargado');
+      return;
+    }
+    if (!videoUrl) {
+      console.error('No hay URL del video');
+      return;
+    }
+    if (!subtitles.length) {
+      console.error('No hay subtítulos');
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      console.log('Iniciando exportación...');
+
+      // Crear archivo de subtítulos SRT
+      let srtContent = '';
+      subtitles.forEach((subtitle, index) => {
+        const startTime = new Date(subtitle.startTime * 1000).toISOString().substr(11, 12).replace('.', ',');
+        const endTime = new Date(subtitle.endTime * 1000).toISOString().substr(11, 12).replace('.', ',');
+        srtContent += `${index + 1}\n${startTime} --> ${endTime}\n${subtitle.text}\n\n`;
+      });
+      console.log('Contenido SRT generado:', srtContent);
+
+      // Obtener el video original como ArrayBuffer
+      console.log('Obteniendo video original...');
+      const videoResponse = await fetch(videoUrl);
+      const videoBuffer = await videoResponse.arrayBuffer();
+      console.log('Video obtenido, tamaño:', videoBuffer.byteLength);
+
+      // Escribir archivos en FFmpeg
+      console.log('Escribiendo archivos en FFmpeg...');
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(videoBuffer));
+      await ffmpeg.writeFile('subtitles.srt', srtContent);
+
+      // Configurar el comando FFmpeg para mantener la calidad original
+      const command = [
+        '-i', 'input.mp4',
+        '-i', 'subtitles.srt',
+        '-c:v', 'copy',
+        '-c:a', 'copy',
+        '-c:s', 'mov_text',
+        '-metadata:s:s:0', 'language=spa',
+        '-movflags', '+faststart',
+        'output.mp4'
+      ];
+
+      console.log('Ejecutando FFmpeg con comando:', command.join(' '));
+      const { stderr } = await ffmpeg.exec(command);
+      console.log('Salida de FFmpeg:', stderr);
+
+      // Leer el archivo resultante
+      console.log('Leyendo archivo resultante...');
+      const data = await ffmpeg.readFile('output.mp4');
+      console.log('Archivo leído, tamaño:', data.length);
+      
+      // Crear y descargar el archivo
+      console.log('Creando blob y descargando...');
+      const blob = new Blob([data], { type: 'video/mp4' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'video_con_subtitulos.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      // Limpiar archivos
+      console.log('Limpiando archivos temporales...');
+      await ffmpeg.deleteFile('input.mp4');
+      await ffmpeg.deleteFile('subtitles.srt');
+      await ffmpeg.deleteFile('output.mp4');
+
+      console.log('Exportación completada con éxito');
+    } catch (error) {
+      console.error('Error al exportar el video:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col bg-gray-800 rounded-lg overflow-hidden">
       {/* Barra de herramientas del viewport */}
@@ -355,6 +469,36 @@ export function VideoViewport({
         >
           Guías de tercios
         </button>
+
+        <button
+          onClick={handleExport}
+          disabled={!videoUrl || subtitles.length === 0 || isExporting}
+          className={`px-3 py-1 rounded text-sm transition-colors ml-auto flex items-center gap-2
+            ${videoUrl && subtitles.length > 0 && !isExporting
+              ? 'bg-green-600 text-white hover:bg-green-700'
+              : 'bg-gray-500 text-gray-400 cursor-not-allowed'
+            }`}
+          title={!videoUrl 
+            ? "Necesitas cargar un video primero"
+            : subtitles.length === 0 
+              ? "Necesitas añadir subtítulos primero"
+              : isExporting
+                ? "Exportando..."
+                : "Exportar video con subtítulos"
+          }
+        >
+          {isExporting ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              <span>Exportando...</span>
+            </>
+          ) : (
+            'Exportar'
+          )}
+        </button>
       </div>
 
       {/* Contenedor principal del video */}
@@ -362,7 +506,6 @@ export function VideoViewport({
         className="flex-1 bg-black relative flex items-center justify-center min-h-0"
         onDrop={handleDrop}
         onDragOver={handleDragOver}
-        onClick={() => !videoUrl && fileInputRef.current?.click()}
       >
         <input
           type="file"
@@ -484,8 +627,33 @@ export function VideoViewport({
             )}
           </div>
         ) : (
-          <div className="text-gray-500 cursor-pointer p-8 text-center">
-            Arrastra y suelta un video o haz clic para seleccionar
+          <div className="flex flex-col items-center justify-center gap-4 text-gray-500 p-8 text-center">
+            <button
+              onClick={() => !isLoading && fileInputRef.current?.click()}
+              disabled={isLoading}
+              className={`px-6 py-3 bg-blue-600 text-white rounded-lg transition-colors flex items-center gap-2
+                ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+            >
+              {isLoading ? (
+                <>
+                  <svg className="animate-spin h-6 w-6" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span>Cargando...</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  Cargar Video
+                </>
+              )}
+            </button>
+            <p className="text-sm">
+              {isLoading ? 'Por favor espera...' : 'o arrastra y suelta un archivo de video aquí'}
+            </p>
           </div>
         )}
       </div>
