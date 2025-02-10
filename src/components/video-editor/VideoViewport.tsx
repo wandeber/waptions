@@ -560,7 +560,7 @@ export function VideoViewport({
   }, [renderSubtitles]);
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-800 rounded-t-lg overflow-hidden select-none">
+    <div className="flex-1 flex flex-col bg-gray-800 overflow-hidden select-none">
       {/* Contenedor principal del video */}
       <div
         className="flex-1 bg-black relative flex items-center justify-center min-h-0"
