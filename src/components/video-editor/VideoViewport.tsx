@@ -21,6 +21,13 @@ interface VideoViewportProps {
   onEnded?: () => void;
   showThirdsGuide?: boolean;
   showMetaInfo?: boolean;
+  animationStyle?: {
+    fadeInDuration: number;
+    fadeOutDuration: number;
+    initialScale: number;
+    bounceStrength: number;
+    useElasticEffect: boolean;
+  };
 }
 
 export function VideoViewport({ 
@@ -35,7 +42,14 @@ export function VideoViewport({
   canvasRef: externalCanvasRef,
   onEnded,
   showThirdsGuide = false,
-  showMetaInfo = false
+  showMetaInfo = false,
+  animationStyle = {
+    fadeInDuration: 0.15,
+    fadeOutDuration: 0.15,
+    initialScale: 1.5,
+    bounceStrength: 1.70158,
+    useElasticEffect: true
+  }
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
@@ -310,10 +324,9 @@ export function VideoViewport({
   // Encontrar los subtítulos activos para el tiempo actual
   const activeSubtitles = subtitles.filter(
     subtitle => {
-      // Reducimos el tiempo de animación a 150ms
-      const fadeTime = 0.15;
-      return currentTime >= subtitle.startTime - fadeTime && 
-             currentTime <= subtitle.endTime + fadeTime;
+      const maxFadeTime = Math.max(animationStyle.fadeInDuration, animationStyle.fadeOutDuration);
+      return currentTime >= subtitle.startTime - maxFadeTime && 
+             currentTime <= subtitle.endTime + maxFadeTime;
     }
   );
 
@@ -415,45 +428,39 @@ export function VideoViewport({
     // Encontrar subtítulos activos
     const activeSubtitles = subtitles.filter(
       subtitle => {
-        // Reducimos el tiempo de animación a 150ms
-        const fadeTime = 0.15;
-        return currentTime >= subtitle.startTime - fadeTime && 
-               currentTime <= subtitle.endTime + fadeTime;
+        const maxFadeTime = Math.max(animationStyle.fadeInDuration, animationStyle.fadeOutDuration);
+        return currentTime >= subtitle.startTime - maxFadeTime && 
+               currentTime <= subtitle.endTime + maxFadeTime;
       }
     );
 
+    // Funciones de easing
+    const easeOutBack = (x: number): number => {
+      if (!animationStyle.useElasticEffect) return x;
+      const c1 = animationStyle.bounceStrength;
+      const c3 = c1 + 1;
+      return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+    };
+
+    const easeOutExpo = (x: number): number => {
+      return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
+    };
+
     // Renderizar cada subtítulo
     activeSubtitles.forEach(subtitle => {
-      const fadeTime = 0.15;
       let opacity = 1;
       let scale = 1;
       
-      // Función de easing para el rebote
-      const easeOutBack = (x: number): number => {
-        const c1 = 1.70158;
-        const c3 = c1 + 1;
-        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
-      };
-
-      // Función de easing para la opacidad
-      const easeOutExpo = (x: number): number => {
-        return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
-      };
-      
-      // Fade in con escala y easing
+      // Fade in con escala
       if (currentTime < subtitle.startTime) {
-        const progress = (fadeTime - (subtitle.startTime - currentTime)) / fadeTime;
-        // Aplicamos easing a la opacidad para un fade más rápido
+        const progress = (animationStyle.fadeInDuration - (subtitle.startTime - currentTime)) / animationStyle.fadeInDuration;
         opacity = easeOutExpo(progress);
-        // Aplicamos easing al scale para un efecto de rebote
         const scaleProgress = easeOutBack(progress);
-        // La escala irá de 1.5 a 1 con efecto de rebote
-        scale = 1 + (0.5 * (1 - scaleProgress));
+        scale = 1 + ((animationStyle.initialScale - 1) * (1 - scaleProgress));
       }
-      // Fade out con easing
+      // Fade out
       else if (currentTime > subtitle.endTime) {
-        const progress = (fadeTime - (currentTime - subtitle.endTime)) / fadeTime;
-        // Caída rápida de la opacidad
+        const progress = (animationStyle.fadeOutDuration - (currentTime - subtitle.endTime)) / animationStyle.fadeOutDuration;
         opacity = Math.pow(progress, 2);
       }
       
@@ -484,7 +491,7 @@ export function VideoViewport({
       // Restaurar el contexto
       ctx.restore();
     });
-  }, [currentTime, subtitles, getVideoDisplayRect, videoDimensions]);
+  }, [currentTime, subtitles, getVideoDisplayRect, videoDimensions, animationStyle]);
 
   // Efecto para renderizar subtítulos cuando cambie el tiempo o las dimensiones
   useEffect(() => {

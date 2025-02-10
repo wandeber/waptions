@@ -13,11 +13,48 @@ interface SubtitleEditorProps {
   currentTime: number;
   onGenerateSubtitles?: () => void;
   isGeneratingSubtitles?: boolean;
+  onAnimationStyleChange?: (style: SubtitleAnimationStyle) => void;
+  animationStyle?: SubtitleAnimationStyle;
 }
 
-export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick, onDelete, onSubtitlesChange, currentTime, onGenerateSubtitles, isGeneratingSubtitles }: SubtitleEditorProps) {
+interface SubtitleAnimationStyle {
+  fadeInDuration: number;
+  fadeOutDuration: number;
+  initialScale: number;
+  bounceStrength: number;
+  useElasticEffect: boolean;
+}
+
+const defaultAnimationStyle: SubtitleAnimationStyle = {
+  fadeInDuration: 0.15,
+  fadeOutDuration: 0.15,
+  initialScale: 1.5,
+  bounceStrength: 1.70158,
+  useElasticEffect: true
+};
+
+export function SubtitleEditor({ 
+  subtitles, 
+  selectedSubtitleId, 
+  onSave, 
+  onSubtitleClick, 
+  onDelete, 
+  onSubtitlesChange, 
+  currentTime, 
+  onGenerateSubtitles, 
+  isGeneratingSubtitles,
+  onAnimationStyleChange,
+  animationStyle = defaultAnimationStyle
+}: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
+  const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
+  const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>(animationStyle);
+
+  // Efecto para sincronizar los estilos locales con los props
+  useEffect(() => {
+    setLocalAnimationStyle(animationStyle);
+  }, [animationStyle]);
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
   /* eslint-disable react-hooks/exhaustive-deps */
@@ -249,109 +286,219 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
     }
   };
 
+  const handleStyleChange = (key: keyof SubtitleAnimationStyle, value: number | boolean) => {
+    const newStyle = { ...localAnimationStyle, [key]: value };
+    setLocalAnimationStyle(newStyle);
+    onAnimationStyleChange?.(newStyle);
+  };
+
   return (
-    <div className="h-full bg-gray-800 rounded-lg p-4 flex flex-col gap-4 overflow-y-auto">
-      <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold text-white">Subtítulos</h2>
-        <div className="flex gap-2">
-          <button
-            className={`p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none ${isGeneratingSubtitles ? 'opacity-50 cursor-not-allowed' : ''}`}
-            onClick={onGenerateSubtitles}
-            disabled={isGeneratingSubtitles}
-            title="Generar subtítulos automáticamente"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-            </svg>
-          </button>
-          <button
-            className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
-            onClick={() => {
-              const newSubtitle: Subtitle = {
-                id: Date.now().toString(),
-                startTime: currentTime,
-                endTime: currentTime + 2,
-                text: ''
-              };
-              onSubtitlesChange?.([...subtitles, newSubtitle]);
-              onSubtitleClick?.(newSubtitle);
-              // Dar foco al textarea después de que se renderice
-              requestAnimationFrame(() => {
-                const textarea = textAreasRef.current[newSubtitle.id];
-                if (textarea) {
-                  textarea.focus();
-                }
-              });
-            }}
-            title="Añadir subtítulo"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-          </button>
+    <div className="h-full flex flex-col">
+      {/* Tabs - ahora pegados al panel */}
+      <div className="flex">
+        <button
+          className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${
+            activeTab === 'subtitles'
+              ? 'bg-gray-800 text-white'
+              : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+          }`}
+          onClick={() => setActiveTab('subtitles')}
+        >
+          Subtítulos
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${
+            activeTab === 'style'
+              ? 'bg-gray-800 text-white'
+              : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+          }`}
+          onClick={() => setActiveTab('style')}
+        >
+          Estilo
+        </button>
+      </div>
+
+      {/* Panel principal - sin redondeado arriba */}
+      <div className="flex-1 bg-gray-800 rounded-b-lg overflow-hidden">
+        {/* Panel de contenido */}
+        <div className="h-full overflow-y-auto">
+          {activeTab === 'subtitles' ? (
+            <div className="flex flex-col gap-4 p-4">
+              <div className="flex justify-between items-center">
+                <div className="flex gap-2">
+                  <button
+                    className={`p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none ${
+                      isGeneratingSubtitles ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={onGenerateSubtitles}
+                    disabled={isGeneratingSubtitles}
+                    title="Generar subtítulos automáticamente"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                    </svg>
+                  </button>
+                  <button
+                    className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+                    onClick={() => {
+                      const newSubtitle: Subtitle = {
+                        id: Date.now().toString(),
+                        startTime: currentTime,
+                        endTime: currentTime + 2,
+                        text: ''
+                      };
+                      onSubtitlesChange?.([...subtitles, newSubtitle]);
+                      onSubtitleClick?.(newSubtitle);
+                      requestAnimationFrame(() => {
+                        const textarea = textAreasRef.current[newSubtitle.id];
+                        if (textarea) {
+                          textarea.focus();
+                        }
+                      });
+                    }}
+                    title="Añadir subtítulo"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {subtitles.length === 0 ? (
+                <div className="text-gray-500 text-center">
+                  No hay subtítulos añadidos
+                </div>
+              ) : (
+                [...subtitles]
+                  .sort((a, b) => a.startTime - b.startTime)
+                  .map(subtitle => (
+                    <div 
+                      key={subtitle.id}
+                      className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
+                        ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
+                      onClick={() => onSubtitleClick?.(subtitle)}
+                    >
+                      <div className="flex justify-between items-center">
+                        <div className="text-sm text-gray-400">
+                          <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
+                        </div>
+                        <button
+                          className="p-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete?.(subtitle.id);
+                          }}
+                          title="Eliminar subtítulo"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      
+                      <textarea
+                        ref={el => {
+                          textAreasRef.current[subtitle.id] = el;
+                        }}
+                        className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden"
+                        value={editingText[subtitle.id] || ''}
+                        onChange={(e) => handleTextChange(subtitle, e.target.value)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSubtitleClick?.(subtitle);
+                        }}
+                        onFocus={() => onSubtitleClick?.(subtitle)}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => handleKeyDown(e, subtitle)}
+                        placeholder="Escribe el texto del subtítulo aquí..."
+                        rows={1}
+                      />
+                    </div>
+                  ))
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-8 p-6">
+              {/* Animación de entrada */}
+              <div className="flex flex-col gap-4">
+                <h3 className="text-sm font-medium text-white">Animación de entrada</h3>
+                <div className="flex flex-col gap-6 pl-2">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Duración</label>
+                    <input
+                      type="range"
+                      min="0.05"
+                      max="0.5"
+                      step="0.05"
+                      value={localAnimationStyle.fadeInDuration}
+                      onChange={(e) => handleStyleChange('fadeInDuration', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-400 text-right">{localAnimationStyle.fadeInDuration}s</div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Escala inicial</label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="2"
+                      step="0.1"
+                      value={localAnimationStyle.initialScale}
+                      onChange={(e) => handleStyleChange('initialScale', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-400 text-right">{localAnimationStyle.initialScale}x</div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Intensidad del rebote</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="3"
+                      step="0.1"
+                      value={localAnimationStyle.bounceStrength}
+                      onChange={(e) => handleStyleChange('bounceStrength', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-400 text-right">{localAnimationStyle.bounceStrength}</div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={localAnimationStyle.useElasticEffect}
+                      onChange={(e) => handleStyleChange('useElasticEffect', e.target.checked)}
+                      className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+                    />
+                    <label className="text-sm text-gray-300">Usar efecto elástico</label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Animación de salida */}
+              <div className="flex flex-col gap-4">
+                <h3 className="text-sm font-medium text-white">Animación de salida</h3>
+                <div className="flex flex-col gap-2 pl-2">
+                  <label className="text-sm text-gray-300">Duración</label>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="0.5"
+                    step="0.05"
+                    value={localAnimationStyle.fadeOutDuration}
+                    onChange={(e) => handleStyleChange('fadeOutDuration', parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                  <div className="text-xs text-gray-400 text-right">{localAnimationStyle.fadeOutDuration}s</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
-      {subtitles.length === 0 ? (
-        <div className="text-gray-500 text-center">
-          No hay subtítulos añadidos
-        </div>
-      ) : (
-        [...subtitles]
-          .sort((a, b) => {
-            // Primero ordenar por tiempo de inicio
-            if (a.startTime !== b.startTime) {
-              return a.startTime - b.startTime;
-            }
-            // Si tienen el mismo tiempo de inicio, ordenar por duración
-            const aDuration = a.endTime - a.startTime;
-            const bDuration = b.endTime - b.startTime;
-            return aDuration - bDuration;
-          })
-          .map(subtitle => (
-            <div 
-              key={subtitle.id}
-              className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
-                ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
-              onClick={() => onSubtitleClick?.(subtitle)}
-            >
-              <div className="flex justify-between items-center">
-                <div className="text-sm text-gray-400">
-                  <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
-                </div>
-                <button
-                  className="p-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete?.(subtitle.id);
-                  }}
-                  title="Eliminar subtítulo"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              
-              <textarea
-                ref={el => {
-                  textAreasRef.current[subtitle.id] = el;
-                }}
-                className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden"
-                value={editingText[subtitle.id] || ''}
-                onChange={(e) => handleTextChange(subtitle, e.target.value)}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSubtitleClick?.(subtitle);
-                }}
-                onFocus={() => onSubtitleClick?.(subtitle)}
-                onMouseDown={(e) => e.stopPropagation()}
-                onKeyDown={(e) => handleKeyDown(e, subtitle)}
-                placeholder="Escribe el texto del subtítulo aquí..."
-                rows={1}
-              />
-            </div>
-          ))
-      )}
     </div>
   );
 } 

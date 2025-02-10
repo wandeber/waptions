@@ -19,6 +19,13 @@ export default function Home() {
   const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
   const [showMetaInfo, setShowMetaInfo] = useState(true);
+  const [animationStyle, setAnimationStyle] = useState({
+    fadeInDuration: 0.15,
+    fadeOutDuration: 0.15,
+    initialScale: 1.5,
+    bounceStrength: 1.70158,
+    useElasticEffect: true
+  });
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -171,6 +178,7 @@ export default function Home() {
               onEnded={() => setIsPlaying(false)}
               showThirdsGuide={showThirdsGuide}
               showMetaInfo={showMetaInfo}
+              animationStyle={animationStyle}
             />
             <Timeline 
               duration={duration}
@@ -200,6 +208,8 @@ export default function Home() {
               currentTime={currentTime}
               onGenerateSubtitles={handleGenerateSubtitles}
               isGeneratingSubtitles={isGeneratingSubtitles}
+              onAnimationStyleChange={setAnimationStyle}
+              animationStyle={animationStyle}
             />
           </div>
         </div>
