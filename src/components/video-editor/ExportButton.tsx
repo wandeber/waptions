@@ -8,9 +8,25 @@ interface ExportButtonProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   subtitles: Subtitle[];
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
+  animationStyle?: {
+    fadeInDuration: number;
+    fadeOutDuration: number;
+    initialScale: number;
+    bounceStrength: number;
+    useElasticEffect: boolean;
+    fontSize: number;
+    textColor: string;
+    strokeWidth: number;
+    strokeColor: string;
+    fontWeight: number;
+    textCase: 'normal' | 'uppercase' | 'lowercase';
+    hidePunctuation: boolean;
+    punctuationChars: string;
+    removeAccents: boolean;
+  };
 }
 
-export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonProps) {
+export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }: ExportButtonProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [timeElapsed, setTimeElapsed] = useState(0);
@@ -19,6 +35,31 @@ export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonPro
   const startTimeRef = useRef<number>(0);
   const frameCountRef = useRef(0);
   const totalFramesRef = useRef(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Efecto para manejar el contador de tiempo
+  useEffect(() => {
+    if (isExporting) {
+      startTimeRef.current = Date.now();
+      timerRef.current = setInterval(() => {
+        const elapsedMs = Date.now() - startTimeRef.current;
+        setTimeElapsed(elapsedMs / 1000);
+      }, 100);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setTimeElapsed(0);
+    }
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [isExporting]);
 
   // Inicializar FFmpeg solo en el cliente
   useEffect(() => {
@@ -87,8 +128,8 @@ export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonPro
       const video = videoRef.current;
       const canvas = canvasRef.current;
       
-      // Usar el FPS del video o 30 como fallback
-      const fps = Math.round(video.videoWidth > 1920 ? 30 : 60); // Reducir FPS para videos 4K
+      // Reducir FPS para pruebas
+      const fps = Math.round(video.videoWidth > 1920 ? 15 : 24); // Reducido de 30/60 a 15/24
       totalFramesRef.current = Math.ceil(video.duration * fps);
 
       setCurrentStep('Preparando video...');
@@ -127,28 +168,111 @@ export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonPro
         // Dibujar el frame del video
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        // Renderizar subtítulos activos
-        const activeSubtitles = subtitles.filter(
-          subtitle => video.currentTime >= subtitle.startTime && video.currentTime <= subtitle.endTime
-        );
+        // Renderizar subtítulos activos con animaciones
+        const subtitlesToRender = subtitles.filter(subtitle => {
+          const isActive = video.currentTime >= subtitle.startTime && video.currentTime <= subtitle.endTime;
+          const isExiting = video.currentTime >= subtitle.endTime - (animationStyle?.fadeOutDuration || 0.15) && 
+                           video.currentTime < subtitle.endTime;
+          return isActive || isExiting;
+        });
 
-        activeSubtitles.forEach(subtitle => {
-          const fontSize = Math.max(16, canvas.height * 0.05);
-          ctx.font = `bold ${fontSize}px sans-serif`;
+        // Funciones de easing
+        const easeOutBack = (x: number): number => {
+          if (!animationStyle?.useElasticEffect) return x;
+          const c1 = animationStyle?.bounceStrength || 1.70158;
+          const c3 = c1 + 1;
+          return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+        };
+
+        const easeOutExpo = (x: number): number => {
+          return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
+        };
+
+        // Renderizar cada subtítulo
+        subtitlesToRender.forEach(subtitle => {
+          let opacity = 1;
+          let scale = 1;
+          
+          // Fade in con escala
+          if (video.currentTime >= subtitle.startTime && 
+              video.currentTime < subtitle.startTime + (animationStyle?.fadeInDuration || 0.15)) {
+            const progress = (video.currentTime - subtitle.startTime) / (animationStyle?.fadeInDuration || 0.15);
+            opacity = easeOutExpo(progress);
+            const scaleProgress = easeOutBack(progress);
+            scale = 1 + (((animationStyle?.initialScale || 1.5) - 1) * (1 - scaleProgress));
+          }
+          // Fade out
+          else if (video.currentTime >= subtitle.endTime - (animationStyle?.fadeOutDuration || 0.15) && 
+                   video.currentTime < subtitle.endTime) {
+            const progress = (subtitle.endTime - video.currentTime) / (animationStyle?.fadeOutDuration || 0.15);
+            opacity = progress;
+          }
+          
+          // Asegurar que la opacidad esté entre 0 y 1
+          opacity = Math.max(0, Math.min(1, opacity));
+
+          // Configurar estilo del texto
+          const fontSize = (animationStyle?.fontSize || 48) * (canvas.height / 1080);
+          ctx.font = `${animationStyle?.fontWeight || 700} ${fontSize}px sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'bottom';
-          ctx.fillStyle = 'white';
-          ctx.strokeStyle = 'black';
-          ctx.lineWidth = fontSize * 0.1;
+          ctx.fillStyle = `${animationStyle?.textColor || '#ffffff'}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+          ctx.strokeStyle = `${animationStyle?.strokeColor || '#000000'}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+          ctx.lineWidth = fontSize * ((animationStyle?.strokeWidth || 4) / 48);
 
+          // Aplicar la transformación de escala
+          ctx.save();
           const x = canvas.width / 2;
           const y = canvas.height * 0.9;
-          ctx.strokeText(subtitle.text, x, y);
-          ctx.fillText(subtitle.text, x, y);
+          ctx.translate(x, y);
+          ctx.scale(scale, scale);
+          ctx.translate(-x, -y);
+
+          // Procesar el texto según los estilos
+          const processedText = (text: string) => {
+            let result = text;
+            if (animationStyle?.textCase === 'uppercase') {
+              result = result.toUpperCase();
+            } else if (animationStyle?.textCase === 'lowercase') {
+              result = result.toLowerCase();
+            }
+            if (animationStyle?.hidePunctuation) {
+              const regex = new RegExp(`[${(animationStyle?.punctuationChars || '').replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`, 'g');
+              result = result.replace(regex, '');
+            }
+            if (animationStyle?.removeAccents) {
+              result = result
+                .replace(/[áàäâã]/g, 'a')
+                .replace(/[éèëê]/g, 'e')
+                .replace(/[íìïî]/g, 'i')
+                .replace(/[óòöôõ]/g, 'o')
+                .replace(/[úùüû]/g, 'u')
+                .replace(/[ÁÀÄÂÃ]/g, 'A')
+                .replace(/[ÉÈËÊ]/g, 'E')
+                .replace(/[ÍÌÏÎ]/g, 'I')
+                .replace(/[ÓÒÖÔÕ]/g, 'O')
+                .replace(/[ÚÙÜÛ]/g, 'U');
+            }
+            return result;
+          };
+
+          ctx.strokeText(
+            processedText(subtitle.text),
+            x,
+            y
+          );
+          ctx.fillText(
+            processedText(subtitle.text),
+            x,
+            y
+          );
+          
+          // Restaurar el contexto
+          ctx.restore();
         });
 
         const blob = await new Promise<Blob>((resolve) => 
-          canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.95)
+          canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.8) // Reducido de 0.95 a 0.8
         );
         const frameData = await blob.arrayBuffer();
 
@@ -159,9 +283,6 @@ export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonPro
         frameCountRef.current++;
         setProgress((frameCountRef.current / totalFramesRef.current) * 50); // Primera mitad del progreso
         
-        const elapsedMs = Date.now() - startTimeRef.current;
-        setTimeElapsed(elapsedMs / 1000);
-
         frameCount++;
       };
 
@@ -171,14 +292,14 @@ export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonPro
       }
 
       setCurrentStep('Generando video final...');
-      // Combinar frames en video intermedio
+      // Combinar frames en video intermedio con calidad reducida
       await ffmpeg.exec([
         '-framerate', fps.toString(),
         '-i', 'frame_%06d.jpg',
         '-c:v', 'libx264',
-        '-preset', 'veryfast', // Usar preset más rápido
-        '-crf', '23', // Calidad ligeramente menor pero más rápido
-        '-tune', 'zerolatency', // Optimizar para velocidad
+        '-preset', 'ultrafast', // Cambiado de veryfast a ultrafast
+        '-crf', '28', // Aumentado de 23 a 28 (menor calidad)
+        '-tune', 'zerolatency',
         '-movflags', '+faststart',
         'temp.mp4'
       ]);
@@ -223,7 +344,6 @@ export function ExportButton({ videoRef, subtitles, canvasRef }: ExportButtonPro
     } finally {
       setIsExporting(false);
       setProgress(0);
-      setTimeElapsed(0);
       setCurrentStep('');
     }
   };

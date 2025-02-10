@@ -167,6 +167,7 @@ export default function Home() {
           videoRef={videoRef}
           subtitles={subtitles}
           canvasRef={canvasRef}
+          animationStyle={animationStyle}
         />
       </header>
 
