@@ -323,6 +323,22 @@ export function SubtitleEditor({
     onAnimationStyleChange?.(newStyle);
   };
 
+  // Efecto para manejar atajos de teclado
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Si no hay subtítulo seleccionado, no hacemos nada
+      if (!selectedSubtitleId) return;
+
+      // Borrar subtítulo con tecla Supr/Delete
+      if (e.key === 'Delete') {
+        onDelete?.(selectedSubtitleId);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedSubtitleId, onDelete]);
+
   return (
     <div className="h-full flex flex-col">
       {/* Tabs - ahora pegados al panel */}
