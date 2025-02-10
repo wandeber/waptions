@@ -19,6 +19,8 @@ interface VideoViewportProps {
   }>;
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
   onEnded?: () => void;
+  showThirdsGuide?: boolean;
+  showMetaInfo?: boolean;
 }
 
 export function VideoViewport({ 
@@ -31,13 +33,13 @@ export function VideoViewport({
   onFpsChange,
   subtitles = [],
   canvasRef: externalCanvasRef,
-  onEnded
+  onEnded,
+  showThirdsGuide = false,
+  showMetaInfo = false
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
   const [isFFmpegLoaded, setIsFFmpegLoaded] = useState(false);
-  const [showThirdsGuide, setShowThirdsGuide] = useState(false);
-  const [showMetaInfo, setShowMetaInfo] = useState(true);
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const internalVideoRef = useRef<HTMLVideoElement>(null);
@@ -443,32 +445,6 @@ export function VideoViewport({
 
   return (
     <div className="flex-1 flex flex-col bg-gray-800 rounded-t-lg overflow-hidden select-none">
-      {/* Barra de herramientas del viewport */}
-      <div className="flex-none flex items-center gap-2 p-2 bg-gray-700">
-        <button
-          onClick={() => setShowThirdsGuide(prev => !prev)}
-          className={`px-3 py-1 rounded text-sm transition-colors select-none ${
-            showThirdsGuide 
-              ? 'bg-blue-600 text-white hover:bg-blue-700' 
-              : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-          }`}
-          title="Mostrar/ocultar guías de los tercios"
-        >
-          Guías de tercios
-        </button>
-        <button
-          onClick={() => setShowMetaInfo(prev => !prev)}
-          className={`px-3 py-1 rounded text-sm transition-colors select-none ${
-            showMetaInfo 
-              ? 'bg-blue-600 text-white hover:bg-blue-700' 
-              : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-          }`}
-          title="Mostrar/ocultar información del vídeo"
-        >
-          Meta Info
-        </button>
-      </div>
-
       {/* Contenedor principal del video */}
       <div
         className="flex-1 bg-black relative flex items-center justify-center min-h-0"

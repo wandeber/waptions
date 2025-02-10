@@ -17,6 +17,8 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [fps, setFps] = useState(30);
   const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
+  const [showThirdsGuide, setShowThirdsGuide] = useState(false);
+  const [showMetaInfo, setShowMetaInfo] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -65,6 +67,14 @@ export default function Home() {
 
   const handleFpsChange = (newFps: number) => {
     setFps(newFps);
+  };
+
+  const handleThirdsGuideToggle = () => {
+    setShowThirdsGuide(prev => !prev);
+  };
+
+  const handleMetaInfoToggle = () => {
+    setShowMetaInfo(prev => !prev);
   };
 
   const handleGenerateSubtitles = async () => {
@@ -159,6 +169,8 @@ export default function Home() {
               subtitles={subtitles}
               canvasRef={canvasRef}
               onEnded={() => setIsPlaying(false)}
+              showThirdsGuide={showThirdsGuide}
+              showMetaInfo={showMetaInfo}
             />
             <Timeline 
               duration={duration}
@@ -171,6 +183,10 @@ export default function Home() {
               isPlaying={isPlaying}
               onPlayPause={handlePlayPause}
               fps={fps}
+              showThirdsGuide={showThirdsGuide}
+              onThirdsGuideToggle={handleThirdsGuideToggle}
+              showMetaInfo={showMetaInfo}
+              onMetaInfoToggle={handleMetaInfoToggle}
             />
           </div>
           <div className="w-80 flex-none">

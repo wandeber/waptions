@@ -14,6 +14,10 @@ interface TimelineProps {
   isPlaying?: boolean;
   onPlayPause?: () => void;
   fps?: number;
+  showThirdsGuide?: boolean;
+  onThirdsGuideToggle?: () => void;
+  showMetaInfo?: boolean;
+  onMetaInfoToggle?: () => void;
 }
 
 export function Timeline({ 
@@ -26,7 +30,11 @@ export function Timeline({
   selectedSubtitleId,
   isPlaying = false,
   onPlayPause,
-  fps = 30
+  fps = 30,
+  showThirdsGuide = false,
+  onThirdsGuideToggle,
+  showMetaInfo = false,
+  onMetaInfoToggle
 }: TimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const [localTime, setLocalTime] = useState(currentTime);
@@ -227,6 +235,28 @@ export function Timeline({
         </div>
 
         <div className="flex gap-2 ml-auto">
+          <button
+            onClick={onThirdsGuideToggle}
+            className={`px-3 py-1 rounded text-sm transition-colors select-none ${
+              showThirdsGuide 
+                ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+            }`}
+            title="Mostrar/ocultar guías de los tercios"
+          >
+            Guías de tercios
+          </button>
+          <button
+            onClick={onMetaInfoToggle}
+            className={`px-3 py-1 rounded text-sm transition-colors select-none ${
+              showMetaInfo 
+                ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+            }`}
+            title="Mostrar/ocultar información del vídeo"
+          >
+            Meta Info
+          </button>
         </div>
       </div>
 
