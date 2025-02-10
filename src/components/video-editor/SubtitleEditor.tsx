@@ -68,6 +68,11 @@ export function SubtitleEditor({
 }: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
+  const [collapsedSections, setCollapsedSections] = useState<{[key: string]: boolean}>({
+    textStyle: false,
+    entryAnimation: false,
+    exitAnimation: false
+  });
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
   const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
     ...defaultAnimationStyle,
@@ -448,251 +453,296 @@ export function SubtitleEditor({
             <div className="flex flex-col divide-y divide-gray-700">
               {/* Estilo visual */}
               <div className="p-4">
-                <h3 className="text-sm font-medium text-white mb-4">Estilo del texto</h3>
-                <div className="flex flex-col gap-6">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Tamaño de fuente</label>
-                    <div className="flex gap-4 items-center">
-                      <input
-                        type="range"
-                        min="24"
-                        max="96"
-                        step="1"
-                        value={localAnimationStyle.fontSize}
-                        onChange={(e) => handleStyleChange('fontSize', parseInt(e.target.value))}
-                        className="flex-1"
-                      />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontSize}px</div>
+                <button
+                  onClick={() => setCollapsedSections(prev => ({ ...prev, textStyle: !prev.textStyle }))}
+                  className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
+                >
+                  <span>Estilo del texto</span>
+                  <svg 
+                    className={`w-5 h-5 transition-transform ${collapsedSections.textStyle ? '-rotate-90' : ''}`}
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {!collapsedSections.textStyle && (
+                  <div className="flex flex-col gap-6 mt-4">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Tamaño de fuente</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="24"
+                          max="96"
+                          step="1"
+                          value={localAnimationStyle.fontSize}
+                          onChange={(e) => handleStyleChange('fontSize', parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontSize}px</div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Grosor de fuente</label>
-                    <div className="flex gap-4 items-center">
-                      <input
-                        type="range"
-                        min="400"
-                        max="900"
-                        step="100"
-                        value={localAnimationStyle.fontWeight}
-                        onChange={(e) => handleStyleChange('fontWeight', parseInt(e.target.value))}
-                        className="flex-1"
-                      />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontWeight}</div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Grosor de fuente</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="400"
+                          max="900"
+                          step="100"
+                          value={localAnimationStyle.fontWeight}
+                          onChange={(e) => handleStyleChange('fontWeight', parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontWeight}</div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Color del texto</label>
-                    <div className="flex gap-2 items-center">
-                      <input
-                        type="color"
-                        value={localAnimationStyle.textColor}
-                        onChange={(e) => handleStyleChange('textColor', e.target.value)}
-                        className="w-8 h-8 rounded cursor-pointer"
-                      />
-                      <input
-                        type="text"
-                        value={localAnimationStyle.textColor}
-                        onChange={(e) => handleStyleChange('textColor', e.target.value)}
-                        className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                      />
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Color del texto</label>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="color"
+                          value={localAnimationStyle.textColor}
+                          onChange={(e) => handleStyleChange('textColor', e.target.value)}
+                          className="w-8 h-8 rounded cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={localAnimationStyle.textColor}
+                          onChange={(e) => handleStyleChange('textColor', e.target.value)}
+                          className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                        />
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Grosor del borde</label>
-                    <div className="flex gap-4 items-center">
-                      <input
-                        type="range"
-                        min="0"
-                        max="8"
-                        step="0.5"
-                        value={localAnimationStyle.strokeWidth}
-                        onChange={(e) => handleStyleChange('strokeWidth', parseFloat(e.target.value))}
-                        className="flex-1"
-                      />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.strokeWidth}px</div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Grosor del borde</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="8"
+                          step="0.5"
+                          value={localAnimationStyle.strokeWidth}
+                          onChange={(e) => handleStyleChange('strokeWidth', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.strokeWidth}px</div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Color del borde</label>
-                    <div className="flex gap-2 items-center">
-                      <input
-                        type="color"
-                        value={localAnimationStyle.strokeColor}
-                        onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
-                        className="w-8 h-8 rounded cursor-pointer"
-                      />
-                      <input
-                        type="text"
-                        value={localAnimationStyle.strokeColor}
-                        onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
-                        className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                      />
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Color del borde</label>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="color"
+                          value={localAnimationStyle.strokeColor}
+                          onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
+                          className="w-8 h-8 rounded cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={localAnimationStyle.strokeColor}
+                          onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
+                          className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                        />
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Transformación del texto</label>
-                    <div className="flex gap-2">
-                      <button
-                        className={`px-3 py-1 rounded text-sm ${
-                          localAnimationStyle.textCase === 'normal'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                        }`}
-                        onClick={() => handleStyleChange('textCase', 'normal')}
-                      >
-                        Normal
-                      </button>
-                      <button
-                        className={`px-3 py-1 rounded text-sm ${
-                          localAnimationStyle.textCase === 'uppercase'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                        }`}
-                        onClick={() => handleStyleChange('textCase', 'uppercase')}
-                      >
-                        MAYÚS.
-                      </button>
-                      <button
-                        className={`px-3 py-1 rounded text-sm ${
-                          localAnimationStyle.textCase === 'lowercase'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                        }`}
-                        onClick={() => handleStyleChange('textCase', 'lowercase')}
-                      >
-                        minús.
-                      </button>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Transformación del texto</label>
+                      <div className="flex gap-2">
+                        <button
+                          className={`px-3 py-1 rounded text-sm ${
+                            localAnimationStyle.textCase === 'normal'
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          }`}
+                          onClick={() => handleStyleChange('textCase', 'normal')}
+                        >
+                          Normal
+                        </button>
+                        <button
+                          className={`px-3 py-1 rounded text-sm ${
+                            localAnimationStyle.textCase === 'uppercase'
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          }`}
+                          onClick={() => handleStyleChange('textCase', 'uppercase')}
+                        >
+                          MAYÚS.
+                        </button>
+                        <button
+                          className={`px-3 py-1 rounded text-sm ${
+                            localAnimationStyle.textCase === 'lowercase'
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          }`}
+                          onClick={() => handleStyleChange('textCase', 'lowercase')}
+                        >
+                          minús.
+                        </button>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={localAnimationStyle.hidePunctuation}
+                          onChange={(e) => handleStyleChange('hidePunctuation', e.target.checked)}
+                          className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+                        />
+                        <label className="text-sm text-gray-300">Ocultar signos de puntuación</label>
+                      </div>
+                      
+                      {localAnimationStyle.hidePunctuation && (
+                        <div className="flex flex-col gap-1 pl-6">
+                          <input
+                            type="text"
+                            value={localAnimationStyle.punctuationChars}
+                            onChange={(e) => handleStyleChange('punctuationChars', e.target.value)}
+                            className="bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                            placeholder="Caracteres a ocultar..."
+                          />
+                          <span className="text-xs text-gray-400">
+                            Caracteres por defecto: ¿?:-,;¡!
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="flex items-center gap-2">
                       <input
                         type="checkbox"
-                        checked={localAnimationStyle.hidePunctuation}
-                        onChange={(e) => handleStyleChange('hidePunctuation', e.target.checked)}
+                        checked={localAnimationStyle.removeAccents}
+                        onChange={(e) => handleStyleChange('removeAccents', e.target.checked)}
                         className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
                       />
-                      <label className="text-sm text-gray-300">Ocultar signos de puntuación</label>
+                      <label className="text-sm text-gray-300">Omitir tildes</label>
                     </div>
-                    
-                    {localAnimationStyle.hidePunctuation && (
-                      <div className="flex flex-col gap-1 pl-6">
-                        <input
-                          type="text"
-                          value={localAnimationStyle.punctuationChars}
-                          onChange={(e) => handleStyleChange('punctuationChars', e.target.value)}
-                          className="bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                          placeholder="Caracteres a ocultar..."
-                        />
-                        <span className="text-xs text-gray-400">
-                          Caracteres por defecto: ¿?:-,;¡!
-                        </span>
-                      </div>
-                    )}
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={localAnimationStyle.removeAccents}
-                      onChange={(e) => handleStyleChange('removeAccents', e.target.checked)}
-                      className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
-                    />
-                    <label className="text-sm text-gray-300">Omitir tildes</label>
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* Animación de entrada */}
               <div className="p-4">
-                <h3 className="text-sm font-medium text-white mb-4">Animación de entrada</h3>
-                <div className="flex flex-col gap-6">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Duración</label>
-                    <div className="flex gap-4 items-center">
+                <button
+                  onClick={() => setCollapsedSections(prev => ({ ...prev, entryAnimation: !prev.entryAnimation }))}
+                  className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
+                >
+                  <span>Animación de entrada</span>
+                  <svg 
+                    className={`w-5 h-5 transition-transform ${collapsedSections.entryAnimation ? '-rotate-90' : ''}`}
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {!collapsedSections.entryAnimation && (
+                  <div className="flex flex-col gap-6 mt-4">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Duración</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="0.5"
+                          step="0.05"
+                          value={localAnimationStyle.fadeInDuration}
+                          onChange={(e) => handleStyleChange('fadeInDuration', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeInDuration}s</div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Escala inicial</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="1"
+                          max="2"
+                          step="0.1"
+                          value={localAnimationStyle.initialScale}
+                          onChange={(e) => handleStyleChange('initialScale', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.initialScale}x</div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Intensidad del rebote</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="3"
+                          step="0.1"
+                          value={localAnimationStyle.bounceStrength}
+                          onChange={(e) => handleStyleChange('bounceStrength', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.bounceStrength}</div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
                       <input
-                        type="range"
-                        min="0.05"
-                        max="0.5"
-                        step="0.05"
-                        value={localAnimationStyle.fadeInDuration}
-                        onChange={(e) => handleStyleChange('fadeInDuration', parseFloat(e.target.value))}
-                        className="flex-1"
+                        type="checkbox"
+                        checked={localAnimationStyle.useElasticEffect}
+                        onChange={(e) => handleStyleChange('useElasticEffect', e.target.checked)}
+                        className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
                       />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeInDuration}s</div>
+                      <label className="text-sm text-gray-300">Usar efecto elástico</label>
                     </div>
                   </div>
-
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Escala inicial</label>
-                    <div className="flex gap-4 items-center">
-                      <input
-                        type="range"
-                        min="1"
-                        max="2"
-                        step="0.1"
-                        value={localAnimationStyle.initialScale}
-                        onChange={(e) => handleStyleChange('initialScale', parseFloat(e.target.value))}
-                        className="flex-1"
-                      />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.initialScale}x</div>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Intensidad del rebote</label>
-                    <div className="flex gap-4 items-center">
-                      <input
-                        type="range"
-                        min="0"
-                        max="3"
-                        step="0.1"
-                        value={localAnimationStyle.bounceStrength}
-                        onChange={(e) => handleStyleChange('bounceStrength', parseFloat(e.target.value))}
-                        className="flex-1"
-                      />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.bounceStrength}</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={localAnimationStyle.useElasticEffect}
-                      onChange={(e) => handleStyleChange('useElasticEffect', e.target.checked)}
-                      className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
-                    />
-                    <label className="text-sm text-gray-300">Usar efecto elástico</label>
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* Animación de salida */}
               <div className="p-4">
-                <h3 className="text-sm font-medium text-white mb-4">Animación de salida</h3>
-                <div className="flex flex-col gap-6">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-300">Duración</label>
-                    <div className="flex gap-4 items-center">
-                      <input
-                        type="range"
-                        min="0.05"
-                        max="0.5"
-                        step="0.05"
-                        value={localAnimationStyle.fadeOutDuration}
-                        onChange={(e) => handleStyleChange('fadeOutDuration', parseFloat(e.target.value))}
-                        className="flex-1"
-                      />
-                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeOutDuration}s</div>
+                <button
+                  onClick={() => setCollapsedSections(prev => ({ ...prev, exitAnimation: !prev.exitAnimation }))}
+                  className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
+                >
+                  <span>Animación de salida</span>
+                  <svg 
+                    className={`w-5 h-5 transition-transform ${collapsedSections.exitAnimation ? '-rotate-90' : ''}`}
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {!collapsedSections.exitAnimation && (
+                  <div className="flex flex-col gap-6 mt-4">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Duración</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="0.5"
+                          step="0.05"
+                          value={localAnimationStyle.fadeOutDuration}
+                          onChange={(e) => handleStyleChange('fadeOutDuration', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeOutDuration}s</div>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           )}
