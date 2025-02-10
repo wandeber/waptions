@@ -66,21 +66,6 @@ export function Timeline({
     };
   }, [localTime, fps]);
 
-  const handleAddSubtitle = () => {
-    if (!onSubtitlesChange || !onSubtitleClick) return;
-    
-    const newSubtitle: Subtitle = {
-      id: Date.now().toString(),
-      startTime: localTime,
-      endTime: localTime + 2,
-      text: ''
-    };
-
-    onSubtitlesChange([...subtitles, newSubtitle]);
-    // Seleccionar automáticamente el nuevo subtítulo
-    onSubtitleClick(newSubtitle);
-  };
-
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -168,14 +153,6 @@ export function Timeline({
     document.addEventListener('mouseup', handleGlobalMouseUp);
   };
 
-  const handleDeleteSubtitle = () => {
-    if (!selectedSubtitleId || !onSubtitlesChange) return;
-    onSubtitlesChange(subtitles.filter(s => s.id !== selectedSubtitleId));
-    if (onSubtitleClick) {
-      onSubtitleClick(null);
-    }
-  };
-
   const moveFrame = useCallback((direction: 'next' | 'prev') => {
     if (!onTimeUpdate) return;
 
@@ -251,21 +228,6 @@ export function Timeline({
         </div>
 
         <div className="flex gap-2 ml-auto">
-          <button
-            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed select-none"
-            onClick={handleDeleteSubtitle}
-            disabled={!selectedSubtitleId}
-            title="Eliminar subtítulo seleccionado"
-          >
-            Eliminar Subtítulo
-          </button>
-          <button
-            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 select-none"
-            onClick={handleAddSubtitle}
-            title="Añadir un nuevo subtítulo en la posición actual"
-          >
-            Añadir Subtítulo
-          </button>
         </div>
       </div>
 

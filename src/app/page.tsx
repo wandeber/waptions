@@ -108,6 +108,8 @@ export default function Home() {
               onSave={handleSubtitleSave}
               onSubtitleClick={handleSubtitleClick}
               onDelete={handleSubtitleDelete}
+              onSubtitlesChange={setSubtitles}
+              currentTime={currentTime}
             />
           </div>
         </div>

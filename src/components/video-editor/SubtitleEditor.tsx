@@ -9,9 +9,11 @@ interface SubtitleEditorProps {
   onSave?: (subtitle: Subtitle) => void;
   onSubtitleClick?: (subtitle: Subtitle) => void;
   onDelete?: (subtitleId: string) => void;
+  onSubtitlesChange?: (subtitles: Subtitle[]) => void;
+  currentTime: number;
 }
 
-export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick, onDelete }: SubtitleEditorProps) {
+export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick, onDelete, onSubtitlesChange, currentTime }: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
 
@@ -247,6 +249,35 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
 
   return (
     <div className="h-full bg-gray-800 rounded-lg p-4 flex flex-col gap-4 overflow-y-auto">
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-semibold text-white">Subtítulos</h2>
+        <button
+          className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
+          onClick={() => {
+            const newSubtitle: Subtitle = {
+              id: Date.now().toString(),
+              startTime: currentTime,
+              endTime: currentTime + 2,
+              text: ''
+            };
+            onSubtitlesChange?.([...subtitles, newSubtitle]);
+            onSubtitleClick?.(newSubtitle);
+            // Dar foco al textarea después de que se renderice
+            requestAnimationFrame(() => {
+              const textarea = textAreasRef.current[newSubtitle.id];
+              if (textarea) {
+                textarea.focus();
+              }
+            });
+          }}
+          title="Añadir subtítulo"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          <span>Añadir</span>
+        </button>
+      </div>
       {subtitles.length === 0 ? (
         <div className="text-gray-500 text-center">
           No hay subtítulos añadidos
@@ -270,9 +301,22 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
                 ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
               onClick={() => onSubtitleClick?.(subtitle)}
             >
-              <div className="flex justify-between text-sm text-gray-400">
-                <span className="select-none">Inicio: {formatTime(subtitle.startTime)}</span>
-                <span className="select-none">Fin: {formatTime(subtitle.endTime)}</span>
+              <div className="flex justify-between items-center">
+                <div className="text-sm text-gray-400">
+                  <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
+                </div>
+                <button
+                  className="ml-2 p-1 text-gray-400 hover:text-red-500 rounded hover:bg-gray-600"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete?.(subtitle.id);
+                  }}
+                  title="Eliminar subtítulo"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
               
               <textarea
