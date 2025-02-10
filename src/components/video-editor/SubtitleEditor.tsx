@@ -252,7 +252,7 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-semibold text-white">Subtítulos</h2>
         <button
-          className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
+          className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
           onClick={() => {
             const newSubtitle: Subtitle = {
               id: Date.now().toString(),
@@ -272,10 +272,9 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
           }}
           title="Añadir subtítulo"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          <span>Añadir</span>
         </button>
       </div>
       {subtitles.length === 0 ? (
@@ -306,7 +305,7 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
                   <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
                 </div>
                 <button
-                  className="ml-2 p-1 text-gray-400 hover:text-red-500 rounded hover:bg-gray-600"
+                  className="p-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
                   onClick={(e) => {
                     e.stopPropagation();
                     onDelete?.(subtitle.id);
@@ -323,7 +322,7 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
                 ref={el => {
                   textAreasRef.current[subtitle.id] = el;
                 }}
-                className="bg-gray-600 rounded p-2 text-white resize-none overflow-hidden"
+                className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden"
                 value={editingText[subtitle.id] || ''}
                 onChange={(e) => handleTextChange(subtitle, e.target.value)}
                 onClick={(e) => {
