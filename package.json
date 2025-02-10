@@ -11,10 +11,11 @@
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.3",
-    "@ffmpeg/ffmpeg": "^0.12.7",
-    "@ffmpeg/util": "^0.12.1",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "autoprefixer": "^10.4.20",
     "next": "^15.1.6",
+    "openai": "^4.83.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

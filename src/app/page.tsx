@@ -6,6 +6,8 @@ import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/SubtitleEditor';
 import { ExportButton } from '@/components/video-editor/ExportButton';
 import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { toBlobURL } from '@ffmpeg/util';
 
 export default function Home() {
   const [duration, setDuration] = useState(0);
@@ -14,6 +16,7 @@ export default function Home() {
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [fps, setFps] = useState(30);
+  const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -62,6 +65,71 @@ export default function Home() {
 
   const handleFpsChange = (newFps: number) => {
     setFps(newFps);
+  };
+
+  const handleGenerateSubtitles = async () => {
+    if (!videoRef.current?.src) {
+      alert('Por favor, carga un video primero');
+      return;
+    }
+
+    try {
+      setIsGeneratingSubtitles(true);
+
+      // Inicializar FFmpeg en el cliente
+      const ffmpeg = new FFmpeg();
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+
+      // Obtener el blob del video
+      const response = await fetch(videoRef.current.src);
+      const videoBlob = await response.blob();
+      const videoData = await videoBlob.arrayBuffer();
+      
+      // Escribir el video en FFmpeg
+      ffmpeg.writeFile('input.mp4', new Uint8Array(videoData));
+
+      // Extraer el audio como MP3
+      await ffmpeg.exec([
+        '-i', 'input.mp4',
+        '-vn',
+        '-acodec', 'libmp3lame',
+        '-ar', '16000',
+        '-ac', '1',
+        'audio.mp3'
+      ]);
+
+      // Leer el archivo de audio
+      const audioData = await ffmpeg.readFile('audio.mp3');
+      const audioBlob = new Blob([audioData], { type: 'audio/mpeg' });
+
+      // Crear FormData y añadir el audio
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'audio.mp3');
+
+      // Enviar al endpoint
+      const result = await fetch('/api/generate-subtitles', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!result.ok) {
+        throw new Error('Error al generar los subtítulos');
+      }
+
+      const data = await result.json();
+      
+      // Actualizar los subtítulos
+      setSubtitles(data.subtitles);
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al generar los subtítulos');
+    } finally {
+      setIsGeneratingSubtitles(false);
+    }
   };
 
   return (
@@ -113,6 +181,8 @@ export default function Home() {
               onDelete={handleSubtitleDelete}
               onSubtitlesChange={setSubtitles}
               currentTime={currentTime}
+              onGenerateSubtitles={handleGenerateSubtitles}
+              isGeneratingSubtitles={isGeneratingSubtitles}
             />
           </div>
         </div>

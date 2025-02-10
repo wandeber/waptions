@@ -11,9 +11,11 @@ interface SubtitleEditorProps {
   onDelete?: (subtitleId: string) => void;
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
   currentTime: number;
+  onGenerateSubtitles?: () => void;
+  isGeneratingSubtitles?: boolean;
 }
 
-export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick, onDelete, onSubtitlesChange, currentTime }: SubtitleEditorProps) {
+export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtitleClick, onDelete, onSubtitlesChange, currentTime, onGenerateSubtitles, isGeneratingSubtitles }: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
 
@@ -251,31 +253,43 @@ export function SubtitleEditor({ subtitles, selectedSubtitleId, onSave, onSubtit
     <div className="h-full bg-gray-800 rounded-lg p-4 flex flex-col gap-4 overflow-y-auto">
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-semibold text-white">Subtítulos</h2>
-        <button
-          className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
-          onClick={() => {
-            const newSubtitle: Subtitle = {
-              id: Date.now().toString(),
-              startTime: currentTime,
-              endTime: currentTime + 2,
-              text: ''
-            };
-            onSubtitlesChange?.([...subtitles, newSubtitle]);
-            onSubtitleClick?.(newSubtitle);
-            // Dar foco al textarea después de que se renderice
-            requestAnimationFrame(() => {
-              const textarea = textAreasRef.current[newSubtitle.id];
-              if (textarea) {
-                textarea.focus();
-              }
-            });
-          }}
-          title="Añadir subtítulo"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-        </button>
+        <div className="flex gap-2">
+          <button
+            className={`p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none ${isGeneratingSubtitles ? 'opacity-50 cursor-not-allowed' : ''}`}
+            onClick={onGenerateSubtitles}
+            disabled={isGeneratingSubtitles}
+            title="Generar subtítulos automáticamente"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+          <button
+            className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+            onClick={() => {
+              const newSubtitle: Subtitle = {
+                id: Date.now().toString(),
+                startTime: currentTime,
+                endTime: currentTime + 2,
+                text: ''
+              };
+              onSubtitlesChange?.([...subtitles, newSubtitle]);
+              onSubtitleClick?.(newSubtitle);
+              // Dar foco al textarea después de que se renderice
+              requestAnimationFrame(() => {
+                const textarea = textAreasRef.current[newSubtitle.id];
+                if (textarea) {
+                  textarea.focus();
+                }
+              });
+            }}
+            title="Añadir subtítulo"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
       </div>
       {subtitles.length === 0 ? (
         <div className="text-gray-500 text-center">
