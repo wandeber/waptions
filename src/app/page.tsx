@@ -158,6 +158,7 @@ export default function Home() {
               onFpsChange={handleFpsChange}
               subtitles={subtitles}
               canvasRef={canvasRef}
+              onEnded={() => setIsPlaying(false)}
             />
             <Timeline 
               duration={duration}

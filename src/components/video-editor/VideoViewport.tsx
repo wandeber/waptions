@@ -18,6 +18,7 @@ interface VideoViewportProps {
     text: string;
   }>;
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
+  onEnded?: () => void;
 }
 
 export function VideoViewport({ 
@@ -29,7 +30,8 @@ export function VideoViewport({
   fps,
   onFpsChange,
   subtitles = [],
-  canvasRef: externalCanvasRef
+  canvasRef: externalCanvasRef,
+  onEnded
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
@@ -200,12 +202,21 @@ export function VideoViewport({
   /* eslint-disable react-hooks/exhaustive-deps */
   const updateTime = useCallback(() => {
     if (videoRef.current && onTimeUpdate) {
-      onTimeUpdate(videoRef.current.currentTime);
+      const video = videoRef.current;
+      onTimeUpdate(video.currentTime);
+      
+      // Si llegamos al final del video, asegurarnos de que se detenga
+      if (video.currentTime >= video.duration) {
+        video.pause();
+        onTimeUpdate(video.duration);
+        onEnded?.();
+        return;
+      }
     }
     if (isPlaying) {
       timelineRef.current = requestAnimationFrame(updateTime);
     }
-  }, [isPlaying, onTimeUpdate]);
+  }, [isPlaying, onTimeUpdate, onEnded]);
 
   // Efecto para manejar la actualización del tiempo
   useEffect(() => {
@@ -230,8 +241,14 @@ export function VideoViewport({
     if (Math.abs(video.currentTime - currentTime) > 0.01) {
       if (video.seekable.length > 0) {
         const seekableEnd = video.seekable.end(video.seekable.length - 1);
-        if (currentTime <= seekableEnd) {
+        // Solo actualizamos el tiempo si no estamos al final del video
+        if (currentTime <= seekableEnd && currentTime < video.duration) {
           video.currentTime = currentTime;
+        } else if (currentTime >= video.duration) {
+          video.currentTime = video.duration;
+          video.pause();
+          onTimeUpdate?.(video.duration);
+          onEnded?.();
         } else {
           console.log(`No se puede buscar más allá de ${seekableEnd}s`);
         }
@@ -239,14 +256,20 @@ export function VideoViewport({
         console.log('El video no es buscable todavía');
       }
     }
-  }, [currentTime]);
+  }, [currentTime, onTimeUpdate, onEnded]);
 
   // Manejar el estado de reproducción
   useEffect(() => {
     if (!videoRef.current) return;
 
     if (isPlaying) {
-      const playPromise = videoRef.current.play();
+      const video = videoRef.current;
+      // Si el video está al final, reiniciarlo
+      if (video.currentTime >= video.duration) {
+        video.currentTime = 0;
+        onTimeUpdate?.(0);
+      }
+      const playPromise = video.play();
       if (playPromise) {
         playPromise.catch(error => {
           console.error('Error al reproducir el video:', error);
@@ -255,7 +278,7 @@ export function VideoViewport({
     } else {
       videoRef.current.pause();
     }
-  }, [isPlaying]);
+  }, [isPlaying, onTimeUpdate]);
 
   // Limpiar URL al desmontar
   useEffect(() => {
@@ -513,6 +536,13 @@ export function VideoViewport({
                       if (buffered.length > 0) {
                         console.log('Buffered until:', buffered.end(buffered.length - 1));
                       }
+                    }
+                  }}
+                  onEnded={() => {
+                    if (videoRef.current) {
+                      videoRef.current.pause();
+                      onTimeUpdate?.(videoRef.current.duration);
+                      onEnded?.();
                     }
                   }}
                   preload="auto"
