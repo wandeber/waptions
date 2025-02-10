@@ -38,6 +38,7 @@ export function VideoViewport({
   const [isLoading, setIsLoading] = useState(false);
   const internalVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
   const timelineRef = useRef<number | undefined>(undefined);
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
@@ -355,6 +356,65 @@ export function VideoViewport({
     return { width, height, left, top };
   }, []);
 
+  // Función para renderizar subtítulos en el canvas
+  const renderSubtitles = useCallback(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video || !videoDimensions) return;
+
+    const rect = getVideoDisplayRect();
+    if (!rect) return;
+
+    // Ajustar el canvas al tamaño y posición exacta del video
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    canvas.style.left = `${rect.left}px`;
+    canvas.style.top = `${rect.top}px`;
+    canvas.style.width = `${rect.width}px`;
+    canvas.style.height = `${rect.height}px`;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Limpiar el canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Encontrar subtítulos activos
+    const activeSubtitles = subtitles.filter(
+      subtitle => currentTime >= subtitle.startTime && currentTime <= subtitle.endTime
+    );
+
+    // Renderizar cada subtítulo
+    activeSubtitles.forEach(subtitle => {
+      // Configurar estilo del texto
+      const fontSize = Math.max(16, rect.height * 0.05); // 5% de la altura del video
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillStyle = 'white';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = fontSize * 0.1; // Borde del 10% del tamaño de fuente
+
+      // Dibujar el texto
+      const x = rect.width / 2;
+      const y = rect.height * 0.9; // 90% abajo
+      ctx.strokeText(subtitle.text, x, y);
+      ctx.fillText(subtitle.text, x, y);
+    });
+  }, [currentTime, subtitles, getVideoDisplayRect, videoDimensions]);
+
+  // Efecto para renderizar subtítulos cuando cambie el tiempo o las dimensiones
+  useEffect(() => {
+    renderSubtitles();
+  }, [renderSubtitles, currentTime, videoDimensions]);
+
+  // Efecto para ajustar el canvas cuando cambie el tamaño de la ventana
+  useEffect(() => {
+    const handleResize = () => renderSubtitles();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [renderSubtitles]);
+
   return (
     <div className="flex-1 flex flex-col bg-gray-800 rounded-t-lg overflow-hidden select-none">
       {/* Barra de herramientas del viewport */}
@@ -426,7 +486,6 @@ export function VideoViewport({
                         width: videoRef.current?.videoWidth,
                         height: videoRef.current?.videoHeight
                       });
-                      // Usar las dimensiones reales del video
                       if (videoRef.current) {
                         setVideoDimensions({
                           width: videoRef.current.videoWidth,
@@ -457,6 +516,17 @@ export function VideoViewport({
                   playsInline
                 />
 
+                {/* Canvas para subtítulos */}
+                <canvas
+                  ref={canvasRef}
+                  className="absolute pointer-events-none"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0
+                  }}
+                />
+
                 {/* Guías de los tercios */}
                 {showThirdsGuide && videoRef.current && (() => {
                   const rect = getVideoDisplayRect();
@@ -482,18 +552,6 @@ export function VideoViewport({
                   );
                 })()}
               </div>
-            </div>
-
-            {/* Overlay para los subtítulos */}
-            <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center">
-              {activeSubtitles.map(subtitle => (
-                <div
-                  key={subtitle.id}
-                  className="bg-black/75 text-white px-4 py-2 rounded-lg mb-2 text-center max-w-[80%] whitespace-pre-wrap"
-                >
-                  {subtitle.text}
-                </div>
-              ))}
             </div>
 
             {detectedFps && (
