@@ -18,11 +18,18 @@ interface SubtitleEditorProps {
 }
 
 interface SubtitleAnimationStyle {
+  // Propiedades de animación
   fadeInDuration: number;
   fadeOutDuration: number;
   initialScale: number;
   bounceStrength: number;
   useElasticEffect: boolean;
+  // Propiedades de estilo visual
+  fontSize: number;
+  textColor: string;
+  strokeWidth: number;
+  strokeColor: string;
+  fontWeight: number;
 }
 
 const defaultAnimationStyle: SubtitleAnimationStyle = {
@@ -30,7 +37,12 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
   fadeOutDuration: 0.15,
   initialScale: 1.5,
   bounceStrength: 1.70158,
-  useElasticEffect: true
+  useElasticEffect: true,
+  fontSize: 48,
+  textColor: '#FFD000',
+  strokeWidth: 6,
+  strokeColor: '#000000',
+  fontWeight: 800
 };
 
 export function SubtitleEditor({ 
@@ -49,11 +61,17 @@ export function SubtitleEditor({
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
-  const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>(animationStyle);
+  const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
+    ...defaultAnimationStyle,
+    ...animationStyle
+  });
 
   // Efecto para sincronizar los estilos locales con los props
   useEffect(() => {
-    setLocalAnimationStyle(animationStyle);
+    setLocalAnimationStyle({
+      ...defaultAnimationStyle,
+      ...animationStyle
+    });
   }, [animationStyle]);
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
@@ -286,7 +304,7 @@ export function SubtitleEditor({
     }
   };
 
-  const handleStyleChange = (key: keyof SubtitleAnimationStyle, value: number | boolean) => {
+  const handleStyleChange = (key: keyof SubtitleAnimationStyle, value: number | boolean | string) => {
     const newStyle = { ...localAnimationStyle, [key]: value };
     setLocalAnimationStyle(newStyle);
     onAnimationStyleChange?.(newStyle);
@@ -420,6 +438,96 @@ export function SubtitleEditor({
             </div>
           ) : (
             <div className="flex flex-col gap-8 p-6">
+              {/* Estilo visual */}
+              <div className="flex flex-col gap-4">
+                <h3 className="text-sm font-medium text-white">Estilo del texto</h3>
+                <div className="flex flex-col gap-6 pl-2">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Tamaño de fuente</label>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="24"
+                        max="96"
+                        step="1"
+                        value={localAnimationStyle.fontSize}
+                        onChange={(e) => handleStyleChange('fontSize', parseInt(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontSize}px</div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Grosor de fuente</label>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="400"
+                        max="900"
+                        step="100"
+                        value={localAnimationStyle.fontWeight}
+                        onChange={(e) => handleStyleChange('fontWeight', parseInt(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontWeight}</div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Color del texto</label>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="color"
+                        value={localAnimationStyle.textColor}
+                        onChange={(e) => handleStyleChange('textColor', e.target.value)}
+                        className="w-8 h-8 rounded cursor-pointer"
+                      />
+                      <input
+                        type="text"
+                        value={localAnimationStyle.textColor}
+                        onChange={(e) => handleStyleChange('textColor', e.target.value)}
+                        className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Grosor del borde</label>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="0"
+                        max="8"
+                        step="0.5"
+                        value={localAnimationStyle.strokeWidth}
+                        onChange={(e) => handleStyleChange('strokeWidth', parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.strokeWidth}px</div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Color del borde</label>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="color"
+                        value={localAnimationStyle.strokeColor}
+                        onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
+                        className="w-8 h-8 rounded cursor-pointer"
+                      />
+                      <input
+                        type="text"
+                        value={localAnimationStyle.strokeColor}
+                        onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
+                        className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* Animación de entrada */}
               <div className="flex flex-col gap-4">
                 <h3 className="text-sm font-medium text-white">Animación de entrada</h3>

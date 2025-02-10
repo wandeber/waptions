@@ -27,6 +27,11 @@ interface VideoViewportProps {
     initialScale: number;
     bounceStrength: number;
     useElasticEffect: boolean;
+    fontSize: number;
+    textColor: string;
+    strokeWidth: number;
+    strokeColor: string;
+    fontWeight: number;
   };
 }
 
@@ -48,7 +53,12 @@ export function VideoViewport({
     fadeOutDuration: 0.15,
     initialScale: 1.5,
     bounceStrength: 1.70158,
-    useElasticEffect: true
+    useElasticEffect: true,
+    fontSize: 48,
+    textColor: '#ffffff',
+    strokeWidth: 4,
+    strokeColor: '#000000',
+    fontWeight: 700
   }
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -468,13 +478,13 @@ export function VideoViewport({
       opacity = Math.max(0, Math.min(1, opacity));
 
       // Configurar estilo del texto
-      const fontSize = Math.max(16, rect.height * 0.05);
-      ctx.font = `bold ${fontSize}px sans-serif`;
+      const fontSize = animationStyle.fontSize * (rect.height / 1080);
+      ctx.font = `${animationStyle.fontWeight} ${fontSize}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
-      ctx.strokeStyle = `rgba(0, 0, 0, ${opacity})`;
-      ctx.lineWidth = fontSize * 0.1;
+      ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+      ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+      ctx.lineWidth = fontSize * (animationStyle.strokeWidth / 48);
 
       // Aplicar la transformación de escala
       ctx.save();

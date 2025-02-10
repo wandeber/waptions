@@ -24,7 +24,12 @@ export default function Home() {
     fadeOutDuration: 0.15,
     initialScale: 1.5,
     bounceStrength: 1.70158,
-    useElasticEffect: true
+    useElasticEffect: true,
+    fontSize: 48,
+    textColor: '#FFD000',
+    strokeWidth: 6,
+    strokeColor: '#000000',
+    fontWeight: 800
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
