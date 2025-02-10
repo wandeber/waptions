@@ -30,6 +30,10 @@ interface SubtitleAnimationStyle {
   strokeWidth: number;
   strokeColor: string;
   fontWeight: number;
+  useUppercase: boolean;
+  hidePunctuation: boolean;
+  punctuationChars: string;
+  removeAccents: boolean;
 }
 
 const defaultAnimationStyle: SubtitleAnimationStyle = {
@@ -42,7 +46,11 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
   textColor: '#FFD000',
   strokeWidth: 6,
   strokeColor: '#000000',
-  fontWeight: 800
+  fontWeight: 800,
+  useUppercase: false,
+  hidePunctuation: false,
+  punctuationChars: '¿?:-,;¡!',
+  removeAccents: false
 };
 
 export function SubtitleEditor({ 
@@ -524,6 +532,53 @@ export function SubtitleEditor({
                         className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
                       />
                     </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={localAnimationStyle.useUppercase}
+                      onChange={(e) => handleStyleChange('useUppercase', e.target.checked)}
+                      className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+                    />
+                    <label className="text-sm text-gray-300">Mostrar en mayúsculas</label>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={localAnimationStyle.hidePunctuation}
+                        onChange={(e) => handleStyleChange('hidePunctuation', e.target.checked)}
+                        className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+                      />
+                      <label className="text-sm text-gray-300">Ocultar signos de puntuación</label>
+                    </div>
+                    
+                    {localAnimationStyle.hidePunctuation && (
+                      <div className="flex flex-col gap-1 pl-6">
+                        <input
+                          type="text"
+                          value={localAnimationStyle.punctuationChars}
+                          onChange={(e) => handleStyleChange('punctuationChars', e.target.value)}
+                          className="bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                          placeholder="Caracteres a ocultar..."
+                        />
+                        <span className="text-xs text-gray-400">
+                          Caracteres por defecto: ¿?:-,;¡!
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={localAnimationStyle.removeAccents}
+                      onChange={(e) => handleStyleChange('removeAccents', e.target.checked)}
+                      className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+                    />
+                    <label className="text-sm text-gray-300">Omitir tildes</label>
                   </div>
                 </div>
               </div>

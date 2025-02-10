@@ -32,6 +32,10 @@ interface VideoViewportProps {
     strokeWidth: number;
     strokeColor: string;
     fontWeight: number;
+    useUppercase: boolean;
+    hidePunctuation: boolean;
+    punctuationChars: string;
+    removeAccents: boolean;
   };
 }
 
@@ -58,7 +62,11 @@ export function VideoViewport({
     textColor: '#ffffff',
     strokeWidth: 4,
     strokeColor: '#000000',
-    fontWeight: 700
+    fontWeight: 700,
+    useUppercase: false,
+    hidePunctuation: false,
+    punctuationChars: '',
+    removeAccents: false
   }
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -495,8 +503,42 @@ export function VideoViewport({
       ctx.translate(-x, -y);
 
       // Dibujar el texto
-      ctx.strokeText(subtitle.text, x, y);
-      ctx.fillText(subtitle.text, x, y);
+      const processedText = (text: string) => {
+        let result = text;
+        if (animationStyle.useUppercase) {
+          result = result.toUpperCase();
+        }
+        if (animationStyle.hidePunctuation) {
+          const regex = new RegExp(`[${animationStyle.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`, 'g');
+          result = result.replace(regex, '');
+        }
+        if (animationStyle.removeAccents) {
+          // Reemplazar solo vocales con tilde manteniendo la ñ
+          result = result
+            .replace(/[áàäâã]/g, 'a')
+            .replace(/[éèëê]/g, 'e')
+            .replace(/[íìïî]/g, 'i')
+            .replace(/[óòöôõ]/g, 'o')
+            .replace(/[úùüû]/g, 'u')
+            .replace(/[ÁÀÄÂÃ]/g, 'A')
+            .replace(/[ÉÈËÊ]/g, 'E')
+            .replace(/[ÍÌÏÎ]/g, 'I')
+            .replace(/[ÓÒÖÔÕ]/g, 'O')
+            .replace(/[ÚÙÜÛ]/g, 'U');
+        }
+        return result;
+      };
+
+      ctx.strokeText(
+        processedText(subtitle.text),
+        x,
+        y
+      );
+      ctx.fillText(
+        processedText(subtitle.text),
+        x,
+        y
+      );
       
       // Restaurar el contexto
       ctx.restore();

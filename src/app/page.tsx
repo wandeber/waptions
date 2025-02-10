@@ -29,7 +29,11 @@ export default function Home() {
     textColor: '#FFD000',
     strokeWidth: 6,
     strokeColor: '#000000',
-    fontWeight: 800
+    fontWeight: 800,
+    useUppercase: false,
+    hidePunctuation: false,
+    punctuationChars: '¿?:-,;¡!',
+    removeAccents: false
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
