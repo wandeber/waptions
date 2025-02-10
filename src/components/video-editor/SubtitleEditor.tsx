@@ -30,7 +30,7 @@ interface SubtitleAnimationStyle {
   strokeWidth: number;
   strokeColor: string;
   fontWeight: number;
-  useUppercase: boolean;
+  textCase: 'normal' | 'uppercase' | 'lowercase';
   hidePunctuation: boolean;
   punctuationChars: string;
   removeAccents: boolean;
@@ -47,7 +47,7 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
   strokeWidth: 6,
   strokeColor: '#000000',
   fontWeight: 800,
-  useUppercase: false,
+  textCase: 'normal',
   hidePunctuation: false,
   punctuationChars: '¿?:-,;¡!',
   removeAccents: false
@@ -534,14 +534,40 @@ export function SubtitleEditor({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={localAnimationStyle.useUppercase}
-                      onChange={(e) => handleStyleChange('useUppercase', e.target.checked)}
-                      className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
-                    />
-                    <label className="text-sm text-gray-300">Mostrar en mayúsculas</label>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Transformación del texto</label>
+                    <div className="flex gap-2">
+                      <button
+                        className={`px-3 py-1 rounded text-sm ${
+                          localAnimationStyle.textCase === 'normal'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                        onClick={() => handleStyleChange('textCase', 'normal')}
+                      >
+                        Normal
+                      </button>
+                      <button
+                        className={`px-3 py-1 rounded text-sm ${
+                          localAnimationStyle.textCase === 'uppercase'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                        onClick={() => handleStyleChange('textCase', 'uppercase')}
+                      >
+                        MAYÚS.
+                      </button>
+                      <button
+                        className={`px-3 py-1 rounded text-sm ${
+                          localAnimationStyle.textCase === 'lowercase'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                        onClick={() => handleStyleChange('textCase', 'lowercase')}
+                      >
+                        minús.
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-2">

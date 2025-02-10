@@ -32,7 +32,7 @@ interface VideoViewportProps {
     strokeWidth: number;
     strokeColor: string;
     fontWeight: number;
-    useUppercase: boolean;
+    textCase: 'normal' | 'uppercase' | 'lowercase';
     hidePunctuation: boolean;
     punctuationChars: string;
     removeAccents: boolean;
@@ -63,7 +63,7 @@ export function VideoViewport({
     strokeWidth: 4,
     strokeColor: '#000000',
     fontWeight: 700,
-    useUppercase: false,
+    textCase: 'normal',
     hidePunctuation: false,
     punctuationChars: '',
     removeAccents: false
@@ -505,8 +505,10 @@ export function VideoViewport({
       // Dibujar el texto
       const processedText = (text: string) => {
         let result = text;
-        if (animationStyle.useUppercase) {
+        if (animationStyle.textCase === 'uppercase') {
           result = result.toUpperCase();
+        } else if (animationStyle.textCase === 'lowercase') {
+          result = result.toLowerCase();
         }
         if (animationStyle.hidePunctuation) {
           const regex = new RegExp(`[${animationStyle.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`, 'g');
