@@ -341,11 +341,7 @@ export function VideoViewport({
 
   // Encontrar los subtítulos activos para el tiempo actual
   const activeSubtitles = subtitles.filter(
-    subtitle => {
-      const maxFadeTime = Math.max(animationStyle.fadeInDuration, animationStyle.fadeOutDuration);
-      return currentTime >= subtitle.startTime - maxFadeTime && 
-             currentTime <= subtitle.endTime + maxFadeTime;
-    }
+    subtitle => currentTime >= subtitle.startTime && currentTime <= subtitle.endTime
   );
 
   // Función para calcular las dimensiones del video en pantalla
@@ -443,14 +439,13 @@ export function VideoViewport({
     // Limpiar el canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Encontrar subtítulos activos
-    const activeSubtitles = subtitles.filter(
-      subtitle => {
-        const maxFadeTime = Math.max(animationStyle.fadeInDuration, animationStyle.fadeOutDuration);
-        return currentTime >= subtitle.startTime - maxFadeTime && 
-               currentTime <= subtitle.endTime + maxFadeTime;
-      }
-    );
+    // Encontrar subtítulos activos y en transición
+    const subtitlesToRender = subtitles.filter(subtitle => {
+      const isActive = currentTime >= subtitle.startTime && currentTime <= subtitle.endTime;
+      const isExiting = currentTime >= subtitle.endTime - animationStyle.fadeOutDuration && 
+                       currentTime < subtitle.endTime;
+      return isActive || isExiting;
+    });
 
     // Funciones de easing
     const easeOutBack = (x: number): number => {
@@ -465,21 +460,21 @@ export function VideoViewport({
     };
 
     // Renderizar cada subtítulo
-    activeSubtitles.forEach(subtitle => {
+    subtitlesToRender.forEach(subtitle => {
       let opacity = 1;
       let scale = 1;
       
       // Fade in con escala
-      if (currentTime < subtitle.startTime) {
-        const progress = (animationStyle.fadeInDuration - (subtitle.startTime - currentTime)) / animationStyle.fadeInDuration;
+      if (currentTime >= subtitle.startTime && currentTime < subtitle.startTime + animationStyle.fadeInDuration) {
+        const progress = (currentTime - subtitle.startTime) / animationStyle.fadeInDuration;
         opacity = easeOutExpo(progress);
         const scaleProgress = easeOutBack(progress);
         scale = 1 + ((animationStyle.initialScale - 1) * (1 - scaleProgress));
       }
       // Fade out
-      else if (currentTime > subtitle.endTime) {
-        const progress = (animationStyle.fadeOutDuration - (currentTime - subtitle.endTime)) / animationStyle.fadeOutDuration;
-        opacity = Math.pow(progress, 2);
+      else if (currentTime >= subtitle.endTime - animationStyle.fadeOutDuration && currentTime < subtitle.endTime) {
+        const progress = (subtitle.endTime - currentTime) / animationStyle.fadeOutDuration;
+        opacity = progress;
       }
       
       // Asegurar que la opacidad esté entre 0 y 1
