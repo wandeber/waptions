@@ -17,6 +17,7 @@ interface VideoViewportProps {
     endTime: number;
     text: string;
   }>;
+  canvasRef?: React.RefObject<HTMLCanvasElement | null>;
 }
 
 export function VideoViewport({ 
@@ -27,7 +28,8 @@ export function VideoViewport({
   isPlaying,
   fps,
   onFpsChange,
-  subtitles = []
+  subtitles = [],
+  canvasRef: externalCanvasRef
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
@@ -37,9 +39,10 @@ export function VideoViewport({
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const internalVideoRef = useRef<HTMLVideoElement>(null);
+  const internalCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = externalVideoRef || internalVideoRef;
+  const canvasRef = externalCanvasRef || internalCanvasRef;
   const timelineRef = useRef<number | undefined>(undefined);
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);

@@ -15,6 +15,7 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [fps, setFps] = useState(30);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const handleTimeUpdate = (time: number) => {
     setCurrentTime(time);
@@ -71,6 +72,7 @@ export default function Home() {
         <ExportButton
           videoRef={videoRef}
           subtitles={subtitles}
+          canvasRef={canvasRef}
         />
       </header>
 
@@ -87,6 +89,7 @@ export default function Home() {
               fps={fps}
               onFpsChange={handleFpsChange}
               subtitles={subtitles}
+              canvasRef={canvasRef}
             />
             <Timeline 
               duration={duration}
