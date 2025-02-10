@@ -445,11 +445,11 @@ export function SubtitleEditor({
               )}
             </div>
           ) : (
-            <div className="flex flex-col gap-8 p-6">
+            <div className="flex flex-col divide-y divide-gray-700">
               {/* Estilo visual */}
-              <div className="flex flex-col gap-4">
-                <h3 className="text-sm font-medium text-white">Estilo del texto</h3>
-                <div className="flex flex-col gap-6 pl-2">
+              <div className="p-4">
+                <h3 className="text-sm font-medium text-white mb-4">Estilo del texto</h3>
+                <div className="flex flex-col gap-6">
                   <div className="flex flex-col gap-2">
                     <label className="text-sm text-gray-300">Tamaño de fuente</label>
                     <div className="flex gap-4 items-center">
@@ -610,49 +610,55 @@ export function SubtitleEditor({
               </div>
 
               {/* Animación de entrada */}
-              <div className="flex flex-col gap-4">
-                <h3 className="text-sm font-medium text-white">Animación de entrada</h3>
-                <div className="flex flex-col gap-6 pl-2">
+              <div className="p-4">
+                <h3 className="text-sm font-medium text-white mb-4">Animación de entrada</h3>
+                <div className="flex flex-col gap-6">
                   <div className="flex flex-col gap-2">
                     <label className="text-sm text-gray-300">Duración</label>
-                    <input
-                      type="range"
-                      min="0.05"
-                      max="0.5"
-                      step="0.05"
-                      value={localAnimationStyle.fadeInDuration}
-                      onChange={(e) => handleStyleChange('fadeInDuration', parseFloat(e.target.value))}
-                      className="w-full"
-                    />
-                    <div className="text-xs text-gray-400 text-right">{localAnimationStyle.fadeInDuration}s</div>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="0.05"
+                        max="0.5"
+                        step="0.05"
+                        value={localAnimationStyle.fadeInDuration}
+                        onChange={(e) => handleStyleChange('fadeInDuration', parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeInDuration}s</div>
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-2">
                     <label className="text-sm text-gray-300">Escala inicial</label>
-                    <input
-                      type="range"
-                      min="1"
-                      max="2"
-                      step="0.1"
-                      value={localAnimationStyle.initialScale}
-                      onChange={(e) => handleStyleChange('initialScale', parseFloat(e.target.value))}
-                      className="w-full"
-                    />
-                    <div className="text-xs text-gray-400 text-right">{localAnimationStyle.initialScale}x</div>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="1"
+                        max="2"
+                        step="0.1"
+                        value={localAnimationStyle.initialScale}
+                        onChange={(e) => handleStyleChange('initialScale', parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.initialScale}x</div>
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-2">
                     <label className="text-sm text-gray-300">Intensidad del rebote</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="3"
-                      step="0.1"
-                      value={localAnimationStyle.bounceStrength}
-                      onChange={(e) => handleStyleChange('bounceStrength', parseFloat(e.target.value))}
-                      className="w-full"
-                    />
-                    <div className="text-xs text-gray-400 text-right">{localAnimationStyle.bounceStrength}</div>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="0"
+                        max="3"
+                        step="0.1"
+                        value={localAnimationStyle.bounceStrength}
+                        onChange={(e) => handleStyleChange('bounceStrength', parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.bounceStrength}</div>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -668,20 +674,24 @@ export function SubtitleEditor({
               </div>
 
               {/* Animación de salida */}
-              <div className="flex flex-col gap-4">
-                <h3 className="text-sm font-medium text-white">Animación de salida</h3>
-                <div className="flex flex-col gap-2 pl-2">
-                  <label className="text-sm text-gray-300">Duración</label>
-                  <input
-                    type="range"
-                    min="0.05"
-                    max="0.5"
-                    step="0.05"
-                    value={localAnimationStyle.fadeOutDuration}
-                    onChange={(e) => handleStyleChange('fadeOutDuration', parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="text-xs text-gray-400 text-right">{localAnimationStyle.fadeOutDuration}s</div>
+              <div className="p-4">
+                <h3 className="text-sm font-medium text-white mb-4">Animación de salida</h3>
+                <div className="flex flex-col gap-6">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-300">Duración</label>
+                    <div className="flex gap-4 items-center">
+                      <input
+                        type="range"
+                        min="0.05"
+                        max="0.5"
+                        step="0.05"
+                        value={localAnimationStyle.fadeOutDuration}
+                        onChange={(e) => handleStyleChange('fadeOutDuration', parseFloat(e.target.value))}
+                        className="flex-1"
+                      />
+                      <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeOutDuration}s</div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
