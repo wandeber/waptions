@@ -309,7 +309,12 @@ export function VideoViewport({
 
   // Encontrar los subtítulos activos para el tiempo actual
   const activeSubtitles = subtitles.filter(
-    subtitle => currentTime >= subtitle.startTime && currentTime <= subtitle.endTime
+    subtitle => {
+      // Reducimos el tiempo de animación a 150ms
+      const fadeTime = 0.15;
+      return currentTime >= subtitle.startTime - fadeTime && 
+             currentTime <= subtitle.endTime + fadeTime;
+    }
   );
 
   // Función para calcular las dimensiones del video en pantalla
@@ -409,25 +414,75 @@ export function VideoViewport({
 
     // Encontrar subtítulos activos
     const activeSubtitles = subtitles.filter(
-      subtitle => currentTime >= subtitle.startTime && currentTime <= subtitle.endTime
+      subtitle => {
+        // Reducimos el tiempo de animación a 150ms
+        const fadeTime = 0.15;
+        return currentTime >= subtitle.startTime - fadeTime && 
+               currentTime <= subtitle.endTime + fadeTime;
+      }
     );
 
     // Renderizar cada subtítulo
     activeSubtitles.forEach(subtitle => {
+      const fadeTime = 0.15;
+      let opacity = 1;
+      let scale = 1;
+      
+      // Función de easing para el rebote
+      const easeOutBack = (x: number): number => {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+      };
+
+      // Función de easing para la opacidad
+      const easeOutExpo = (x: number): number => {
+        return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
+      };
+      
+      // Fade in con escala y easing
+      if (currentTime < subtitle.startTime) {
+        const progress = (fadeTime - (subtitle.startTime - currentTime)) / fadeTime;
+        // Aplicamos easing a la opacidad para un fade más rápido
+        opacity = easeOutExpo(progress);
+        // Aplicamos easing al scale para un efecto de rebote
+        const scaleProgress = easeOutBack(progress);
+        // La escala irá de 1.5 a 1 con efecto de rebote
+        scale = 1 + (0.5 * (1 - scaleProgress));
+      }
+      // Fade out con easing
+      else if (currentTime > subtitle.endTime) {
+        const progress = (fadeTime - (currentTime - subtitle.endTime)) / fadeTime;
+        // Caída rápida de la opacidad
+        opacity = Math.pow(progress, 2);
+      }
+      
+      // Asegurar que la opacidad esté entre 0 y 1
+      opacity = Math.max(0, Math.min(1, opacity));
+
       // Configurar estilo del texto
-      const fontSize = Math.max(16, rect.height * 0.05); // 5% de la altura del video
+      const fontSize = Math.max(16, rect.height * 0.05);
       ctx.font = `bold ${fontSize}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillStyle = 'white';
-      ctx.strokeStyle = 'black';
-      ctx.lineWidth = fontSize * 0.1; // Borde del 10% del tamaño de fuente
+      ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
+      ctx.strokeStyle = `rgba(0, 0, 0, ${opacity})`;
+      ctx.lineWidth = fontSize * 0.1;
+
+      // Aplicar la transformación de escala
+      ctx.save();
+      const x = rect.width / 2;
+      const y = rect.height * 0.9;
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.translate(-x, -y);
 
       // Dibujar el texto
-      const x = rect.width / 2;
-      const y = rect.height * 0.9; // 90% abajo
       ctx.strokeText(subtitle.text, x, y);
       ctx.fillText(subtitle.text, x, y);
+      
+      // Restaurar el contexto
+      ctx.restore();
     });
   }, [currentTime, subtitles, getVideoDisplayRect, videoDimensions]);
 
