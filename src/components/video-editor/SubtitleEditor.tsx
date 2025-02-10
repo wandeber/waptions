@@ -356,7 +356,8 @@ export function SubtitleEditor({
           {activeTab === 'subtitles' ? (
             <div className="flex flex-col gap-4 p-4">
               <div className="flex justify-between items-center">
-                <div className="flex gap-2">
+                <div></div>
+                <div className="flex gap-2 ml-auto">
                   <button
                     className={`p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none ${
                       isGeneratingSubtitles ? 'opacity-50 cursor-not-allowed' : ''
@@ -397,7 +398,7 @@ export function SubtitleEditor({
               </div>
 
               {subtitles.length === 0 ? (
-                <div className="text-gray-500 text-center">
+                <div className="text-gray-500 text-center text-sm mt-8">
                   No hay subtítulos añadidos
                 </div>
               ) : (
