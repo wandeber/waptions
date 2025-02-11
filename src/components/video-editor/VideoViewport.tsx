@@ -34,6 +34,7 @@ interface VideoViewportProps {
     hidePunctuation: boolean;
     punctuationChars: string;
     removeAccents: boolean;
+    fontFamily: string;
   };
   onAudioExtracted?: (audioUrl: string) => void;
 }
@@ -63,7 +64,8 @@ export function VideoViewport({
     textCase: 'normal',
     hidePunctuation: false,
     punctuationChars: '',
-    removeAccents: false
+    removeAccents: false,
+    fontFamily: 'Arial',
   },
   onAudioExtracted
 }: VideoViewportProps) {
@@ -531,7 +533,7 @@ export function VideoViewport({
 
       // Configurar estilo del texto
       const fontSize = animationStyle.fontSize * (rect.height / 1080);
-      ctx.font = `${animationStyle.fontWeight} ${fontSize}px sans-serif`;
+      ctx.font = `${animationStyle.fontWeight} ${fontSize}px ${animationStyle.fontFamily}, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
       ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;

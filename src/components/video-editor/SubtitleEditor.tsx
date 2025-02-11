@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import type { Subtitle } from './SubtitleTrack';
+import { FontSelector } from './FontSelector';
 
 interface SubtitleEditorProps {
   subtitles: Subtitle[];
@@ -25,6 +26,7 @@ interface SubtitleAnimationStyle {
   useElasticEffect: boolean;
   // Propiedades de estilo visual
   fontSize: number;
+  fontFamily: string;
   textColor: string;
   strokeWidth: number;
   strokeColor: string;
@@ -42,6 +44,7 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
   bounceStrength: 1.70158,
   useElasticEffect: true,
   fontSize: 48,
+  fontFamily: 'Inter',
   textColor: '#FFD000',
   strokeWidth: 6,
   strokeColor: '#000000',
@@ -534,6 +537,14 @@ export function SubtitleEditor({
                         />
                         <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontSize}px</div>
                       </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Fuente</label>
+                      <FontSelector
+                        value={localAnimationStyle.fontFamily}
+                        onChange={(font) => handleStyleChange('fontFamily', font)}
+                      />
                     </div>
 
                     <div className="flex flex-col gap-2">
