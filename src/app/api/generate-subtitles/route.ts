@@ -143,8 +143,14 @@ export async function POST(request: NextRequest) {
     const audioFile = formData.get('audio') as File;
     
     if (!audioFile) {
+      console.error('No se proporcionó archivo de audio');
       return NextResponse.json({ error: 'No audio file provided' }, { status: 400 });
     }
+
+    console.log('Iniciando transcripción con Whisper...', {
+      audioFileSize: audioFile.size,
+      audioFileType: audioFile.type
+    });
 
     // Transcribir con Whisper con configuración más precisa
     const transcription = await openai.audio.transcriptions.create({
@@ -156,6 +162,10 @@ export async function POST(request: NextRequest) {
       temperature: 0 // Máxima precisión
     }) as unknown as WhisperResponse;
 
+    console.log('Transcripción completada', {
+      segmentCount: transcription.segments.length
+    });
+
     // Dividir los segmentos en partes más pequeñas y convertir a formato de subtítulos
     const subtitles = transcription.segments
       .flatMap(segment => splitSegment(segment))
@@ -166,11 +176,28 @@ export async function POST(request: NextRequest) {
         text: subSegment.text.trim()
       }));
 
+    console.log('Subtítulos generados', {
+      subtitleCount: subtitles.length
+    });
+
     return NextResponse.json({ subtitles });
   } catch (error) {
-    console.error('Error generating subtitles:', error);
+    console.error('Error detallado al generar subtítulos:', {
+      error,
+      message: error instanceof Error ? error.message : 'Error desconocido',
+      stack: error instanceof Error ? error.stack : undefined
+    });
+
+    // Si es un error de OpenAI, devolver un mensaje más específico
+    if (error instanceof Error && error.message.includes('OpenAI')) {
+      return NextResponse.json(
+        { error: 'Error al comunicarse con OpenAI. Por favor, verifica tu API key.' },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json(
-      { error: 'Error generating subtitles' },
+      { error: 'Error al generar subtítulos. Por favor, intenta de nuevo.' },
       { status: 500 }
     );
   }

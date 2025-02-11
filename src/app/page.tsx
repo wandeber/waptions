@@ -32,7 +32,17 @@ export default function Home() {
     textCase: 'normal' as 'normal' | 'uppercase' | 'lowercase',
     hidePunctuation: false,
     punctuationChars: '¿?:-,.;¡!',
-    removeAccents: false
+    removeAccents: false,
+    fontFamily: 'Arial',
+    backgroundColor: '#000000',
+    backgroundOpacity: 0.5,
+    backgroundBorderColor: '#FFD000',
+    backgroundBorderWidth: 2,
+    backgroundMarginVertical: 8,
+    backgroundMarginHorizontal: 16,
+    backgroundBorderRadius: 8,
+    backgroundOffsetX: 0,
+    backgroundOffsetY: 0
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -138,10 +148,41 @@ export default function Home() {
               onSubtitlesChange={setSubtitles}
               currentTime={currentTime}
               onGenerateSubtitles={async () => {
-                setIsGeneratingSubtitles(true);
-                // TODO: Implementar generación de subtítulos
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                setIsGeneratingSubtitles(false);
+                if (!videoRef.current || !audioUrl) {
+                  alert('Por favor, carga un video primero');
+                  return;
+                }
+
+                try {
+                  setIsGeneratingSubtitles(true);
+                  
+                  // Crear FormData con el audio
+                  const formData = new FormData();
+                  const audioBlob = await fetch(audioUrl).then(r => r.blob());
+                  formData.append('audio', audioBlob);
+
+                  // Llamar al endpoint
+                  const response = await fetch('/api/generate-subtitles', {
+                    method: 'POST',
+                    body: formData,
+                  });
+
+                  const data = await response.json();
+
+                  if (!response.ok) {
+                    throw new Error(data.error || 'Error al generar subtítulos');
+                  }
+
+                  setSubtitles(data.subtitles);
+                } catch (error) {
+                  console.error('Error detallado al generar subtítulos:', {
+                    error,
+                    message: error instanceof Error ? error.message : 'Error desconocido'
+                  });
+                  alert(error instanceof Error ? error.message : 'Error al generar los subtítulos. Por favor, intenta de nuevo.');
+                } finally {
+                  setIsGeneratingSubtitles(false);
+                }
               }}
               isGeneratingSubtitles={isGeneratingSubtitles}
               animationStyle={animationStyle}

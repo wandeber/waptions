@@ -201,10 +201,22 @@ export function VideoViewport({
     }
 
     try {
+      console.log('Iniciando extracción de audio...', {
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type
+      });
+
       const buffer = await file.arrayBuffer();
+      console.log('Buffer de video creado:', {
+        bufferSize: buffer.byteLength
+      });
+
       await ffmpeg.writeFile('input.mp4', new Uint8Array(buffer));
+      console.log('Archivo de video escrito en FFmpeg');
       
       // Extraer audio en formato WAV
+      console.log('Ejecutando comando de extracción de audio...');
       await ffmpeg.exec([
         '-i', 'input.mp4',
         '-vn', // No video
@@ -213,19 +225,30 @@ export function VideoViewport({
         '-ac', '2', // Stereo
         'output.wav'
       ]);
+      console.log('Audio extraído exitosamente');
       
       // Leer el archivo de audio
       const audioData = await ffmpeg.readFile('output.wav');
+      console.log('Archivo de audio leído:', {
+        audioDataSize: audioData.length
+      });
+
       const audioBlob = new Blob([audioData], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(audioBlob);
+      console.log('URL de audio creada');
       
       // Limpiar archivos
       await ffmpeg.deleteFile('input.mp4');
       await ffmpeg.deleteFile('output.wav');
+      console.log('Archivos temporales eliminados');
       
       return audioUrl;
     } catch (error) {
-      console.error('Error al extraer el audio:', error);
+      console.error('Error detallado al extraer el audio:', {
+        error,
+        message: error instanceof Error ? error.message : 'Error desconocido',
+        stack: error instanceof Error ? error.stack : undefined
+      });
       return null;
     }
   };
