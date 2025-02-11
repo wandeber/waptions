@@ -490,7 +490,7 @@ export function VideoViewport({
 
     // Encontrar subtítulos activos y en transición
     const subtitlesToRender = subtitles.filter(subtitle => {
-      const isActive = currentTime >= subtitle.startTime && currentTime <= subtitle.endTime;
+      const isActive = currentTime >= subtitle.startTime && currentTime < subtitle.endTime;
       const isExiting = currentTime >= subtitle.endTime - animationStyle.fadeOutDuration && 
                        currentTime < subtitle.endTime;
       return isActive || isExiting;

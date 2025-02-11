@@ -170,7 +170,7 @@ export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }:
 
         // Renderizar subtítulos activos con animaciones
         const subtitlesToRender = subtitles.filter(subtitle => {
-          const isActive = video.currentTime >= subtitle.startTime && video.currentTime <= subtitle.endTime;
+          const isActive = video.currentTime >= subtitle.startTime && video.currentTime < subtitle.endTime;
           const isExiting = video.currentTime >= subtitle.endTime - (animationStyle?.fadeOutDuration || 0.15) && 
                            video.currentTime < subtitle.endTime;
           return isActive || isExiting;
