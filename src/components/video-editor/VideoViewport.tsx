@@ -50,8 +50,8 @@ export function VideoViewport({
   showThirdsGuide = false,
   showMetaInfo = false,
   animationStyle = {
-    fadeInDuration: 0.15,
-    fadeOutDuration: 0.15,
+    fadeInDuration: 0,
+    fadeOutDuration: 0,
     initialScale: 1.5,
     bounceStrength: 1.70158,
     useElasticEffect: true,

@@ -19,8 +19,8 @@ export default function Home() {
   const [showMetaInfo, setShowMetaInfo] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [animationStyle, setAnimationStyle] = useState({
-    fadeInDuration: 0.15,
-    fadeOutDuration: 0.15,
+    fadeInDuration: 0,
+    fadeOutDuration: 0,
     initialScale: 1.5,
     bounceStrength: 1.70158,
     useElasticEffect: true,

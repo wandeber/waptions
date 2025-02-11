@@ -36,8 +36,8 @@ interface SubtitleAnimationStyle {
 }
 
 const defaultAnimationStyle: SubtitleAnimationStyle = {
-  fadeInDuration: 0.15,
-  fadeOutDuration: 0.15,
+  fadeInDuration: 0,
+  fadeOutDuration: 0,
   initialScale: 1.5,
   bounceStrength: 1.70158,
   useElasticEffect: true,
@@ -703,7 +703,7 @@ export function SubtitleEditor({
                       <div className="flex gap-4 items-center">
                         <input
                           type="range"
-                          min="0.05"
+                          min="0"
                           max="0.5"
                           step="0.05"
                           value={localAnimationStyle.fadeInDuration}
@@ -782,7 +782,7 @@ export function SubtitleEditor({
                       <div className="flex gap-4 items-center">
                         <input
                           type="range"
-                          min="0.05"
+                          min="0"
                           max="0.5"
                           step="0.05"
                           value={localAnimationStyle.fadeOutDuration}
