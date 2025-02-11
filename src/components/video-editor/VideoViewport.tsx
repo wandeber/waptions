@@ -372,11 +372,6 @@ export function VideoViewport({
     return () => video.removeEventListener('progress', handleProgress);
   }, [videoUrl]);
 
-  // Encontrar los subtítulos activos para el tiempo actual
-  const activeSubtitles = subtitles.filter(
-    subtitle => currentTime >= subtitle.startTime && currentTime <= subtitle.endTime
-  );
-
   // Función para calcular las dimensiones del video en pantalla
   const calculateVideoDimensions = useCallback(() => {
     const video = videoRef.current;
@@ -608,10 +603,13 @@ export function VideoViewport({
             {/* Panel de información del video */}
             {showMetaInfo && (
               <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20">
-                <div>Dimensiones originales: {videoDimensions ? `${videoDimensions.width}x${videoDimensions.height}` : 'No disponible'}</div>
+                <div>Dimensiones originales: {videoRef.current ? `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'No disponible'}</div>
                 <div>FPS: {detectedFps || 'No detectado'}</div>
                 <div>Duración: {videoRef.current?.duration.toFixed(2)}s</div>
-                <div>Dimensiones en viewport: {videoRef.current?.videoWidth}x{videoRef.current?.videoHeight}</div>
+                <div>Dimensiones en viewport: {(() => {
+                  const rect = getVideoDisplayRect();
+                  return rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : 'No disponible';
+                })()}</div>
               </div>
             )}
 
