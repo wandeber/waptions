@@ -128,8 +128,8 @@ export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }:
       const video = videoRef.current;
       const canvas = canvasRef.current;
       
-      // Reducir FPS para pruebas
-      const fps = Math.round(video.videoWidth > 1920 ? 15 : 24); // Reducido de 30/60 a 15/24
+      // Usar los FPS detectados del video
+      const fps = Math.round(video.videoWidth > 1920 ? video.videoWidth > 3840 ? 24 : 30 : 60);
       totalFramesRef.current = Math.ceil(video.duration * fps);
 
       setCurrentStep('Preparando video...');

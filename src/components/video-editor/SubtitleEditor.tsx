@@ -6,7 +6,6 @@ import type { Subtitle } from './SubtitleTrack';
 interface SubtitleEditorProps {
   subtitles: Subtitle[];
   selectedSubtitleId?: string | null;
-  onSave?: (subtitle: Subtitle) => void;
   onSubtitleClick?: (subtitle: Subtitle) => void;
   onDelete?: (subtitleId: string) => void;
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
@@ -56,7 +55,6 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
 export function SubtitleEditor({ 
   subtitles, 
   selectedSubtitleId, 
-  onSave, 
   onSubtitleClick, 
   onDelete, 
   onSubtitlesChange, 
@@ -113,10 +111,13 @@ export function SubtitleEditor({
 
   const handleTextChange = (subtitle: Subtitle, newText: string) => {
     setEditingText(prev => ({...prev, [subtitle.id]: newText}));
-    onSave?.({
-      ...subtitle,
-      text: newText
-    });
+    
+    if (onSubtitlesChange) {
+      const updatedSubtitles = subtitles.map(s => 
+        s.id === subtitle.id ? { ...s, text: newText } : s
+      );
+      onSubtitlesChange(updatedSubtitles);
+    }
 
     // Ajustar altura después de cambiar el texto
     const textarea = textAreasRef.current[subtitle.id];
@@ -211,10 +212,7 @@ export function SubtitleEditor({
         }));
         
         // Guardar ambos subtítulos
-        onSave?.(updatedOriginal);
-        onSave?.(newSubtitle);
-        
-        // Seleccionar el nuevo subtítulo
+        onSubtitlesChange?.([...subtitles, newSubtitle]);
         onSubtitleClick?.(newSubtitle);
       } else {
         // Comportamiento normal para división en medio del texto
@@ -243,10 +241,7 @@ export function SubtitleEditor({
         }));
         
         // Guardar ambos subtítulos
-        onSave?.(updatedOriginal);
-        onSave?.(newSubtitle);
-        
-        // Seleccionar el nuevo subtítulo
+        onSubtitlesChange?.([...subtitles, newSubtitle]);
         onSubtitleClick?.(newSubtitle);
       }
 
@@ -261,8 +256,10 @@ export function SubtitleEditor({
       });
     } else if (e.key === 'Backspace') {
       const textarea = e.currentTarget;
-      // Solo proceder si estamos al inicio del texto
-      if (textarea.selectionStart !== 0 || textarea.selectionEnd !== 0) {
+      const currentText = editingText[subtitle.id] || '';
+      
+      // Si el texto no está vacío y no estamos al inicio, permitir el comportamiento normal
+      if (currentText.length > 0 && textarea.selectionStart !== 0) {
         return;
       }
 
@@ -275,9 +272,43 @@ export function SubtitleEditor({
 
       e.preventDefault();
       const previousSubtitle = sortedSubtitles[currentIndex - 1];
-      const currentText = editingText[subtitle.id] || '';
       const previousText = editingText[previousSubtitle.id] || '';
 
+      // Si el texto actual está vacío, simplemente borrar el subtítulo
+      if (!currentText) {
+        // Actualizar el subtítulo anterior para que llegue hasta el final del actual
+        const updatedPrevious: Subtitle = {
+          ...previousSubtitle,
+          endTime: subtitle.endTime
+        };
+
+        // Actualizar el estado local de edición
+        setEditingText(prev => {
+          const newState = { ...prev };
+          delete newState[subtitle.id];
+          return newState;
+        });
+
+        // Actualizar los subtítulos y eliminar el actual
+        const updatedSubtitles = subtitles
+          .filter(s => s.id !== subtitle.id)
+          .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
+        
+        onSubtitlesChange?.(updatedSubtitles);
+        onSubtitleClick?.(updatedPrevious);
+
+        // Mover el foco al textarea anterior y posicionar el cursor al final
+        requestAnimationFrame(() => {
+          const previousTextarea = textAreasRef.current[previousSubtitle.id];
+          if (previousTextarea) {
+            previousTextarea.focus();
+            previousTextarea.setSelectionRange(previousText.length, previousText.length);
+          }
+        });
+        return;
+      }
+
+      // Si hay texto, unir con el anterior
       // Unir los textos con un espacio, eliminando espacios extra
       const combinedText = `${previousText.trim()} ${currentText.trim()}`.trim();
 
@@ -298,10 +329,13 @@ export function SubtitleEditor({
         };
       });
 
-      // Guardar el subtítulo actualizado y eliminar el actual
-      onSave?.(updatedPrevious);
+      // Actualizar los subtítulos y eliminar el actual
+      const updatedSubtitles = subtitles
+        .filter(s => s.id !== subtitle.id)
+        .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
+      
+      onSubtitlesChange?.(updatedSubtitles);
       onSubtitleClick?.(updatedPrevious);
-      onDelete?.(subtitle.id);
 
       // Calcular la posición del cursor donde ocurre el join
       const joinPosition = previousText.length;

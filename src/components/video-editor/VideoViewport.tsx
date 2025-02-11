@@ -9,8 +9,6 @@ interface VideoViewportProps {
   currentTime?: number;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   isPlaying?: boolean;
-  fps?: number | null;
-  onFpsChange?: (fps: number) => void;
   subtitles?: Array<{
     id: string;
     startTime: number;
@@ -37,6 +35,7 @@ interface VideoViewportProps {
     punctuationChars: string;
     removeAccents: boolean;
   };
+  onAudioExtracted?: (audioUrl: string) => void;
 }
 
 export function VideoViewport({ 
@@ -45,8 +44,6 @@ export function VideoViewport({
   currentTime = 0,
   videoRef: externalVideoRef,
   isPlaying,
-  fps,
-  onFpsChange,
   subtitles = [],
   canvasRef: externalCanvasRef,
   onEnded,
@@ -67,7 +64,8 @@ export function VideoViewport({
     hidePunctuation: false,
     punctuationChars: '',
     removeAccents: false
-  }
+  },
+  onAudioExtracted
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
@@ -157,6 +155,42 @@ export function VideoViewport({
     }
   };
 
+  const extractAudio = async (file: File) => {
+    if (!isFFmpegLoaded || !ffmpeg) {
+      console.warn('FFmpeg no está cargado, no se puede extraer el audio');
+      return null;
+    }
+
+    try {
+      const buffer = await file.arrayBuffer();
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(buffer));
+      
+      // Extraer audio en formato WAV
+      await ffmpeg.exec([
+        '-i', 'input.mp4',
+        '-vn', // No video
+        '-acodec', 'pcm_s16le', // Formato PCM 16-bit
+        '-ar', '44100', // Sample rate
+        '-ac', '2', // Stereo
+        'output.wav'
+      ]);
+      
+      // Leer el archivo de audio
+      const audioData = await ffmpeg.readFile('output.wav');
+      const audioBlob = new Blob([audioData], { type: 'audio/wav' });
+      const audioUrl = URL.createObjectURL(audioBlob);
+      
+      // Limpiar archivos
+      await ffmpeg.deleteFile('input.mp4');
+      await ffmpeg.deleteFile('output.wav');
+      
+      return audioUrl;
+    } catch (error) {
+      console.error('Error al extraer el audio:', error);
+      return null;
+    }
+  };
+
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || isLoading) return;
@@ -168,6 +202,12 @@ export function VideoViewport({
       // Primero detectar metadata con FFmpeg
       const { fps: detectedFps, width, height } = await detectVideoMetadata(file);
       console.log('Metadata detectada:', { fps: detectedFps, width, height });
+      
+      // Extraer audio
+      const audioUrl = await extractAudio(file);
+      if (audioUrl) {
+        onAudioExtracted?.(audioUrl);
+      }
       
       // Luego crear la URL del video
       const url = URL.createObjectURL(file);
@@ -223,13 +263,6 @@ export function VideoViewport({
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-  };
-
-  const handleFpsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newFps = parseInt(e.target.value);
-    if (!isNaN(newFps) && newFps > 0) {
-      onFpsChange?.(newFps);
-    }
   };
 
   // Función para actualizar el tiempo usando requestAnimationFrame
@@ -673,19 +706,6 @@ export function VideoViewport({
                 })()}
               </div>
             </div>
-
-            {detectedFps && (
-              <div className="absolute bottom-2 right-2 flex items-center gap-2 bg-black/50 p-2 rounded">
-                <span className="text-xs text-gray-300">FPS:</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={fps || detectedFps}
-                  onChange={handleFpsChange}
-                  className="w-16 px-1 py-0.5 bg-gray-800 border border-gray-600 rounded text-xs text-white select-text"
-                />
-              </div>
-            )}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center gap-4 text-gray-500 p-8 text-center">

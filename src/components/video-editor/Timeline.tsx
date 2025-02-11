@@ -13,7 +13,7 @@ interface TimelineProps {
   selectedSubtitleId?: string | null;
   isPlaying?: boolean;
   onPlayPause?: () => void;
-  fps?: number;
+  fps: number;
   showThirdsGuide?: boolean;
   onThirdsGuideToggle?: () => void;
   showMetaInfo?: boolean;
@@ -30,7 +30,7 @@ export function Timeline({
   selectedSubtitleId,
   isPlaying = false,
   onPlayPause,
-  fps = 30,
+  fps,
   showThirdsGuide = false,
   onThirdsGuideToggle,
   showMetaInfo = false,
