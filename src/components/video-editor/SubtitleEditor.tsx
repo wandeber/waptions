@@ -547,19 +547,26 @@ export function SubtitleEditor({
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Grosor de fuente</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="400"
-                          max="900"
-                          step="100"
+                    <div className="flex items-center gap-4">
+                      <label className="text-sm text-gray-300 whitespace-nowrap">Grosor de fuente</label>
+                      <div className="relative flex-1">
+                        <select
                           value={localAnimationStyle.fontWeight}
                           onChange={(e) => handleStyleChange('fontWeight', parseInt(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontWeight}</div>
+                          className="w-full bg-gray-700 text-white rounded px-2 py-1.5 text-sm appearance-none"
+                        >
+                          <option value="400">Normal (400)</option>
+                          <option value="500">Medium (500)</option>
+                          <option value="600">Semi Bold (600)</option>
+                          <option value="700">Bold (700)</option>
+                          <option value="800">Extra Bold (800)</option>
+                          <option value="900">Black (900)</option>
+                        </select>
+                        <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </div>
                       </div>
                     </div>
 
