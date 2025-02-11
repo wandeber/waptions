@@ -295,13 +295,24 @@ export function Timeline({
             />
           </div>
 
-          {/* Línea del cabezal */}
-          <div 
-            className="absolute inset-0 w-0.5 bg-red-500 pointer-events-none z-10"
-            style={{ 
-              left: `${(currentFrame.start / duration) * 100}%`
-            }}
-          />
+          {/* Resaltado del frame actual y cabezal */}
+          <div className="absolute inset-0 pointer-events-none">
+            {/* Resaltado del frame */}
+            <div 
+              className="absolute inset-0 bg-white/10"
+              style={{
+                left: `${(currentFrame.start / duration) * 100}%`,
+                width: `${(currentFrame.width / duration) * 100}%`
+              }}
+            />
+            {/* Línea del cabezal */}
+            <div 
+              className="absolute inset-0 w-0.5 bg-red-500 z-10"
+              style={{ 
+                left: `${(currentFrame.start / duration) * 100}%`
+              }}
+            />
+          </div>
         </div>
       </div>
     </div>
