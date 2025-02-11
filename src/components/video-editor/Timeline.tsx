@@ -53,10 +53,11 @@ export function Timeline({
     const rect = timelineRef.current.getBoundingClientRect();
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, x / rect.width));
-    const exactTime = percentage * duration;
-    const frameCount = Math.floor(exactTime * fps) + 1;
-    // Convertimos a tiempo usando división entera y luego a decimal
-    return Number(((frameCount - 1) / fps).toFixed(3));
+    const totalFrames = Math.ceil(duration * fps);
+    // Calculamos el frame objetivo directamente
+    const targetFrame = Math.max(1, Math.min(Math.ceil(percentage * totalFrames), totalFrames));
+    // Convertimos a tiempo igual que en moveFrame
+    return Math.min((targetFrame - 1) / fps, duration);
   }, [duration, fps, localTime]);
 
   const getCurrentFrame = useCallback(() => {
