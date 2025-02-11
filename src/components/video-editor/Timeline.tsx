@@ -244,14 +244,16 @@ export function Timeline({
         <div className="flex gap-2 ml-auto">
           <button
             onClick={onThirdsGuideToggle}
-            className={`px-3 py-1 rounded text-sm transition-colors select-none ${
+            className={`p-1.5 rounded transition-colors select-none ${
               showThirdsGuide 
                 ? 'bg-blue-600 text-white hover:bg-blue-700' 
                 : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
             }`}
             title="Mostrar/ocultar guías de los tercios"
           >
-            Guías de tercios
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16M16 4v16M8 4v16" />
+            </svg>
           </button>
           <button
             onClick={onMetaInfoToggle}
