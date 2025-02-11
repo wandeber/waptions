@@ -51,7 +51,7 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
   fontWeight: 800,
   textCase: 'normal',
   hidePunctuation: false,
-  punctuationChars: '¿?:-,;¡!',
+  punctuationChars: '¿?:-,.;¡!',
   removeAccents: false
 };
 
@@ -679,7 +679,7 @@ export function SubtitleEditor({
                             placeholder="Caracteres a ocultar..."
                           />
                           <span className="text-xs text-gray-400">
-                            Caracteres por defecto: ¿?:-,;¡!
+                            Caracteres por defecto: ¿?:-,.;¡!
                           </span>
                         </div>
                       )}

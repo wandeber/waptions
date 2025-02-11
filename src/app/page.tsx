@@ -31,7 +31,7 @@ export default function Home() {
     fontWeight: 800,
     textCase: 'normal' as 'normal' | 'uppercase' | 'lowercase',
     hidePunctuation: false,
-    punctuationChars: '¿?:-,;¡!',
+    punctuationChars: '¿?:-,.;¡!',
     removeAccents: false
   });
   const videoRef = useRef<HTMLVideoElement>(null);
