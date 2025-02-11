@@ -4,7 +4,7 @@ globs:
 ---
 - **Scope Discipline** – Avoid modifying areas that are not related to the current work to prevent unintended issues.
 - **Knowledge Retention** – Document any useful insights in project-knowledge.md for future reference. You are free to structure it as you see fit.
-- **Pre-Task Review** – Before starting a new task, check [project-knowledge.md](/project-knowledge.md) to leverage existing information.
-- **Changelog Maintenance** – Always update [CHANGELOG.md](/CHANGELOG.md) after making changes. Summarize or merge previous entries if they become less relevant. If you need a more detailed history of changes, you can run `git log --oneline`.
-- **Code Quality Standards** – Ensure that no TypeScript or linting errors are left unresolved before pushing your changes.
+- **Pre-Task Review** – Always, before starting a new task, check [project-knowledge.md](mdc:project-knowledge.md) to leverage existing information.
+- **Changelog Maintenance** – Always update [CHANGELOG.md](mdc:CHANGELOG.md) after making changes. Summarize or merge previous entries if they become less relevant. If you need a more detailed history of changes, you can run `git log --oneline`.
+- **Code Quality Standards** – Always ensure that no TypeScript or linting errors are left unresolved before pushing your changes.
 - **Versioning** – Increment the patch version when necessary, based on the accumulated changes in the changelog.
