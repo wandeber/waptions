@@ -255,14 +255,16 @@ export function Timeline({
           </button>
           <button
             onClick={onMetaInfoToggle}
-            className={`px-3 py-1 rounded text-sm transition-colors select-none ${
+            className={`p-1.5 rounded transition-colors select-none ${
               showMetaInfo 
                 ? 'bg-blue-600 text-white hover:bg-blue-700' 
-                : 'bg-gray-900 text-gray-300 hover:bg-gray-800'
+                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
             }`}
             title="Mostrar/ocultar información del vídeo"
           >
-            Meta Info
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
           </button>
         </div>
       </div>
