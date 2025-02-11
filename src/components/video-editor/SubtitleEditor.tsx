@@ -524,6 +524,14 @@ export function SubtitleEditor({
                 {!collapsedSections.textStyle && (
                   <div className="flex flex-col gap-6 mt-4">
                     <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Fuente</label>
+                      <FontSelector
+                        value={localAnimationStyle.fontFamily}
+                        onChange={(font) => handleStyleChange('fontFamily', font)}
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-2">
                       <label className="text-sm text-gray-300">Tamaño de fuente</label>
                       <div className="flex gap-4 items-center">
                         <input
@@ -537,14 +545,6 @@ export function SubtitleEditor({
                         />
                         <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontSize}px</div>
                       </div>
-                    </div>
-
-                    <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Fuente</label>
-                      <FontSelector
-                        value={localAnimationStyle.fontFamily}
-                        onChange={(font) => handleStyleChange('fontFamily', font)}
-                      />
                     </div>
 
                     <div className="flex flex-col gap-2">
