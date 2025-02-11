@@ -75,8 +75,14 @@ export function Timeline({
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, x / rect.width));
     const exactTime = percentage * duration;
-    const frameCount = Math.round(exactTime * fps);
-    return Number(((frameCount - 1) / fps).toFixed(3));
+    const totalFrames = Math.ceil(duration * fps);
+    
+    // Usamos Math.ceil en lugar de Math.round para asegurarnos de llegar al último frame
+    const frameCount = Math.ceil(exactTime * fps);
+    // Aseguramos que el frame esté entre 1 y el total de frames
+    const adjustedFrame = Math.max(1, Math.min(frameCount, totalFrames));
+    // Restamos 1 al frame para mantener la consistencia con getCurrentFrame
+    return Number(((adjustedFrame - 1) / fps).toFixed(3));
   }, [duration, fps, localTime]);
 
   const formatTime = (seconds: number) => {
