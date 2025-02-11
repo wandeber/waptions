@@ -214,21 +214,39 @@ export function Timeline({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-4">
-        <button
-          className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
-          onClick={onPlayPause}
-          title={isPlaying ? "Pausar" : "Reproducir"}
-        >
-          {isPlaying ? (
+        <div className="flex gap-2">
+          <button
+            className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+            onClick={() => {
+              if (isPlaying) {
+                onPlayPause?.();
+              }
+            }}
+            title="Detener"
+          >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 4h4v16H6zM14 4h4v16h-4z" />
+              <rect x="6" y="6" width="12" height="12" strokeWidth={2} />
             </svg>
-          ) : (
+          </button>
+
+          <button
+            className={`p-1.5 ${
+              isPlaying 
+                ? 'bg-red-700 hover:bg-red-600' 
+                : 'bg-gray-700 hover:bg-gray-600'
+            } text-gray-300 rounded transition-colors select-none`}
+            onClick={() => {
+              if (!isPlaying) {
+                onPlayPause?.();
+              }
+            }}
+            title="Reproducir"
+          >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5v14l11-7z" />
             </svg>
-          )}
-        </button>
+          </button>
+        </div>
 
         <div className="text-sm text-gray-300 select-none">
           {formatTime(localTime)} / {formatTime(duration)}
