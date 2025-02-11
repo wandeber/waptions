@@ -95,13 +95,13 @@ export function Timeline({
       markers.push(
         <div
           key={`second-${second}`}
-          className="absolute border-l border-gray-400"
+          className="absolute border-l border-gray-500"
           style={{
             left: `${(second / duration) * 100}%`,
             height: '32px'
           }}
         >
-          <span className="absolute bottom-0 left-2 text-xs text-gray-400 select-none">
+          <span className="absolute bottom-0 left-1 text-xs text-gray-300 select-none">
             {second}s
           </span>
         </div>
@@ -258,7 +258,7 @@ export function Timeline({
             className={`px-3 py-1 rounded text-sm transition-colors select-none ${
               showMetaInfo 
                 ? 'bg-blue-600 text-white hover:bg-blue-700' 
-                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                : 'bg-gray-900 text-gray-300 hover:bg-gray-800'
             }`}
             title="Mostrar/ocultar información del vídeo"
           >
@@ -267,7 +267,7 @@ export function Timeline({
         </div>
       </div>
 
-      <div className="h-[88px] bg-gray-800 rounded-b-lg overflow-hidden">
+      <div className="h-[88px] bg-gray-900 rounded-b-lg overflow-hidden">
         <div 
           ref={timelineRef}
           className="w-full h-full relative timeline-track"
