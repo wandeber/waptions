@@ -249,7 +249,7 @@ export function Timeline({
         </div>
 
         <div className="text-sm text-gray-300 select-none">
-          {formatTime(localTime)} / {formatTime(duration)}
+          {formatTime(localTime)} / {formatTime(duration)} ({currentFrame.current} / {Math.floor(duration * fps)})
         </div>
 
         <div className="flex gap-2 ml-auto">
