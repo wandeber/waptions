@@ -40,26 +40,6 @@ export function Timeline({
   const [localTime, setLocalTime] = useState(currentTime);
   const [isSeeking, setIsSeeking] = useState(false);
 
-  useEffect(() => {
-    // Solo sincronizamos si no estamos buscando y la diferencia es significativa
-    if (!isSeeking && Math.abs(currentTime - localTime) > 0.01) {
-      setLocalTime(currentTime);
-    }
-  }, [currentTime, isSeeking, localTime]);
-
-  const getTimeFromClick = useCallback((clientX: number): number => {
-    if (!timelineRef.current) return localTime;
-    
-    const rect = timelineRef.current.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const percentage = Math.max(0, Math.min(1, x / rect.width));
-    const totalFrames = Math.ceil(duration * fps);
-    // Calculamos el frame objetivo directamente
-    const targetFrame = Math.max(1, Math.min(Math.ceil(percentage * totalFrames), totalFrames));
-    // Convertimos a tiempo igual que en moveFrame
-    return Math.min((targetFrame - 1) / fps, duration);
-  }, [duration, fps, localTime]);
-
   const getCurrentFrame = useCallback(() => {
     const totalFrames = Math.ceil(duration * fps);
     const frameCount = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
@@ -74,6 +54,34 @@ export function Timeline({
       total: totalFrames
     };
   }, [localTime, fps, duration]);
+
+  useEffect(() => {
+    // Solo sincronizamos si no estamos buscando y la diferencia es significativa
+    if (!isSeeking && Math.abs(currentTime - localTime) > 0.1) {
+      const { total: totalFrames } = getCurrentFrame();
+      const frameFromCurrent = Math.min(Math.floor(currentTime * fps) + 1, totalFrames);
+      const frameFromLocal = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
+      
+      // Solo actualizamos si hay diferencia de frames y no estamos en frames adyacentes
+      if (Math.abs(frameFromCurrent - frameFromLocal) > 1) {
+        const newTime = Math.min((frameFromCurrent - 1) / fps, duration);
+        setLocalTime(newTime);
+      }
+    }
+  }, [currentTime, fps, isSeeking, localTime, duration, getCurrentFrame]);
+
+  const getTimeFromClick = useCallback((clientX: number): number => {
+    if (!timelineRef.current) return localTime;
+    
+    const rect = timelineRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const percentage = Math.max(0, Math.min(1, x / rect.width));
+    const totalFrames = Math.ceil(duration * fps);
+    // Calculamos el frame objetivo directamente
+    const targetFrame = Math.max(1, Math.min(Math.ceil(percentage * totalFrames), totalFrames));
+    // Convertimos a tiempo igual que en moveFrame
+    return Math.min((targetFrame - 1) / fps, duration);
+  }, [duration, fps, localTime]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -182,21 +190,6 @@ export function Timeline({
     setLocalTime(newTime);
     onTimeUpdate(newTime);
   }, [fps, duration, getCurrentFrame, onTimeUpdate]);
-
-  // Efecto para sincronizar el tiempo local con el tiempo del video
-  useEffect(() => {
-    if (!isSeeking) {
-      const { total: totalFrames } = getCurrentFrame();
-      const frameFromCurrent = Math.min(Math.floor(currentTime * fps) + 1, totalFrames);
-      const frameFromLocal = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
-      
-      // Solo actualizamos si hay diferencia de frames
-      if (frameFromCurrent !== frameFromLocal) {
-        const newTime = Math.min((frameFromCurrent - 1) / fps, duration);
-        setLocalTime(newTime);
-      }
-    }
-  }, [currentTime, fps, isSeeking, localTime, duration, getCurrentFrame]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
