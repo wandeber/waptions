@@ -19,6 +19,7 @@ interface SubtitleTrackProps {
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
   selectedSubtitleId?: string | null;
   fps: number;
+  onTimeUpdate?: (time: number) => void;
 }
 
 export function SubtitleTrack({ 
@@ -28,7 +29,8 @@ export function SubtitleTrack({
   subtitles,
   onSubtitlesChange,
   selectedSubtitleId,
-  fps
+  fps,
+  onTimeUpdate
 }: SubtitleTrackProps) {
   const [dragMode, setDragMode] = useState<DragMode>(null);
   const [dragStartTime, setDragStartTime] = useState<number>(0);
@@ -73,28 +75,33 @@ export function SubtitleTrack({
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragMode || !draggedSubtitle || !onSubtitlesChange || !trackRef.current) return;
 
-    const currentTime = getTimeFromX(e.clientX - trackRef.current.getBoundingClientRect().left);
-    const timeDiff = currentTime - dragStartTime;
+    const rect = trackRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const newTime = getTimeFromX(x);
+    
+    // El cabezal siempre lidera el movimiento
+    onTimeUpdate?.(newTime);
     
     const updatedSubtitle = { ...draggedSubtitle };
     let shouldUpdate = false;
     
     switch (dragMode) {
       case 'move': {
-        const duration = draggedSubtitle.endTime - draggedSubtitle.startTime;
+        const subtitleDuration = draggedSubtitle.endTime - draggedSubtitle.startTime;
+        const timeDiff = newTime - dragStartTime;
         const newStartFrame = Math.round((draggedSubtitle.startTime + timeDiff) * fps);
         const newStartTime = Number((newStartFrame / fps).toFixed(3));
         
         // Asegurarnos de que no se salga de los límites
         if (newStartTime >= 0) {
           updatedSubtitle.startTime = newStartTime;
-          updatedSubtitle.endTime = Number((newStartTime + duration).toFixed(3));
+          updatedSubtitle.endTime = Number((newStartTime + subtitleDuration).toFixed(3));
           shouldUpdate = true;
         }
         break;
       }
       case 'resize-start': {
-        const newStartFrame = Math.round(currentTime * fps);
+        const newStartFrame = Math.round(newTime * fps);
         const endFrame = Math.round(draggedSubtitle.endTime * fps);
         
         // Asegurar un mínimo de 1 frame entre inicio y fin
@@ -106,7 +113,8 @@ export function SubtitleTrack({
       }
       case 'resize-end': {
         const startFrame = Math.round(draggedSubtitle.startTime * fps);
-        const newEndFrame = Math.round(currentTime * fps);
+        // Para el final del subtítulo, usamos el frame siguiente al del cabezal
+        const newEndFrame = Math.round(newTime * fps) + 1;
         
         // Asegurar un mínimo de 1 frame entre inicio y fin
         if (newEndFrame > startFrame + 1) {
@@ -129,7 +137,7 @@ export function SubtitleTrack({
         );
       }
     }
-  }, [dragMode, draggedSubtitle, dragStartTime, onSubtitlesChange, subtitles, getTimeFromX, fps]);
+  }, [dragMode, draggedSubtitle, dragStartTime, onSubtitlesChange, subtitles, getTimeFromX, fps, onTimeUpdate]);
 
   const handleMouseUp = () => {
     setDragMode(null);

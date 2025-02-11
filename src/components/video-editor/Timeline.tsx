@@ -42,15 +42,13 @@ export function Timeline({
 
   const getCurrentFrame = useCallback(() => {
     const totalFrames = Math.ceil(duration * fps);
-    const frameCount = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
-    const frameStart = ((frameCount - 1) / fps);
-    const frameEnd = Math.min(frameCount / fps, duration);
+    const frameCount = Math.round(localTime * fps) + 1;
+    const adjustedFrameCount = Math.min(frameCount, totalFrames);
+    const frameStart = ((adjustedFrameCount - 1) / fps);
 
     return {
       start: frameStart,
-      end: frameEnd,
-      width: frameEnd - frameStart,
-      current: frameCount,
+      current: adjustedFrameCount,
       total: totalFrames
     };
   }, [localTime, fps, duration]);
@@ -76,11 +74,9 @@ export function Timeline({
     const rect = timelineRef.current.getBoundingClientRect();
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, x / rect.width));
-    const totalFrames = Math.ceil(duration * fps);
-    // Calculamos el frame objetivo directamente
-    const targetFrame = Math.max(1, Math.min(Math.ceil(percentage * totalFrames), totalFrames));
-    // Convertimos a tiempo igual que en moveFrame
-    return Math.min((targetFrame - 1) / fps, duration);
+    const exactTime = percentage * duration;
+    const frameCount = Math.round(exactTime * fps);
+    return Number(((frameCount - 1) / fps).toFixed(3));
   }, [duration, fps, localTime]);
 
   const formatTime = (seconds: number) => {
@@ -292,6 +288,10 @@ export function Timeline({
               onSubtitlesChange={onSubtitlesChange}
               selectedSubtitleId={selectedSubtitleId}
               fps={fps}
+              onTimeUpdate={(time) => {
+                setLocalTime(time);
+                onTimeUpdate?.(time);
+              }}
             />
           </div>
 
@@ -302,7 +302,7 @@ export function Timeline({
               className="absolute inset-0 bg-white/10"
               style={{
                 left: `${(currentFrame.start / duration) * 100}%`,
-                width: `${(currentFrame.width / duration) * 100}%`
+                width: `${(1 / fps / duration) * 100}%`
               }}
             />
             {/* Línea del cabezal */}
