@@ -161,33 +161,17 @@ export function SubtitleTrack({
   return (
     <div 
       ref={trackRef}
-      className="absolute top-9 left-0 w-full h-12 bg-gray-800"
+      className="absolute inset-0 bg-gray-800"
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Resaltado del frame actual */}
-      <div 
-        className="absolute top-0 bottom-0 bg-white/10 pointer-events-none border-l border-r border-white/20"
-        style={{
-          left: `${(currentTime / duration) * 100}%`,
-          width: `${(1 / fps / duration) * 100}%`
-        }}
-      />
-      {/* Indicador de tiempo actual */}
-      <div 
-        className="absolute top-0 bottom-0 w-px bg-red-500 z-10"
-        style={{
-          left: `${(currentTime / duration) * 100}%`,
-          pointerEvents: 'none'
-        }}
-      />
       {subtitles.map(subtitle => {
         const isSelected = subtitle.id === selectedSubtitleId;
         return (
           <div
             key={subtitle.id}
-            className={`absolute top-1 bottom-1 bg-blue-600 opacity-75 rounded group
+            className={`absolute top-[15%] bottom-[15%] bg-blue-600 opacity-75 rounded group
               hover:opacity-90 transition-opacity flex items-center overflow-hidden`}
             style={{
               left: `${(subtitle.startTime / duration) * 100}%`,

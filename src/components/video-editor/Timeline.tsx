@@ -54,25 +54,25 @@ export function Timeline({
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, x / rect.width));
     const exactTime = percentage * duration;
-    const frameCount = Math.round(exactTime * fps);
+    const frameCount = Math.floor(exactTime * fps) + 1;
     // Convertimos a tiempo usando división entera y luego a decimal
-    return Number((frameCount / fps).toFixed(3));
+    return Number(((frameCount - 1) / fps).toFixed(3));
   }, [duration, fps, localTime]);
 
   const getCurrentFrame = useCallback(() => {
-    // Asegurarnos de que trabajamos con frames enteros
-    const frameCount = Math.round(localTime * fps);
-    const frameStart = Number((frameCount / fps).toFixed(3));
-    const frameEnd = Number(((frameCount + 1) / fps).toFixed(3));
-    const frameWidth = frameEnd - frameStart;
+    const totalFrames = Math.ceil(duration * fps);
+    const frameCount = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
+    const frameStart = ((frameCount - 1) / fps);
+    const frameEnd = Math.min(frameCount / fps, duration);
 
     return {
       start: frameStart,
       end: frameEnd,
-      width: frameWidth,
-      current: frameCount
+      width: frameEnd - frameStart,
+      current: frameCount,
+      total: totalFrames
     };
-  }, [localTime, fps]);
+  }, [localTime, fps, duration]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -83,7 +83,7 @@ export function Timeline({
 
   const getTimeMarkers = useCallback(() => {
     const markers = [];
-    const totalFrames = Math.floor(duration * fps);
+    const { total: totalFrames } = getCurrentFrame();
     
     // Marcadores de segundos
     for (let second = 0; second <= duration; second++) {
@@ -104,8 +104,8 @@ export function Timeline({
     }
 
     // Marcadores de frames (sin números)
-    for (let frame = 0; frame <= totalFrames; frame++) {
-      const time = frame / fps;
+    for (let frame = 1; frame <= totalFrames; frame++) {
+      const time = (frame - 1) / fps;
       if (Math.floor(time) === time) continue;
       markers.push(
         <div
@@ -120,7 +120,7 @@ export function Timeline({
     }
 
     return markers;
-  }, [duration, fps]);
+  }, [duration, fps, getCurrentFrame]);
 
   const currentFrame = getCurrentFrame();
 
@@ -164,39 +164,38 @@ export function Timeline({
   const moveFrame = useCallback((direction: 'next' | 'prev') => {
     if (!onTimeUpdate) return;
 
-    const currentFrame = getCurrentFrame();
-    const totalFrames = Math.floor(duration * fps);
+    const { current: currentFrameNumber, total: totalFrames } = getCurrentFrame();
     
     let newFrame;
-    if (direction === 'next' && currentFrame.current < totalFrames - 1) {
-      newFrame = currentFrame.current + 1;
-    } else if (direction === 'prev' && currentFrame.current > 0) {
-      newFrame = currentFrame.current - 1;
+    if (direction === 'next' && currentFrameNumber < totalFrames) {
+      newFrame = currentFrameNumber + 1;
+    } else if (direction === 'prev' && currentFrameNumber > 1) {
+      newFrame = currentFrameNumber - 1;
     } else {
-      console.log(`No se puede mover ${direction}. Frame actual: ${currentFrame.current}, Total frames: ${totalFrames}`);
+      console.log(`No se puede mover ${direction}. Frame actual: ${currentFrameNumber}, Total frames: ${totalFrames}`);
       return;
     }
 
-    // Convertimos el frame a tiempo usando división entera y luego a decimal
-    const newTime = Number((newFrame / fps).toFixed(3));
-    console.log(`Frame ${currentFrame.current} -> ${newFrame} (${newTime}s)`);
-    
+    const newTime = Math.min((newFrame - 1) / fps, duration);
+    console.log(`Frame ${currentFrameNumber} -> ${newFrame} (${newTime}s)`);
     setLocalTime(newTime);
     onTimeUpdate(newTime);
-  }, [fps, getCurrentFrame, duration, onTimeUpdate]);
+  }, [fps, duration, getCurrentFrame, onTimeUpdate]);
 
   // Efecto para sincronizar el tiempo local con el tiempo del video
   useEffect(() => {
     if (!isSeeking) {
-      const frameFromCurrent = Math.round(currentTime * fps);
-      const frameFromLocal = Math.round(localTime * fps);
+      const { total: totalFrames } = getCurrentFrame();
+      const frameFromCurrent = Math.min(Math.floor(currentTime * fps) + 1, totalFrames);
+      const frameFromLocal = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
       
       // Solo actualizamos si hay diferencia de frames
       if (frameFromCurrent !== frameFromLocal) {
-        setLocalTime(Number((frameFromCurrent / fps).toFixed(3)));
+        const newTime = Math.min((frameFromCurrent - 1) / fps, duration);
+        setLocalTime(newTime);
       }
     }
-  }, [currentTime, fps, isSeeking, localTime]);
+  }, [currentTime, fps, isSeeking, localTime, duration, getCurrentFrame]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -249,7 +248,7 @@ export function Timeline({
         </div>
 
         <div className="text-sm text-gray-300 select-none">
-          {formatTime(localTime)} / {formatTime(duration)} ({currentFrame.current} / {Math.floor(duration * fps)})
+          {formatTime(localTime)} / {formatTime(duration)} ({currentFrame.current} / {currentFrame.total})
         </div>
 
         <div className="flex gap-2 ml-auto">
@@ -284,26 +283,13 @@ export function Timeline({
           className="w-full h-full relative timeline-track"
           onMouseDown={handleMouseDownLocal}
         >
+          {/* Regla de tiempo */}
           <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 timeline-markers">
-            <div className="absolute top-0 left-0 w-full h-full overflow-hidden timeline-markers">
-              {getTimeMarkers()}
-            </div>
+            {getTimeMarkers()}
           </div>
-          
-          <div 
-            className="absolute top-0 bottom-0 bg-white/10 pointer-events-none border-l border-r border-white/20"
-            style={{
-              left: `${(currentFrame.start / duration) * 100}%`,
-              width: `${(currentFrame.width / duration) * 100}%`
-            }}
-          />
 
-          <div 
-            className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 pointer-events-none"
-            style={{ left: `${(currentFrame.start / duration) * 100}%` }}
-          />
-
-          <div className="absolute top-0 left-0 w-full h-full">
+          {/* Track de subtítulos */}
+          <div className="absolute top-8 left-0 right-0 bottom-0">
             <SubtitleTrack
               duration={duration}
               currentTime={localTime}
@@ -314,6 +300,14 @@ export function Timeline({
               fps={fps}
             />
           </div>
+
+          {/* Línea del cabezal */}
+          <div 
+            className="absolute inset-0 w-0.5 bg-red-500 pointer-events-none z-10"
+            style={{ 
+              left: `${(currentFrame.start / duration) * 100}%`
+            }}
+          />
         </div>
       </div>
     </div>
