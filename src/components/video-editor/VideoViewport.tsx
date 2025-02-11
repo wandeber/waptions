@@ -4,7 +4,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 
 interface VideoViewportProps {
-  onVideoLoad?: (duration: number, fps: number) => void;
+  onVideoLoad?: (duration: number, fps: number | null) => void;
   onTimeUpdate?: (currentTime: number) => void;
   currentTime?: number;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
@@ -120,28 +120,47 @@ export function VideoViewport({
     }
   }, []);
 
-  const detectVideoMetadata = async (file: File): Promise<{ fps: number; width: number; height: number }> => {
+  const detectVideoMetadata = async (file: File): Promise<{ fps: number | null; width: number; height: number }> => {
     if (!isFFmpegLoaded || !ffmpeg) {
       console.warn('FFmpeg no está cargado, usando valores por defecto');
-      return { fps: 30, width: 1920, height: 1080 };
+      return { fps: null, width: 1920, height: 1080 };
     }
 
     try {
       const buffer = await file.arrayBuffer();
       await ffmpeg.writeFile('input.mp4', new Uint8Array(buffer));
       
-      const result = await ffmpeg.exec(['-i', 'input.mp4']);
-      const stderr = result.toString();
-      console.log('FFmpeg stderr completo:', stderr);
+      // Configurar el logger para capturar stderr
+      let stderr = '';
+      ffmpeg.on('log', ({ message }) => {
+        stderr += message + '\n';
+      });
       
-      // Buscar FPS
-      const fpsMatch = stderr.match(/(\d+(?:\.\d+)?) fps/);
-      const fps = fpsMatch ? Math.round(parseFloat(fpsMatch[1])) : 30;
+      await ffmpeg.exec(['-i', 'input.mp4']);
       
-      // Buscar dimensiones con una expresión regular más específica
-      // Buscamos patrones como: "1920x1080" o "Stream #0:0: Video: h264, yuv420p, 1080x1920"
+      // Log detallado de la metadata
+      console.log('=== INICIO METADATA COMPLETA ===');
+      console.log(stderr);
+      console.log('=== FIN METADATA COMPLETA ===');
+      
+      // Buscar la línea que contiene la info del stream de video
+      const videoStreamLine = stderr.split('\n').find(line => line.includes('Stream') && line.includes('Video'));
+      console.log('Línea del stream de video:', videoStreamLine);
+      
+      // Buscar FPS en la información del stream de video (fps o tbr)
+      const fpsMatch = stderr.match(/Video:.*?,\s*(\d+(?:\.\d+)?)\s*(?:fps|tbr)/);
+      console.log('Match de FPS:', fpsMatch);
+      const fps = fpsMatch ? parseFloat(fpsMatch[1]) : null;
+      console.log('FPS detectados:', fps);
+      
+      if (!fps) {
+        console.warn('No se pudieron detectar los FPS del video');
+        return { fps: null, width: 1920, height: 1080 };
+      }
+      
+      // Buscar dimensiones
       const dimensionsMatch = stderr.match(/Video:.*?(\d+)x(\d+)/);
-      console.log('Match de dimensiones:', dimensionsMatch);
+      console.log('Dimensiones detectadas:', dimensionsMatch);
       
       const width = dimensionsMatch ? parseInt(dimensionsMatch[1]) : 1920;
       const height = dimensionsMatch ? parseInt(dimensionsMatch[2]) : 1080;
@@ -151,7 +170,7 @@ export function VideoViewport({
       return { fps, width, height };
     } catch (error) {
       console.error('Error al detectar metadatos del video:', error);
-      return { fps: 30, width: 1920, height: 1080 };
+      return { fps: null, width: 1920, height: 1080 };
     }
   };
 
@@ -224,7 +243,8 @@ export function VideoViewport({
             console.log('Video cargado:', {
               duration: videoRef.current?.duration,
               width: videoRef.current?.videoWidth,
-              height: videoRef.current?.videoHeight
+              height: videoRef.current?.videoHeight,
+              detectedFps
             });
             
             if (videoRef.current) {
@@ -232,7 +252,8 @@ export function VideoViewport({
                 width: videoRef.current.videoWidth,
                 height: videoRef.current.videoHeight
               });
-              onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
+              // Asegurarnos de usar los FPS detectados por FFmpeg
+              onVideoLoad?.(videoRef.current.duration, detectedFps ?? 24);
             }
             resolve(null);
           };
@@ -604,7 +625,7 @@ export function VideoViewport({
             {showMetaInfo && (
               <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20">
                 <div>Dimensiones originales: {videoRef.current ? `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'No disponible'}</div>
-                <div>FPS: {detectedFps || 'No detectado'}</div>
+                <div>FPS: {detectedFps !== null ? detectedFps.toFixed(3) : 'No detectado'}</div>
                 <div>Duración: {videoRef.current?.duration.toFixed(2)}s</div>
                 <div>Dimensiones en viewport: {(() => {
                   const rect = getVideoDisplayRect();
@@ -628,15 +649,42 @@ export function VideoViewport({
                       console.log('Video metadata loaded:', {
                         duration: videoRef.current?.duration,
                         width: videoRef.current?.videoWidth,
-                        height: videoRef.current?.videoHeight
+                        height: videoRef.current?.videoHeight,
+                        detectedFps
                       });
+
+                      // Intentar obtener FPS nativos del video
+                      if ('getVideoPlaybackQuality' in videoRef.current) {
+                        const video = videoRef.current as HTMLVideoElement & {
+                          getVideoPlaybackQuality: () => {
+                            totalVideoFrames: number;
+                            droppedVideoFrames: number;
+                            creationTime: number;
+                            totalFrameDelay: number;
+                          };
+                        };
+                        
+                        const quality = video.getVideoPlaybackQuality();
+                        console.log('Video playback quality:', quality);
+                        
+                        // Si tenemos frames totales y duración, podemos calcular FPS
+                        if (quality.totalVideoFrames > 0 && video.duration > 0) {
+                          const calculatedFps = quality.totalVideoFrames / video.duration;
+                          console.log('FPS calculados desde metadata:', calculatedFps);
+                          if (Math.abs(calculatedFps - 24) < 1) {
+                            setDetectedFps(24);
+                          }
+                        }
+                      }
+
                       if (videoRef.current) {
                         setVideoDimensions({
                           width: videoRef.current.videoWidth,
                           height: videoRef.current.videoHeight
                         });
+                        // Usar los FPS detectados sin fallback a 24
+                        onVideoLoad?.(videoRef.current.duration, detectedFps ?? 24);
                       }
-                      onVideoLoad?.(videoRef.current.duration, detectedFps || 30);
                     }
                   }}
                   onCanPlayThrough={() => {
