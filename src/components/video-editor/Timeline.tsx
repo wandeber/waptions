@@ -2,6 +2,10 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { SubtitleTrack, type Subtitle } from './SubtitleTrack';
+import { StopIcon } from '../icons/StopIcon';
+import { PlayIcon } from '../icons/PlayIcon';
+import { GridIcon } from '../icons/GridIcon';
+import { InfoIcon } from '../icons/InfoIcon';
 
 interface TimelineProps {
   duration: number;
@@ -219,9 +223,7 @@ export function Timeline({
             }}
             title="Detener"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <rect x="6" y="6" width="12" height="12" strokeWidth={2} />
-            </svg>
+            <StopIcon />
           </button>
 
           <button
@@ -237,9 +239,7 @@ export function Timeline({
             }}
             title="Reproducir"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5v14l11-7z" />
-            </svg>
+            <PlayIcon />
           </button>
         </div>
 
@@ -257,9 +257,7 @@ export function Timeline({
             }`}
             title="Mostrar/ocultar guías de los tercios"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16M16 4v16M8 4v16" />
-            </svg>
+            <GridIcon />
           </button>
           <button
             onClick={onMetaInfoToggle}
@@ -270,9 +268,7 @@ export function Timeline({
             }`}
             title="Mostrar/ocultar información del vídeo"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+            <InfoIcon />
           </button>
         </div>
       </div>

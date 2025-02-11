@@ -3,6 +3,10 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Subtitle } from './SubtitleTrack';
 import { FontSelector } from './FontSelector';
+import { MagicMicIcon } from '../icons/MagicMicIcon';
+import { PlusIcon } from '../icons/PlusIcon';
+import { CloseIcon } from '../icons/CloseIcon';
+import { ChevronDownIcon } from '../icons/ChevronDownIcon';
 
 interface SubtitleEditorProps {
   subtitles: Subtitle[];
@@ -440,15 +444,7 @@ export function SubtitleEditor({
                     disabled={isGeneratingSubtitles}
                     title="Generar subtítulos automáticamente con IA"
                   >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      {/* Destello de "magia" - estrella cuadrada con todos los bordes cóncavos */}
-                      <path stroke="currentColor" fill="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={0.5} 
-                        d="M19 1 Q20.5 4 22 4 Q19.5 4 19 7 Q18.5 4 16 4 Q18.5 4 19 1" />
-                      {/* Micrófono más pequeño y centrado */}
-                      <g transform="translate(0,2) scale(0.85)">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                      </g>
-                    </svg>
+                    <MagicMicIcon />
                   </button>
                   <button
                     className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
@@ -470,9 +466,7 @@ export function SubtitleEditor({
                     }}
                     title="Añadir subtítulo"
                   >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
+                    <PlusIcon />
                   </button>
                 </div>
               </div>
@@ -503,9 +497,7 @@ export function SubtitleEditor({
                           }}
                           title="Eliminar subtítulo"
                         >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
+                          <CloseIcon />
                         </button>
                       </div>
                       
@@ -539,14 +531,11 @@ export function SubtitleEditor({
                   className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
                 >
                   <span>Estilo del texto</span>
-                  <svg 
-                    className={`w-5 h-5 transition-transform ${collapsedSections.textStyle ? '-rotate-90' : ''}`}
-                    fill="none" 
-                    viewBox="0 0 24 24" 
-                    stroke="currentColor"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <ChevronDownIcon 
+                    className={`w-5 h-5 transition-transform ${
+                      collapsedSections.textStyle ? '-rotate-90' : ''
+                    }`}
+                  />
                 </button>
                 {!collapsedSections.textStyle && (
                   <div className="flex flex-col gap-6 mt-4">
@@ -590,9 +579,7 @@ export function SubtitleEditor({
                           <option value="900">Black (900)</option>
                         </select>
                         <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
+                          <ChevronDownIcon />
                         </div>
                       </div>
                     </div>
@@ -732,14 +719,11 @@ export function SubtitleEditor({
                   className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
                 >
                   <span>Fondo</span>
-                  <svg 
-                    className={`w-5 h-5 transition-transform ${collapsedSections.background ? '-rotate-90' : ''}`}
-                    fill="none" 
-                    viewBox="0 0 24 24" 
-                    stroke="currentColor"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <ChevronDownIcon 
+                    className={`w-5 h-5 transition-transform ${
+                      collapsedSections.background ? '-rotate-90' : ''
+                    }`}
+                  />
                 </button>
                 {!collapsedSections.background && (
                   <div className="flex flex-col gap-6 mt-4">
@@ -912,14 +896,11 @@ export function SubtitleEditor({
                   className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
                 >
                   <span>Animación de entrada</span>
-                  <svg 
-                    className={`w-5 h-5 transition-transform ${collapsedSections.entryAnimation ? '-rotate-90' : ''}`}
-                    fill="none" 
-                    viewBox="0 0 24 24" 
-                    stroke="currentColor"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <ChevronDownIcon 
+                    className={`w-5 h-5 transition-transform ${
+                      collapsedSections.entryAnimation ? '-rotate-90' : ''
+                    }`}
+                  />
                 </button>
                 {!collapsedSections.entryAnimation && (
                   <div className="flex flex-col gap-6 mt-4">
@@ -991,14 +972,11 @@ export function SubtitleEditor({
                   className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
                 >
                   <span>Animación de salida</span>
-                  <svg 
-                    className={`w-5 h-5 transition-transform ${collapsedSections.exitAnimation ? '-rotate-90' : ''}`}
-                    fill="none" 
-                    viewBox="0 0 24 24" 
-                    stroke="currentColor"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <ChevronDownIcon 
+                    className={`w-5 h-5 transition-transform ${
+                      collapsedSections.exitAnimation ? '-rotate-90' : ''
+                    }`}
+                  />
                 </button>
                 {!collapsedSections.exitAnimation && (
                   <div className="flex flex-col gap-6 mt-4">
