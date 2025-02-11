@@ -35,6 +35,15 @@ interface VideoViewportProps {
     punctuationChars: string;
     removeAccents: boolean;
     fontFamily: string;
+    backgroundColor: string;
+    backgroundOpacity: number;
+    backgroundBorderColor: string;
+    backgroundBorderWidth: number;
+    backgroundMarginVertical: number;
+    backgroundMarginHorizontal: number;
+    backgroundBorderRadius: number;
+    backgroundOffsetX: number;
+    backgroundOffsetY: number;
   };
   onAudioExtracted?: (audioUrl: string) => void;
 }
@@ -66,6 +75,15 @@ export function VideoViewport({
     punctuationChars: '',
     removeAccents: false,
     fontFamily: 'Arial',
+    backgroundColor: '#000000',
+    backgroundOpacity: 0,
+    backgroundBorderColor: '#ffffff',
+    backgroundBorderWidth: 0,
+    backgroundMarginVertical: 0,
+    backgroundMarginHorizontal: 0,
+    backgroundBorderRadius: 0,
+    backgroundOffsetX: 0,
+    backgroundOffsetY: 0,
   },
   onAudioExtracted
 }: VideoViewportProps) {
@@ -536,19 +554,8 @@ export function VideoViewport({
       ctx.font = `${animationStyle.fontWeight} ${fontSize}px ${animationStyle.fontFamily}, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
-      ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
-      ctx.lineWidth = fontSize * (animationStyle.strokeWidth / 48);
 
-      // Aplicar la transformación de escala
-      ctx.save();
-      const x = rect.width / 2;
-      const y = rect.height * 0.9;
-      ctx.translate(x, y);
-      ctx.scale(scale, scale);
-      ctx.translate(-x, -y);
-
-      // Dibujar el texto
+      // Procesar el texto
       const processedText = (text: string) => {
         let result = text;
         if (animationStyle.textCase === 'uppercase') {
@@ -561,7 +568,6 @@ export function VideoViewport({
           result = result.replace(regex, '');
         }
         if (animationStyle.removeAccents) {
-          // Reemplazar solo vocales con tilde manteniendo la ñ
           result = result
             .replace(/[áàäâã]/g, 'a')
             .replace(/[éèëê]/g, 'e')
@@ -577,16 +583,73 @@ export function VideoViewport({
         return result;
       };
 
-      ctx.strokeText(
-        processedText(subtitle.text),
-        x,
-        y
-      );
-      ctx.fillText(
-        processedText(subtitle.text),
-        x,
-        y
-      );
+      const text = processedText(subtitle.text);
+
+      // Aplicar la transformación de escala
+      ctx.save();
+      const x = rect.width / 2;
+      const y = rect.height * 0.9;
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.translate(-x, -y);
+
+      // Medir el texto para el fondo
+      const metrics = ctx.measureText(text);
+      const textWidth = metrics.width;
+      const textHeight = fontSize;
+      const padding = {
+        vertical: animationStyle.backgroundMarginVertical,
+        horizontal: animationStyle.backgroundMarginHorizontal
+      };
+      const bgWidth = textWidth + (padding.horizontal * 2);
+      const bgHeight = textHeight + (padding.vertical * 2);
+      const bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
+      const bgY = y - textHeight - padding.vertical + animationStyle.backgroundOffsetY;
+
+      // Dibujar el fondo
+      if (animationStyle.backgroundOpacity > 0) {
+        ctx.fillStyle = `${animationStyle.backgroundColor}${Math.round(opacity * animationStyle.backgroundOpacity * 255).toString(16).padStart(2, '0')}`;
+        if (animationStyle.backgroundBorderRadius > 0) {
+          // Dibujar fondo con esquinas redondeadas
+          const radius = Math.min(animationStyle.backgroundBorderRadius, bgHeight / 2, bgWidth / 2);
+          ctx.beginPath();
+          ctx.moveTo(bgX + radius, bgY);
+          ctx.lineTo(bgX + bgWidth - radius, bgY);
+          ctx.quadraticCurveTo(bgX + bgWidth, bgY, bgX + bgWidth, bgY + radius);
+          ctx.lineTo(bgX + bgWidth, bgY + bgHeight - radius);
+          ctx.quadraticCurveTo(bgX + bgWidth, bgY + bgHeight, bgX + bgWidth - radius, bgY + bgHeight);
+          ctx.lineTo(bgX + radius, bgY + bgHeight);
+          ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius);
+          ctx.lineTo(bgX, bgY + radius);
+          ctx.quadraticCurveTo(bgX, bgY, bgX + radius, bgY);
+          ctx.closePath();
+          ctx.fill();
+
+          // Dibujar borde si es necesario
+          if (animationStyle.backgroundBorderWidth > 0) {
+            ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+            ctx.lineWidth = animationStyle.backgroundBorderWidth;
+            ctx.stroke();
+          }
+        } else {
+          // Dibujar fondo rectangular
+          ctx.fillRect(bgX, bgY, bgWidth, bgHeight);
+          
+          // Dibujar borde si es necesario
+          if (animationStyle.backgroundBorderWidth > 0) {
+            ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+            ctx.lineWidth = animationStyle.backgroundBorderWidth;
+            ctx.strokeRect(bgX, bgY, bgWidth, bgHeight);
+          }
+        }
+      }
+
+      // Dibujar el texto
+      ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+      ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+      ctx.lineWidth = fontSize * (animationStyle.strokeWidth / 48);
+      ctx.strokeText(text, x, y);
+      ctx.fillText(text, x, y);
       
       // Restaurar el contexto
       ctx.restore();

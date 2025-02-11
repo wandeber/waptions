@@ -35,6 +35,16 @@ interface SubtitleAnimationStyle {
   hidePunctuation: boolean;
   punctuationChars: string;
   removeAccents: boolean;
+  // Propiedades del fondo
+  backgroundColor: string;
+  backgroundOpacity: number;
+  backgroundBorderColor: string;
+  backgroundBorderWidth: number;
+  backgroundMarginVertical: number;
+  backgroundMarginHorizontal: number;
+  backgroundBorderRadius: number;
+  backgroundOffsetX: number;
+  backgroundOffsetY: number;
 }
 
 const defaultAnimationStyle: SubtitleAnimationStyle = {
@@ -52,7 +62,17 @@ const defaultAnimationStyle: SubtitleAnimationStyle = {
   textCase: 'normal',
   hidePunctuation: false,
   punctuationChars: '¿?:-,.;¡!',
-  removeAccents: false
+  removeAccents: false,
+  // Valores por defecto del fondo
+  backgroundColor: '#000000',
+  backgroundOpacity: 0.5,
+  backgroundBorderColor: '#000000',
+  backgroundBorderWidth: 0,
+  backgroundMarginVertical: 8,
+  backgroundMarginHorizontal: 16,
+  backgroundBorderRadius: 4,
+  backgroundOffsetX: 0,
+  backgroundOffsetY: 0
 };
 
 export function SubtitleEditor({ 
@@ -72,7 +92,8 @@ export function SubtitleEditor({
   const [collapsedSections, setCollapsedSections] = useState<{[key: string]: boolean}>({
     textStyle: false,
     entryAnimation: false,
-    exitAnimation: false
+    exitAnimation: false,
+    background: false
   });
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
   const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
@@ -693,6 +714,186 @@ export function SubtitleEditor({
                         className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
                       />
                       <label className="text-sm text-gray-300">Omitir tildes</label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Fondo */}
+              <div className="p-4">
+                <button
+                  onClick={() => setCollapsedSections(prev => ({ ...prev, background: !prev.background }))}
+                  className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
+                >
+                  <span>Fondo</span>
+                  <svg 
+                    className={`w-5 h-5 transition-transform ${collapsedSections.background ? '-rotate-90' : ''}`}
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {!collapsedSections.background && (
+                  <div className="flex flex-col gap-6 mt-4">
+                    {/* Color y opacidad del fondo */}
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Color del fondo</label>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="color"
+                          value={localAnimationStyle.backgroundColor}
+                          onChange={(e) => handleStyleChange('backgroundColor', e.target.value)}
+                          className="w-8 h-8 rounded cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={localAnimationStyle.backgroundColor}
+                          onChange={(e) => handleStyleChange('backgroundColor', e.target.value)}
+                          className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Opacidad</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={localAnimationStyle.backgroundOpacity}
+                          onChange={(e) => handleStyleChange('backgroundOpacity', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">
+                          {Math.round(localAnimationStyle.backgroundOpacity * 100)}%
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Borde del fondo */}
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Color del borde</label>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="color"
+                          value={localAnimationStyle.backgroundBorderColor}
+                          onChange={(e) => handleStyleChange('backgroundBorderColor', e.target.value)}
+                          className="w-8 h-8 rounded cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={localAnimationStyle.backgroundBorderColor}
+                          onChange={(e) => handleStyleChange('backgroundBorderColor', e.target.value)}
+                          className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Grosor del borde</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="8"
+                          step="0.5"
+                          value={localAnimationStyle.backgroundBorderWidth}
+                          onChange={(e) => handleStyleChange('backgroundBorderWidth', parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundBorderWidth}px</div>
+                      </div>
+                    </div>
+
+                    {/* Márgenes */}
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Margen vertical</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="32"
+                          step="2"
+                          value={localAnimationStyle.backgroundMarginVertical}
+                          onChange={(e) => handleStyleChange('backgroundMarginVertical', parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundMarginVertical}px</div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Margen horizontal</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="64"
+                          step="4"
+                          value={localAnimationStyle.backgroundMarginHorizontal}
+                          onChange={(e) => handleStyleChange('backgroundMarginHorizontal', parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundMarginHorizontal}px</div>
+                      </div>
+                    </div>
+
+                    {/* Redondeo de esquinas */}
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Redondeo de esquinas</label>
+                      <div className="flex gap-4 items-center">
+                        <input
+                          type="range"
+                          min="0"
+                          max="16"
+                          step="1"
+                          value={localAnimationStyle.backgroundBorderRadius}
+                          onChange={(e) => handleStyleChange('backgroundBorderRadius', parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundBorderRadius}px</div>
+                      </div>
+                    </div>
+
+                    {/* Offset del fondo */}
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm text-gray-300">Desplazamiento del fondo</label>
+                      <div className="flex flex-col gap-4">
+                        <div className="flex flex-col gap-2">
+                          <label className="text-xs text-gray-400">Horizontal (X)</label>
+                          <div className="flex gap-4 items-center">
+                            <input
+                              type="range"
+                              min="-100"
+                              max="100"
+                              step="1"
+                              value={localAnimationStyle.backgroundOffsetX}
+                              onChange={(e) => handleStyleChange('backgroundOffsetX', parseInt(e.target.value))}
+                              className="flex-1"
+                            />
+                            <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundOffsetX}px</div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <label className="text-xs text-gray-400">Vertical (Y)</label>
+                          <div className="flex gap-4 items-center">
+                            <input
+                              type="range"
+                              min="-100"
+                              max="100"
+                              step="1"
+                              value={localAnimationStyle.backgroundOffsetY}
+                              onChange={(e) => handleStyleChange('backgroundOffsetY', parseInt(e.target.value))}
+                              className="flex-1"
+                            />
+                            <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundOffsetY}px</div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
