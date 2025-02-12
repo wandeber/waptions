@@ -1,6 +1,6 @@
 ---
 description: General guidelines for approaching new tasks
-globs: 
+globs: *
 ---
 - **Scope Discipline** – Avoid modifying areas that are not related to the current work to prevent unintended issues. Ask before doing it if you think it's necessary.
 - **Knowledge Retention** – Document any useful insights in project-knowledge.md for future reference. You are free to structure it as you see fit.
