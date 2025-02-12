@@ -18,7 +18,7 @@
   - `SubtitleEditor.tsx`: Subtitle editor
   - `SubtitleTrack.tsx`: Subtitle track in timeline
   - `FontSelector.tsx`: Subtitle font selector
-  - `ExportButton.tsx`: Video export handling
+  - `ExportButton.tsx`: Video export handling with FPS preservation from source video
 
 ### API Routes
 - `/api/generate-subtitles`: Endpoint for automatic subtitle generation

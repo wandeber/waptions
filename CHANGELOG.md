@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored SubtitleEditor to use the new Button variants
 - Refactored ExportButton to use the new Button component
 
+### Fixed
+- Fixed video FPS detection in ExportButton to use detected FPS instead of resolution-based calculation
+
 ## [0.1.0] - 2024-03-20
 
 ### Added

@@ -11,6 +11,7 @@ interface ExportButtonProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   subtitles: Subtitle[];
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
+  fps: number;
   animationStyle?: {
     fadeInDuration: number;
     fadeOutDuration: number;
@@ -29,7 +30,7 @@ interface ExportButtonProps {
   };
 }
 
-export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }: ExportButtonProps) {
+export function ExportButton({ videoRef, subtitles, canvasRef, fps, animationStyle }: ExportButtonProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [timeElapsed, setTimeElapsed] = useState(0);
@@ -130,8 +131,6 @@ export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }:
       const video = videoRef.current;
       const canvas = canvasRef.current;
       
-      // Usar los FPS detectados del video
-      const fps = Math.round(video.videoWidth > 1920 ? video.videoWidth > 3840 ? 24 : 30 : 60);
       totalFramesRef.current = Math.ceil(video.duration * fps);
 
       setCurrentStep('Preparando video...');
