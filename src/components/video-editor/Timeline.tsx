@@ -303,7 +303,13 @@ export function Timeline({
             />
           </div>
 
-          {/* Resaltado del frame actual y cabezal */}
+          {/* Current frame highlight and playhead */}
+          {/* 
+            Note: When no video is loaded (duration = 0), the highlight position calculations
+            (width and left) result in invalid values (NaN or Infinity). This causes the div with
+            bg-white/10 to extend across the entire timeline, creating a lighter visual effect.
+            This is expected behavior since the frame highlight only makes sense with a loaded video.
+          */}
           <div className="absolute inset-0 pointer-events-none">
             {/* Resaltado del frame */}
             <div 

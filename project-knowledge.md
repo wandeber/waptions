@@ -42,3 +42,8 @@
 ## Important Notes
 - Project is in initial development phase
 - Subtitle generation requires API key configuration 
+
+## Visual Behaviors
+### Timeline Component
+- The timeline appears slightly lighter when no video is loaded due to the frame highlight overlay (bg-white/10) extending across the entire timeline when duration is 0.
+- Once a video is loaded, the frame highlight positions correctly and the timeline shows its true background color. 
