@@ -22,6 +22,8 @@ interface TimelineProps {
   onThirdsGuideToggle?: () => void;
   showMetaInfo?: boolean;
   onMetaInfoToggle?: () => void;
+  audioUrl?: string;
+  onWaveformReady?: () => void;
 }
 
 export function Timeline({ 
