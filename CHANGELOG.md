@@ -17,3 +17,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Removed unused variables in generate-subtitles route and ExportButton component 
+- Fixed subtitle deletion functionality (both delete button and Delete key) 

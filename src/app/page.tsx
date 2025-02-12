@@ -89,6 +89,13 @@ export default function Home() {
     setAnimationStyle(style);
   };
 
+  const handleDelete = (subtitleId: string) => {
+    setSubtitles(prev => prev.filter(s => s.id !== subtitleId));
+    if (selectedSubtitle?.id === subtitleId) {
+      setSelectedSubtitle(null);
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
       {/* Header */}
@@ -145,6 +152,7 @@ export default function Home() {
               subtitles={subtitles}
               selectedSubtitleId={selectedSubtitle?.id}
               onSubtitleClick={handleSubtitleClick}
+              onDelete={handleDelete}
               onSubtitlesChange={setSubtitles}
               currentTime={currentTime}
               onGenerateSubtitles={async () => {
