@@ -78,7 +78,6 @@ export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }:
           const timeMatch = message.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
           
           if (frameMatch && timeMatch) {
-            const currentFrame = parseInt(frameMatch[1]);
             const hours = parseInt(timeMatch[1]);
             const minutes = parseInt(timeMatch[2]);
             const seconds = parseInt(timeMatch[3]);

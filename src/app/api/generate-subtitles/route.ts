@@ -121,7 +121,7 @@ function splitSegment(segment: WhisperSegment): WhisperSegment[] {
         currentWords.push(word);
         const phrase = currentWords.join(' ');
         const wordStart = fullText.indexOf(phrase, currentPosition);
-        const wordEnd = wordStart + phrase.length;
+        // const wordEnd = wordStart + phrase.length;
         segments.push({
           start: segment.start + (wordStart / fullText.length * totalDuration),
           end: segment.end,
