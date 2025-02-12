@@ -2,7 +2,7 @@
 description: General guidelines for approaching new tasks
 globs: 
 ---
-- **Scope Discipline** – Avoid modifying areas that are not related to the current work to prevent unintended issues.
+- **Scope Discipline** – Avoid modifying areas that are not related to the current work to prevent unintended issues. Ask before doing it if you think it's necessary.
 - **Knowledge Retention** – Document any useful insights in project-knowledge.md for future reference. You are free to structure it as you see fit.
 - **Pre-Task Review** – Always, before starting a new task, check [project-knowledge.md](mdc:project-knowledge.md) to leverage existing information.
 - **Changelog Maintenance** – Always update [CHANGELOG.md](mdc:CHANGELOG.md) after making changes. Summarize or merge previous entries if they become less relevant. If you need a more detailed history of changes, you can run `git log --oneline`.
