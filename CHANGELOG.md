@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Design System: Added base Button component with variants and sizes
+- Design System: Added new 'ghost' variant for transparent buttons
+- Design System: Added new 'xs' size for smaller buttons
 - Refactored Timeline component to use the new Button component
+- Refactored SubtitleEditor to use the new Button variants
+- Refactored ExportButton to use the new Button component
 
 ## [0.1.0] - 2024-03-20
 

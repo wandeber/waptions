@@ -9,7 +9,7 @@
 
 ### Design System
 - `design-system/`: Contains reusable UI components
-  - `Button.tsx`: Base button component with variants (primary, secondary, danger) and sizes (sm, md, lg)
+  - `Button.tsx`: Base button component with variants (primary, secondary, danger, ghost) and sizes (xs to lg)
 
 ### Core Components
 - `VideoEditor/`: Contains core components for video editing

@@ -3,10 +3,10 @@
 import { ButtonHTMLAttributes, ReactNode } from 'react';
 
 // Button variants
-export type ButtonVariant = 'primary' | 'secondary' | 'danger';
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
 // Button sizes
-export type ButtonSize = 'sm' | 'md' | 'lg';
+export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
 
 // Props interface extending HTML button attributes
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -31,18 +31,22 @@ export function Button({
   // Variant styles with active states
   const variantStyles = {
     primary: isActive 
-      ? 'bg-green-800 hover:bg-red-600 text-gray-300'
-      : 'bg-green-700 hover:bg-gray-600 text-gray-300',
+      ? 'bg-green-700 hover:bg-green-600 text-white'
+      : 'bg-green-600 hover:bg-green-700 text-white',
     secondary: isActive
       ? 'bg-gray-500 hover:bg-gray-400 text-gray-300'
       : 'bg-gray-600 hover:bg-gray-500 text-gray-300',
     danger: isActive
       ? 'bg-red-800 hover:bg-red-700 text-gray-300'
-      : 'bg-red-700 hover:bg-red-600 text-gray-300'
+      : 'bg-red-700 hover:bg-red-600 text-gray-300',
+    ghost: isActive
+      ? 'hover:bg-gray-600 text-gray-300'
+      : 'hover:bg-gray-600 text-gray-300'
   };
 
   // Size styles
   const sizeStyles = {
+    xs: 'p-0.5',
     sm: 'p-1',
     md: 'px-3 py-1',
     lg: 'px-4 py-2'

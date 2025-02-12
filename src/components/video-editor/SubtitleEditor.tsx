@@ -490,8 +490,9 @@ export function SubtitleEditor({
                         <div className="text-sm text-gray-400">
                           <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
                         </div>
-                        <button
-                          className="p-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+                        <Button
+                          variant="ghost"
+                          size="xs"
                           onClick={(e) => {
                             e.stopPropagation();
                             onDelete?.(subtitle.id);
@@ -499,7 +500,7 @@ export function SubtitleEditor({
                           title="Eliminar subtítulo"
                         >
                           <CloseIcon />
-                        </button>
+                        </Button>
                       </div>
                       
                       <textarea
