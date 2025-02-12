@@ -13,7 +13,7 @@ export default function Home() {
   const [selectedSubtitle, setSelectedSubtitle] = useState<Subtitle | null>(null);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [detectedFps, setDetectedFps] = useState(30);
+  const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
   const [showMetaInfo, setShowMetaInfo] = useState(true);
@@ -51,7 +51,7 @@ export default function Home() {
     setCurrentTime(time);
   };
 
-  const handleVideoLoad = (videoDuration: number, detectedFps: number) => {
+  const handleVideoLoad = (videoDuration: number, detectedFps: number | null) => {
     setDuration(videoDuration);
     setDetectedFps(detectedFps);
   };
@@ -130,7 +130,7 @@ export default function Home() {
               selectedSubtitleId={selectedSubtitle?.id}
               isPlaying={isPlaying}
               onPlayPause={handlePlayPause}
-              fps={detectedFps}
+              fps={detectedFps ?? 0}
               showThirdsGuide={showThirdsGuide}
               onThirdsGuideToggle={handleThirdsGuideToggle}
               showMetaInfo={showMetaInfo}
