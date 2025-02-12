@@ -218,6 +218,7 @@ export function Timeline({
       <div className="flex items-center gap-4">
         <div className="flex gap-2">
           <Button
+            variant="secondary"
             onClick={() => {
               if (isPlaying) {
                 onPlayPause?.();
@@ -229,6 +230,7 @@ export function Timeline({
           </Button>
 
           <Button
+            variant={isPlaying ? 'danger' : 'secondary'}
             isActive={isPlaying}
             onClick={() => {
               if (!isPlaying) {

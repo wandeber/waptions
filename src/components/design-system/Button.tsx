@@ -26,13 +26,13 @@ export function Button({
   ...props
 }: ButtonProps) {
   // Base styles
-  const baseStyles = 'rounded transition-colors select-none';
+  const baseStyles = 'rounded transition-colors select-none flex items-center gap-1';
 
   // Variant styles with active states
   const variantStyles = {
     primary: isActive 
-      ? 'bg-red-700 hover:bg-red-600 text-gray-300'
-      : 'bg-gray-700 hover:bg-gray-600 text-gray-300',
+      ? 'bg-green-800 hover:bg-red-600 text-gray-300'
+      : 'bg-green-700 hover:bg-gray-600 text-gray-300',
     secondary: isActive
       ? 'bg-gray-500 hover:bg-gray-400 text-gray-300'
       : 'bg-gray-600 hover:bg-gray-500 text-gray-300',
@@ -44,8 +44,8 @@ export function Button({
   // Size styles
   const sizeStyles = {
     sm: 'p-1',
-    md: 'p-1.5',
-    lg: 'p-2'
+    md: 'px-3 py-1',
+    lg: 'px-4 py-2'
   };
 
   // Combine all styles

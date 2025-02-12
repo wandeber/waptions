@@ -5,6 +5,7 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import type { Subtitle } from './SubtitleTrack';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { ExportIcon } from '../icons/ExportIcon';
+import { Button } from '../design-system/Button';
 
 interface ExportButtonProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -367,14 +368,10 @@ export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }:
           </span>
         </div>
       )}
-      <button
+      <Button
+        variant="primary"
         onClick={handleExport}
         disabled={!videoRef.current?.src || subtitles.length === 0 || isExporting}
-        className={`px-3 py-1 rounded flex items-center gap-1 select-none
-          ${videoRef.current?.src && subtitles.length > 0 && !isExporting
-            ? 'bg-green-600 text-white hover:bg-green-700'
-            : 'bg-gray-500 text-gray-400 cursor-not-allowed'
-          }`}
         title={!videoRef.current?.src 
           ? "Necesitas cargar un video primero"
           : subtitles.length === 0 
@@ -395,7 +392,7 @@ export function ExportButton({ videoRef, subtitles, canvasRef, animationStyle }:
             <span>Exportar</span>
           </>
         )}
-      </button>
+      </Button>
     </div>
   );
 } 
