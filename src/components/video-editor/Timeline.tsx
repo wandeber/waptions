@@ -6,6 +6,7 @@ import { StopIcon } from '../icons/StopIcon';
 import { PlayIcon } from '../icons/PlayIcon';
 import { GridIcon } from '../icons/GridIcon';
 import { InfoIcon } from '../icons/InfoIcon';
+import { Button } from '../design-system/Button';
 
 interface TimelineProps {
   duration: number;
@@ -216,8 +217,7 @@ export function Timeline({
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-4">
         <div className="flex gap-2">
-          <button
-            className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+          <Button
             onClick={() => {
               if (isPlaying) {
                 onPlayPause?.();
@@ -226,14 +226,10 @@ export function Timeline({
             title="Detener"
           >
             <StopIcon />
-          </button>
+          </Button>
 
-          <button
-            className={`p-1.5 ${
-              isPlaying 
-                ? 'bg-red-700 hover:bg-red-600' 
-                : 'bg-gray-700 hover:bg-gray-600'
-            } text-gray-300 rounded transition-colors select-none`}
+          <Button
+            isActive={isPlaying}
             onClick={() => {
               if (!isPlaying) {
                 onPlayPause?.();
@@ -242,7 +238,7 @@ export function Timeline({
             title="Reproducir"
           >
             <PlayIcon />
-          </button>
+          </Button>
         </div>
 
         <div className="text-sm text-gray-300 select-none">
@@ -250,28 +246,23 @@ export function Timeline({
         </div>
 
         <div className="flex gap-2 ml-auto">
-          <button
+          <Button
+            variant="secondary"
+            isActive={showThirdsGuide}
             onClick={onThirdsGuideToggle}
-            className={`p-1.5 rounded transition-colors select-none ${
-              showThirdsGuide 
-                ? 'bg-blue-600 text-white hover:bg-blue-700' 
-                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-            }`}
-            title="Mostrar/ocultar guías de los tercios"
+            title="Mostrar guía de tercios"
           >
             <GridIcon />
-          </button>
-          <button
+          </Button>
+
+          <Button
+            variant="secondary"
+            isActive={showMetaInfo}
             onClick={onMetaInfoToggle}
-            className={`p-1.5 rounded transition-colors select-none ${
-              showMetaInfo 
-                ? 'bg-blue-600 text-white hover:bg-blue-700' 
-                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-            }`}
-            title="Mostrar/ocultar información del vídeo"
+            title="Mostrar información"
           >
             <InfoIcon />
-          </button>
+          </Button>
         </div>
       </div>
 

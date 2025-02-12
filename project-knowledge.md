@@ -7,6 +7,10 @@
 - **Styling**: Tailwind CSS
 - **Typing**: Strict TypeScript
 
+### Design System
+- `design-system/`: Contains reusable UI components
+  - `Button.tsx`: Base button component with variants (primary, secondary, danger) and sizes (sm, md, lg)
+
 ### Core Components
 - `VideoEditor/`: Contains core components for video editing
   - `Timeline.tsx`: Video navigation timeline
