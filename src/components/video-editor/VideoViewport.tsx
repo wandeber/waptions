@@ -102,6 +102,7 @@ export function VideoViewport({
   const timelineRef = useRef<number | undefined>(undefined);
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const [videoBitrate, setVideoBitrate] = useState<number | null>(null);
 
   // Inicializar FFmpeg solo en el cliente
   useEffect(() => {
@@ -142,10 +143,10 @@ export function VideoViewport({
     }
   }, []);
 
-  const detectVideoMetadata = async (file: File): Promise<{ fps: number | null; width: number; height: number }> => {
+  const detectVideoMetadata = async (file: File): Promise<{ fps: number | null; width: number; height: number; bitrate: number | null }> => {
     if (!isFFmpegLoaded || !ffmpeg) {
       console.warn('FFmpeg no está cargado, usando valores por defecto');
-      return { fps: null, width: 1920, height: 1080 };
+      return { fps: null, width: 1920, height: 1080, bitrate: null };
     }
 
     try {
@@ -175,9 +176,14 @@ export function VideoViewport({
       const fps = fpsMatch ? parseFloat(fpsMatch[1]) : null;
       console.log('FPS detectados:', fps);
       
+      // Buscar bitrate
+      const bitrateMatch = stderr.match(/bitrate:\s*(\d+)\s*kb\/s/);
+      console.log('Match de bitrate:', bitrateMatch);
+      const bitrate = bitrateMatch ? parseInt(bitrateMatch[1]) : null;
+      console.log('Bitrate detectado:', bitrate);
+      
       if (!fps) {
         console.warn('No se pudieron detectar los FPS del video');
-        return { fps: null, width: 1920, height: 1080 };
       }
       
       // Buscar dimensiones
@@ -189,10 +195,10 @@ export function VideoViewport({
       
       await ffmpeg.deleteFile('input.mp4');
       
-      return { fps, width, height };
+      return { fps, width, height, bitrate };
     } catch (error) {
       console.error('Error al detectar metadatos del video:', error);
-      return { fps: null, width: 1920, height: 1080 };
+      return { fps: null, width: 1920, height: 1080, bitrate: null };
     }
   };
 
@@ -264,8 +270,8 @@ export function VideoViewport({
       console.log('Iniciando carga de video:', file.name);
       
       // Primero detectar metadata con FFmpeg
-      const { fps: detectedFps, width, height } = await detectVideoMetadata(file);
-      console.log('Metadata detectada:', { fps: detectedFps, width, height });
+      const { fps: detectedFps, width, height, bitrate } = await detectVideoMetadata(file);
+      console.log('Metadata detectada:', { fps: detectedFps, width, height, bitrate });
       
       // Extraer audio
       const audioUrl = await extractAudio(file);
@@ -278,6 +284,7 @@ export function VideoViewport({
       setVideoUrl(url);
       setDetectedFps(detectedFps);
       setVideoDimensions({ width, height });
+      setVideoBitrate(bitrate);
       
       // Esperar a que el video se cargue
       if (videoRef.current) {
@@ -717,6 +724,7 @@ export function VideoViewport({
                 <div>Dimensiones originales: {videoRef.current ? `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'No disponible'}</div>
                 <div>FPS: {detectedFps !== null ? detectedFps.toFixed(3) : 'No detectado'}</div>
                 <div>Duración: {videoRef.current?.duration.toFixed(2)}s</div>
+                <div>Bitrate: {videoBitrate !== null ? `${videoBitrate} kb/s` : 'No detectado'}</div>
                 <div>Dimensiones en viewport: {(() => {
                   const rect = getVideoDisplayRect();
                   return rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : 'No disponible';
