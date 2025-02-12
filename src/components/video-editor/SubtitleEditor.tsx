@@ -7,6 +7,7 @@ import { MagicMicIcon } from '../icons/MagicMicIcon';
 import { PlusIcon } from '../icons/PlusIcon';
 import { CloseIcon } from '../icons/CloseIcon';
 import { ChevronDownIcon } from '../icons/ChevronDownIcon';
+import { Button } from '../design-system/Button';
 
 interface SubtitleEditorProps {
   subtitles: Subtitle[];
@@ -436,18 +437,18 @@ export function SubtitleEditor({
               <div className="flex justify-between items-center">
                 <div></div>
                 <div className="flex gap-2 ml-auto">
-                  <button
-                    className={`p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none ${
-                      isGeneratingSubtitles ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={onGenerateSubtitles}
                     disabled={isGeneratingSubtitles}
                     title="Generar subtítulos automáticamente con IA"
                   >
                     <MagicMicIcon />
-                  </button>
-                  <button
-                    className="p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors select-none"
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => {
                       const newSubtitle: Subtitle = {
                         id: Date.now().toString(),
@@ -467,7 +468,7 @@ export function SubtitleEditor({
                     title="Añadir subtítulo"
                   >
                     <PlusIcon />
-                  </button>
+                  </Button>
                 </div>
               </div>
 
