@@ -4,6 +4,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { LoadVideoIcon } from '../icons/LoadVideoIcon';
+import { Button } from '../design-system/Button';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number | null) => void;
@@ -853,11 +854,11 @@ export function VideoViewport({
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center gap-4 text-gray-500 p-8 text-center">
-            <button
+            <Button
               onClick={() => !isLoading && fileInputRef.current?.click()}
               disabled={isLoading}
-              className={`px-6 py-3 bg-blue-600 text-white rounded-lg transition-colors flex items-center gap-2 select-none
-                ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+              variant="primary"
+              size="lg"
             >
               {isLoading ? (
                 <>
@@ -870,7 +871,7 @@ export function VideoViewport({
                   Cargar Video
                 </>
               )}
-            </button>
+            </Button>
             <p className="text-sm select-none">
               {isLoading ? 'Por favor espera...' : 'o arrastra y suelta un archivo de video aquí'}
             </p>

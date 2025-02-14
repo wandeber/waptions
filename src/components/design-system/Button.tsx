@@ -3,7 +3,7 @@
 import { ButtonHTMLAttributes, ReactNode } from 'react';
 
 // Button variants
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'info' | 'success';
 
 // Button sizes
 export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -31,8 +31,8 @@ export function Button({
   // Variant styles with active states
   const variantStyles = {
     primary: isActive 
-      ? 'bg-green-700 hover:bg-green-600 text-white'
-      : 'bg-green-600 hover:bg-green-700 text-white',
+      ? 'bg-blue-700 hover:bg-blue-600 text-white'
+      : 'bg-blue-600 hover:bg-blue-700 text-white',
     secondary: isActive
       ? 'bg-gray-500 hover:bg-gray-400 text-gray-300'
       : 'bg-gray-600 hover:bg-gray-500 text-gray-300',
@@ -41,7 +41,13 @@ export function Button({
       : 'bg-red-700 hover:bg-red-600 text-gray-300',
     ghost: isActive
       ? 'hover:bg-gray-600 text-gray-300'
-      : 'hover:bg-gray-600 text-gray-300'
+      : 'hover:bg-gray-600 text-gray-300',
+    info: isActive
+      ? 'bg-sky-700 hover:bg-sky-600 text-white'
+      : 'bg-sky-600 hover:bg-sky-700 text-white',
+    success: isActive
+      ? 'bg-green-700 hover:bg-green-600 text-white'
+      : 'bg-green-600 hover:bg-green-700 text-white'
   };
 
   // Size styles
