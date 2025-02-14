@@ -10,6 +10,7 @@ import { ChevronDownIcon } from '../icons/ChevronDownIcon';
 import { Button } from '../design-system/Button';
 import { DraggableNumberInput } from '../design-system/DraggableNumberInput';
 import { Tabs } from '../design-system/Tabs';
+import { Accordion } from '../design-system/Accordion';
 
 interface SubtitleEditorProps {
   subtitles: Subtitle[];
@@ -96,12 +97,7 @@ export function SubtitleEditor({
 }: SubtitleEditorProps) {
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
-  const [collapsedSections, setCollapsedSections] = useState<{[key: string]: boolean}>({
-    textStyle: false,
-    entryAnimation: false,
-    exitAnimation: false,
-    background: false
-  });
+  const [expandedStyleSection, setExpandedStyleSection] = useState<string | null>(null);
   const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
   const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
     ...defaultAnimationStyle,
@@ -498,451 +494,416 @@ export function SubtitleEditor({
     </div>
   );
 
-  const styleContent = (
-    <div className="flex flex-col divide-y divide-gray-700">
-      {/* Estilo visual */}
-      <div className="p-4">
-        <button
-          onClick={() => setCollapsedSections(prev => ({ ...prev, textStyle: !prev.textStyle }))}
-          className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
-        >
-          <span>Estilo del texto</span>
-          <ChevronDownIcon 
-            className={`w-5 h-5 transition-transform ${
-              collapsedSections.textStyle ? '-rotate-90' : ''
-            }`}
+  // Contenido de cada sección
+  const textStyleContent = (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Fuente</label>
+        <FontSelector
+          value={localAnimationStyle.fontFamily}
+          onChange={(font) => handleStyleChange('fontFamily', font)}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Tamaño"
+          value={localAnimationStyle.fontSize}
+          onChange={(value) => handleStyleChange('fontSize', value)}
+          min={24}
+          max={96}
+          step={1}
+          unit="px"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex items-center gap-4">
+        <label className="text-sm text-gray-300 whitespace-nowrap">Grosor de fuente</label>
+        <div className="relative flex-1">
+          <select
+            value={localAnimationStyle.fontWeight}
+            onChange={(e) => handleStyleChange('fontWeight', parseInt(e.target.value))}
+            className="w-full bg-gray-700 text-white rounded px-2 py-1.5 text-sm appearance-none"
+          >
+            <option value="400">Normal (400)</option>
+            <option value="500">Medium (500)</option>
+            <option value="600">Semi Bold (600)</option>
+            <option value="700">Bold (700)</option>
+            <option value="800">Extra Bold (800)</option>
+            <option value="900">Black (900)</option>
+          </select>
+          <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+            <ChevronDownIcon />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Color del texto</label>
+        <div className="flex gap-2 items-center">
+          <input
+            type="color"
+            value={localAnimationStyle.textColor}
+            onChange={(e) => handleStyleChange('textColor', e.target.value)}
+            className="w-8 h-8 rounded cursor-pointer"
           />
-        </button>
-        {!collapsedSections.textStyle && (
-          <div className="flex flex-col gap-6 mt-4">
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Fuente</label>
-              <FontSelector
-                value={localAnimationStyle.fontFamily}
-                onChange={(font) => handleStyleChange('fontFamily', font)}
-              />
-            </div>
+          <input
+            type="text"
+            value={localAnimationStyle.textColor}
+            onChange={(e) => handleStyleChange('textColor', e.target.value)}
+            className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+          />
+        </div>
+      </div>
 
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Tamaño"
-                value={localAnimationStyle.fontSize}
-                onChange={(value) => handleStyleChange('fontSize', value)}
-                min={24}
-                max={96}
-                step={1}
-                unit="px"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Grosor del borde"
+          value={localAnimationStyle.strokeWidth}
+          onChange={(value) => handleStyleChange('strokeWidth', value)}
+          min={0}
+          max={8}
+          step={0.5}
+          unit="px"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
 
-            <div className="flex items-center gap-4">
-              <label className="text-sm text-gray-300 whitespace-nowrap">Grosor de fuente</label>
-              <div className="relative flex-1">
-                <select
-                  value={localAnimationStyle.fontWeight}
-                  onChange={(e) => handleStyleChange('fontWeight', parseInt(e.target.value))}
-                  className="w-full bg-gray-700 text-white rounded px-2 py-1.5 text-sm appearance-none"
-                >
-                  <option value="400">Normal (400)</option>
-                  <option value="500">Medium (500)</option>
-                  <option value="600">Semi Bold (600)</option>
-                  <option value="700">Bold (700)</option>
-                  <option value="800">Extra Bold (800)</option>
-                  <option value="900">Black (900)</option>
-                </select>
-                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
-                  <ChevronDownIcon />
-                </div>
-              </div>
-            </div>
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Color del borde</label>
+        <div className="flex gap-2 items-center">
+          <input
+            type="color"
+            value={localAnimationStyle.strokeColor}
+            onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
+            className="w-8 h-8 rounded cursor-pointer"
+          />
+          <input
+            type="text"
+            value={localAnimationStyle.strokeColor}
+            onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
+            className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+          />
+        </div>
+      </div>
 
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Color del texto</label>
-              <div className="flex gap-2 items-center">
-                <input
-                  type="color"
-                  value={localAnimationStyle.textColor}
-                  onChange={(e) => handleStyleChange('textColor', e.target.value)}
-                  className="w-8 h-8 rounded cursor-pointer"
-                />
-                <input
-                  type="text"
-                  value={localAnimationStyle.textColor}
-                  onChange={(e) => handleStyleChange('textColor', e.target.value)}
-                  className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                />
-              </div>
-            </div>
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Transformación del texto</label>
+        <div className="flex gap-2">
+          <button
+            className={`px-3 py-1 rounded text-sm ${
+              localAnimationStyle.textCase === 'normal'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => handleStyleChange('textCase', 'normal')}
+          >
+            Normal
+          </button>
+          <button
+            className={`px-3 py-1 rounded text-sm ${
+              localAnimationStyle.textCase === 'uppercase'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => handleStyleChange('textCase', 'uppercase')}
+          >
+            MAYÚS.
+          </button>
+          <button
+            className={`px-3 py-1 rounded text-sm ${
+              localAnimationStyle.textCase === 'lowercase'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => handleStyleChange('textCase', 'lowercase')}
+          >
+            minús.
+          </button>
+        </div>
+      </div>
 
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Grosor del borde"
-                value={localAnimationStyle.strokeWidth}
-                onChange={(value) => handleStyleChange('strokeWidth', value)}
-                min={0}
-                max={8}
-                step={0.5}
-                unit="px"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Color del borde</label>
-              <div className="flex gap-2 items-center">
-                <input
-                  type="color"
-                  value={localAnimationStyle.strokeColor}
-                  onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
-                  className="w-8 h-8 rounded cursor-pointer"
-                />
-                <input
-                  type="text"
-                  value={localAnimationStyle.strokeColor}
-                  onChange={(e) => handleStyleChange('strokeColor', e.target.value)}
-                  className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Transformación del texto</label>
-              <div className="flex gap-2">
-                <button
-                  className={`px-3 py-1 rounded text-sm ${
-                    localAnimationStyle.textCase === 'normal'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                  onClick={() => handleStyleChange('textCase', 'normal')}
-                >
-                  Normal
-                </button>
-                <button
-                  className={`px-3 py-1 rounded text-sm ${
-                    localAnimationStyle.textCase === 'uppercase'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                  onClick={() => handleStyleChange('textCase', 'uppercase')}
-                >
-                  MAYÚS.
-                </button>
-                <button
-                  className={`px-3 py-1 rounded text-sm ${
-                    localAnimationStyle.textCase === 'lowercase'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                  onClick={() => handleStyleChange('textCase', 'lowercase')}
-                >
-                  minús.
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={localAnimationStyle.hidePunctuation}
-                  onChange={(e) => handleStyleChange('hidePunctuation', e.target.checked)}
-                  className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
-                />
-                <label className="text-sm text-gray-300">Ocultar signos de puntuación</label>
-              </div>
-              
-              {localAnimationStyle.hidePunctuation && (
-                <div className="flex flex-col gap-1 pl-6">
-                  <input
-                    type="text"
-                    value={localAnimationStyle.punctuationChars}
-                    onChange={(e) => handleStyleChange('punctuationChars', e.target.value)}
-                    className="bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                    placeholder="Caracteres a ocultar..."
-                  />
-                  <span className="text-xs text-gray-400">
-                    Caracteres por defecto: ¿?:-,.;¡!
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={localAnimationStyle.removeAccents}
-                onChange={(e) => handleStyleChange('removeAccents', e.target.checked)}
-                className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
-              />
-              <label className="text-sm text-gray-300">Omitir tildes</label>
-            </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={localAnimationStyle.hidePunctuation}
+            onChange={(e) => handleStyleChange('hidePunctuation', e.target.checked)}
+            className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+          />
+          <label className="text-sm text-gray-300">Ocultar signos de puntuación</label>
+        </div>
+        
+        {localAnimationStyle.hidePunctuation && (
+          <div className="flex flex-col gap-1 pl-6">
+            <input
+              type="text"
+              value={localAnimationStyle.punctuationChars}
+              onChange={(e) => handleStyleChange('punctuationChars', e.target.value)}
+              className="bg-gray-700 rounded px-2 py-1 text-sm text-white"
+              placeholder="Caracteres a ocultar..."
+            />
+            <span className="text-xs text-gray-400">
+              Caracteres por defecto: ¿?:-,.;¡!
+            </span>
           </div>
         )}
       </div>
 
-      {/* Fondo */}
-      <div className="p-4">
-        <button
-          onClick={() => setCollapsedSections(prev => ({ ...prev, background: !prev.background }))}
-          className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
-        >
-          <span>Fondo</span>
-          <ChevronDownIcon 
-            className={`w-5 h-5 transition-transform ${
-              collapsedSections.background ? '-rotate-90' : ''
-            }`}
-          />
-        </button>
-        {!collapsedSections.background && (
-          <div className="flex flex-col gap-6 mt-4">
-            {/* Color y opacidad del fondo */}
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Color del fondo</label>
-              <div className="flex gap-2 items-center">
-                <input
-                  type="color"
-                  value={localAnimationStyle.backgroundColor}
-                  onChange={(e) => handleStyleChange('backgroundColor', e.target.value)}
-                  className="w-8 h-8 rounded cursor-pointer"
-                />
-                <input
-                  type="text"
-                  value={localAnimationStyle.backgroundColor}
-                  onChange={(e) => handleStyleChange('backgroundColor', e.target.value)}
-                  className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Opacidad"
-                value={Math.round(localAnimationStyle.backgroundOpacity * 100)}
-                onChange={(value) => handleStyleChange('backgroundOpacity', value / 100)}
-                min={0}
-                max={100}
-                step={5}
-                unit="%"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            {/* Borde del fondo */}
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Color del borde</label>
-              <div className="flex gap-2 items-center">
-                <input
-                  type="color"
-                  value={localAnimationStyle.backgroundBorderColor}
-                  onChange={(e) => handleStyleChange('backgroundBorderColor', e.target.value)}
-                  className="w-8 h-8 rounded cursor-pointer"
-                />
-                <input
-                  type="text"
-                  value={localAnimationStyle.backgroundBorderColor}
-                  onChange={(e) => handleStyleChange('backgroundBorderColor', e.target.value)}
-                  className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Grosor del borde"
-                value={localAnimationStyle.backgroundBorderWidth}
-                onChange={(value) => handleStyleChange('backgroundBorderWidth', value)}
-                min={0}
-                max={8}
-                step={0.5}
-                unit="px"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            {/* Márgenes */}
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Margen vertical"
-                value={localAnimationStyle.backgroundMarginVertical}
-                onChange={(value) => handleStyleChange('backgroundMarginVertical', value)}
-                min={0}
-                max={32}
-                step={2}
-                unit="px"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Margen horizontal"
-                value={localAnimationStyle.backgroundMarginHorizontal}
-                onChange={(value) => handleStyleChange('backgroundMarginHorizontal', value)}
-                min={0}
-                max={64}
-                step={4}
-                unit="px"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            {/* Redondeo de esquinas */}
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Redondeo"
-                value={localAnimationStyle.backgroundBorderRadius}
-                onChange={(value) => handleStyleChange('backgroundBorderRadius', value)}
-                min={0}
-                max={16}
-                step={1}
-                unit="px"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            {/* Offset del fondo */}
-            <div className="flex flex-col gap-2">
-              <label className="text-sm text-gray-300">Desplazamiento del fondo</label>
-              <div className="flex flex-col gap-4">
-                <DraggableNumberInput
-                  label="Horizontal (X)"
-                  value={localAnimationStyle.backgroundOffsetX}
-                  onChange={(value) => handleStyleChange('backgroundOffsetX', value)}
-                  min={-100}
-                  max={100}
-                  step={1}
-                  unit="px"
-                  layout="horizontal"
-                  labelWidth={100}
-                />
-                <DraggableNumberInput
-                  label="Vertical (Y)"
-                  value={localAnimationStyle.backgroundOffsetY}
-                  onChange={(value) => handleStyleChange('backgroundOffsetY', value)}
-                  min={-100}
-                  max={100}
-                  step={1}
-                  unit="px"
-                  layout="horizontal"
-                  labelWidth={100}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Animación de entrada */}
-      <div className="p-4">
-        <button
-          onClick={() => setCollapsedSections(prev => ({ ...prev, entryAnimation: !prev.entryAnimation }))}
-          className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
-        >
-          <span>Animación de entrada</span>
-          <ChevronDownIcon 
-            className={`w-5 h-5 transition-transform ${
-              collapsedSections.entryAnimation ? '-rotate-90' : ''
-            }`}
-          />
-        </button>
-        {!collapsedSections.entryAnimation && (
-          <div className="flex flex-col gap-6 mt-4">
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Duración"
-                value={localAnimationStyle.fadeInDuration * 1000}
-                onChange={(value) => handleStyleChange('fadeInDuration', value / 1000)}
-                min={0}
-                max={500}
-                step={50}
-                unit="ms"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Escala inicial"
-                value={localAnimationStyle.initialScale * 100}
-                onChange={(value) => handleStyleChange('initialScale', value / 100)}
-                min={100}
-                max={200}
-                step={10}
-                unit="%"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Rebote"
-                value={localAnimationStyle.bounceStrength * 100}
-                onChange={(value) => handleStyleChange('bounceStrength', value / 100)}
-                min={0}
-                max={300}
-                step={10}
-                unit="%"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={localAnimationStyle.useElasticEffect}
-                onChange={(e) => handleStyleChange('useElasticEffect', e.target.checked)}
-                className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
-              />
-              <label className="text-sm text-gray-300">Usar efecto elástico</label>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Animación de salida */}
-      <div className="p-4">
-        <button
-          onClick={() => setCollapsedSections(prev => ({ ...prev, exitAnimation: !prev.exitAnimation }))}
-          className="w-full flex items-center justify-between text-sm font-medium text-white hover:text-gray-300 transition-colors"
-        >
-          <span>Animación de salida</span>
-          <ChevronDownIcon 
-            className={`w-5 h-5 transition-transform ${
-              collapsedSections.exitAnimation ? '-rotate-90' : ''
-            }`}
-          />
-        </button>
-        {!collapsedSections.exitAnimation && (
-          <div className="flex flex-col gap-6 mt-4">
-            <div className="flex flex-col gap-2">
-              <DraggableNumberInput
-                label="Duración"
-                value={localAnimationStyle.fadeOutDuration * 1000}
-                onChange={(value) => handleStyleChange('fadeOutDuration', value / 1000)}
-                min={0}
-                max={500}
-                step={50}
-                unit="ms"
-                layout="horizontal"
-                labelWidth={100}
-              />
-            </div>
-          </div>
-        )}
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={localAnimationStyle.removeAccents}
+          onChange={(e) => handleStyleChange('removeAccents', e.target.checked)}
+          className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+        />
+        <label className="text-sm text-gray-300">Omitir tildes</label>
       </div>
     </div>
+  );
+
+  const backgroundContent = (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Color del fondo</label>
+        <div className="flex gap-2 items-center">
+          <input
+            type="color"
+            value={localAnimationStyle.backgroundColor}
+            onChange={(e) => handleStyleChange('backgroundColor', e.target.value)}
+            className="w-8 h-8 rounded cursor-pointer"
+          />
+          <input
+            type="text"
+            value={localAnimationStyle.backgroundColor}
+            onChange={(e) => handleStyleChange('backgroundColor', e.target.value)}
+            className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Opacidad"
+          value={Math.round(localAnimationStyle.backgroundOpacity * 100)}
+          onChange={(value) => handleStyleChange('backgroundOpacity', value / 100)}
+          min={0}
+          max={100}
+          step={5}
+          unit="%"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Color del borde</label>
+        <div className="flex gap-2 items-center">
+          <input
+            type="color"
+            value={localAnimationStyle.backgroundBorderColor}
+            onChange={(e) => handleStyleChange('backgroundBorderColor', e.target.value)}
+            className="w-8 h-8 rounded cursor-pointer"
+          />
+          <input
+            type="text"
+            value={localAnimationStyle.backgroundBorderColor}
+            onChange={(e) => handleStyleChange('backgroundBorderColor', e.target.value)}
+            className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Grosor del borde"
+          value={localAnimationStyle.backgroundBorderWidth}
+          onChange={(value) => handleStyleChange('backgroundBorderWidth', value)}
+          min={0}
+          max={8}
+          step={0.5}
+          unit="px"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Margen vertical"
+          value={localAnimationStyle.backgroundMarginVertical}
+          onChange={(value) => handleStyleChange('backgroundMarginVertical', value)}
+          min={0}
+          max={32}
+          step={2}
+          unit="px"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Margen horizontal"
+          value={localAnimationStyle.backgroundMarginHorizontal}
+          onChange={(value) => handleStyleChange('backgroundMarginHorizontal', value)}
+          min={0}
+          max={64}
+          step={4}
+          unit="px"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Redondeo"
+          value={localAnimationStyle.backgroundBorderRadius}
+          onChange={(value) => handleStyleChange('backgroundBorderRadius', value)}
+          min={0}
+          max={16}
+          step={1}
+          unit="px"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Desplazamiento del fondo</label>
+        <div className="flex flex-col gap-4">
+          <DraggableNumberInput
+            label="Horizontal (X)"
+            value={localAnimationStyle.backgroundOffsetX}
+            onChange={(value) => handleStyleChange('backgroundOffsetX', value)}
+            min={-100}
+            max={100}
+            step={1}
+            unit="px"
+            layout="horizontal"
+            labelWidth={100}
+          />
+          <DraggableNumberInput
+            label="Vertical (Y)"
+            value={localAnimationStyle.backgroundOffsetY}
+            onChange={(value) => handleStyleChange('backgroundOffsetY', value)}
+            min={-100}
+            max={100}
+            step={1}
+            unit="px"
+            layout="horizontal"
+            labelWidth={100}
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  const entryAnimationContent = (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Duración"
+          value={localAnimationStyle.fadeInDuration * 1000}
+          onChange={(value) => handleStyleChange('fadeInDuration', value / 1000)}
+          min={0}
+          max={500}
+          step={50}
+          unit="ms"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Escala inicial"
+          value={localAnimationStyle.initialScale * 100}
+          onChange={(value) => handleStyleChange('initialScale', value / 100)}
+          min={100}
+          max={200}
+          step={10}
+          unit="%"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Rebote"
+          value={localAnimationStyle.bounceStrength * 100}
+          onChange={(value) => handleStyleChange('bounceStrength', value / 100)}
+          min={0}
+          max={300}
+          step={10}
+          unit="%"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="items-center gap-2">
+        <input
+          type="checkbox"
+          checked={localAnimationStyle.useElasticEffect}
+          onChange={(e) => handleStyleChange('useElasticEffect', e.target.checked)}
+          className="rounded border-gray-600 text-blue-600 focus:ring-blue-500"
+        />
+        <label className="text-sm text-gray-300">Usar efecto elástico</label>
+      </div>
+    </div>
+  );
+
+  const exitAnimationContent = (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Duración"
+          value={localAnimationStyle.fadeOutDuration * 1000}
+          onChange={(value) => handleStyleChange('fadeOutDuration', value / 1000)}
+          min={0}
+          max={500}
+          step={50}
+          unit="ms"
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+    </div>
+  );
+
+  const styleContent = (
+    <Accordion
+      sections={[
+        {
+          id: 'textStyle',
+          title: 'Estilo del texto',
+          content: textStyleContent
+        },
+        {
+          id: 'background',
+          title: 'Fondo',
+          content: backgroundContent
+        },
+        {
+          id: 'entryAnimation',
+          title: 'Animación de entrada',
+          content: entryAnimationContent
+        },
+        {
+          id: 'exitAnimation',
+          title: 'Animación de salida',
+          content: exitAnimationContent
+        }
+      ]}
+      expandedSection={expandedStyleSection}
+      onSectionChange={setExpandedStyleSection}
+    />
   );
 
   const tabs = [

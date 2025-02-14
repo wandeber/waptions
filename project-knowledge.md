@@ -146,4 +146,40 @@ const tabs = [
   activeTab={activeTab}
   onTabChange={setActiveTab}
 />
+```
+
+### Accordion
+Componente reutilizable para crear secciones colapsables. Implementa el patrón de diseño "Disclosure" permitiendo que solo una sección esté abierta a la vez.
+
+Propiedades:
+- `sections`: Array de objetos con la siguiente estructura:
+  - `id`: Identificador único de la sección
+  - `title`: Título de la sección
+  - `content`: Contenido JSX a mostrar cuando la sección está expandida
+- `expandedSection`: ID de la sección actualmente expandida (o null si ninguna lo está)
+- `onSectionChange`: Función que se llama cuando se cambia la sección expandida
+- `className`: Clases CSS adicionales (opcional)
+
+Internamente usa un componente `AccordionItem` para renderizar cada sección.
+
+Ejemplo de uso:
+```tsx
+const [expandedSection, setExpandedSection] = useState<string | null>(null);
+
+<Accordion
+  sections={[
+    {
+      id: 'section1',
+      title: 'Primera sección',
+      content: <div>Contenido de la primera sección</div>
+    },
+    {
+      id: 'section2',
+      title: 'Segunda sección',
+      content: <div>Contenido de la segunda sección</div>
+    }
+  ]}
+  expandedSection={expandedSection}
+  onSectionChange={setExpandedSection}
+/>
 ``` 
