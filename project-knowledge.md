@@ -111,3 +111,39 @@
 - Dev mode con debug UI: `?debug=true` en URL
 - Forzar modo fallback FFmpeg: `?ffmpeg=fallback`
 - Logs detallados: `localStorage.debug = '*'` 
+
+## Componentes del sistema de diseño
+
+### Tabs
+Componente reutilizable para crear pestañas en la interfaz. Se encuentra en `src/components/design-system/Tabs.tsx`.
+
+Propiedades:
+- `tabs`: Array de objetos con la siguiente estructura:
+  - `id`: Identificador único de la pestaña
+  - `label`: Texto a mostrar en la pestaña
+  - `content`: Contenido JSX a mostrar cuando la pestaña está activa
+- `activeTab`: ID de la pestaña actualmente activa
+- `onTabChange`: Función que se llama cuando se cambia de pestaña
+- `className`: Clases CSS adicionales para el contenedor principal
+
+Ejemplo de uso:
+```tsx
+const tabs = [
+  {
+    id: 'tab1',
+    label: 'Primera pestaña',
+    content: <div>Contenido de la primera pestaña</div>
+  },
+  {
+    id: 'tab2',
+    label: 'Segunda pestaña',
+    content: <div>Contenido de la segunda pestaña</div>
+  }
+];
+
+<Tabs
+  tabs={tabs}
+  activeTab={activeTab}
+  onTabChange={setActiveTab}
+/>
+``` 
