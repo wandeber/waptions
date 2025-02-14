@@ -15,7 +15,13 @@
 - `VideoEditor/`: Contains core components for video editing
   - `Timeline.tsx`: Video navigation timeline
   - `VideoViewport.tsx`: Main video viewer
-  - `SubtitleEditor.tsx`: Subtitle editor
+  - `SubtitleEditor/`: Subtitle editor module
+    - `index.tsx`: Main component that orchestrates the editor
+    - `types.ts`: Types and constants
+    - `TextStyleSection.tsx`: Text style configuration
+    - `BackgroundSection.tsx`: Background style configuration
+    - `AnimationSection.tsx`: Entry/exit animation configuration
+    - `SubtitleList.tsx`: List of subtitles with editing capabilities
   - `SubtitleTrack.tsx`: Subtitle track in timeline
   - `FontSelector.tsx`: Subtitle font selector
   - `ExportButton.tsx`: Video export handling with FPS preservation from source video
@@ -182,4 +188,28 @@ const [expandedSection, setExpandedSection] = useState<string | null>(null);
   expandedSection={expandedSection}
   onSectionChange={setExpandedSection}
 />
-``` 
+```
+
+### SubtitleEditor
+Módulo para la edición de subtítulos. Se encuentra en `src/components/video-editor/subtitle-editor/`.
+
+Estructura:
+- `index.tsx`: Componente principal que orquesta el editor
+- `types.ts`: Tipos y constantes
+- `TextStyleSection.tsx`: Configuración de estilo de texto
+- `BackgroundSection.tsx`: Configuración de estilo de fondo
+- `AnimationSection.tsx`: Configuración de animaciones de entrada/salida
+- `SubtitleList.tsx`: Lista de subtítulos con capacidades de edición
+
+Características principales:
+- Edición de texto con soporte para división y unión de subtítulos
+- Configuración completa de estilos visuales
+- Animaciones de entrada y salida configurables
+- Generación automática de subtítulos con IA
+- Atajos de teclado para operaciones comunes
+
+Atajos de teclado:
+- `Enter`: Dividir subtítulo en la posición del cursor
+- `Ctrl+Enter`: Insertar salto de línea
+- `Backspace` al inicio: Unir con subtítulo anterior
+- `Delete`: Eliminar subtítulo seleccionado 

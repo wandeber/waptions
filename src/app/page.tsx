@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react';
 import { VideoViewport } from '@/components/video-editor/VideoViewport';
 import { Timeline } from '@/components/video-editor/Timeline';
-import { SubtitleEditor } from '@/components/video-editor/SubtitleEditor';
+import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
 import { ExportButton } from '@/components/video-editor/ExportButton';
 import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
 

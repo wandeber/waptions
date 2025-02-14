@@ -1,0 +1,376 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import type { Subtitle } from '../SubtitleTrack';
+import { Tabs } from '../../design-system/Tabs';
+import { Accordion } from '../../design-system/Accordion';
+import { TextStyleSection } from './TextStyleSection';
+import { BackgroundSection } from './BackgroundSection';
+import { AnimationSection } from './AnimationSection';
+import { SubtitleList } from './SubtitleList';
+import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
+import { defaultAnimationStyle } from './types';
+
+export function SubtitleEditor({ 
+  subtitles, 
+  selectedSubtitleId, 
+  onSubtitleClick, 
+  onDelete, 
+  onSubtitlesChange, 
+  currentTime, 
+  onGenerateSubtitles, 
+  isGeneratingSubtitles,
+  onAnimationStyleChange,
+  animationStyle = defaultAnimationStyle
+}: SubtitleEditorProps) {
+  const [editingText, setEditingText] = useState<{[key: string]: string}>({});
+  const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
+  const [expandedStyleSection, setExpandedStyleSection] = useState<string | null>(null);
+  const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
+    ...defaultAnimationStyle,
+    ...animationStyle
+  });
+
+  // Efecto para sincronizar los estilos locales con los props
+  useEffect(() => {
+    setLocalAnimationStyle({
+      ...defaultAnimationStyle,
+      ...animationStyle
+    });
+  }, [animationStyle]);
+
+  // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
+  useEffect(() => {
+    const newEditingText: {[key: string]: string} = {};
+    let needsUpdate = false;
+
+    subtitles.forEach(subtitle => {
+      if (!(subtitle.id in editingText)) {
+        newEditingText[subtitle.id] = subtitle.text;
+        needsUpdate = true;
+      }
+    });
+
+    if (needsUpdate) {
+      setEditingText(prev => ({...prev, ...newEditingText}));
+    }
+  }, [subtitles, editingText]);
+
+  const handleTextChange = (subtitle: Subtitle, newText: string) => {
+    setEditingText(prev => ({...prev, [subtitle.id]: newText}));
+    
+    if (onSubtitlesChange) {
+      const updatedSubtitles = subtitles.map(s => 
+        s.id === subtitle.id ? { ...s, text: newText } : s
+      );
+      onSubtitlesChange(updatedSubtitles);
+    }
+  };
+
+  const handleStyleChange = (key: keyof SubtitleAnimationStyle, value: number | boolean | string) => {
+    const newStyle = { ...localAnimationStyle, [key]: value };
+    setLocalAnimationStyle(newStyle);
+    onAnimationStyleChange?.(newStyle);
+  };
+
+  const handleSubtitleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => {
+    if (e.key === 'Enter') {
+      if (e.ctrlKey) {
+        // Permitir el comportamiento por defecto para insertar salto de línea
+        const textarea = e.currentTarget;
+        const cursorPosition = textarea.selectionStart;
+        const currentText = editingText[subtitle.id] || '';
+        const newText = currentText.slice(0, cursorPosition) + '\n' + currentText.slice(cursorPosition);
+        handleTextChange(subtitle, newText);
+        
+        // Mover el cursor después del salto de línea
+        requestAnimationFrame(() => {
+          textarea.setSelectionRange(cursorPosition + 1, cursorPosition + 1);
+        });
+        return;
+      }
+
+      e.preventDefault();
+      
+      const textarea = e.currentTarget;
+      const cursorPosition = textarea.selectionStart;
+      const currentText = editingText[subtitle.id] || '';
+
+      // No crear nuevo subtítulo si el texto está vacío
+      if (!currentText.trim()) {
+        return;
+      }
+      
+      // Dividir el texto en dos partes según la posición del cursor y limpiar espacios en la zona del split
+      const firstPart = currentText.slice(0, cursorPosition).replace(/\s+$/, '');
+      const secondPart = currentText.slice(cursorPosition).replace(/^\s+/, '');
+      
+      // Calcular los tiempos para los dos nuevos subtítulos
+      const originalDuration = subtitle.endTime - subtitle.startTime;
+      const splitRatio = cursorPosition / currentText.length;
+
+      // Si estamos al final del texto, asegurar una duración mínima de 1 segundo para el nuevo subtítulo
+      const isAtEnd = cursorPosition >= currentText.length;
+      const minDuration = 1; // 1 segundo
+      
+      let splitTime: number;
+      let newSubtitle: Subtitle;
+      
+      if (isAtEnd) {
+        splitTime = subtitle.endTime;
+        // Ajustar el tiempo final del nuevo subtítulo para asegurar la duración mínima
+        const newEndTime = splitTime + minDuration;
+        
+        // Actualizar el subtítulo original (sin cambios en su duración)
+        const updatedOriginal: Subtitle = {
+          ...subtitle,
+          text: firstPart
+        };
+        
+        // Crear el nuevo subtítulo con la duración mínima
+        newSubtitle = {
+          id: Date.now().toString(),
+          startTime: splitTime,
+          endTime: newEndTime,
+          text: secondPart
+        };
+        
+        // Actualizar el estado local de edición
+        setEditingText(prev => ({
+          ...prev,
+          [updatedOriginal.id]: firstPart,
+          [newSubtitle.id]: secondPart
+        }));
+        
+        // Guardar ambos subtítulos
+        onSubtitlesChange?.([...subtitles, newSubtitle]);
+        onSubtitleClick?.(newSubtitle);
+      } else {
+        // Comportamiento normal para división en medio del texto
+        splitTime = subtitle.startTime + (originalDuration * splitRatio);
+        
+        // Actualizar el subtítulo original con la primera parte
+        const updatedOriginal: Subtitle = {
+          ...subtitle,
+          text: firstPart,
+          endTime: splitTime
+        };
+        
+        // Crear el nuevo subtítulo con la segunda parte
+        newSubtitle = {
+          id: Date.now().toString(),
+          startTime: splitTime,
+          endTime: subtitle.endTime,
+          text: secondPart
+        };
+        
+        // Actualizar el estado local de edición
+        setEditingText(prev => ({
+          ...prev,
+          [updatedOriginal.id]: firstPart,
+          [newSubtitle.id]: secondPart
+        }));
+        
+        // Guardar ambos subtítulos
+        onSubtitlesChange?.([...subtitles, newSubtitle]);
+        onSubtitleClick?.(newSubtitle);
+      }
+    } else if (e.key === 'Backspace') {
+      const textarea = e.currentTarget;
+      const currentText = editingText[subtitle.id] || '';
+      
+      // Si el texto no está vacío y no estamos al inicio, permitir el comportamiento normal
+      if (currentText.length > 0 && textarea.selectionStart !== 0) {
+        return;
+      }
+
+      // Encontrar el subtítulo anterior
+      const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+      const currentIndex = sortedSubtitles.findIndex(s => s.id === subtitle.id);
+      if (currentIndex <= 0) {
+        return; // No hay subtítulo anterior
+      }
+
+      e.preventDefault();
+      const previousSubtitle = sortedSubtitles[currentIndex - 1];
+      const previousText = editingText[previousSubtitle.id] || '';
+
+      // Si el texto actual está vacío, simplemente borrar el subtítulo
+      if (!currentText) {
+        // Actualizar el subtítulo anterior para que llegue hasta el final del actual
+        const updatedPrevious: Subtitle = {
+          ...previousSubtitle,
+          endTime: subtitle.endTime
+        };
+
+        // Actualizar el estado local de edición
+        setEditingText(prev => {
+          const newState = { ...prev };
+          delete newState[subtitle.id];
+          return newState;
+        });
+
+        // Actualizar los subtítulos y eliminar el actual
+        const updatedSubtitles = subtitles
+          .filter(s => s.id !== subtitle.id)
+          .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
+        
+        onSubtitlesChange?.(updatedSubtitles);
+        onSubtitleClick?.(updatedPrevious);
+
+        // Mover el foco al textarea anterior y posicionar el cursor al final
+        requestAnimationFrame(() => {
+          const previousTextarea = document.getElementById(`subtitle-${previousSubtitle.id}`) as HTMLTextAreaElement;
+          if (previousTextarea) {
+            previousTextarea.focus();
+            previousTextarea.setSelectionRange(previousText.length, previousText.length);
+          }
+        });
+        return;
+      }
+
+      // Si hay texto, unir con el anterior
+      // Unir los textos con un espacio, eliminando espacios extra
+      const combinedText = `${previousText.trim()} ${currentText.trim()}`.trim();
+
+      // Actualizar el subtítulo anterior con el texto combinado y la nueva duración
+      const updatedPrevious: Subtitle = {
+        ...previousSubtitle,
+        text: combinedText,
+        endTime: subtitle.endTime
+      };
+
+      // Actualizar el estado local de edición
+      setEditingText(prev => {
+        const newState = { ...prev };
+        delete newState[subtitle.id];
+        return {
+          ...newState,
+          [previousSubtitle.id]: combinedText
+        };
+      });
+
+      // Actualizar los subtítulos y eliminar el actual
+      const updatedSubtitles = subtitles
+        .filter(s => s.id !== subtitle.id)
+        .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
+      
+      onSubtitlesChange?.(updatedSubtitles);
+      onSubtitleClick?.(updatedPrevious);
+
+      // Calcular la posición del cursor donde ocurre el join
+      const joinPosition = previousText.length;
+
+      // Mover el foco al textarea anterior y posicionar el cursor en el punto de unión
+      requestAnimationFrame(() => {
+        const previousTextarea = document.getElementById(`subtitle-${previousSubtitle.id}`) as HTMLTextAreaElement;
+        if (previousTextarea) {
+          previousTextarea.focus();
+          previousTextarea.setSelectionRange(joinPosition, joinPosition);
+        }
+      });
+    }
+  };
+
+  // Efecto para manejar atajos de teclado
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Si no hay subtítulo seleccionado, no hacemos nada
+      if (!selectedSubtitleId) return;
+
+      // Borrar subtítulo con tecla Supr/Delete
+      if (e.key === 'Delete') {
+        onDelete?.(selectedSubtitleId);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedSubtitleId, onDelete]);
+
+  const styleContent = (
+    <Accordion
+      sections={[
+        {
+          id: 'textStyle',
+          title: 'Estilo del texto',
+          content: (
+            <TextStyleSection
+              style={localAnimationStyle}
+              onStyleChange={handleStyleChange}
+            />
+          )
+        },
+        {
+          id: 'background',
+          title: 'Fondo',
+          content: (
+            <BackgroundSection
+              style={localAnimationStyle}
+              onStyleChange={handleStyleChange}
+            />
+          )
+        },
+        {
+          id: 'entryAnimation',
+          title: 'Animación de entrada',
+          content: (
+            <AnimationSection
+              style={localAnimationStyle}
+              onStyleChange={handleStyleChange}
+              type="entry"
+            />
+          )
+        },
+        {
+          id: 'exitAnimation',
+          title: 'Animación de salida',
+          content: (
+            <AnimationSection
+              style={localAnimationStyle}
+              onStyleChange={handleStyleChange}
+              type="exit"
+            />
+          )
+        }
+      ]}
+      expandedSection={expandedStyleSection}
+      onSectionChange={setExpandedStyleSection}
+    />
+  );
+
+  const tabs = [
+    {
+      id: 'subtitles',
+      label: 'Subtítulos',
+      content: (
+        <SubtitleList
+          subtitles={subtitles}
+          selectedSubtitleId={selectedSubtitleId}
+          editingText={editingText}
+          currentTime={currentTime}
+          onSubtitleClick={onSubtitleClick}
+          onDelete={onDelete}
+          onSubtitlesChange={onSubtitlesChange}
+          onGenerateSubtitles={onGenerateSubtitles}
+          isGeneratingSubtitles={isGeneratingSubtitles}
+          onTextChange={handleTextChange}
+          onKeyDown={handleSubtitleKeyDown}
+        />
+      )
+    },
+    {
+      id: 'style',
+      label: 'Estilo',
+      content: styleContent
+    }
+  ];
+
+  return (
+    <Tabs
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={(tabId) => setActiveTab(tabId as 'subtitles' | 'style')}
+    />
+  );
+} 
