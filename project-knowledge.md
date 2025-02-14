@@ -10,6 +10,13 @@
 ### Design System
 - `design-system/`: Contains reusable UI components
   - `Button.tsx`: Base button component with variants (primary, secondary, danger, ghost) and sizes (xs to lg)
+  - **Checkboxes**: Deben estar dentro de un contenedor con las clases `flex items-center gap-2` para mantener la alineación consistente con el label
+  - **Accordion**: 
+    - Usa `grid-template-rows` con valores `[0fr]` y `[1fr]` para animar el colapso/expansión
+    - La transición se aplica con `transition-[grid-template-rows]`
+    - Estructura anidada: grid > overflow-hidden > contenido
+    - No requiere JavaScript para calcular alturas
+    - Importante: El contenido debe estar envuelto en un div con padding para evitar saltos visuales
 
 ### Core Components
 - `VideoEditor/`: Contains core components for video editing

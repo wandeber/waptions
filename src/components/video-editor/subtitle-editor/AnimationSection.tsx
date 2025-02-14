@@ -53,7 +53,7 @@ export function AnimationSection({ style, onStyleChange, type }: AnimationSectio
           />
         </div>
 
-        <div className="items-center gap-2">
+        <div className="flex items-center gap-2">
           <input
             type="checkbox"
             checked={style.useElasticEffect}

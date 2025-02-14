@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Fixed video FPS detection in ExportButton to use detected FPS instead of resolution-based calculation
 - Customized scrollbars to match dark theme using bg-gray-800 for track and bg-gray-700 for thumb
+- Fixed checkbox alignment in AnimationSection for "Usar efecto elástico" option
+- Fixed Accordion height not updating when content changes
+
+### Changed
+- Improved Accordion animation using CSS grid-template-rows for smoother transitions
 
 ## [0.1.0] - 2024-03-20
 

@@ -34,16 +34,21 @@ function AccordionItem({
       >
         <span>{title}</span>
         <ChevronDownIcon 
-          className={`w-5 h-5 transition-transform ${
+          className={`w-5 h-5 transition-transform duration-300 ${
             !isExpanded ? '-rotate-90' : ''
           }`}
         />
       </button>
-      {isExpanded && (
-        <div className="flex flex-col gap-6 px-4 pb-4">
-          {children}
+      <div 
+        className={`grid transition-[grid-template-rows] duration-300 ease-out
+          ${isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+      >
+        <div className="overflow-hidden">
+          <div className="flex flex-col gap-6 px-4 pb-4">
+            {children}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
