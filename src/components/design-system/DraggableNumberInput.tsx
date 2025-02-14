@@ -11,6 +11,10 @@ interface DraggableNumberInputProps {
   unit?: string;
   className?: string;
   defaultValue?: number;
+  /** Layout del componente. 'stacked' muestra el label arriba, 'horizontal' lo muestra a la izquierda */
+  layout?: 'stacked' | 'horizontal';
+  /** Ancho del label cuando el layout es horizontal. Por defecto se ajusta al contenido */
+  labelWidth?: number;
 }
 
 /**
@@ -22,6 +26,7 @@ interface DraggableNumberInputProps {
  * - Hold Shift for fine control (0.1x sensitivity)
  * - Double click on label to reset to default value
  * - Click reset button to restore default value
+ * - Supports stacked (default) and horizontal layouts
  */
 export function DraggableNumberInput({
   value,
@@ -32,7 +37,9 @@ export function DraggableNumberInput({
   label,
   unit = '',
   className = '',
-  defaultValue = 0
+  defaultValue = 0,
+  layout = 'stacked',
+  labelWidth
 }: DraggableNumberInputProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [startX, setStartX] = useState(0);
@@ -184,17 +191,27 @@ export function DraggableNumberInput({
   };
 
   return (
-    <div className={`flex flex-col gap-2 ${className}`}>
+    <div className={`
+      ${layout === 'stacked' ? 'flex flex-col gap-2' : 'flex items-center gap-3'}
+      ${className}
+    `}>
       {label && (
         <label 
-          className="text-sm text-gray-300 cursor-ew-resize select-none" 
+          className={`
+            text-sm text-gray-300 cursor-ew-resize select-none
+            ${layout === 'horizontal' ? 'truncate' : ''}
+          `}
+          style={layout === 'horizontal' && labelWidth ? { width: labelWidth } : undefined}
           onMouseDown={handleDragStart}
-          title="Arrastra para cambiar valor. Doble clic para restablecer valor por defecto"
+          title={layout === 'horizontal' ? label : "Arrastra para cambiar valor. Doble clic para restablecer valor por defecto"}
         >
           {label}
         </label>
       )}
-      <div className="relative flex items-center">
+      <div className={`
+        relative flex items-center
+        ${layout === 'horizontal' ? 'min-w-[120px] flex-1' : ''}
+      `}>
         {/* Overlay de arrastre - solo visible durante el arrastre */}
         <div
           ref={dragOverlayRef}

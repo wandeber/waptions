@@ -864,22 +864,20 @@ export function SubtitleEditor({
                           max={100}
                           step={1}
                           unit="px"
+                          layout="horizontal"
+                          labelWidth={100}
                         />
-                        <div className="flex flex-col gap-2">
-                          <label className="text-xs text-gray-400">Vertical (Y)</label>
-                          <div className="flex gap-4 items-center">
-                            <input
-                              type="range"
-                              min="-100"
-                              max="100"
-                              step="1"
-                              value={localAnimationStyle.backgroundOffsetY}
-                              onChange={(e) => handleStyleChange('backgroundOffsetY', parseInt(e.target.value))}
-                              className="flex-1"
-                            />
-                            <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundOffsetY}px</div>
-                          </div>
-                        </div>
+                        <DraggableNumberInput
+                          label="Vertical (Y)"
+                          value={localAnimationStyle.backgroundOffsetY}
+                          onChange={(value) => handleStyleChange('backgroundOffsetY', value)}
+                          min={-100}
+                          max={100}
+                          step={1}
+                          unit="px"
+                          layout="horizontal"
+                          labelWidth={100}
+                        />
                       </div>
                     </div>
                   </div>
