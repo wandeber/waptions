@@ -551,19 +551,17 @@ export function SubtitleEditor({
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Tamaño de fuente</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="24"
-                          max="96"
-                          step="1"
-                          value={localAnimationStyle.fontSize}
-                          onChange={(e) => handleStyleChange('fontSize', parseInt(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fontSize}px</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Tamaño"
+                        value={localAnimationStyle.fontSize}
+                        onChange={(value) => handleStyleChange('fontSize', value)}
+                        min={24}
+                        max={96}
+                        step={1}
+                        unit="px"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     <div className="flex items-center gap-4">
@@ -606,19 +604,17 @@ export function SubtitleEditor({
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Grosor del borde</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="8"
-                          step="0.5"
-                          value={localAnimationStyle.strokeWidth}
-                          onChange={(e) => handleStyleChange('strokeWidth', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.strokeWidth}px</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Grosor del borde"
+                        value={localAnimationStyle.strokeWidth}
+                        onChange={(value) => handleStyleChange('strokeWidth', value)}
+                        min={0}
+                        max={8}
+                        step={0.5}
+                        unit="px"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     <div className="flex flex-col gap-2">
@@ -750,21 +746,17 @@ export function SubtitleEditor({
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Opacidad</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={localAnimationStyle.backgroundOpacity}
-                          onChange={(e) => handleStyleChange('backgroundOpacity', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">
-                          {Math.round(localAnimationStyle.backgroundOpacity * 100)}%
-                        </div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Opacidad"
+                        value={Math.round(localAnimationStyle.backgroundOpacity * 100)}
+                        onChange={(value) => handleStyleChange('backgroundOpacity', value / 100)}
+                        min={0}
+                        max={100}
+                        step={5}
+                        unit="%"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     {/* Borde del fondo */}
@@ -787,69 +779,61 @@ export function SubtitleEditor({
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Grosor del borde</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="8"
-                          step="0.5"
-                          value={localAnimationStyle.backgroundBorderWidth}
-                          onChange={(e) => handleStyleChange('backgroundBorderWidth', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundBorderWidth}px</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Grosor del borde"
+                        value={localAnimationStyle.backgroundBorderWidth}
+                        onChange={(value) => handleStyleChange('backgroundBorderWidth', value)}
+                        min={0}
+                        max={8}
+                        step={0.5}
+                        unit="px"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     {/* Márgenes */}
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Margen vertical</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="32"
-                          step="2"
-                          value={localAnimationStyle.backgroundMarginVertical}
-                          onChange={(e) => handleStyleChange('backgroundMarginVertical', parseInt(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundMarginVertical}px</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Margen vertical"
+                        value={localAnimationStyle.backgroundMarginVertical}
+                        onChange={(value) => handleStyleChange('backgroundMarginVertical', value)}
+                        min={0}
+                        max={32}
+                        step={2}
+                        unit="px"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Margen horizontal</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="64"
-                          step="4"
-                          value={localAnimationStyle.backgroundMarginHorizontal}
-                          onChange={(e) => handleStyleChange('backgroundMarginHorizontal', parseInt(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundMarginHorizontal}px</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Margen horizontal"
+                        value={localAnimationStyle.backgroundMarginHorizontal}
+                        onChange={(value) => handleStyleChange('backgroundMarginHorizontal', value)}
+                        min={0}
+                        max={64}
+                        step={4}
+                        unit="px"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     {/* Redondeo de esquinas */}
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Redondeo de esquinas</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="16"
-                          step="1"
-                          value={localAnimationStyle.backgroundBorderRadius}
-                          onChange={(e) => handleStyleChange('backgroundBorderRadius', parseInt(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundBorderRadius}px</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Redondeo"
+                        value={localAnimationStyle.backgroundBorderRadius}
+                        onChange={(value) => handleStyleChange('backgroundBorderRadius', value)}
+                        min={0}
+                        max={16}
+                        step={1}
+                        unit="px"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     {/* Offset del fondo */}
@@ -900,51 +884,45 @@ export function SubtitleEditor({
                 {!collapsedSections.entryAnimation && (
                   <div className="flex flex-col gap-6 mt-4">
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Duración</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.5"
-                          step="0.05"
-                          value={localAnimationStyle.fadeInDuration}
-                          onChange={(e) => handleStyleChange('fadeInDuration', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeInDuration}s</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Duración"
+                        value={localAnimationStyle.fadeInDuration * 1000}
+                        onChange={(value) => handleStyleChange('fadeInDuration', value / 1000)}
+                        min={0}
+                        max={500}
+                        step={50}
+                        unit="ms"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Escala inicial</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="1"
-                          max="2"
-                          step="0.1"
-                          value={localAnimationStyle.initialScale}
-                          onChange={(e) => handleStyleChange('initialScale', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.initialScale}x</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Escala inicial"
+                        value={localAnimationStyle.initialScale * 100}
+                        onChange={(value) => handleStyleChange('initialScale', value / 100)}
+                        min={100}
+                        max={200}
+                        step={10}
+                        unit="%"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Intensidad del rebote</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="3"
-                          step="0.1"
-                          value={localAnimationStyle.bounceStrength}
-                          onChange={(e) => handleStyleChange('bounceStrength', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.bounceStrength}</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Rebote"
+                        value={localAnimationStyle.bounceStrength * 100}
+                        onChange={(value) => handleStyleChange('bounceStrength', value / 100)}
+                        min={0}
+                        max={300}
+                        step={10}
+                        unit="%"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -976,19 +954,17 @@ export function SubtitleEditor({
                 {!collapsedSections.exitAnimation && (
                   <div className="flex flex-col gap-6 mt-4">
                     <div className="flex flex-col gap-2">
-                      <label className="text-sm text-gray-300">Duración</label>
-                      <div className="flex gap-4 items-center">
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.5"
-                          step="0.05"
-                          value={localAnimationStyle.fadeOutDuration}
-                          onChange={(e) => handleStyleChange('fadeOutDuration', parseFloat(e.target.value))}
-                          className="flex-1"
-                        />
-                        <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.fadeOutDuration}s</div>
-                      </div>
+                      <DraggableNumberInput
+                        label="Duración"
+                        value={localAnimationStyle.fadeOutDuration * 1000}
+                        onChange={(value) => handleStyleChange('fadeOutDuration', value / 1000)}
+                        min={0}
+                        max={500}
+                        step={50}
+                        unit="ms"
+                        layout="horizontal"
+                        labelWidth={100}
+                      />
                     </div>
                   </div>
                 )}
