@@ -8,6 +8,7 @@ import { PlusIcon } from '../icons/PlusIcon';
 import { CloseIcon } from '../icons/CloseIcon';
 import { ChevronDownIcon } from '../icons/ChevronDownIcon';
 import { Button } from '../design-system/Button';
+import { DraggableNumberInput } from '../design-system/DraggableNumberInput';
 
 interface SubtitleEditorProps {
   subtitles: Subtitle[];
@@ -855,21 +856,15 @@ export function SubtitleEditor({
                     <div className="flex flex-col gap-2">
                       <label className="text-sm text-gray-300">Desplazamiento del fondo</label>
                       <div className="flex flex-col gap-4">
-                        <div className="flex flex-col gap-2">
-                          <label className="text-xs text-gray-400">Horizontal (X)</label>
-                          <div className="flex gap-4 items-center">
-                            <input
-                              type="range"
-                              min="-100"
-                              max="100"
-                              step="1"
-                              value={localAnimationStyle.backgroundOffsetX}
-                              onChange={(e) => handleStyleChange('backgroundOffsetX', parseInt(e.target.value))}
-                              className="flex-1"
-                            />
-                            <div className="text-xs text-gray-400 w-12 text-right">{localAnimationStyle.backgroundOffsetX}px</div>
-                          </div>
-                        </div>
+                        <DraggableNumberInput
+                          label="Horizontal (X)"
+                          value={localAnimationStyle.backgroundOffsetX}
+                          onChange={(value) => handleStyleChange('backgroundOffsetX', value)}
+                          min={-100}
+                          max={100}
+                          step={1}
+                          unit="px"
+                        />
                         <div className="flex flex-col gap-2">
                           <label className="text-xs text-gray-400">Vertical (Y)</label>
                           <div className="flex gap-4 items-center">
