@@ -143,8 +143,19 @@ export function SubtitleEditor({
         }));
         
         // Guardar ambos subtítulos
-        onSubtitlesChange?.([...subtitles, newSubtitle]);
+        onSubtitlesChange?.([...subtitles.map(s => 
+          s.id === subtitle.id ? { ...s, text: firstPart, endTime: splitTime } : s
+        ), newSubtitle]);
         onSubtitleClick?.(newSubtitle);
+
+        // Mover el foco al nuevo textarea
+        requestAnimationFrame(() => {
+          const newTextarea = document.getElementById(`subtitle-${newSubtitle.id}`) as HTMLTextAreaElement;
+          if (newTextarea) {
+            newTextarea.focus();
+            newTextarea.setSelectionRange(0, 0);
+          }
+        });
       } else {
         // Comportamiento normal para división en medio del texto
         splitTime = subtitle.startTime + (originalDuration * splitRatio);
@@ -172,8 +183,19 @@ export function SubtitleEditor({
         }));
         
         // Guardar ambos subtítulos
-        onSubtitlesChange?.([...subtitles, newSubtitle]);
+        onSubtitlesChange?.([...subtitles.map(s => 
+          s.id === subtitle.id ? { ...s, text: firstPart, endTime: splitTime } : s
+        ), newSubtitle]);
         onSubtitleClick?.(newSubtitle);
+
+        // Mover el foco al nuevo textarea
+        requestAnimationFrame(() => {
+          const newTextarea = document.getElementById(`subtitle-${newSubtitle.id}`) as HTMLTextAreaElement;
+          if (newTextarea) {
+            newTextarea.focus();
+            newTextarea.setSelectionRange(0, 0);
+          }
+        });
       }
     } else if (e.key === 'Backspace') {
       const textarea = e.currentTarget;

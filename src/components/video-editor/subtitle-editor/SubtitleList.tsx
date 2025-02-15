@@ -116,6 +116,7 @@ export function SubtitleList({
                 ref={el => {
                   textAreasRef.current[subtitle.id] = el;
                 }}
+                id={`subtitle-${subtitle.id}`}
                 className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden transition-colors border border-transparent focus:border-blue-500/50 focus:bg-gray-700 focus:outline-none"
                 value={editingText[subtitle.id] || ''}
                 onChange={(e) => onTextChange(subtitle, e.target.value)}

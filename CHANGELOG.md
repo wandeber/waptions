@@ -8,18 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Design System: Added base Button component with variants and sizes
-- Design System: Added new 'ghost' variant for transparent buttons
-- Design System: Added new 'xs' size for smaller buttons
-- Refactored Timeline component to use the new Button component
-- Refactored SubtitleEditor to use the new Button variants
-- Refactored ExportButton to use the new Button component
+- Design System: Enhanced Button component with new variants (ghost) and sizes (xs)
+- Refactored core components to use the new Button system
 
 ### Fixed
-- Fixed video FPS detection in ExportButton to use detected FPS instead of resolution-based calculation
-- Customized scrollbars to match dark theme using bg-gray-800 for track and bg-gray-700 for thumb
-- Fixed checkbox alignment in AnimationSection for "Usar efecto elástico" option
-- Fixed Accordion height not updating when content changes
+- Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management
+- Fixed Accordion animations and height calculations
+- Fixed video FPS detection in ExportButton
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions
