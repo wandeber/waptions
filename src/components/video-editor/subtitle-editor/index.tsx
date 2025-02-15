@@ -389,11 +389,15 @@ export function SubtitleEditor({
   ];
 
   return (
-    <Tabs
-      tabs={tabs}
-      activeTab={activeTab}
-      onTabChange={(tabId) => setActiveTab(tabId as 'subtitles' | 'style')}
+    <div 
+      className="flex-1 flex flex-col overflow-hidden select-none" 
       data-testid="subtitle-editor"
-    />
+    >
+      <Tabs
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={(tabId) => setActiveTab(tabId as 'subtitles' | 'style')}
+      />
+    </div>
   );
 } 

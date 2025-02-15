@@ -11,7 +11,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
-    "test:report": "playwright show-report"
+    "test:report": "playwright show-report",
+    "test:e2e:full": "playwright test && playwright show-report"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.3",
