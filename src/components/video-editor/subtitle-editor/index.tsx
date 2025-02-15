@@ -393,6 +393,7 @@ export function SubtitleEditor({
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={(tabId) => setActiveTab(tabId as 'subtitles' | 'style')}
+      data-testid="subtitle-editor"
     />
   );
 } 

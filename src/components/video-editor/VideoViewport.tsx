@@ -702,7 +702,10 @@ export function VideoViewport({
   }, [renderSubtitles]);
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-800 overflow-hidden select-none">
+    <div 
+      className="flex-1 flex flex-col bg-gray-800 overflow-hidden select-none"
+      data-testid="video-viewport"
+    >
       {/* Contenedor principal del video */}
       <div
         className="flex-1 bg-black relative flex items-center justify-center min-h-0"
@@ -853,7 +856,8 @@ export function VideoViewport({
             </div>
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center gap-4 text-gray-500 p-8 text-center">
+          <div className="flex flex-col items-center justify-center gap-4 text-gray-500 p-8 text-center"
+               data-testid="upload-zone">
             <Button
               onClick={() => !isLoading && fileInputRef.current?.click()}
               disabled={isLoading}

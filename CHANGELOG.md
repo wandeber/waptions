@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Design System: Enhanced Button component with new variants (ghost) and sizes (xs)
 - Refactored core components to use the new Button system
+- Configuración inicial de tests end-to-end con Playwright
+- Tests básicos para la página principal y funcionalidad de carga de vídeos
+- Integración de tests en el proceso de desarrollo
 
 ### Fixed
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management
@@ -18,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions
+- Añadidos data-testid a componentes principales para facilitar testing
 
 ## [0.1.0] - 2024-03-20
 

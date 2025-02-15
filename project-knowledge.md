@@ -87,4 +87,28 @@ Atajos de teclado:
 - Heap monitoring: `--enable-precise-memory-info`
 - Dev mode: `?debug=true` en URL
 - FFmpeg fallback: `?ffmpeg=fallback`
-- Logs: `localStorage.debug = '*'` 
+- Logs: `localStorage.debug = '*'`
+
+## Testing E2E
+
+El proyecto utiliza Playwright para tests end-to-end. Configuración principal:
+
+- Los tests se encuentran en el directorio `e2e/`
+- Se prueban tres navegadores: Chrome, Firefox y Safari
+- Configuración en `playwright.config.ts`
+- Capturas de pantalla y vídeos automáticos en caso de fallos
+- Reportes HTML detallados
+
+### Comandos de testing
+
+- `npm run test:e2e`: Ejecuta todos los tests
+- `npm run test:e2e:ui`: Abre la interfaz visual de Playwright
+- `npm run test:e2e:debug`: Ejecuta los tests en modo debug
+
+### Buenas prácticas
+
+1. Usar data-testid para elementos importantes
+2. Mantener los tests independientes
+3. Verificar componentes críticos en cada página
+4. Probar flujos completos de usuario
+5. Documentar casos de prueba complejos 
