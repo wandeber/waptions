@@ -32,6 +32,7 @@ export interface SubtitleAnimationStyle {
   hidePunctuation: boolean;
   punctuationChars: string;
   removeAccents: boolean;
+  numberOfLines: number;
   // Propiedades de posición
   position: {
     x: number;
@@ -66,6 +67,7 @@ export const defaultAnimationStyle: SubtitleAnimationStyle = {
   hidePunctuation: false,
   punctuationChars: '¿?:-,.;¡!',
   removeAccents: false,
+  numberOfLines: 1,
   position: {
     x: 50,
     y: 80

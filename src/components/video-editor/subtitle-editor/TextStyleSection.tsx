@@ -111,6 +111,19 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
       </div>
 
       <div className="flex flex-col gap-2">
+        <DraggableNumberInput
+          label="Número de líneas"
+          value={style.numberOfLines}
+          onChange={(value) => onStyleChange('numberOfLines', value)}
+          min={1}
+          max={3}
+          step={1}
+          layout="horizontal"
+          labelWidth={100}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
         <label className="text-sm text-gray-300">Transformación del texto</label>
         <div className="flex gap-2">
           <button

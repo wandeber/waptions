@@ -493,13 +493,84 @@ export function VideoViewport({
     // Limpiar el canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Encontrar los próximos subtítulos para renderizar múltiples líneas
+    const getSubtitlesGroup = (currentTime: number) => {
+      // Ordenar subtítulos por tiempo de inicio
+      const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+
+      // Encontrar el primer subtítulo del grupo actual o el próximo grupo
+      const firstSubtitleIndex = sortedSubtitles.findIndex((subtitle, index) => {
+        // Encontrar el grupo al que pertenece este subtítulo
+        const groupStartIndex = Math.floor(index / animationStyle.numberOfLines) * animationStyle.numberOfLines;
+        const groupEndIndex = Math.min(groupStartIndex + animationStyle.numberOfLines - 1, sortedSubtitles.length - 1);
+        const groupEndTime = sortedSubtitles[groupEndIndex].endTime;
+        
+        return currentTime < groupEndTime && currentTime >= subtitle.startTime;
+      });
+
+      if (firstSubtitleIndex === -1) {
+        // Si no encontramos un subtítulo activo, buscar el próximo grupo
+        const nextSubtitleIndex = sortedSubtitles.findIndex(s => currentTime < s.startTime);
+        if (nextSubtitleIndex === -1) return [];
+        
+        const groupStartIndex = Math.floor(nextSubtitleIndex / animationStyle.numberOfLines) * animationStyle.numberOfLines;
+        return sortedSubtitles.slice(
+          groupStartIndex,
+          Math.min(groupStartIndex + animationStyle.numberOfLines, sortedSubtitles.length)
+        );
+      }
+
+      // Obtener el grupo completo basado en el índice encontrado
+      const groupStartIndex = Math.floor(firstSubtitleIndex / animationStyle.numberOfLines) * animationStyle.numberOfLines;
+      return sortedSubtitles.slice(
+        groupStartIndex,
+        Math.min(groupStartIndex + animationStyle.numberOfLines, sortedSubtitles.length)
+      );
+    };
+
     // Encontrar subtítulos activos y en transición
-    const subtitlesToRender = subtitles.filter(subtitle => {
-      const isActive = currentTime >= subtitle.startTime && currentTime < subtitle.endTime;
-      const isExiting = currentTime >= subtitle.endTime - animationStyle.fadeOutDuration && 
-                       currentTime < subtitle.endTime;
-      return isActive || isExiting;
-    });
+    const subtitlesToRender = (() => {
+      const group = getSubtitlesGroup(currentTime);
+      if (group.length === 0) return [];
+
+      const firstSubtitle = group[0];
+      const lastSubtitle = group[group.length - 1];
+
+      const isActive = currentTime >= firstSubtitle.startTime && currentTime < lastSubtitle.endTime;
+      const isExiting = currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration && 
+                       currentTime < lastSubtitle.endTime;
+
+      if (isActive || isExiting) return [firstSubtitle]; // Usamos el primer subtítulo como referencia
+      return [];
+    })();
+
+    // Función para procesar el texto
+    const processedText = (text: string) => {
+      let result = text;
+      if (animationStyle.textCase === 'uppercase') {
+        result = result.toUpperCase();
+      } else if (animationStyle.textCase === 'lowercase') {
+        result = result.toLowerCase();
+      }
+      if (animationStyle.hidePunctuation) {
+        const regex = new RegExp(`[${animationStyle.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`, 'g');
+        result = result.replace(regex, '');
+      }
+      if (animationStyle.removeAccents) {
+        result = result
+          .replace(/[áàäâã]/g, 'a')
+          .replace(/[éèëê]/g, 'e')
+          .replace(/[íìïî]/g, 'i')
+          .replace(/[óòöôõ]/g, 'o')
+          .replace(/[úùüû]/g, 'u')
+          .replace(/[ÁÀÄÂÃ]/g, 'A')
+          .replace(/[ÉÈËÊ]/g, 'E')
+          .replace(/[ÍÌÏÎ]/g, 'I')
+          .replace(/[ÓÒÖÔÕ]/g, 'O')
+          .replace(/[ÚÙÜÛ]/g, 'U');
+      }
+      return result;
+    };
 
     // Funciones de easing
     const easeOutBack = (x: number): number => {
@@ -514,56 +585,31 @@ export function VideoViewport({
     };
 
     // Renderizar cada subtítulo
-    subtitlesToRender.forEach(subtitle => {
+    subtitlesToRender.forEach(() => {
+      const subtitlesToShow = getSubtitlesGroup(currentTime);
+      if (subtitlesToShow.length === 0) return;
+
+      const firstSubtitle = subtitlesToShow[0];
+      const lastSubtitle = subtitlesToShow[subtitlesToShow.length - 1];
+      
       let opacity = 1;
       let scale = 1;
       
-      // Fade in con escala
-      if (currentTime >= subtitle.startTime && currentTime < subtitle.startTime + animationStyle.fadeInDuration) {
-        const progress = (currentTime - subtitle.startTime) / animationStyle.fadeInDuration;
+      // Fade in con escala - se aplica al inicio del primer subtítulo
+      if (currentTime >= firstSubtitle.startTime && currentTime < firstSubtitle.startTime + animationStyle.fadeInDuration) {
+        const progress = (currentTime - firstSubtitle.startTime) / animationStyle.fadeInDuration;
         opacity = easeOutExpo(progress);
         const scaleProgress = easeOutBack(progress);
         scale = 1 + ((animationStyle.initialScale - 1) * (1 - scaleProgress));
       }
-      // Fade out
-      else if (currentTime >= subtitle.endTime - animationStyle.fadeOutDuration && currentTime < subtitle.endTime) {
-        const progress = (subtitle.endTime - currentTime) / animationStyle.fadeOutDuration;
+      // Fade out - se aplica al final del último subtítulo
+      if (currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration && currentTime < lastSubtitle.endTime) {
+        const progress = (lastSubtitle.endTime - currentTime) / animationStyle.fadeOutDuration;
         opacity = progress;
       }
       
       // Asegurar que la opacidad esté entre 0 y 1
       opacity = Math.max(0, Math.min(1, opacity));
-
-      // Procesar el texto
-      const processedText = (text: string) => {
-        let result = text;
-        if (animationStyle.textCase === 'uppercase') {
-          result = result.toUpperCase();
-        } else if (animationStyle.textCase === 'lowercase') {
-          result = result.toLowerCase();
-        }
-        if (animationStyle.hidePunctuation) {
-          const regex = new RegExp(`[${animationStyle.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`, 'g');
-          result = result.replace(regex, '');
-        }
-        if (animationStyle.removeAccents) {
-          result = result
-            .replace(/[áàäâã]/g, 'a')
-            .replace(/[éèëê]/g, 'e')
-            .replace(/[íìïî]/g, 'i')
-            .replace(/[óòöôõ]/g, 'o')
-            .replace(/[úùüû]/g, 'u')
-            .replace(/[ÁÀÄÂÃ]/g, 'A')
-            .replace(/[ÉÈËÊ]/g, 'E')
-            .replace(/[ÍÌÏÎ]/g, 'I')
-            .replace(/[ÓÒÖÔÕ]/g, 'O')
-            .replace(/[ÚÙÜÛ]/g, 'U');
-        }
-        return result;
-      };
-
-      const text = processedText(subtitle.text);
-      const lines = text.split('\n');
 
       // Aplicar la transformación de escala
       ctx.save();
@@ -580,27 +626,41 @@ export function VideoViewport({
       ctx.textAlign = animationStyle.textAlign;
       ctx.textBaseline = 'middle';
 
-      // Medir todas las líneas para calcular el fondo
-      const lineMetrics = lines.map(line => ctx.measureText(line));
-      const maxTextWidth = Math.max(...lineMetrics.map(m => m.width));
+      // Procesar y medir todos los textos
+      interface ProcessedLine {
+        text: string;
+        metrics: TextMetrics;
+      }
+      const processedTexts = subtitlesToShow.map(s => {
+        const text = processedText(s.text);
+        return text.split('\n').map(line => ({
+          text: line,
+          metrics: ctx.measureText(line)
+        })) as ProcessedLine[];
+      });
+
+      // Calcular dimensiones máximas
+      const maxLineWidth = Math.max(
+        ...processedTexts.flatMap(lines => lines.map(line => line.metrics.width))
+      );
       const lineHeight = fontSize * 1.2; // 20% de espacio entre líneas
-      const totalTextHeight = lineHeight * lines.length;
+      const totalTextHeight = lineHeight * processedTexts.reduce((acc, lines) => acc + lines.length, 0);
       
       const padding = {
         vertical: animationStyle.backgroundMarginVertical,
         horizontal: animationStyle.backgroundMarginHorizontal
       };
-      const bgWidth = maxTextWidth + (padding.horizontal * 2);
+      const bgWidth = maxLineWidth + (padding.horizontal * 2);
       const bgHeight = totalTextHeight + (padding.vertical * 2);
 
       // Calcular la posición del fondo según la alineación del texto
       let bgX: number;
       switch (animationStyle.textAlign) {
         case 'left':
-          bgX = x - (bgWidth / 2) + (maxTextWidth / 2) + animationStyle.backgroundOffsetX;
+          bgX = x - (bgWidth / 2) + (maxLineWidth / 2) + animationStyle.backgroundOffsetX;
           break;
         case 'right':
-          bgX = x - (bgWidth / 2) - (maxTextWidth / 2) + animationStyle.backgroundOffsetX;
+          bgX = x - (bgWidth / 2) - (maxLineWidth / 2) + animationStyle.backgroundOffsetX;
           break;
         default: // center
           bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
@@ -651,11 +711,13 @@ export function VideoViewport({
       ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
       ctx.lineWidth = animationStyle.strokeWidth;
 
-      const startY = y - (totalTextHeight / 2) + (lineHeight / 2);
-      lines.forEach((line, index) => {
-        const lineY = startY + (index * lineHeight);
-        ctx.strokeText(line, x, lineY);
-        ctx.fillText(line, x, lineY);
+      let currentY = y - (totalTextHeight / 2) + (lineHeight / 2);
+      processedTexts.forEach(lines => {
+        lines.forEach(line => {
+          ctx.strokeText(line.text, x, currentY);
+          ctx.fillText(line.text, x, currentY);
+          currentY += lineHeight;
+        });
       });
       
       // Restaurar el contexto

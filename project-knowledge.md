@@ -136,4 +136,13 @@ The project uses Playwright for end-to-end testing. Main configuration:
 - X,Y position acts as anchor point for alignment:
   - Left alignment: text and background extend to the right
   - Center alignment: text and background are centered on the point
-  - Right alignment: text and background extend to the left 
+  - Right alignment: text and background extend to the left
+
+### Multiple Lines Display
+- Supports showing up to 3 subtitles simultaneously
+- Subtitles are grouped in fixed sets (e.g., 0-1-2, 3-4-5 for 3 lines)
+- Groups appear and disappear together with synchronized animations
+- Each group starts with the first subtitle and ends with the last one
+- Transitions between groups are smooth with fade in/out effects
+- Background adapts to accommodate all visible lines
+- Vertical spacing between lines is 120% of font size for readability 
