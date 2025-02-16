@@ -7,6 +7,8 @@ import { LoadVideoIcon } from '../icons/LoadVideoIcon';
 import { Button } from '../design-system/Button';
 import type { SubtitleAnimationStyle } from './subtitle-editor/types';
 import { defaultAnimationStyle } from './subtitle-editor/types';
+import { ThirdsGuideOverlay } from './overlays/ThirdsGuideOverlay';
+import { DevinGuideOverlay } from './overlays/DevinGuideOverlay';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number | null) => void;
@@ -23,6 +25,7 @@ interface VideoViewportProps {
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
   onEnded?: () => void;
   showThirdsGuide?: boolean;
+  showDevinGuide?: boolean;
   showMetaInfo?: boolean;
   animationStyle?: SubtitleAnimationStyle;
   onAudioExtracted?: (audioUrl: string) => void;
@@ -38,6 +41,7 @@ export function VideoViewport({
   canvasRef: externalCanvasRef,
   onEnded,
   showThirdsGuide = false,
+  showDevinGuide = false,
   showMetaInfo = false,
   animationStyle = defaultAnimationStyle,
   onAudioExtracted
@@ -907,23 +911,16 @@ export function VideoViewport({
                 {showThirdsGuide && videoRef.current && (() => {
                   const rect = getVideoDisplayRect();
                   if (!rect) return null;
-                  
+                  return <ThirdsGuideOverlay rect={rect} />;
+                })()}
+
+                {/* Guía de Devin */}
+                {showDevinGuide && videoRef.current && (() => {
+                  const rect = getVideoDisplayRect();
+                  if (!rect) return null;
                   return (
-                    <div 
-                      className="absolute pointer-events-none"
-                      style={{
-                        left: `${rect.left}px`,
-                        top: `${rect.top}px`,
-                        width: `${rect.width}px`,
-                        height: `${rect.height}px`
-                      }}
-                    >
-                      {/* Líneas verticales */}
-                      <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/30" />
-                      <div className="absolute right-1/3 top-0 bottom-0 w-px bg-white/30" />
-                      {/* Líneas horizontales */}
-                      <div className="absolute top-1/3 left-0 right-0 h-px bg-white/30" />
-                      <div className="absolute bottom-1/3 left-0 right-0 h-px bg-white/30" />
+                    <div className="absolute inset-0 z-10">
+                      <DevinGuideOverlay rect={rect} />
                     </div>
                   );
                 })()}

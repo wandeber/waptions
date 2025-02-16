@@ -16,6 +16,7 @@ export default function Home() {
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
+  const [showDevinGuide, setShowDevinGuide] = useState(false);
   const [showMetaInfo, setShowMetaInfo] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [animationStyle, setAnimationStyle] = useState({
@@ -76,6 +77,10 @@ export default function Home() {
     setShowThirdsGuide(!showThirdsGuide);
   };
 
+  const handleDevinGuideToggle = () => {
+    setShowDevinGuide(!showDevinGuide);
+  };
+
   const handleMetaInfoToggle = () => {
     setShowMetaInfo(!showMetaInfo);
   };
@@ -130,6 +135,7 @@ export default function Home() {
               canvasRef={canvasRef}
               onEnded={() => setIsPlaying(false)}
               showThirdsGuide={showThirdsGuide}
+              showDevinGuide={showDevinGuide}
               showMetaInfo={showMetaInfo}
               animationStyle={animationStyle}
               onAudioExtracted={handleAudioExtracted}
@@ -147,6 +153,8 @@ export default function Home() {
               fps={detectedFps ?? 0}
               showThirdsGuide={showThirdsGuide}
               onThirdsGuideToggle={handleThirdsGuideToggle}
+              showDevinGuide={showDevinGuide}
+              onDevinGuideToggle={handleDevinGuideToggle}
               showMetaInfo={showMetaInfo}
               onMetaInfoToggle={handleMetaInfoToggle}
               audioUrl={audioUrl || undefined}

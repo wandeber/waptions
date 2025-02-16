@@ -6,6 +6,7 @@ import { StopIcon } from '../icons/StopIcon';
 import { PlayIcon } from '../icons/PlayIcon';
 import { GridIcon } from '../icons/GridIcon';
 import { InfoIcon } from '../icons/InfoIcon';
+import { DevinIcon } from '../icons/DevinIcon';
 import { Button } from '../design-system/Button';
 
 interface TimelineProps {
@@ -21,6 +22,8 @@ interface TimelineProps {
   fps: number;
   showThirdsGuide?: boolean;
   onThirdsGuideToggle?: () => void;
+  showDevinGuide?: boolean;
+  onDevinGuideToggle?: () => void;
   showMetaInfo?: boolean;
   onMetaInfoToggle?: () => void;
   audioUrl?: string;
@@ -40,6 +43,8 @@ export function Timeline({
   fps,
   showThirdsGuide = false,
   onThirdsGuideToggle,
+  showDevinGuide = false,
+  onDevinGuideToggle,
   showMetaInfo = false,
   onMetaInfoToggle
 }: TimelineProps) {
@@ -255,6 +260,15 @@ export function Timeline({
             title="Mostrar guía de tercios"
           >
             <GridIcon />
+          </Button>
+
+          <Button
+            variant="secondary"
+            isActive={showDevinGuide}
+            onClick={onDevinGuideToggle}
+            title="Mostrar guía de Devin"
+          >
+            <DevinIcon />
           </Button>
 
           <Button
