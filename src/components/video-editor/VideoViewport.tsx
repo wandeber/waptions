@@ -5,6 +5,8 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { LoadVideoIcon } from '../icons/LoadVideoIcon';
 import { Button } from '../design-system/Button';
+import type { SubtitleAnimationStyle } from './subtitle-editor/types';
+import { defaultAnimationStyle } from './subtitle-editor/types';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number | null) => void;
@@ -22,32 +24,7 @@ interface VideoViewportProps {
   onEnded?: () => void;
   showThirdsGuide?: boolean;
   showMetaInfo?: boolean;
-  animationStyle?: {
-    fadeInDuration: number;
-    fadeOutDuration: number;
-    initialScale: number;
-    bounceStrength: number;
-    useElasticEffect: boolean;
-    fontSize: number;
-    textColor: string;
-    strokeWidth: number;
-    strokeColor: string;
-    fontWeight: number;
-    textCase: 'normal' | 'uppercase' | 'lowercase';
-    hidePunctuation: boolean;
-    punctuationChars: string;
-    removeAccents: boolean;
-    fontFamily: string;
-    backgroundColor: string;
-    backgroundOpacity: number;
-    backgroundBorderColor: string;
-    backgroundBorderWidth: number;
-    backgroundMarginVertical: number;
-    backgroundMarginHorizontal: number;
-    backgroundBorderRadius: number;
-    backgroundOffsetX: number;
-    backgroundOffsetY: number;
-  };
+  animationStyle?: SubtitleAnimationStyle;
   onAudioExtracted?: (audioUrl: string) => void;
 }
 
@@ -62,32 +39,7 @@ export function VideoViewport({
   onEnded,
   showThirdsGuide = false,
   showMetaInfo = false,
-  animationStyle = {
-    fadeInDuration: 0,
-    fadeOutDuration: 0,
-    initialScale: 1.5,
-    bounceStrength: 1.70158,
-    useElasticEffect: true,
-    fontSize: 48,
-    textColor: '#ffffff',
-    strokeWidth: 4,
-    strokeColor: '#000000',
-    fontWeight: 700,
-    textCase: 'normal',
-    hidePunctuation: false,
-    punctuationChars: '',
-    removeAccents: false,
-    fontFamily: 'Arial',
-    backgroundColor: '#000000',
-    backgroundOpacity: 0,
-    backgroundBorderColor: '#ffffff',
-    backgroundBorderWidth: 0,
-    backgroundMarginVertical: 0,
-    backgroundMarginHorizontal: 0,
-    backgroundBorderRadius: 0,
-    backgroundOffsetX: 0,
-    backgroundOffsetY: 0,
-  },
+  animationStyle = defaultAnimationStyle,
   onAudioExtracted
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -584,9 +536,10 @@ export function VideoViewport({
 
       // Configurar estilo del texto
       const fontSize = animationStyle.fontSize * (rect.height / 1080);
-      ctx.font = `${animationStyle.fontWeight} ${fontSize}px ${animationStyle.fontFamily}, sans-serif`;
+      const fontWeight = animationStyle.fontWeight;
+      ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
+      ctx.textBaseline = 'middle';
 
       // Procesar el texto
       const processedText = (text: string) => {
@@ -620,8 +573,8 @@ export function VideoViewport({
 
       // Aplicar la transformación de escala
       ctx.save();
-      const x = rect.width / 2;
-      const y = rect.height * 0.9;
+      const x = (canvas.width * animationStyle.position.x) / 100;
+      const y = (canvas.height * animationStyle.position.y) / 100;
       ctx.translate(x, y);
       ctx.scale(scale, scale);
       ctx.translate(-x, -y);
@@ -637,7 +590,7 @@ export function VideoViewport({
       const bgWidth = textWidth + (padding.horizontal * 2);
       const bgHeight = textHeight + (padding.vertical * 2);
       const bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
-      const bgY = y - textHeight - padding.vertical + animationStyle.backgroundOffsetY;
+      const bgY = y - (bgHeight / 2) + animationStyle.backgroundOffsetY;
 
       // Dibujar el fondo
       if (animationStyle.backgroundOpacity > 0) {
@@ -680,7 +633,7 @@ export function VideoViewport({
       // Dibujar el texto
       ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
       ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
-      ctx.lineWidth = fontSize * (animationStyle.strokeWidth / 48);
+      ctx.lineWidth = animationStyle.strokeWidth;
       ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
       

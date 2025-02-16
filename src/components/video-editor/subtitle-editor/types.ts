@@ -31,6 +31,11 @@ export interface SubtitleAnimationStyle {
   hidePunctuation: boolean;
   punctuationChars: string;
   removeAccents: boolean;
+  // Propiedades de posición
+  position: {
+    x: number;
+    y: number;
+  };
   // Propiedades del fondo
   backgroundColor: string;
   backgroundOpacity: number;
@@ -59,6 +64,10 @@ export const defaultAnimationStyle: SubtitleAnimationStyle = {
   hidePunctuation: false,
   punctuationChars: '¿?:-,.;¡!',
   removeAccents: false,
+  position: {
+    x: 50,
+    y: 80
+  },
   backgroundColor: '#000000',
   backgroundOpacity: 0.5,
   backgroundBorderColor: '#000000',

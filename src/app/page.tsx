@@ -34,6 +34,10 @@ export default function Home() {
     punctuationChars: '¿?:-,.;¡!',
     removeAccents: false,
     fontFamily: 'Arial',
+    position: {
+      x: 50,
+      y: 80
+    },
     backgroundColor: '#000000',
     backgroundOpacity: 0.5,
     backgroundBorderColor: '#FFD000',

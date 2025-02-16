@@ -7,6 +7,7 @@ import { Accordion } from '../../design-system/Accordion';
 import { TextStyleSection } from './TextStyleSection';
 import { BackgroundSection } from './BackgroundSection';
 import { AnimationSection } from './AnimationSection';
+import { PositionSection } from './PositionSection';
 import { SubtitleList } from './SubtitleList';
 import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
 import { defaultAnimationStyle } from './types';
@@ -67,7 +68,10 @@ export function SubtitleEditor({
     }
   };
 
-  const handleStyleChange = (key: keyof SubtitleAnimationStyle, value: number | boolean | string) => {
+  const handleStyleChange = (
+    key: keyof SubtitleAnimationStyle, 
+    value: SubtitleAnimationStyle[keyof SubtitleAnimationStyle]
+  ) => {
     const newStyle = { ...localAnimationStyle, [key]: value };
     setLocalAnimationStyle(newStyle);
     onAnimationStyleChange?.(newStyle);
@@ -318,6 +322,16 @@ export function SubtitleEditor({
           title: 'Estilo del texto',
           content: (
             <TextStyleSection
+              style={localAnimationStyle}
+              onStyleChange={handleStyleChange}
+            />
+          )
+        },
+        {
+          id: 'position',
+          title: 'Posición',
+          content: (
+            <PositionSection
               style={localAnimationStyle}
               onStyleChange={handleStyleChange}
             />

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuración inicial de tests end-to-end con Playwright
 - Tests básicos para la página principal y funcionalidad de carga de vídeos
 - Integración de tests en el proceso de desarrollo
+- Nueva sección "Posición" en la pestaña de Estilo que permite configurar la posición X e Y de los subtítulos en la pantalla
 
 ### Fixed
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management

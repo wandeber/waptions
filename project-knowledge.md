@@ -111,4 +111,13 @@ El proyecto utiliza Playwright para tests end-to-end. Configuración principal:
 2. Mantener los tests independientes
 3. Verificar componentes críticos en cada página
 4. Probar flujos completos de usuario
-5. Documentar casos de prueba complejos 
+5. Documentar casos de prueba complejos
+
+## Subtítulos
+
+### Posicionamiento
+- Los subtítulos se pueden posicionar en cualquier parte de la pantalla usando coordenadas X e Y en porcentaje
+- La posición X=50, Y=90 es la posición por defecto (centro-abajo)
+- Las coordenadas son relativas al tamaño del canvas, donde:
+  - X=0 es el borde izquierdo, X=100 es el borde derecho
+  - Y=0 es el borde superior, Y=100 es el borde inferior 
