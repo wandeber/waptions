@@ -67,6 +67,7 @@ Características principales:
 - Configuración de estilos y animaciones
 - Generación automática con IA
 - Gestión inteligente del foco
+- Textareas con altura dinámica que se ajusta al contenido
 
 Atajos de teclado:
 - `Enter`: Dividir subtítulo y mover foco

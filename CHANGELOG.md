@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management
 - Fixed Accordion animations and height calculations
 - Fixed video FPS detection in ExportButton
+- Fixed subtitle textareas to automatically adjust their height based on content
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions

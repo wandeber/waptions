@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import type { Subtitle } from '../SubtitleTrack';
 import { Button } from '../../design-system/Button';
 import { MagicMicIcon } from '../../icons/MagicMicIcon';
@@ -40,6 +40,16 @@ export function SubtitleList({
     const ms = Math.floor((seconds % 1) * 1000);
     return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
   };
+
+  // Ajusta la altura del textarea al contenido
+  useEffect(() => {
+    Object.values(textAreasRef.current).forEach(textarea => {
+      if (textarea) {
+        textarea.style.height = 'auto';
+        textarea.style.height = `${textarea.scrollHeight}px`;
+      }
+    });
+  }, [editingText]);
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -117,9 +127,14 @@ export function SubtitleList({
                   textAreasRef.current[subtitle.id] = el;
                 }}
                 id={`subtitle-${subtitle.id}`}
-                className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden transition-colors border border-transparent focus:border-blue-500/50 focus:bg-gray-700 focus:outline-none"
+                className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden transition-colors border border-transparent focus:border-blue-500/50 focus:bg-gray-700 focus:outline-none min-h-[2rem]"
                 value={editingText[subtitle.id] || ''}
-                onChange={(e) => onTextChange(subtitle, e.target.value)}
+                onChange={(e) => {
+                  onTextChange(subtitle, e.target.value);
+                  // Ajustar altura inmediatamente al escribir
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${e.target.scrollHeight}px`;
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSubtitleClick?.(subtitle);
