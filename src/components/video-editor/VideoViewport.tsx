@@ -538,7 +538,7 @@ export function VideoViewport({
       const fontSize = animationStyle.fontSize * (rect.height / 1080);
       const fontWeight = animationStyle.fontWeight;
       ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
-      ctx.textAlign = 'center';
+      ctx.textAlign = animationStyle.textAlign;
       ctx.textBaseline = 'middle';
 
       // Procesar el texto
@@ -589,7 +589,19 @@ export function VideoViewport({
       };
       const bgWidth = textWidth + (padding.horizontal * 2);
       const bgHeight = textHeight + (padding.vertical * 2);
-      const bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
+
+      // Calcular la posición del fondo según la alineación del texto
+      let bgX: number;
+      switch (animationStyle.textAlign) {
+        case 'left':
+          bgX = x - (bgWidth / 2) + (textWidth / 2) + animationStyle.backgroundOffsetX;
+          break;
+        case 'right':
+          bgX = x - (bgWidth / 2) - (textWidth / 2) + animationStyle.backgroundOffsetX;
+          break;
+        default: // center
+          bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
+      }
       const bgY = y - (bgHeight / 2) + animationStyle.backgroundOffsetY;
 
       // Dibujar el fondo

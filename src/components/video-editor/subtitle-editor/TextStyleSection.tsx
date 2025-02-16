@@ -1,6 +1,9 @@
 import { FontSelector } from '../FontSelector';
 import { DraggableNumberInput } from '../../design-system/DraggableNumberInput';
 import { ChevronDownIcon } from '../../icons/ChevronDownIcon';
+import { AlignLeftIcon } from '../../icons/AlignLeftIcon';
+import { AlignCenterIcon } from '../../icons/AlignCenterIcon';
+import { AlignRightIcon } from '../../icons/AlignRightIcon';
 import type { SubtitleAnimationStyle } from './types';
 
 interface TextStyleSectionProps {
@@ -136,6 +139,45 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
             onClick={() => onStyleChange('textCase', 'lowercase')}
           >
             minús.
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <label className="text-sm text-gray-300">Alineación del texto</label>
+        <div className="flex gap-2">
+          <button
+            className={`p-2 rounded ${
+              style.textAlign === 'left'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => onStyleChange('textAlign', 'left')}
+            title="Alinear a la izquierda"
+          >
+            <AlignLeftIcon />
+          </button>
+          <button
+            className={`p-2 rounded ${
+              style.textAlign === 'center'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => onStyleChange('textAlign', 'center')}
+            title="Centrar"
+          >
+            <AlignCenterIcon />
+          </button>
+          <button
+            className={`p-2 rounded ${
+              style.textAlign === 'right'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => onStyleChange('textAlign', 'right')}
+            title="Alinear a la derecha"
+          >
+            <AlignRightIcon />
           </button>
         </div>
       </div>

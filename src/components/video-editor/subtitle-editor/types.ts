@@ -28,6 +28,7 @@ export interface SubtitleAnimationStyle {
   strokeColor: string;
   fontWeight: number;
   textCase: 'normal' | 'uppercase' | 'lowercase';
+  textAlign: 'left' | 'center' | 'right';
   hidePunctuation: boolean;
   punctuationChars: string;
   removeAccents: boolean;
@@ -61,6 +62,7 @@ export const defaultAnimationStyle: SubtitleAnimationStyle = {
   strokeColor: '#000000',
   fontWeight: 800,
   textCase: 'normal',
+  textAlign: 'center',
   hidePunctuation: false,
   punctuationChars: '¿?:-,.;¡!',
   removeAccents: false,

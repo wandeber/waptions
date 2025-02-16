@@ -30,6 +30,7 @@ export default function Home() {
     strokeColor: '#000000',
     fontWeight: 800,
     textCase: 'normal' as 'normal' | 'uppercase' | 'lowercase',
+    textAlign: 'center' as 'left' | 'center' | 'right',
     hidePunctuation: false,
     punctuationChars: '¿?:-,.;¡!',
     removeAccents: false,

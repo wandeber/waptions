@@ -91,33 +91,42 @@ Atajos de teclado:
 
 ## Testing E2E
 
-El proyecto utiliza Playwright para tests end-to-end. Configuración principal:
+The project uses Playwright for end-to-end testing. Main configuration:
 
-- Los tests se encuentran en el directorio `e2e/`
-- Se prueban tres navegadores: Chrome, Firefox y Safari
-- Configuración en `playwright.config.ts`
-- Capturas de pantalla y vídeos automáticos en caso de fallos
-- Reportes HTML detallados
+- Tests are located in the `e2e/` directory
+- Testing on three browsers: Chrome, Firefox and Safari
+- Configuration in `playwright.config.ts`
+- Automatic screenshots and videos on failure
+- Detailed HTML reports
 
-### Comandos de testing
+### Testing Commands
 
-- `npm run test:e2e`: Ejecuta todos los tests
-- `npm run test:e2e:ui`: Abre la interfaz visual de Playwright
-- `npm run test:e2e:debug`: Ejecuta los tests en modo debug
+- `npm run test:e2e`: Run all tests
+- `npm run test:e2e:ui`: Open Playwright's visual interface
+- `npm run test:e2e:debug`: Run tests in debug mode
 
-### Buenas prácticas
+### Best Practices
 
-1. Usar data-testid para elementos importantes
-2. Mantener los tests independientes
-3. Verificar componentes críticos en cada página
-4. Probar flujos completos de usuario
-5. Documentar casos de prueba complejos
+1. Use data-testid for important elements
+2. Keep tests independent
+3. Verify critical components on each page
+4. Test complete user flows
+5. Document complex test cases
 
-## Subtítulos
+## Subtitles
 
-### Posicionamiento
-- Los subtítulos se pueden posicionar en cualquier parte de la pantalla usando coordenadas X e Y en porcentaje
-- La posición X=50, Y=90 es la posición por defecto (centro-abajo)
-- Las coordenadas son relativas al tamaño del canvas, donde:
-  - X=0 es el borde izquierdo, X=100 es el borde derecho
-  - Y=0 es el borde superior, Y=100 es el borde inferior 
+### Positioning
+- Subtitles can be positioned anywhere on screen using X and Y percentage coordinates
+- Default position is X=50, Y=90 (center-bottom)
+- Coordinates are relative to canvas size, where:
+  - X=0 is left edge, X=100 is right edge
+  - Y=0 is top edge, Y=100 is bottom edge
+
+### Alignment
+- Supports three alignment types: left, center, and right
+- Alignment affects both text and its background
+- Background automatically adjusts according to alignment to keep text contained
+- X,Y position acts as anchor point for alignment:
+  - Left alignment: text and background extend to the right
+  - Center alignment: text and background are centered on the point
+  - Right alignment: text and background extend to the left 
