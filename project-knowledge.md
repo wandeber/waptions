@@ -10,6 +10,11 @@
 ### Design System
 - `design-system/`: Contains reusable UI components
   - `Button.tsx`: Base button component with variants (primary, secondary, danger, ghost) and sizes (xs to lg)
+  - `DraggableNumberInput.tsx`: Numeric input inspired by Blender's UI
+    - Horizontal drag to change value (normal and fine control with Shift)
+    - Arrow keys for value adjustment (normal and fine control with Shift)
+    - Visual progress bar when min/max are defined
+    - Double-click label or reset button to restore default
   - **Checkboxes**: Container with `flex items-center gap-2` for consistent alignment
   - **Accordion**: Smooth animation using `grid-template-rows` and `transition-[grid-template-rows]`
   - **Text Controls**: Icon-based buttons for text transformations and alignment, consistent style with `p-2 rounded` and hover states

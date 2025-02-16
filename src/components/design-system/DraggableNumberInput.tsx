@@ -227,6 +227,18 @@ export function DraggableNumberInput({
           style={{ display: 'none' }}
         />
         <div className="relative flex-1">
+          {/* Fondo base */}
+          <div className="absolute inset-0 bg-gray-700 rounded-l" />
+          {/* Barra de progreso - solo visible cuando hay min y max definidos */}
+          {min !== -Infinity && max !== Infinity && (
+            <div 
+              className="absolute inset-0 bg-gray-800 rounded-l pointer-events-none"
+              style={{ 
+                width: `${((value - min) / (max - min)) * 100}%`,
+                opacity: 0.5
+              }}
+            />
+          )}
           <input
             ref={inputRef}
             type="text"
@@ -235,7 +247,7 @@ export function DraggableNumberInput({
             onFocus={handleFocus}
             onBlur={handleBlur}
             onKeyDown={handleKeyDown}
-            className={`w-full h-8 bg-gray-700 text-white rounded-l px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500
+            className={`relative w-full h-8 bg-transparent text-white rounded-l px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500
               ${isFocused ? 'cursor-text' : 'cursor-ew-resize'}`}
           />
           {/* Área de arrastre - solo visible cuando no tiene foco */}

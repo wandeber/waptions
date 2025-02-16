@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New "Position" section in Style tab for configuring subtitle X and Y position on screen
 - Improved text alignment with support for left, center, and right, including text background
 - Enhanced text transformation controls with intuitive icons for normal, uppercase and lowercase options
+- Enhanced DraggableNumberInput with keyboard arrow controls and visual progress indicator
 
 ### Fixed
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management
