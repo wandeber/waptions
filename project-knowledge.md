@@ -74,23 +74,25 @@
 - Real-time grouping with proper state updates
 
 ### SubtitleEditor
-Características principales:
-- Edición de texto con división/unión de subtítulos
-- Configuración de estilos y animaciones
-- Generación automática con IA
-- Gestión inteligente del foco
-- Textareas con altura dinámica que se ajusta al contenido
-- Sistema de presets de estilos con almacenamiento local
-  - Preset predeterminado "Edu Siverio" no eliminable
-  - Guardado y carga de presets personalizados
-  - Gestión de presets (crear, eliminar)
-  - Persistencia en localStorage
+Main features:
+- Text editing with subtitle splitting/merging
+- Style and animation configuration
+- AI-powered subtitle generation
+- Smart focus management
+- Dynamic height textareas that adjust to content
+- Style presets system with local storage
+  - Non-removable "Edu Siverio" default preset
+  - Save and load custom presets
+  - Preset management (create, delete)
+  - Local storage persistence
+  - Handling of isDefault presets to avoid duplicates
+  - Separated effects for preset loading and selection to prevent infinite loops
 
-Atajos de teclado:
-- `Enter`: Dividir subtítulo y mover foco
-- `Ctrl+Enter`: Salto de línea
-- `Backspace` al inicio: Unir con anterior
-- `Delete`: Eliminar subtítulo
+Keyboard shortcuts:
+- `Enter`: Split subtitle and move focus
+- `Ctrl+Enter`: Line break
+- `Backspace` at start: Merge with previous
+- `Delete`: Remove subtitle
 
 ## Gotchas & Key Points
 

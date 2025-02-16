@@ -103,13 +103,14 @@ export function getSelectedPreset(): StylePreset | null {
     const savedPresetId = localStorage.getItem(SELECTED_PRESET_KEY);
     if (!savedPresetId) return null;
 
+    // Si el ID guardado corresponde a cualquier versión del preset de Edu Siverio
     if (savedPresetId === eduSiverioPreset.id || savedPresetId === eduSiverioPresetWithUniqueId.id) {
       return eduSiverioPresetWithUniqueId;
     }
 
-    const storedPresets = localStorage.getItem(STORAGE_KEY);
-    const customPresets: StylePreset[] = storedPresets ? JSON.parse(storedPresets) : [];
-    return customPresets.find(p => p.id === savedPresetId) || null;
+    // Obtener todos los presets y buscar en ellos
+    const allPresets = getStylePresets();
+    return allPresets.find(p => p.id === savedPresetId) || null;
   } catch (error) {
     console.error('Error loading selected preset:', error);
     return null;

@@ -18,11 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced text transformation controls with intuitive icons for normal, uppercase and lowercase options
 - Enhanced DraggableNumberInput with keyboard arrow controls and visual progress indicator
 - Added support for displaying multiple subtitles simultaneously (up to 3 lines) with synchronized group animations
-- Sistema de presets de estilos para subtítulos
-  - Preset predeterminado "Edu Siverio"
-  - Guardado y carga de presets personalizados
-  - Gestión de presets (crear, eliminar)
-  - Persistencia en localStorage
+- Style presets system for subtitles
+  - "Edu Siverio" default preset
+  - Save and load custom presets
+  - Preset management (create, delete)
+  - Local storage persistence
 
 ### Fixed
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management
@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed subtitle grouping logic to correctly respect the maximum number of lines setting
 - Fixed subtitle groups not forming correctly when adding new subtitles at the start
 - Fixed empty subtitles and empty lines being rendered unnecessarily
+- Fixed preset selection persistence between page reloads
+- Fixed infinite update loop in StylePresetSelector
+- Fixed handling of isDefault presets in localStorage
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions

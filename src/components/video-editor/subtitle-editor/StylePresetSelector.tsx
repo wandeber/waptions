@@ -9,7 +9,8 @@ import {
   getStylePresets, 
   saveStylePreset, 
   deleteStylePreset,
-  updateStylePreset 
+  updateStylePreset,
+  getSelectedPreset
 } from './presetUtils';
 import { OverwritePresetDialog } from './OverwritePresetDialog';
 import { DeletePresetDialog } from './DeletePresetDialog';
@@ -40,15 +41,14 @@ export function StylePresetSelector({
       index === self.findIndex(p => p.id === preset.id)
     );
     setPresets(uniquePresets);
+  }, []);
 
-    // Recuperar el preset seleccionado del localStorage
-    const savedPresetId = localStorage.getItem(SELECTED_PRESET_KEY);
-    if (savedPresetId) {
-      const preset = presets.find(p => p.id === savedPresetId);
-      if (preset) {
-        setSelectedPresetId(savedPresetId);
-        onStyleChange(preset.style);
-      }
+  useEffect(() => {
+    // Recuperar el preset seleccionado usando getSelectedPreset
+    const selectedPreset = getSelectedPreset();
+    if (selectedPreset) {
+      setSelectedPresetId(selectedPreset.id);
+      onStyleChange(selectedPreset.style);
     }
   }, []);
 
