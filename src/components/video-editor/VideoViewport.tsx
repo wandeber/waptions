@@ -534,13 +534,6 @@ export function VideoViewport({
       // Asegurar que la opacidad esté entre 0 y 1
       opacity = Math.max(0, Math.min(1, opacity));
 
-      // Configurar estilo del texto
-      const fontSize = animationStyle.fontSize * (rect.height / 1080);
-      const fontWeight = animationStyle.fontWeight;
-      ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
-      ctx.textAlign = animationStyle.textAlign;
-      ctx.textBaseline = 'middle';
-
       // Procesar el texto
       const processedText = (text: string) => {
         let result = text;
@@ -570,6 +563,7 @@ export function VideoViewport({
       };
 
       const text = processedText(subtitle.text);
+      const lines = text.split('\n');
 
       // Aplicar la transformación de escala
       ctx.save();
@@ -579,29 +573,39 @@ export function VideoViewport({
       ctx.scale(scale, scale);
       ctx.translate(-x, -y);
 
-      // Medir el texto para el fondo
-      const metrics = ctx.measureText(text);
-      const textWidth = metrics.width;
-      const textHeight = fontSize;
+      // Configurar estilo del texto
+      const fontSize = animationStyle.fontSize * (rect.height / 1080);
+      const fontWeight = animationStyle.fontWeight;
+      ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
+      ctx.textAlign = animationStyle.textAlign;
+      ctx.textBaseline = 'middle';
+
+      // Medir todas las líneas para calcular el fondo
+      const lineMetrics = lines.map(line => ctx.measureText(line));
+      const maxTextWidth = Math.max(...lineMetrics.map(m => m.width));
+      const lineHeight = fontSize * 1.2; // 20% de espacio entre líneas
+      const totalTextHeight = lineHeight * lines.length;
+      
       const padding = {
         vertical: animationStyle.backgroundMarginVertical,
         horizontal: animationStyle.backgroundMarginHorizontal
       };
-      const bgWidth = textWidth + (padding.horizontal * 2);
-      const bgHeight = textHeight + (padding.vertical * 2);
+      const bgWidth = maxTextWidth + (padding.horizontal * 2);
+      const bgHeight = totalTextHeight + (padding.vertical * 2);
 
       // Calcular la posición del fondo según la alineación del texto
       let bgX: number;
       switch (animationStyle.textAlign) {
         case 'left':
-          bgX = x - (bgWidth / 2) + (textWidth / 2) + animationStyle.backgroundOffsetX;
+          bgX = x - (bgWidth / 2) + (maxTextWidth / 2) + animationStyle.backgroundOffsetX;
           break;
         case 'right':
-          bgX = x - (bgWidth / 2) - (textWidth / 2) + animationStyle.backgroundOffsetX;
+          bgX = x - (bgWidth / 2) - (maxTextWidth / 2) + animationStyle.backgroundOffsetX;
           break;
         default: // center
           bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
       }
+      // Ajustar Y para que el texto quede centrado verticalmente
       const bgY = y - (bgHeight / 2) + animationStyle.backgroundOffsetY;
 
       // Dibujar el fondo
@@ -642,12 +646,17 @@ export function VideoViewport({
         }
       }
 
-      // Dibujar el texto
+      // Dibujar cada línea de texto
       ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
       ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
       ctx.lineWidth = animationStyle.strokeWidth;
-      ctx.strokeText(text, x, y);
-      ctx.fillText(text, x, y);
+
+      const startY = y - (totalTextHeight / 2) + (lineHeight / 2);
+      lines.forEach((line, index) => {
+        const lineY = startY + (index * lineHeight);
+        ctx.strokeText(line, x, lineY);
+        ctx.fillText(line, x, lineY);
+      });
       
       // Restaurar el contexto
       ctx.restore();
