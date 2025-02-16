@@ -24,10 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed Accordion animations and height calculations
 - Fixed video FPS detection in ExportButton
 - Fixed subtitle textareas to automatically adjust their height based on content
+- Fixed subtitle grouping not updating when adding new subtitles
+- Fixed subtitle grouping logic to correctly respect the maximum number of lines setting
+- Fixed subtitle groups not forming correctly when adding new subtitles at the start
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions
 - Added data-testid to main components to facilitate testing
+- Improved subtitle grouping algorithm for better accuracy and performance
+- Refactored subtitle grouping logic to be more deterministic and consistent
 
 ## [0.1.0] - 2024-03-20
 

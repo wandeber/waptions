@@ -35,6 +35,7 @@ export default function Home() {
     punctuationChars: '¿?:-,.;¡!',
     removeAccents: false,
     fontFamily: 'Arial',
+    numberOfLines: 1,
     position: {
       x: 50,
       y: 80

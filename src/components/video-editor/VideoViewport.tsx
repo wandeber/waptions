@@ -470,6 +470,70 @@ export function VideoViewport({
     return { width, height, left, top };
   }, []);
 
+  // Función para obtener el grupo de subtítulos a mostrar
+  const getSubtitlesGroup = useCallback((currentTime: number) => {
+    // Ordenar subtítulos por tiempo de inicio
+    const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+
+    // Función para contar líneas en un subtítulo
+    const countLines = (text: string) => text.split('\n').length;
+
+    // Primero, encontrar todos los grupos posibles
+    const groups: Array<Array<typeof sortedSubtitles[0]>> = [];
+    let currentGroup: typeof sortedSubtitles = [];
+    let currentLines = 0;
+
+    for (let i = 0; i < sortedSubtitles.length; i++) {
+      const subtitle = sortedSubtitles[i];
+      const lines = countLines(subtitle.text);
+
+      // Si este subtítulo tiene más líneas que el máximo, es un grupo por sí mismo
+      if (lines > animationStyle.numberOfLines) {
+        // Si hay un grupo en construcción, finalizarlo
+        if (currentGroup.length > 0) {
+          groups.push([...currentGroup]);
+          currentGroup = [];
+          currentLines = 0;
+        }
+        groups.push([subtitle]);
+        continue;
+      }
+
+      // Si añadir este subtítulo excedería el límite, comenzar nuevo grupo
+      if (currentLines + lines > animationStyle.numberOfLines) {
+        if (currentGroup.length > 0) {
+          groups.push([...currentGroup]);
+          currentGroup = [];
+          currentLines = 0;
+        }
+      }
+
+      // Añadir el subtítulo al grupo actual
+      currentGroup.push(subtitle);
+      currentLines += lines;
+    }
+
+    // Añadir el último grupo si existe
+    if (currentGroup.length > 0) {
+      groups.push(currentGroup);
+    }
+
+    // Encontrar el grupo activo basado en el tiempo actual
+    const activeGroup = groups.find(group => {
+      const groupStart = group[0].startTime;
+      const groupEnd = group[group.length - 1].endTime;
+      return currentTime >= groupStart && currentTime < groupEnd;
+    });
+
+    if (activeGroup) {
+      return activeGroup;
+    }
+
+    // Si no hay grupo activo, buscar el próximo grupo
+    const nextGroup = groups.find(group => currentTime < group[0].startTime);
+    return nextGroup || [];
+  }, [subtitles, animationStyle.numberOfLines]);
+
   // Función para renderizar subtítulos en el canvas
   const renderSubtitles = useCallback(() => {
     const canvas = canvasRef.current;
@@ -493,41 +557,6 @@ export function VideoViewport({
     // Limpiar el canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Encontrar los próximos subtítulos para renderizar múltiples líneas
-    const getSubtitlesGroup = (currentTime: number) => {
-      // Ordenar subtítulos por tiempo de inicio
-      const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
-
-      // Encontrar el primer subtítulo del grupo actual o el próximo grupo
-      const firstSubtitleIndex = sortedSubtitles.findIndex((subtitle, index) => {
-        // Encontrar el grupo al que pertenece este subtítulo
-        const groupStartIndex = Math.floor(index / animationStyle.numberOfLines) * animationStyle.numberOfLines;
-        const groupEndIndex = Math.min(groupStartIndex + animationStyle.numberOfLines - 1, sortedSubtitles.length - 1);
-        const groupEndTime = sortedSubtitles[groupEndIndex].endTime;
-        
-        return currentTime < groupEndTime && currentTime >= subtitle.startTime;
-      });
-
-      if (firstSubtitleIndex === -1) {
-        // Si no encontramos un subtítulo activo, buscar el próximo grupo
-        const nextSubtitleIndex = sortedSubtitles.findIndex(s => currentTime < s.startTime);
-        if (nextSubtitleIndex === -1) return [];
-        
-        const groupStartIndex = Math.floor(nextSubtitleIndex / animationStyle.numberOfLines) * animationStyle.numberOfLines;
-        return sortedSubtitles.slice(
-          groupStartIndex,
-          Math.min(groupStartIndex + animationStyle.numberOfLines, sortedSubtitles.length)
-        );
-      }
-
-      // Obtener el grupo completo basado en el índice encontrado
-      const groupStartIndex = Math.floor(firstSubtitleIndex / animationStyle.numberOfLines) * animationStyle.numberOfLines;
-      return sortedSubtitles.slice(
-        groupStartIndex,
-        Math.min(groupStartIndex + animationStyle.numberOfLines, sortedSubtitles.length)
-      );
-    };
-
     // Encontrar subtítulos activos y en transición
     const subtitlesToRender = (() => {
       const group = getSubtitlesGroup(currentTime);
@@ -540,7 +569,7 @@ export function VideoViewport({
       const isExiting = currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration && 
                        currentTime < lastSubtitle.endTime;
 
-      if (isActive || isExiting) return [firstSubtitle]; // Usamos el primer subtítulo como referencia
+      if (isActive || isExiting) return group;
       return [];
     })();
 
@@ -585,33 +614,31 @@ export function VideoViewport({
     };
 
     // Renderizar cada subtítulo
-    subtitlesToRender.forEach(() => {
-      const subtitlesToShow = getSubtitlesGroup(currentTime);
-      if (subtitlesToShow.length === 0) return;
-
-      const firstSubtitle = subtitlesToShow[0];
-      const lastSubtitle = subtitlesToShow[subtitlesToShow.length - 1];
+    if (subtitlesToRender.length > 0) {
+      const firstSubtitle = subtitlesToRender[0];
+      const lastSubtitle = subtitlesToRender[subtitlesToRender.length - 1];
       
       let opacity = 1;
       let scale = 1;
       
-      // Fade in con escala - se aplica al inicio del primer subtítulo
-      if (currentTime >= firstSubtitle.startTime && currentTime < firstSubtitle.startTime + animationStyle.fadeInDuration) {
+      // Fade in con escala
+      if (currentTime >= firstSubtitle.startTime && 
+          currentTime < firstSubtitle.startTime + animationStyle.fadeInDuration) {
         const progress = (currentTime - firstSubtitle.startTime) / animationStyle.fadeInDuration;
         opacity = easeOutExpo(progress);
         const scaleProgress = easeOutBack(progress);
         scale = 1 + ((animationStyle.initialScale - 1) * (1 - scaleProgress));
       }
-      // Fade out - se aplica al final del último subtítulo
-      if (currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration && currentTime < lastSubtitle.endTime) {
+      // Fade out
+      if (currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration && 
+          currentTime < lastSubtitle.endTime) {
         const progress = (lastSubtitle.endTime - currentTime) / animationStyle.fadeOutDuration;
         opacity = progress;
       }
       
-      // Asegurar que la opacidad esté entre 0 y 1
       opacity = Math.max(0, Math.min(1, opacity));
 
-      // Aplicar la transformación de escala
+      // Configurar el contexto
       ctx.save();
       const x = (canvas.width * animationStyle.position.x) / 100;
       const y = (canvas.height * animationStyle.position.y) / 100;
@@ -619,32 +646,36 @@ export function VideoViewport({
       ctx.scale(scale, scale);
       ctx.translate(-x, -y);
 
-      // Configurar estilo del texto
       const fontSize = animationStyle.fontSize * (rect.height / 1080);
       const fontWeight = animationStyle.fontWeight;
       ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
       ctx.textAlign = animationStyle.textAlign;
       ctx.textBaseline = 'middle';
 
-      // Procesar y medir todos los textos
+      // Procesar y medir los textos
       interface ProcessedLine {
         text: string;
         metrics: TextMetrics;
       }
-      const processedTexts = subtitlesToShow.map(s => {
-        const text = processedText(s.text);
-        return text.split('\n').map(line => ({
+
+      // Obtener todas las líneas de texto procesadas
+      let allLines: ProcessedLine[] = [];
+      for (const subtitle of subtitlesToRender) {
+        const text = processedText(subtitle.text);
+        const lines = text.split('\n').map(line => ({
           text: line,
           metrics: ctx.measureText(line)
-        })) as ProcessedLine[];
-      });
+        }));
+        allLines.push(...lines);
+      }
 
-      // Calcular dimensiones máximas
-      const maxLineWidth = Math.max(
-        ...processedTexts.flatMap(lines => lines.map(line => line.metrics.width))
-      );
-      const lineHeight = fontSize * 1.2; // 20% de espacio entre líneas
-      const totalTextHeight = lineHeight * processedTexts.reduce((acc, lines) => acc + lines.length, 0);
+      // Limitar al número de líneas configurado
+      allLines = allLines.slice(0, animationStyle.numberOfLines);
+
+      // Calcular dimensiones
+      const maxLineWidth = Math.max(...allLines.map(line => line.metrics.width));
+      const lineHeight = fontSize * 1.2;
+      const totalTextHeight = lineHeight * allLines.length;
       
       const padding = {
         vertical: animationStyle.backgroundMarginVertical,
@@ -653,7 +684,7 @@ export function VideoViewport({
       const bgWidth = maxLineWidth + (padding.horizontal * 2);
       const bgHeight = totalTextHeight + (padding.vertical * 2);
 
-      // Calcular la posición del fondo según la alineación del texto
+      // Calcular posición del fondo
       let bgX: number;
       switch (animationStyle.textAlign) {
         case 'left':
@@ -665,14 +696,12 @@ export function VideoViewport({
         default: // center
           bgX = x - (bgWidth / 2) + animationStyle.backgroundOffsetX;
       }
-      // Ajustar Y para que el texto quede centrado verticalmente
       const bgY = y - (bgHeight / 2) + animationStyle.backgroundOffsetY;
 
-      // Dibujar el fondo
+      // Dibujar fondo
       if (animationStyle.backgroundOpacity > 0) {
         ctx.fillStyle = `${animationStyle.backgroundColor}${Math.round(opacity * animationStyle.backgroundOpacity * 255).toString(16).padStart(2, '0')}`;
         if (animationStyle.backgroundBorderRadius > 0) {
-          // Dibujar fondo con esquinas redondeadas
           const radius = Math.min(animationStyle.backgroundBorderRadius, bgHeight / 2, bgWidth / 2);
           ctx.beginPath();
           ctx.moveTo(bgX + radius, bgY);
@@ -687,17 +716,13 @@ export function VideoViewport({
           ctx.closePath();
           ctx.fill();
 
-          // Dibujar borde si es necesario
           if (animationStyle.backgroundBorderWidth > 0) {
             ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
             ctx.lineWidth = animationStyle.backgroundBorderWidth;
             ctx.stroke();
           }
         } else {
-          // Dibujar fondo rectangular
           ctx.fillRect(bgX, bgY, bgWidth, bgHeight);
-          
-          // Dibujar borde si es necesario
           if (animationStyle.backgroundBorderWidth > 0) {
             ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
             ctx.lineWidth = animationStyle.backgroundBorderWidth;
@@ -706,29 +731,26 @@ export function VideoViewport({
         }
       }
 
-      // Dibujar cada línea de texto
+      // Dibujar texto
       ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
       ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
       ctx.lineWidth = animationStyle.strokeWidth;
 
       let currentY = y - (totalTextHeight / 2) + (lineHeight / 2);
-      processedTexts.forEach(lines => {
-        lines.forEach(line => {
-          ctx.strokeText(line.text, x, currentY);
-          ctx.fillText(line.text, x, currentY);
-          currentY += lineHeight;
-        });
+      allLines.forEach(line => {
+        ctx.strokeText(line.text, x, currentY);
+        ctx.fillText(line.text, x, currentY);
+        currentY += lineHeight;
       });
       
-      // Restaurar el contexto
       ctx.restore();
-    });
-  }, [currentTime, subtitles, getVideoDisplayRect, videoDimensions, animationStyle]);
+    }
+  }, [canvasRef, videoRef, videoDimensions, getVideoDisplayRect, currentTime, animationStyle, getSubtitlesGroup]);
 
   // Efecto para renderizar subtítulos cuando cambie el tiempo o las dimensiones
   useEffect(() => {
     renderSubtitles();
-  }, [renderSubtitles, currentTime, videoDimensions]);
+  }, [renderSubtitles, currentTime, videoDimensions, subtitles]);
 
   // Efecto para ajustar el canvas cuando cambie el tamaño de la ventana
   useEffect(() => {

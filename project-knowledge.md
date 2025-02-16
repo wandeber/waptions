@@ -23,6 +23,9 @@
 - `VideoEditor/`: Contains core components for video editing
   - `Timeline.tsx`: Video navigation timeline
   - `VideoViewport.tsx`: Main video viewer
+    - Subtitle rendering with useCallback requires all dependencies for proper updates
+    - Careful management of dependencies in renderSubtitles to avoid stale state
+    - Includes subtitles array in dependencies to update groups on add/remove
   - `SubtitleEditor/`: Subtitle editor module
   - `SubtitleTrack.tsx`: Subtitle track in timeline
   - `FontSelector.tsx`: Subtitle font selector
@@ -44,6 +47,14 @@
 - Do not remove existing comments unrelated to current task
 - Document decisions in this file
 - Update CHANGELOG.md with each significant change
+- Include all necessary dependencies in useCallback hooks to avoid stale state
+- Pay special attention to array dependencies in useCallback to ensure proper updates
+
+### React Hooks
+- useCallback dependencies must include all variables used in the callback
+- Arrays passed as props must be included in dependencies to detect changes
+- When rendering depends on array content, include both array and array.length
+- Avoid unnecessary re-renders by carefully managing dependencies
 
 ## Environment Setup
 - Node.js v18+, pnpm, `.env.local` required
@@ -60,6 +71,7 @@
 - Frame-accurate timing using detected video FPS
 - Configurable animations with fade and scale effects
 - Smart text handling and dynamic font sizing
+- Real-time grouping with proper state updates
 
 ### SubtitleEditor
 Características principales:
@@ -87,6 +99,7 @@ Atajos de teclado:
 - Firefox: Backup para evento 'ended'
 - Safari: Fallback para archivos grandes
 - Chrome: Limpieza de SharedArrayBuffer
+- useCallback: Incluir todas las dependencias necesarias para evitar estado obsoleto
 
 ### Debugging
 - Canvas debug borders para rendimiento
@@ -140,9 +153,35 @@ The project uses Playwright for end-to-end testing. Main configuration:
 
 ### Multiple Lines Display
 - Supports showing up to 3 subtitles simultaneously
-- Subtitles are grouped in fixed sets (e.g., 0-1-2, 3-4-5 for 3 lines)
+- Subtitles are grouped deterministically based on line count and timing
+- Group formation algorithm:
+  1. Sort all subtitles by start time
+  2. Process subtitles sequentially to form groups:
+     - If subtitle exceeds max lines, it forms its own group
+     - If adding subtitle would exceed group limit, start new group
+     - Add subtitle to current group if space allows
+  3. Find active group based on current time:
+     - Group is active if current time is within its time range
+     - Time range is from first subtitle start to last subtitle end
+     - If no active group, show next upcoming group
 - Groups appear and disappear together with synchronized animations
 - Each group starts with the first subtitle and ends with the last one
 - Transitions between groups are smooth with fade in/out effects
 - Background adapts to accommodate all visible lines
-- Vertical spacing between lines is 120% of font size for readability 
+- Vertical spacing between lines is 120% of font size for readability
+- Group membership changes when:
+  - Adding/removing subtitles
+  - Changing numberOfLines setting
+  - Modifying subtitle text content
+  - Splitting or merging subtitles
+- Group consistency:
+  - Groups remain stable until content or settings change
+  - Each subtitle belongs to exactly one group
+  - Groups never overlap in time
+  - Empty space at end of group is not filled with next subtitle
+- Implementation details:
+  - getSubtitlesGroup is memoized with useCallback
+  - Dependencies include subtitles array and numberOfLines setting
+  - renderSubtitles uses getSubtitlesGroup for consistent updates
+  - State updates trigger proper group recalculation
+  - Proper dependency management ensures groups update correctly 
