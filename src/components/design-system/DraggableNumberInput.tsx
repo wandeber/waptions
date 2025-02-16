@@ -111,9 +111,6 @@ export function DraggableNumberInput({
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging) return;
 
-    // Marcar que ha habido movimiento
-    setHasMoved(true);
-
     const dx = e.clientX - startX;
     const sensitivity = e.shiftKey ? 0.1 : 1; // Shift for fine control
     const newValue = startValue + (dx * step * sensitivity);
@@ -129,6 +126,7 @@ export function DraggableNumberInput({
     if (!isDragging) return;
     
     setIsDragging(false);
+    setHasMoved(true);
     document.body.style.cursor = '';
     
     // Desactivar el overlay de arrastre

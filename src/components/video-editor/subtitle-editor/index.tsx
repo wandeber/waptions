@@ -50,12 +50,16 @@ export function SubtitleEditor({
   // Efecto para sincronizar los estilos locales con los props
   useEffect(() => {
     if (hasLoadedPreset) {
-      setLocalAnimationStyle({
+      const newStyle = {
         ...defaultAnimationStyle,
         ...animationStyle
-      });
+      };
+      // Solo actualizar si realmente hay cambios
+      if (JSON.stringify(newStyle) !== JSON.stringify(localAnimationStyle)) {
+        setLocalAnimationStyle(newStyle);
+      }
     }
-  }, [animationStyle, hasLoadedPreset]);
+  }, [animationStyle, hasLoadedPreset, localAnimationStyle]);
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
   useEffect(() => {

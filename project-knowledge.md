@@ -55,6 +55,12 @@
 - Arrays passed as props must be included in dependencies to detect changes
 - When rendering depends on array content, include both array and array.length
 - Avoid unnecessary re-renders by carefully managing dependencies
+- When synchronizing state with props:
+  1. Use deep comparison (e.g., JSON.stringify) to avoid unnecessary updates
+  2. Consider using useRef for values that don't need to trigger re-renders
+  3. Be careful with circular updates between parent and child components
+  4. Split effects by responsibility to avoid complex dependencies
+  5. Consider memoization for expensive comparisons
 
 ## Environment Setup
 - Node.js v18+, pnpm, `.env.local` required

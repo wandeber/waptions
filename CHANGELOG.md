@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed preset selection persistence between page reloads
 - Fixed infinite update loop in StylePresetSelector
 - Fixed handling of isDefault presets in localStorage
+- Fixed infinite update loop in SubtitleEditor when synchronizing animation styles with props
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions
