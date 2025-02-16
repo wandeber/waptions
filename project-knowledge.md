@@ -154,6 +154,11 @@ The project uses Playwright for end-to-end testing. Main configuration:
 ### Multiple Lines Display
 - Supports showing up to 3 subtitles simultaneously
 - Subtitles are grouped deterministically based on line count and timing
+- Empty handling:
+  - Empty subtitles (only whitespace) are completely ignored
+  - Empty lines within subtitles are skipped
+  - Line count only considers non-empty lines
+  - No rendering occurs if all lines are empty
 - Group formation algorithm:
   1. Sort all subtitles by start time
   2. Process subtitles sequentially to form groups:

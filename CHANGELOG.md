@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed subtitle grouping not updating when adding new subtitles
 - Fixed subtitle grouping logic to correctly respect the maximum number of lines setting
 - Fixed subtitle groups not forming correctly when adding new subtitles at the start
+- Fixed empty subtitles and empty lines being rendered unnecessarily
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions

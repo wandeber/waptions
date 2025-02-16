@@ -472,11 +472,16 @@ export function VideoViewport({
 
   // Función para obtener el grupo de subtítulos a mostrar
   const getSubtitlesGroup = useCallback((currentTime: number) => {
-    // Ordenar subtítulos por tiempo de inicio
-    const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+    // Ordenar subtítulos por tiempo de inicio y filtrar subtítulos vacíos
+    const sortedSubtitles = [...subtitles]
+      .filter(subtitle => subtitle.text.trim() !== '')
+      .sort((a, b) => a.startTime - b.startTime);
 
-    // Función para contar líneas en un subtítulo
-    const countLines = (text: string) => text.split('\n').length;
+    // Función para contar líneas en un subtítulo, ignorando líneas vacías
+    const countLines = (text: string) => text
+      .split('\n')
+      .filter(line => line.trim() !== '')
+      .length;
 
     // Primero, encontrar todos los grupos posibles
     const groups: Array<Array<typeof sortedSubtitles[0]>> = [];
@@ -486,6 +491,9 @@ export function VideoViewport({
     for (let i = 0; i < sortedSubtitles.length; i++) {
       const subtitle = sortedSubtitles[i];
       const lines = countLines(subtitle.text);
+
+      // Si no hay líneas válidas, ignorar este subtítulo
+      if (lines === 0) continue;
 
       // Si este subtítulo tiene más líneas que el máximo, es un grupo por sí mismo
       if (lines > animationStyle.numberOfLines) {
@@ -662,15 +670,24 @@ export function VideoViewport({
       let allLines: ProcessedLine[] = [];
       for (const subtitle of subtitlesToRender) {
         const text = processedText(subtitle.text);
-        const lines = text.split('\n').map(line => ({
-          text: line,
-          metrics: ctx.measureText(line)
-        }));
+        const lines = text
+          .split('\n')
+          .filter(line => line.trim() !== '') // Ignorar líneas vacías
+          .map(line => ({
+            text: line,
+            metrics: ctx.measureText(line)
+          }));
         allLines.push(...lines);
       }
 
       // Limitar al número de líneas configurado
       allLines = allLines.slice(0, animationStyle.numberOfLines);
+
+      // Si no hay líneas válidas, no renderizar nada
+      if (allLines.length === 0) {
+        ctx.restore();
+        return;
+      }
 
       // Calcular dimensiones
       const maxLineWidth = Math.max(...allLines.map(line => line.metrics.width));
