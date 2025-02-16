@@ -18,16 +18,27 @@
   - **Checkboxes**: Container with `flex items-center gap-2` for consistent alignment
   - **Accordion**: Smooth animation using `grid-template-rows` and `transition-[grid-template-rows]`
   - **Text Controls**: Icon-based buttons for text transformations and alignment, consistent style with `p-2 rounded` and hover states
+  - **Track Controls**: Left sidebar with track-specific controls like visibility toggle
+    - Controls affect only specific aspects of the track (e.g., visibility only affects viewport rendering)
+    - Maintains timeline visualization for better editing experience
 
 ### Core Components
 - `VideoEditor/`: Contains core components for video editing
   - `Timeline.tsx`: Video navigation timeline
+    - Subtitle visibility toggle with eye icon in track controls area
+    - Controls subtitle rendering in VideoViewport
+    - Track controls area for track-specific actions
+    - Maintains subtitle visibility in timeline for editing
   - `VideoViewport.tsx`: Main video viewer
     - Subtitle rendering with useCallback requires all dependencies for proper updates
     - Careful management of dependencies in renderSubtitles to avoid stale state
     - Includes subtitles array in dependencies to update groups on add/remove
+    - Respects subtitle visibility state for rendering
+    - Clears canvas when subtitles are hidden
   - `SubtitleEditor/`: Subtitle editor module
   - `SubtitleTrack.tsx`: Subtitle track in timeline
+    - Always shows subtitles for editing purposes
+    - Maintains full editing capabilities
   - `FontSelector.tsx`: Subtitle font selector
   - `ExportButton.tsx`: Video export with FPS preservation
 

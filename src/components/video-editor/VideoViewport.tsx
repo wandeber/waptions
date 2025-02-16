@@ -29,6 +29,7 @@ interface VideoViewportProps {
   showMetaInfo?: boolean;
   animationStyle?: SubtitleAnimationStyle;
   onAudioExtracted?: (audioUrl: string) => void;
+  showSubtitles?: boolean;
 }
 
 export function VideoViewport({ 
@@ -44,7 +45,8 @@ export function VideoViewport({
   showDevinGuide = false,
   showMetaInfo = false,
   animationStyle = defaultAnimationStyle,
-  onAudioExtracted
+  onAudioExtracted,
+  showSubtitles = true
 }: VideoViewportProps) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
@@ -548,26 +550,32 @@ export function VideoViewport({
 
   // Función para renderizar subtítulos en el canvas
   const renderSubtitles = useCallback(() => {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video || !videoDimensions) return;
+    // Limpiar el canvas en cualquier caso
+    if (!canvasRef.current || !videoRef.current) {
+      return;
+    }
 
     const rect = getVideoDisplayRect();
     if (!rect) return;
 
     // Ajustar el canvas al tamaño y posición exacta del video
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    canvas.style.left = `${rect.left}px`;
-    canvas.style.top = `${rect.top}px`;
-    canvas.style.width = `${rect.width}px`;
-    canvas.style.height = `${rect.height}px`;
+    canvasRef.current.width = rect.width;
+    canvasRef.current.height = rect.height;
+    canvasRef.current.style.left = `${rect.left}px`;
+    canvasRef.current.style.top = `${rect.top}px`;
+    canvasRef.current.style.width = `${rect.width}px`;
+    canvasRef.current.style.height = `${rect.height}px`;
 
-    const ctx = canvas.getContext('2d');
+    const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
 
     // Limpiar el canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Si los subtítulos están ocultos, no renderizar nada más
+    if (!showSubtitles) {
+      return;
+    }
 
     // Encontrar subtítulos activos y en transición
     const subtitlesToRender = (() => {
@@ -652,8 +660,8 @@ export function VideoViewport({
 
       // Configurar el contexto
       ctx.save();
-      const x = (canvas.width * animationStyle.position.x) / 100;
-      const y = (canvas.height * animationStyle.position.y) / 100;
+      const x = (canvasRef.current.width * animationStyle.position.x) / 100;
+      const y = (canvasRef.current.height * animationStyle.position.y) / 100;
       ctx.translate(x, y);
       ctx.scale(scale, scale);
       ctx.translate(-x, -y);
@@ -733,7 +741,7 @@ export function VideoViewport({
           ctx.lineTo(bgX + radius, bgY + bgHeight);
           ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius);
           ctx.lineTo(bgX, bgY + radius);
-          ctx.quadraticCurveTo(bgX, bgY, bgX + radius, bgY);
+          ctx.quadraticCurveTo(bgX + radius, bgY, bgX + radius, bgY);
           ctx.closePath();
           ctx.fill();
 
@@ -766,7 +774,7 @@ export function VideoViewport({
       
       ctx.restore();
     }
-  }, [canvasRef, videoRef, videoDimensions, getVideoDisplayRect, currentTime, animationStyle, getSubtitlesGroup]);
+  }, [canvasRef, videoRef, videoDimensions, getVideoDisplayRect, currentTime, animationStyle, getSubtitlesGroup, showSubtitles]);
 
   // Efecto para renderizar subtítulos cuando cambie el tiempo o las dimensiones
   useEffect(() => {

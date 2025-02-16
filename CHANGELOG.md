@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Save and load custom presets
   - Preset management (create, delete)
   - Local storage persistence
+- Added subtitle visibility toggle in timeline controls
+  - Eye icon for showing/hiding subtitles in dedicated track controls area
+  - Controls subtitle rendering in video viewport while maintaining timeline visibility
+  - Persists visibility state during session
 
 ### Fixed
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management
@@ -37,12 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed infinite update loop in StylePresetSelector
 - Fixed handling of isDefault presets in localStorage
 - Fixed infinite update loop in SubtitleEditor when synchronizing animation styles with props
+- Fixed subtitle visibility toggle not properly hiding subtitles in viewport
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions
 - Added data-testid to main components to facilitate testing
 - Improved subtitle grouping algorithm for better accuracy and performance
 - Refactored subtitle grouping logic to be more deterministic and consistent
+- Moved subtitle visibility toggle to dedicated track controls area
 
 ## [0.1.0] - 2024-03-20
 

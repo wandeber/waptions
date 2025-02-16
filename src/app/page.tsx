@@ -18,6 +18,7 @@ export default function Home() {
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
   const [showDevinGuide, setShowDevinGuide] = useState(false);
   const [showMetaInfo, setShowMetaInfo] = useState(true);
+  const [showSubtitles, setShowSubtitles] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [animationStyle, setAnimationStyle] = useState({
     fadeInDuration: 0,
@@ -107,6 +108,10 @@ export default function Home() {
     }
   };
 
+  const handleSubtitlesVisibilityToggle = () => {
+    setShowSubtitles(!showSubtitles);
+  };
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
       {/* Header */}
@@ -139,6 +144,7 @@ export default function Home() {
               showMetaInfo={showMetaInfo}
               animationStyle={animationStyle}
               onAudioExtracted={handleAudioExtracted}
+              showSubtitles={showSubtitles}
             />
             <Timeline 
               duration={duration}
@@ -159,6 +165,8 @@ export default function Home() {
               onMetaInfoToggle={handleMetaInfoToggle}
               audioUrl={audioUrl || undefined}
               onWaveformReady={handleWaveformReady}
+              showSubtitles={showSubtitles}
+              onSubtitlesVisibilityToggle={handleSubtitlesVisibilityToggle}
             />
           </div>
 

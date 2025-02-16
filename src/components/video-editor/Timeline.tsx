@@ -7,7 +7,10 @@ import { PlayIcon } from '../icons/PlayIcon';
 import { GridIcon } from '../icons/GridIcon';
 import { InfoIcon } from '../icons/InfoIcon';
 import { DevinIcon } from '../icons/DevinIcon';
+import { EyeIcon } from '../icons/EyeIcon';
+import { EyeOffIcon } from '../icons/EyeOffIcon';
 import { Button } from '../design-system/Button';
+import { PlusIcon } from '../icons/PlusIcon';
 
 interface TimelineProps {
   duration: number;
@@ -28,6 +31,8 @@ interface TimelineProps {
   onMetaInfoToggle?: () => void;
   audioUrl?: string;
   onWaveformReady?: () => void;
+  showSubtitles?: boolean;
+  onSubtitlesVisibilityToggle?: () => void;
 }
 
 export function Timeline({ 
@@ -46,7 +51,9 @@ export function Timeline({
   showDevinGuide = false,
   onDevinGuideToggle,
   showMetaInfo = false,
-  onMetaInfoToggle
+  onMetaInfoToggle,
+  showSubtitles = true,
+  onSubtitlesVisibilityToggle
 }: TimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const [localTime, setLocalTime] = useState(currentTime);
@@ -282,57 +289,88 @@ export function Timeline({
         </div>
       </div>
 
-      <div className="h-[88px] bg-gray-900 rounded-b-lg overflow-hidden">
-        <div 
-          ref={timelineRef}
-          className="w-full h-full relative timeline-track"
-          onMouseDown={handleMouseDownLocal}
-        >
-          {/* Regla de tiempo */}
-          <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 timeline-markers">
-            {getTimeMarkers()}
+      <div className="flex gap-2">
+        {/* Track controls */}
+        <div className="w-8 h-[88px] bg-gray-900 rounded-l-lg flex flex-col">
+          {/* Área de la regla de tiempo */}
+          <div className="h-8 flex items-center justify-center">
+            <Button
+              variant="secondary"
+              onClick={() => {}}
+              title="Añadir track"
+              className="w-8 h-8 p-1"
+            >
+              <PlusIcon />
+            </Button>
           </div>
 
-          {/* Track de subtítulos */}
-          <div className="absolute top-8 left-0 right-0 bottom-0">
-            <SubtitleTrack
-              duration={duration}
-              currentTime={localTime}
-              onSubtitleClick={onSubtitleClick}
-              subtitles={subtitles}
-              onSubtitlesChange={onSubtitlesChange}
-              selectedSubtitleId={selectedSubtitleId}
-              fps={fps}
-              onTimeUpdate={(time) => {
-                setLocalTime(time);
-                onTimeUpdate?.(time);
-              }}
-            />
+          {/* Área del track de subtítulos */}
+          <div className="flex-1 flex items-center justify-center">
+            <Button
+              variant="secondary"
+              isActive={showSubtitles}
+              onClick={onSubtitlesVisibilityToggle}
+              title={showSubtitles ? "Ocultar subtítulos" : "Mostrar subtítulos"}
+              className="w-8 h-8 p-1"
+            >
+              {showSubtitles ? <EyeIcon /> : <EyeOffIcon />}
+            </Button>
           </div>
+        </div>
 
-          {/* Current frame highlight and playhead */}
-          {/* 
-            Note: When no video is loaded (duration = 0), the highlight position calculations
-            (width and left) result in invalid values (NaN or Infinity). This causes the div with
-            bg-white/10 to extend across the entire timeline, creating a lighter visual effect.
-            This is expected behavior since the frame highlight only makes sense with a loaded video.
-          */}
-          <div className="absolute inset-0 pointer-events-none">
-            {/* Resaltado del frame */}
-            <div 
-              className="absolute inset-0 bg-white/10"
-              style={{
-                left: `${(currentFrame.start / duration) * 100}%`,
-                width: `${(1 / fps / duration) * 100}%`
-              }}
-            />
-            {/* Línea del cabezal */}
-            <div 
-              className="absolute inset-0 w-0.5 bg-red-500 z-10"
-              style={{ 
-                left: `${(currentFrame.start / duration) * 100}%`
-              }}
-            />
+        {/* Timeline */}
+        <div className="flex-1 h-[88px] bg-gray-900 rounded-r-lg overflow-hidden">
+          <div 
+            ref={timelineRef}
+            className="w-full h-full relative timeline-track"
+            onMouseDown={handleMouseDownLocal}
+          >
+            {/* Regla de tiempo */}
+            <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 timeline-markers">
+              {getTimeMarkers()}
+            </div>
+
+            {/* Track de subtítulos */}
+            <div className="absolute top-8 left-0 right-0 bottom-0">
+              <SubtitleTrack
+                duration={duration}
+                currentTime={localTime}
+                onSubtitleClick={onSubtitleClick}
+                subtitles={subtitles}
+                onSubtitlesChange={onSubtitlesChange}
+                selectedSubtitleId={selectedSubtitleId}
+                fps={fps}
+                onTimeUpdate={(time) => {
+                  setLocalTime(time);
+                  onTimeUpdate?.(time);
+                }}
+              />
+            </div>
+
+            {/* Current frame highlight and playhead */}
+            {/* 
+              Note: When no video is loaded (duration = 0), the highlight position calculations
+              (width and left) result in invalid values (NaN or Infinity). This causes the div with
+              bg-white/10 to extend across the entire timeline, creating a lighter visual effect.
+              This is expected behavior since the frame highlight only makes sense with a loaded video.
+            */}
+            <div className="absolute inset-0 pointer-events-none">
+              {/* Resaltado del frame */}
+              <div 
+                className="absolute inset-0 bg-white/10"
+                style={{
+                  left: `${(currentFrame.start / duration) * 100}%`,
+                  width: `${(1 / fps / duration) * 100}%`
+                }}
+              />
+              {/* Línea del cabezal */}
+              <div 
+                className="absolute inset-0 w-0.5 bg-red-500 z-10"
+                style={{ 
+                  left: `${(currentFrame.start / duration) * 100}%`
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
