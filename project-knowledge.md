@@ -10,8 +10,9 @@
 ### Design System
 - `design-system/`: Contains reusable UI components
   - `Button.tsx`: Base button component with variants (primary, secondary, danger, ghost) and sizes (xs to lg)
-  - **Checkboxes**: Contenedor con `flex items-center gap-2` para alineación consistente
-  - **Accordion**: Animación suave usando `grid-template-rows` y `transition-[grid-template-rows]`
+  - **Checkboxes**: Container with `flex items-center gap-2` for consistent alignment
+  - **Accordion**: Smooth animation using `grid-template-rows` and `transition-[grid-template-rows]`
+  - **Text Controls**: Icon-based buttons for text transformations and alignment, consistent style with `p-2 rounded` and hover states
 
 ### Core Components
 - `VideoEditor/`: Contains core components for video editing

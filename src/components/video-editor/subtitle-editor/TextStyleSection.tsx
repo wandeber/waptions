@@ -4,6 +4,9 @@ import { ChevronDownIcon } from '../../icons/ChevronDownIcon';
 import { AlignLeftIcon } from '../../icons/AlignLeftIcon';
 import { AlignCenterIcon } from '../../icons/AlignCenterIcon';
 import { AlignRightIcon } from '../../icons/AlignRightIcon';
+import { TextNormalIcon } from '../../icons/TextNormalIcon';
+import { TextUppercaseIcon } from '../../icons/TextUppercaseIcon';
+import { TextLowercaseIcon } from '../../icons/TextLowercaseIcon';
 import type { SubtitleAnimationStyle } from './types';
 
 interface TextStyleSectionProps {
@@ -111,34 +114,37 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
         <label className="text-sm text-gray-300">Transformación del texto</label>
         <div className="flex gap-2">
           <button
-            className={`px-3 py-1 rounded text-sm ${
+            className={`p-2 rounded ${
               style.textCase === 'normal'
                 ? 'bg-blue-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
             onClick={() => onStyleChange('textCase', 'normal')}
+            title="Normal"
           >
-            Normal
+            <TextNormalIcon />
           </button>
           <button
-            className={`px-3 py-1 rounded text-sm ${
+            className={`p-2 rounded ${
               style.textCase === 'uppercase'
                 ? 'bg-blue-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
             onClick={() => onStyleChange('textCase', 'uppercase')}
+            title="Mayúsculas"
           >
-            MAYÚS.
+            <TextUppercaseIcon />
           </button>
           <button
-            className={`px-3 py-1 rounded text-sm ${
+            className={`p-2 rounded ${
               style.textCase === 'lowercase'
                 ? 'bg-blue-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
             onClick={() => onStyleChange('textCase', 'lowercase')}
+            title="Minúsculas"
           >
-            minús.
+            <TextLowercaseIcon />
           </button>
         </div>
       </div>
