@@ -187,6 +187,14 @@ export function DraggableNumberInput({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       inputRef.current?.blur();
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const sensitivity = e.shiftKey ? 0.1 : 1;
+      const direction = e.key === 'ArrowUp' ? 1 : -1;
+      const newValue = value + (direction * step * sensitivity);
+      const clampedValue = Math.min(max, Math.max(min, newValue));
+      onChange(clampedValue);
+      setInputValue(clampedValue.toString());
     }
   };
 
