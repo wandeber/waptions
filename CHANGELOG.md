@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced text transformation controls with intuitive icons for normal, uppercase and lowercase options
 - Enhanced DraggableNumberInput with keyboard arrow controls and visual progress indicator
 - Added support for displaying multiple subtitles simultaneously (up to 3 lines) with synchronized group animations
+- Sistema de presets de estilos para subtítulos
+  - Preset predeterminado "Edu Siverio"
+  - Guardado y carga de presets personalizados
+  - Gestión de presets (crear, eliminar)
+  - Persistencia en localStorage
 
 ### Fixed
 - Improved UI consistency: dark theme scrollbars, checkbox alignment, and focus management

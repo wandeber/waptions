@@ -81,4 +81,39 @@ export const defaultAnimationStyle: SubtitleAnimationStyle = {
   backgroundBorderRadius: 4,
   backgroundOffsetX: 0,
   backgroundOffsetY: 0
+};
+
+export interface StylePreset {
+  id: string;
+  name: string;
+  style: SubtitleAnimationStyle;
+  isDefault?: boolean;
+}
+
+export const eduSiverioPreset: StylePreset = {
+  id: 'edu-siverio',
+  name: 'Edu Siverio',
+  isDefault: true,
+  style: {
+    ...defaultAnimationStyle,
+    fontSize: 48,
+    fontFamily: 'Verdana',
+    textColor: '#FFD000',
+    strokeWidth: 0,
+    fontWeight: 800,
+    textCase: 'uppercase',
+    textAlign: 'center',
+    position: {
+      x: 50,
+      y: 65
+    },
+    backgroundColor: '#000000',
+    backgroundOpacity: 100,
+    backgroundBorderWidth: 0,
+    backgroundMarginVertical: 8,
+    backgroundMarginHorizontal: 16,
+    backgroundBorderRadius: 2,
+    numberOfLines: 2,
+    hidePunctuation: true,
+  }
 }; 

@@ -9,8 +9,10 @@ import { BackgroundSection } from './BackgroundSection';
 import { AnimationSection } from './AnimationSection';
 import { PositionSection } from './PositionSection';
 import { SubtitleList } from './SubtitleList';
+import { StylePresetSelector } from './StylePresetSelector';
 import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
 import { defaultAnimationStyle } from './types';
+import { getSelectedPreset } from './presetUtils';
 
 export function SubtitleEditor({ 
   subtitles, 
@@ -27,18 +29,33 @@ export function SubtitleEditor({
   const [editingText, setEditingText] = useState<{[key: string]: string}>({});
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
   const [expandedStyleSection, setExpandedStyleSection] = useState<string | null>(null);
+  const [hasLoadedPreset, setHasLoadedPreset] = useState(false);
   const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
     ...defaultAnimationStyle,
     ...animationStyle
   });
 
+  // Efecto para cargar el preset inicial
+  useEffect(() => {
+    if (!hasLoadedPreset) {
+      const selectedPreset = getSelectedPreset();
+      if (selectedPreset) {
+        setLocalAnimationStyle(selectedPreset.style);
+        onAnimationStyleChange?.(selectedPreset.style);
+      }
+      setHasLoadedPreset(true);
+    }
+  }, [hasLoadedPreset, onAnimationStyleChange]);
+
   // Efecto para sincronizar los estilos locales con los props
   useEffect(() => {
-    setLocalAnimationStyle({
-      ...defaultAnimationStyle,
-      ...animationStyle
-    });
-  }, [animationStyle]);
+    if (hasLoadedPreset) {
+      setLocalAnimationStyle({
+        ...defaultAnimationStyle,
+        ...animationStyle
+      });
+    }
+  }, [animationStyle, hasLoadedPreset]);
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
   useEffect(() => {
@@ -315,64 +332,76 @@ export function SubtitleEditor({
   }, [selectedSubtitleId, onDelete]);
 
   const styleContent = (
-    <Accordion
-      sections={[
-        {
-          id: 'textStyle',
-          title: 'Estilo del texto',
-          content: (
-            <TextStyleSection
-              style={localAnimationStyle}
-              onStyleChange={handleStyleChange}
-            />
-          )
-        },
-        {
-          id: 'position',
-          title: 'Posición',
-          content: (
-            <PositionSection
-              style={localAnimationStyle}
-              onStyleChange={handleStyleChange}
-            />
-          )
-        },
-        {
-          id: 'background',
-          title: 'Fondo',
-          content: (
-            <BackgroundSection
-              style={localAnimationStyle}
-              onStyleChange={handleStyleChange}
-            />
-          )
-        },
-        {
-          id: 'entryAnimation',
-          title: 'Animación de entrada',
-          content: (
-            <AnimationSection
-              style={localAnimationStyle}
-              onStyleChange={handleStyleChange}
-              type="entry"
-            />
-          )
-        },
-        {
-          id: 'exitAnimation',
-          title: 'Animación de salida',
-          content: (
-            <AnimationSection
-              style={localAnimationStyle}
-              onStyleChange={handleStyleChange}
-              type="exit"
-            />
-          )
-        }
-      ]}
-      expandedSection={expandedStyleSection}
-      onSectionChange={setExpandedStyleSection}
-    />
+    <div className="flex flex-col gap-6">
+      <div className="px-4 pt-4">
+        <StylePresetSelector
+          currentStyle={localAnimationStyle}
+          onStyleChange={(newStyle) => {
+            setLocalAnimationStyle(newStyle);
+            onAnimationStyleChange?.(newStyle);
+          }}
+        />
+      </div>
+
+      <Accordion
+        sections={[
+          {
+            id: 'textStyle',
+            title: 'Estilo del texto',
+            content: (
+              <TextStyleSection
+                style={localAnimationStyle}
+                onStyleChange={handleStyleChange}
+              />
+            )
+          },
+          {
+            id: 'position',
+            title: 'Posición',
+            content: (
+              <PositionSection
+                style={localAnimationStyle}
+                onStyleChange={handleStyleChange}
+              />
+            )
+          },
+          {
+            id: 'background',
+            title: 'Fondo',
+            content: (
+              <BackgroundSection
+                style={localAnimationStyle}
+                onStyleChange={handleStyleChange}
+              />
+            )
+          },
+          {
+            id: 'entryAnimation',
+            title: 'Animación de entrada',
+            content: (
+              <AnimationSection
+                style={localAnimationStyle}
+                onStyleChange={handleStyleChange}
+                type="entry"
+              />
+            )
+          },
+          {
+            id: 'exitAnimation',
+            title: 'Animación de salida',
+            content: (
+              <AnimationSection
+                style={localAnimationStyle}
+                onStyleChange={handleStyleChange}
+                type="exit"
+              />
+            )
+          }
+        ]}
+        expandedSection={expandedStyleSection}
+        onSectionChange={setExpandedStyleSection}
+      />
+    </div>
   );
 
   const tabs = [

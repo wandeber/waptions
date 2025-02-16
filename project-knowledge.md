@@ -80,6 +80,11 @@ Características principales:
 - Generación automática con IA
 - Gestión inteligente del foco
 - Textareas con altura dinámica que se ajusta al contenido
+- Sistema de presets de estilos con almacenamiento local
+  - Preset predeterminado "Edu Siverio" no eliminable
+  - Guardado y carga de presets personalizados
+  - Gestión de presets (crear, eliminar)
+  - Persistencia en localStorage
 
 Atajos de teclado:
 - `Enter`: Dividir subtítulo y mover foco
