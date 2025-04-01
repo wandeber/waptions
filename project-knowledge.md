@@ -15,6 +15,10 @@
     - Arrow keys for value adjustment (normal and fine control with Shift)
     - Visual progress bar when min/max are defined
     - Double-click label or reset button to restore default
+    - Focus behavior: 
+      - Receives focus on direct click (without dragging)
+      - Doesn't receive focus after dragging to change value
+      - Uses threshold of 2px movement to distinguish between click and drag
   - **Checkboxes**: Container with `flex items-center gap-2` for consistent alignment
   - **Accordion**: Smooth animation using `grid-template-rows` and `transition-[grid-template-rows]`
   - **Text Controls**: Icon-based buttons for text transformations and alignment, consistent style with `p-2 rounded` and hover states

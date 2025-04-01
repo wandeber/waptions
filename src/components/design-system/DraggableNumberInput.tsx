@@ -112,6 +112,11 @@ export function DraggableNumberInput({
     if (!isDragging) return;
 
     const dx = e.clientX - startX;
+    // Si hay movimiento real (más de un par de píxeles para evitar pequeños temblores)
+    if (Math.abs(dx) > 2) {
+      setHasMoved(true);
+    }
+    
     const sensitivity = e.shiftKey ? 0.1 : 1; // Shift for fine control
     const newValue = startValue + (dx * step * sensitivity);
     const clampedValue = Math.min(max, Math.max(min, newValue));
@@ -126,7 +131,6 @@ export function DraggableNumberInput({
     if (!isDragging) return;
     
     setIsDragging(false);
-    setHasMoved(true);
     document.body.style.cursor = '';
     
     // Desactivar el overlay de arrastre

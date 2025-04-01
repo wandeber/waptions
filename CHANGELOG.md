@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed handling of isDefault presets in localStorage
 - Fixed infinite update loop in SubtitleEditor when synchronizing animation styles with props
 - Fixed subtitle visibility toggle not properly hiding subtitles in viewport
+- Fixed DraggableNumberInput focus issue: now properly avoids focusing the input field after dragging
 
 ### Changed
 - Improved Accordion animation using CSS grid-template-rows for smoother transitions
