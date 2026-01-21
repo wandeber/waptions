@@ -42,7 +42,7 @@ export function VideoViewport({
 }: VideoViewportProps) {
   // Stores
   const { currentTime, isPlaying, volume, muted } = usePlaybackStore();
-  const { videoFile, width: originalWidth, height: originalHeight, fps, duration, loadVideo } = useVideoStore();
+  const { videoFile, width: originalWidth, height: originalHeight, fps, duration, bitrate, loadVideo } = useVideoStore();
 
   // Sync video metadata to parent (needed when loading project)
   useEffect(() => {
@@ -480,9 +480,12 @@ export function VideoViewport({
             />
 
             {showMetaInfo && (
-              <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20">
-                <div>FPS: {fps.toFixed(2)}</div>
-                <div>Time: {currentTime.toFixed(2)}s</div>
+              <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20 font-mono tracking-wide">
+                <div className="flex flex-col gap-0.5">
+                  <div className="opacity-80">{originalWidth}x{originalHeight}</div>
+                  <div className="opacity-80">FPS: {fps.toFixed(2)}</div>
+                  <div className="opacity-80">Bitrate: {((bitrate || 0) / 1000000).toFixed(2)} Mbps</div>
+                </div>
               </div>
             )}
 

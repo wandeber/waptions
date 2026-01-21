@@ -21,6 +21,7 @@ export async function getVideoInfo(videoFile: File): Promise<{
     width: number;
     height: number;
     fps: number;
+    bitrate: number;
 }> {
     const input = new Input({
         source: new BlobSource(videoFile),
@@ -47,11 +48,15 @@ export async function getVideoInfo(videoFile: File): Promise<{
         }
     }
 
+    // Calculate average bitrate (bits per second)
+    const bitrate = duration > 0 ? Math.round((videoFile.size * 8) / duration) : 0;
+
     return {
         duration,
         width: videoTrack.displayWidth,
         height: videoTrack.displayHeight,
         fps,
+        bitrate,
     };
 }
 
