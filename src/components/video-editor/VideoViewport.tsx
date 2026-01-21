@@ -4,8 +4,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { LoadVideoIcon } from '../icons/LoadVideoIcon';
 import { Button } from '../design-system/Button';
-import type { SubtitleAnimationStyle } from './subtitle-editor/types';
-import { defaultAnimationStyle } from './subtitle-editor/types';
+
 import { ThirdsGuideOverlay } from './overlays/ThirdsGuideOverlay';
 import { DevinGuideOverlay } from './overlays/DevinGuideOverlay';
 import { usePlaybackStore } from '@/stores/playback-store';
@@ -13,6 +12,8 @@ import { useVideoStore } from '@/stores/video-store';
 import { videoCache } from '@/lib/video-cache';
 import { getVideoInfo } from '@/lib/mediabunny-utils';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useProjectStore } from '@/stores/project-store';
+import { storageService } from '@/lib/storage/storage-service';
 import { AnimationStyle } from '@/types/timeline';
 import { Subtitle } from './SubtitleTrack';
 
@@ -21,40 +22,56 @@ interface VideoViewportProps {
   onTimeUpdate?: (currentTime: number) => void;
   currentTime?: number;
   isPlaying?: boolean;
-  subtitles?: Array<{
-    id: string;
-    startTime: number;
-    endTime: number;
-    text: string;
-  }>;
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
   onEnded?: () => void;
   showThirdsGuide?: boolean;
   showDevinGuide?: boolean;
   showMetaInfo?: boolean;
-  animationStyle?: SubtitleAnimationStyle;
   onAudioExtracted?: (audioUrl: string) => void;
   showSubtitles?: boolean;
 }
 
 export function VideoViewport({
   onVideoLoad,
-  subtitles = [],
   canvasRef: externalCanvasRef,
   showThirdsGuide = false,
   showDevinGuide = false,
   showMetaInfo = true,
-  animationStyle = defaultAnimationStyle,
   showSubtitles = true,
   onAudioExtracted,
 }: VideoViewportProps) {
   // Stores
   const { currentTime, isPlaying, volume, muted } = usePlaybackStore();
-  const { videoFile, width: originalWidth, height: originalHeight, fps, loadVideo } = useVideoStore();
+  const { videoFile, width: originalWidth, height: originalHeight, fps, duration, loadVideo } = useVideoStore();
+
+  // Sync video metadata to parent (needed when loading project)
+  useEffect(() => {
+    if (videoFile && duration > 0) {
+      onVideoLoad?.(duration, fps, videoFile);
+    } else if (!videoFile) {
+      onVideoLoad?.(0, 0, undefined);
+    }
+  }, [videoFile, duration, fps, onVideoLoad]);
 
   // Local state
   const [isLoading, setIsLoading] = useState(false);
   const [audioUrl, setAudioUrlState] = useState<string | null>(null);
+
+  // Audio URL management
+  useEffect(() => {
+    if (!videoFile) {
+      setAudioUrlState(null);
+      return;
+    }
+
+    const url = URL.createObjectURL(videoFile);
+    setAudioUrlState(url);
+    onAudioExtracted?.(url);
+
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [videoFile, onAudioExtracted]);
 
   // Refs
   const videoContainerRef = useRef<HTMLDivElement>(null);
@@ -72,6 +89,10 @@ export function VideoViewport({
 
     try {
       setIsLoading(true);
+
+      // Push history state before loading new video
+      useTimelineStore.getState().pushHistory();
+
       console.log('Iniciando carga de video con mediabunny:', file.name);
 
       const info = await getVideoInfo(file);
@@ -80,10 +101,11 @@ export function VideoViewport({
       loadVideo(file, info);
       onVideoLoad?.(info.duration, info.fps, file);
 
-      // Setup audio
-      const url = URL.createObjectURL(file);
-      setAudioUrlState(url);
-      onAudioExtracted?.(url);
+      // Save video to storage if project is active
+      const activeProject = useProjectStore.getState().activeProject;
+      if (activeProject) {
+        storageService.saveVideo(activeProject.id, file).catch(console.error);
+      }
 
       console.log(`Video cargado: ${info.duration.toFixed(2)}s @ ${info.fps.toFixed(2)}fps`);
 
@@ -362,7 +384,7 @@ export function VideoViewport({
     } finally {
       isRendering.current = false;
     }
-  }, [videoFile, subtitles, animationStyle, showSubtitles, getVideoDisplayRect, canvasRef]);
+  }, [videoFile, showSubtitles, getVideoDisplayRect, canvasRef]);
 
   // Main loop
   useEffect(() => {

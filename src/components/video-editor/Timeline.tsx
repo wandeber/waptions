@@ -9,7 +9,9 @@ import { InfoIcon } from '../icons/InfoIcon';
 import { DevinIcon } from '../icons/DevinIcon';
 import { Button } from '../design-system/Button';
 import { PlusIcon } from '../icons/PlusIcon';
-import { EyeIcon } from '../icons/EyeIcon';
+import { ZoomInIcon } from '../icons/ZoomInIcon';
+import { ZoomOutIcon } from '../icons/ZoomOutIcon';
+import { ResetIcon } from '../icons/ResetIcon';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
@@ -31,8 +33,6 @@ interface TimelineProps {
   onDevinGuideToggle?: () => void;
   showMetaInfo?: boolean;
   onMetaInfoToggle?: () => void;
-  showSubtitles?: boolean;
-  onSubtitlesVisibilityToggle?: () => void;
 }
 
 export function Timeline({
@@ -50,8 +50,6 @@ export function Timeline({
   onDevinGuideToggle,
   showMetaInfo = false,
   onMetaInfoToggle,
-  showSubtitles = true,
-  onSubtitlesVisibilityToggle
 }: TimelineProps) {
   const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId } = useTimelineStore();
 
@@ -158,6 +156,25 @@ export function Timeline({
     return () => el.removeEventListener('wheel', handleWheelRaw);
   }, [zoomLevel, setZoom]);
 
+  const handleZoomIn = () => {
+    const newZoom = Math.min(10, zoomLevel * 1.2);
+    setZoom(newZoom);
+  };
+
+  const handleZoomOut = () => {
+    const newZoom = Math.max(0.1, zoomLevel / 1.2);
+    setZoom(newZoom);
+  };
+
+  const handleResetZoom = () => {
+    if (tracksContentRef.current && duration > 0) {
+      const availableWidth = tracksContentRef.current.clientWidth;
+      // Subtract buffer
+      const newZoom = (availableWidth - 50) / (duration * pixelsPerSecond);
+      setZoom(Math.max(0.1, newZoom));
+    }
+  };
+
   // Keyboard navigation (Frame-by-Frame)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -225,25 +242,35 @@ export function Timeline({
           <Button
             variant={isPlaying ? 'primary' : 'secondary'}
             onClick={onPlayPause}
-            className="w-10 h-10 p-0"
           >
             {isPlaying ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
           </Button>
         </div>
 
         <div className="flex items-center gap-4 text-xs font-mono text-gray-400">
-          <div className="flex flex-col">
+          <div>
             <span className="text-blue-400">{formatTime(currentTime)}</span>
+            <span className="mx-1 text-gray-600">/</span>
             <span>{formatTime(duration)}</span>
           </div>
-          <div className="w-px h-8 bg-gray-700" />
-          <div className="flex flex-col">
-            <span>FPS: {fps.toFixed(2)}</span>
-            <span>Zoom: {(zoomLevel * 100).toFixed(0)}%</span>
-          </div>
+
         </div>
 
         <div className="flex gap-2 ml-auto">
+          <div className="flex items-center gap-1">
+            <span className="text-xs font-mono text-gray-400 mr-2 w-10 text-right">{(zoomLevel * 100).toFixed(0)}%</span>
+            <Button variant="secondary" onClick={handleZoomOut} title="Alejar">
+              <ZoomOutIcon className="w-[18px] h-[18px]" />
+            </Button>
+            <Button variant="secondary" onClick={handleZoomIn} title="Acercar">
+              <ZoomInIcon className="w-[18px] h-[18px]" />
+            </Button>
+            <Button variant="secondary" onClick={handleResetZoom} title="Ajustar a la vista">
+              <ResetIcon className="w-[18px] h-[18px]" />
+            </Button>
+          </div>
+          <div className="w-px h-6 bg-gray-800 mx-1" />
+
           <Button variant="secondary" isActive={showThirdsGuide} onClick={onThirdsGuideToggle} title="Guía de tercios">
             <GridIcon className="w-[18px] h-[18px]" />
           </Button>
@@ -252,15 +279,6 @@ export function Timeline({
           </Button>
           <Button variant="secondary" isActive={showMetaInfo} onClick={onMetaInfoToggle} title="Info">
             <InfoIcon className="w-[18px] h-[18px]" />
-          </Button>
-          <div className="w-px h-6 bg-gray-800 mx-1" />
-          <Button
-            variant="secondary"
-            isActive={showSubtitles}
-            onClick={onSubtitlesVisibilityToggle}
-            title="Mostrar/Ocultar Subtítulos"
-          >
-            <EyeIcon className="w-[18px] h-[18px]" />
           </Button>
           <div className="w-px h-6 bg-gray-800 mx-1" />
           <Button variant="secondary" onClick={() => addTrack()} title="Nueva Capa">

@@ -6,6 +6,8 @@ export interface SubtitleEditorProps {
   onSubtitleClick?: (subtitle: Subtitle) => void;
   onDelete?: (subtitleId: string) => void;
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
+  onSubtitleUpdate?: (id: string, updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
+  onAddSubtitle?: (subtitle: Omit<Subtitle, 'id'>) => string;
   currentTime: number;
   onGenerateSubtitles?: () => void;
   isGeneratingSubtitles?: boolean;

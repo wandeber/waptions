@@ -11,7 +11,10 @@ interface VideoSinkData {
     iterator: AsyncGenerator<WrappedCanvas, void, unknown> | null;
     currentFrame: WrappedCanvas | null;
     lastTime: number;
+    fileSignature: string;
 }
+
+const getFileSignature = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
 
 /**
  * VideoCache manages efficient video frame decoding using mediabunny's WebCodecs API.
@@ -118,11 +121,21 @@ export class VideoCache {
     }
 
     private async ensureSink(mediaId: string, file: File): Promise<void> {
-        if (this.sinks.has(mediaId)) return;
+        const signature = getFileSignature(file);
+        const existing = this.sinks.get(mediaId);
+
+        if (existing) {
+            if (existing.fileSignature === signature) return;
+            // File changed, clear old sink
+            this.clearVideo(mediaId);
+        }
 
         if (this.initPromises.has(mediaId)) {
+            // If already initializing, wait for it
             await this.initPromises.get(mediaId);
-            return;
+            // After waiting, re-check constraint (in case the initializing one was also wrong, though unlikely in single-thread flow)
+            // Recursively ensure to double check
+            return this.ensureSink(mediaId, file);
         }
 
         const initPromise = this.initializeSink(mediaId, file);
@@ -162,6 +175,7 @@ export class VideoCache {
                 iterator: null,
                 currentFrame: null,
                 lastTime: -1,
+                fileSignature: getFileSignature(file),
             });
         } catch (error) {
             console.error(`Failed to initialize video sink for ${mediaId}:`, error);

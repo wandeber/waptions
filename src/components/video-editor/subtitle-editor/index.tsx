@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Subtitle } from '../SubtitleTrack';
 import { Tabs } from '../../design-system/Tabs';
 import { Accordion } from '../../design-system/Accordion';
@@ -12,7 +12,15 @@ import { SubtitleList } from './SubtitleList';
 import { StylePresetSelector } from './StylePresetSelector';
 import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
 import { defaultAnimationStyle } from './types';
-import { getSelectedPreset } from './presetUtils';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function debounce<T extends (...args: any[]) => void>(func: T, wait: number) {
+  let timeout: ReturnType<typeof setTimeout>;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), wait);
+  };
+}
 
 export function SubtitleEditor({
   subtitles,
@@ -20,6 +28,8 @@ export function SubtitleEditor({
   onSubtitleClick,
   onDelete,
   onSubtitlesChange,
+  onSubtitleUpdate,
+  onAddSubtitle,
   currentTime,
   onGenerateSubtitles,
   isGeneratingSubtitles,
@@ -33,37 +43,30 @@ export function SubtitleEditor({
   const [editingText, setEditingText] = useState<{ [key: string]: string }>({});
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
   const [expandedStyleSection, setExpandedStyleSection] = useState<string | null>(null);
-  const [hasLoadedPreset, setHasLoadedPreset] = useState(false);
   const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
     ...defaultAnimationStyle,
     ...animationStyle
   });
 
-  // Efecto para cargar el preset inicial
-  useEffect(() => {
-    if (!hasLoadedPreset) {
-      const selectedPreset = getSelectedPreset();
-      if (selectedPreset) {
-        setLocalAnimationStyle(selectedPreset.style);
-        onAnimationStyleChange?.(selectedPreset.style);
-      }
-      setHasLoadedPreset(true);
-    }
-  }, [hasLoadedPreset, onAnimationStyleChange]);
+  const isTypingRef = useRef(false);
+  const finishTyping = useCallback(() => {
+    isTypingRef.current = false;
+  }, []);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const debouncedFinishTyping = useCallback(debounce(finishTyping, 300), [finishTyping]);
 
   // Efecto para sincronizar los estilos locales con los props
   useEffect(() => {
-    if (hasLoadedPreset) {
-      const newStyle = {
-        ...defaultAnimationStyle,
-        ...animationStyle
-      };
-      // Solo actualizar si realmente hay cambios
-      if (JSON.stringify(newStyle) !== JSON.stringify(localAnimationStyle)) {
-        setLocalAnimationStyle(newStyle);
-      }
+    const newStyle = {
+      ...defaultAnimationStyle,
+      ...animationStyle
+    };
+    // Solo actualizar si realmente hay cambios
+    if (JSON.stringify(newStyle) !== JSON.stringify(localAnimationStyle)) {
+      setLocalAnimationStyle(newStyle);
     }
-  }, [animationStyle, hasLoadedPreset, localAnimationStyle]);
+  }, [animationStyle, localAnimationStyle]);
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
   useEffect(() => {
@@ -85,7 +88,17 @@ export function SubtitleEditor({
   const handleTextChange = (subtitle: Subtitle, newText: string) => {
     setEditingText(prev => ({ ...prev, [subtitle.id]: newText }));
 
-    if (onSubtitlesChange) {
+    if (onSubtitleUpdate) {
+      if (!isTypingRef.current) {
+        // Al empezar a escribir, guardamos un punto en la historia (estado previo)
+        onSubtitleUpdate(subtitle.id, { text: newText }, { skipHistory: false });
+        isTypingRef.current = true;
+      } else {
+        // Mientras escribimos, actualizamos sin guardar en historia
+        onSubtitleUpdate(subtitle.id, { text: newText }, { skipHistory: true });
+      }
+      debouncedFinishTyping();
+    } else if (onSubtitlesChange) {
       const updatedSubtitles = subtitles.map(s =>
         s.id === subtitle.id ? { ...s, text: newText } : s
       );
@@ -425,6 +438,7 @@ export function SubtitleEditor({
           onSubtitleClick={onSubtitleClick}
           onDelete={onDelete}
           onSubtitlesChange={onSubtitlesChange}
+          onAddSubtitle={onAddSubtitle}
           onGenerateSubtitles={onGenerateSubtitles}
           isGeneratingSubtitles={isGeneratingSubtitles}
           onTextChange={handleTextChange}

@@ -26,6 +26,7 @@ export function TimelineTrackOverlay({
     selectedSubtitleId
 }: TimelineTrackOverlayProps) {
     const updateSubtitleInTrack = useTimelineStore(state => state.updateSubtitleInTrack);
+    const pushHistory = useTimelineStore(state => state.pushHistory);
     const pps = pixelsPerSecond * zoomLevel;
 
     // Helper to calculate time from click
@@ -58,7 +59,8 @@ export function TimelineTrackOverlay({
                     fps={fps}
                     isSelected={selectedSubtitleId === subtitle.id}
                     onClick={() => onSubtitleClick?.(subtitle)}
-                    onUpdate={(updates) => updateSubtitleInTrack(track.id, subtitle.id, updates)}
+                    onUpdate={(updates, options) => updateSubtitleInTrack(track.id, subtitle.id, updates, options)}
+                    onPushHistory={pushHistory}
                 />
             ))}
         </div>
@@ -72,16 +74,20 @@ interface SubtitleBlockProps {
     fps: number;
     isSelected: boolean;
     onClick: () => void;
-    onUpdate: (updates: Partial<Subtitle>) => void;
+    onUpdate: (updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
+    onPushHistory: () => void;
 }
 
-function SubtitleBlock({ subtitle, pps, fps, isSelected, onClick, onUpdate }: SubtitleBlockProps) {
+function SubtitleBlock({ subtitle, pps, fps, isSelected, onClick, onUpdate, onPushHistory }: SubtitleBlockProps) {
     const left = subtitle.startTime * pps;
     const width = (subtitle.endTime - subtitle.startTime) * pps;
 
     const handleMouseDown = (e: React.MouseEvent, type: 'move' | 'resize-start' | 'resize-end') => {
         e.stopPropagation();
         if (!isSelected) onClick();
+
+        // Push history before starting the drag operation
+        onPushHistory();
 
         const startX = e.clientX;
         const initialStart = subtitle.startTime;
@@ -103,13 +109,13 @@ function SubtitleBlock({ subtitle, pps, fps, isSelected, onClick, onUpdate }: Su
                 onUpdate({
                     startTime: newStart,
                     endTime: newStart + duration
-                });
+                }, { skipHistory: true });
             } else if (type === 'resize-start') {
                 const newStart = Math.max(0, Math.min(subtitle.endTime - 0.1, snapTime(initialStart + deltaTime)));
-                onUpdate({ startTime: newStart });
+                onUpdate({ startTime: newStart }, { skipHistory: true });
             } else if (type === 'resize-end') {
                 const newEnd = Math.max(subtitle.startTime + 0.1, snapTime(initialEnd + deltaTime));
-                onUpdate({ endTime: newEnd });
+                onUpdate({ endTime: newEnd }, { skipHistory: true });
             }
         };
 

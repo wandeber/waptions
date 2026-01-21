@@ -14,6 +14,7 @@ interface SubtitleListProps {
   onSubtitleClick?: (subtitle: Subtitle) => void;
   onDelete?: (subtitleId: string) => void;
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;
+  onAddSubtitle?: (subtitle: Omit<Subtitle, 'id'>) => string;
   onGenerateSubtitles?: () => void;
   isGeneratingSubtitles?: boolean;
   onTextChange: (subtitle: Subtitle, newText: string) => void;
@@ -28,6 +29,7 @@ export function SubtitleList({
   onSubtitleClick,
   onDelete,
   onSubtitlesChange,
+  onAddSubtitle,
   onGenerateSubtitles,
   isGeneratingSubtitles,
   onTextChange,
@@ -70,6 +72,26 @@ export function SubtitleList({
             variant="secondary"
             size="sm"
             onClick={() => {
+              if (onAddSubtitle) {
+                const newSubtitleBase = {
+                  startTime: currentTime,
+                  endTime: currentTime + 2,
+                  text: ''
+                };
+                const newId = onAddSubtitle(newSubtitleBase);
+
+                const newSub = { ...newSubtitleBase, id: newId };
+                onSubtitleClick?.(newSub);
+
+                requestAnimationFrame(() => {
+                  const textarea = textAreasRef.current[newId];
+                  if (textarea) {
+                    textarea.focus();
+                  }
+                });
+                return;
+              }
+
               const newSubtitle: Subtitle = {
                 id: Date.now().toString(),
                 startTime: currentTime,

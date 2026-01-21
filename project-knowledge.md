@@ -8,8 +8,9 @@
 - **Typing**: Strict TypeScript
 
 ### Design System
-- `design-system/`: Reusable UI components (Button, DraggableNumberInput, Accordion)
+- `design-system/`: Reusable UI components (Button, DraggableNumberInput, Accordion, ConfirmDialog)
 - **Icons**: Custom icons in `components/icons/` supporting `className` for Tailwind styling.
+- **Dialogs**: Use `ConfirmDialog` for destructive actions (Delete, Exit Unsaved) instead of `window.confirm`.
 
 ### Core Components
 - `VideoViewport.tsx**: Canvas rendering, multi-layer subtitle support, audio sync.
@@ -37,6 +38,12 @@
 - Rendered directly on Canvas for high performance.
 - Iterates over all visible tracks in `VideoViewport`.
 - Supports animations (fade, scale), positioning (X, Y %), and smart grouping.
+
+### Note on Persistence (IndexedDB)
+- **Video Persistence:** Video files are stored in `waptions-timelines-{projectId}` -> `video-file`. `ProjectStore` loads the video into `VideoStore` on project open. `VideoViewport` automatically detects changes in `VideoStore.videoFile` and synchronizes metadata (duration, fps) to `PlaybackStore`.
+- **Project Storage**: `ProjectStore` uses `storage-service` to save project metadata (`waptions-projects`) and timelines (`waptions-timelines-{projectId}`).
+- **Timeline History**: `TimelineStore` implements manual undo/redo stack (`history` + `redoStack`) and auto-saves to IndexedDB on changes.
+- **Text Editing Optimization**: Subtitle text changes are debounced (300ms) in `SubtitleEditor`. The first keystroke captures a history snapshot (state before typing), subsequent keystrokes update state with `skipHistory: true`. This groups a continuous typing session into a single undo step.
 
 ## Development Guidelines
 

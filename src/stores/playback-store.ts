@@ -22,6 +22,7 @@ interface PlaybackActions {
     mute: () => void;
     unmute: () => void;
     toggleMute: () => void;
+    reset: () => void;
 }
 
 type PlaybackStore = PlaybackState & PlaybackActions;
@@ -158,5 +159,15 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
         } else {
             get().mute();
         }
+    },
+
+    reset: () => {
+        set({
+            isPlaying: false,
+            currentTime: 0,
+            duration: 0,
+            speed: 1.0,
+        });
+        stopTimer();
     },
 }));
