@@ -30,6 +30,7 @@ interface TimelineStore {
     addTrack: (name?: string, style?: AnimationStyle, options?: { skipHistory?: boolean }) => string;
     removeTrack: (id: string) => void;
     updateTrackStyle: (id: string, style: Partial<AnimationStyle>) => void;
+    updateTrackName: (id: string, name: string) => void;
 
     addSubtitleToTrack: (trackId: string, subtitle: Omit<Subtitle, 'id'>) => string;
     updateSubtitleInTrack: (trackId: string, subtitleId: string, updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
@@ -245,6 +246,17 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         set((state) => {
             const newTracks = state.tracks.map(t =>
                 t.id === id ? { ...t, style: { ...t.style, ...styleUpdates } } : t
+            );
+            saveTimelineToStorage(newTracks);
+            return { tracks: newTracks };
+        });
+    },
+
+    updateTrackName: (id, name) => {
+        get().pushHistory();
+        set((state) => {
+            const newTracks = state.tracks.map(t =>
+                t.id === id ? { ...t, name } : t
             );
             saveTimelineToStorage(newTracks);
             return { tracks: newTracks };

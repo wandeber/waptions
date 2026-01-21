@@ -6,6 +6,7 @@ import { Button } from '../design-system/Button';
 import { ConfirmDialog } from '../design-system/ConfirmDialog';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useState } from 'react';
+import { InlineEditor } from '../design-system/InlineEditor';
 
 interface TimelineTrackHeaderProps {
     track: SubtitleTrack;
@@ -15,7 +16,7 @@ interface TimelineTrackHeaderProps {
 }
 
 export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onClick }: TimelineTrackHeaderProps) {
-    const { removeTrack, tracks } = useTimelineStore();
+    const { removeTrack, tracks, updateTrackName } = useTimelineStore();
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     const isOnlyTrack = tracks.length <= 1;
@@ -39,9 +40,12 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
             onClick={onClick}
         >
             <div className="flex-1 min-w-0">
-                <span className="text-xs font-medium text-gray-300 truncate block">
-                    {track.name}
-                </span>
+                <InlineEditor
+                    initialValue={track.name}
+                    onSave={(val) => updateTrackName(track.id, val)}
+                    textClassName="text-xs font-medium text-gray-300"
+                    inputClassName="text-xs font-medium h-6"
+                />
             </div>
 
             <div className="flex items-center gap-1">

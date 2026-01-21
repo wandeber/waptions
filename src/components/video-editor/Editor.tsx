@@ -10,6 +10,7 @@ import { UndoIcon } from '@/components/icons/UndoIcon';
 import { RedoIcon } from '@/components/icons/RedoIcon';
 import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
+import { InlineEditor } from '@/components/design-system/InlineEditor';
 
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
@@ -47,7 +48,7 @@ export function Editor() {
         redoStack
     } = useTimelineStore();
 
-    const { saveCurrentProject, activeProject, closeProject, isDirty } = useProjectStore();
+    const { saveCurrentProject, activeProject, closeProject, isDirty, updateProjectName } = useProjectStore();
 
     const [selectedSubtitle, setSelectedSubtitle] = useState<Subtitle | null>(null);
     const [detectedFps, setDetectedFps] = useState<number | null>(null);
@@ -197,7 +198,12 @@ export function Editor() {
                     <button onClick={handleClose} className="text-gray-400 hover:text-white transition-colors">
                         ← Volver
                     </button>
-                    <h1 className="text-xl font-bold select-none">{activeProject?.name || "Sin Título"}</h1>
+                    <InlineEditor
+                        initialValue={activeProject?.name || ""}
+                        onSave={(val) => updateProjectName(val)}
+                        textClassName="text-xl font-bold"
+                        inputClassName="text-xl font-bold h-8"
+                    />
                 </div>
 
                 <div className="flex items-center gap-2">
