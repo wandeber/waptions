@@ -9,8 +9,8 @@ interface ThirdsGuideOverlayProps {
 
 export function ThirdsGuideOverlay({ rect }: ThirdsGuideOverlayProps) {
   return (
-    <div 
-      className="absolute pointer-events-none"
+    <div
+      className="absolute pointer-events-none z-30"
       style={{
         left: `${rect.left}px`,
         top: `${rect.top}px`,
