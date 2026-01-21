@@ -99,9 +99,12 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
         onPushHistory();
 
         const startX = e.clientX;
+        const startY = e.clientY;
         const initialStart = subtitle.startTime;
         const initialEnd = subtitle.endTime;
         const frameDuration = fps > 0 ? 1 / fps : 0.01;
+        const initialTrackIndex = tracks.findIndex(t => t.subtitles.some(s => s.id === subtitle.id));
+        let lastShift = 0;
 
         // Collect snap points once (one-shot optimization)
         const snapPoints: { time: number, isInitial: boolean }[] = [];
@@ -175,9 +178,27 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
             const deltaX = moveEvent.clientX - startX;
+            const deltaY = moveEvent.clientY - startY;
             const deltaTime = deltaX / pps;
 
             if (type === 'move') {
+                // Vertical track switching logic
+                const trackIndexShift = Math.round(deltaY / 64);
+
+                if (trackIndexShift !== lastShift) {
+                    const targetTrackIndex = Math.max(0, Math.min(tracks.length - 1, initialTrackIndex + trackIndexShift));
+
+                    // We need to know the track where the subtitle is RIGHT NOW to move it successfully
+                    const currentTracks = useTimelineStore.getState().tracks;
+                    const currentTrack = currentTracks.find(t => t.subtitles.some(s => s.id === subtitle.id));
+                    const targetTrack = tracks[targetTrackIndex];
+
+                    if (currentTrack && targetTrack && currentTrack.id !== targetTrack.id) {
+                        useTimelineStore.getState().moveSubtitleToTrack(subtitle.id, currentTrack.id, targetTrack.id);
+                        lastShift = trackIndexShift;
+                    }
+                }
+
                 let newStart = initialStart + deltaTime;
                 const duration = initialEnd - initialStart;
 
@@ -194,10 +215,17 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
                 }
 
                 newStart = Math.max(0, snapToFrame(newStart));
-                onUpdate({
-                    startTime: newStart,
-                    endTime: Number((newStart + duration).toFixed(3))
-                }, { skipHistory: true });
+
+                // Get current track because it might have changed due to vertical drag
+                const currentTracks = useTimelineStore.getState().tracks;
+                const activeTrack = currentTracks.find(t => t.subtitles.some(s => s.id === subtitle.id));
+
+                if (activeTrack) {
+                    useTimelineStore.getState().updateSubtitleInTrack(activeTrack.id, subtitle.id, {
+                        startTime: newStart,
+                        endTime: Number((newStart + duration).toFixed(3))
+                    }, { skipHistory: true });
+                }
 
                 onTimeUpdate?.(newStart);
             } else if (type === 'resize-start') {

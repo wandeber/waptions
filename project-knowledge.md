@@ -49,6 +49,10 @@
 
 ### Note on Persistence (IndexedDB)
 - **Video Persistence:** Video files are stored in `waptions-timelines-{projectId}` -> `video-file`. `ProjectStore` loads the video into `VideoStore` on project open. `VideoViewport` automatically detects changes in `VideoStore.videoFile` and synchronizes metadata (duration, fps) to `PlaybackStore`.
+- **Subtitle Interaction**:
+    - Horizontal dragging for positioning with magnetic snapping.
+    - Vertical dragging to move subtitles between different tracks/layers.
+    - Resizing from edges to adjust duration.
 - **Styles and Presets**:
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
     - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.

@@ -34,6 +34,7 @@ interface TimelineStore {
 
     addSubtitleToTrack: (trackId: string, subtitle: Omit<Subtitle, 'id'>) => string;
     updateSubtitleInTrack: (trackId: string, subtitleId: string, updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
+    moveSubtitleToTrack: (subtitleId: string, sourceTrackId: string, targetTrackId: string) => void;
     removeSubtitleFromTrack: (trackId: string, subtitleId: string) => void;
 
     setTracks: (tracks: SubtitleTrack[]) => void;
@@ -279,22 +280,55 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     },
 
     updateSubtitleInTrack: (trackId, subtitleId, updates, options) => {
-        if (!options?.skipHistory) {
-            get().pushHistory();
-        }
+        if (!options?.skipHistory) get().pushHistory();
         set((state) => {
-            const newTracks = state.tracks.map(t =>
-                t.id === trackId
-                    ? {
-                        ...t,
-                        subtitles: t.subtitles.map(s =>
-                            s.id === subtitleId ? { ...s, ...updates } : s
-                        )
-                    }
-                    : t
-            );
+            const newTracks = state.tracks.map(t => {
+                if (t.id !== trackId) return t;
+                return {
+                    ...t,
+                    subtitles: t.subtitles.map(s => s.id === subtitleId ? { ...s, ...updates } : s)
+                };
+            });
             saveTimelineToStorage(newTracks);
             return { tracks: newTracks };
+        });
+    },
+
+    moveSubtitleToTrack: (subtitleId, sourceTrackId, targetTrackId) => {
+        if (sourceTrackId === targetTrackId) return;
+
+        get().pushHistory();
+        set((state) => {
+            let movedSubtitle: Subtitle | null = null;
+
+            // Remove from source and capture subtitle
+            const tracksWithSourcedRemoved = state.tracks.map(t => {
+                if (t.id === sourceTrackId) {
+                    const subtitle = t.subtitles.find(s => s.id === subtitleId);
+                    if (subtitle) movedSubtitle = { ...subtitle };
+                    return {
+                        ...t,
+                        subtitles: t.subtitles.filter(s => s.id !== subtitleId)
+                    };
+                }
+                return t;
+            });
+
+            if (!movedSubtitle) return state;
+
+            // Add to target
+            const finalTracks = tracksWithSourcedRemoved.map(t => {
+                if (t.id === targetTrackId) {
+                    return {
+                        ...t,
+                        subtitles: [...t.subtitles, movedSubtitle!].sort((a, b) => a.startTime - b.startTime)
+                    };
+                }
+                return t;
+            });
+
+            saveTimelineToStorage(finalTracks);
+            return { tracks: finalTracks, activeTrackId: targetTrackId };
         });
     },
 
