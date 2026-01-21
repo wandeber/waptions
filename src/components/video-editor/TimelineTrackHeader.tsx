@@ -5,7 +5,9 @@ import { EyeIcon } from '../icons/EyeIcon';
 import { EyeOffIcon } from '../icons/EyeOffIcon';
 import { TrashIcon } from '../icons/TrashIcon';
 import { Button } from '../design-system/Button';
+import { ConfirmDialog } from '../design-system/ConfirmDialog';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useState } from 'react';
 
 interface TimelineTrackHeaderProps {
     track: SubtitleTrack;
@@ -15,12 +17,26 @@ interface TimelineTrackHeaderProps {
 }
 
 export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onClick }: TimelineTrackHeaderProps) {
-    const { removeTrack } = useTimelineStore();
+    const { removeTrack, tracks } = useTimelineStore();
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+    const isOnlyTrack = tracks.length <= 1;
+
+    const handleDeleteClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (isOnlyTrack) return;
+        setShowDeleteConfirm(true);
+    };
+
+    const handleConfirmDelete = () => {
+        removeTrack(track.id);
+        setShowDeleteConfirm(false);
+    };
 
     return (
         <div
-            className={`flex items-center gap-2 px-3 border-b border-gray-800 cursor-pointer transition-colors
-                ${isActive ? 'bg-gray-800' : 'bg-gray-900 hover:bg-gray-800/50'}`}
+            className={`flex items-center gap-2 px-3 border-b border-gray-800 cursor-pointer transition-all duration-200 relative
+                ${isActive ? 'bg-gray-800 shadow-[inset_4px_0_0_0_#3b82f6]' : 'bg-gray-900 hover:bg-gray-800/50'}`}
             style={{ height: '56px' }}
             onClick={onClick}
         >
@@ -45,12 +61,24 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
                     variant="secondary"
                     size="sm"
                     className="text-gray-400 hover:text-white"
-                    onClick={() => removeTrack(track.id)}
-                    title="Eliminar capa"
+                    onClick={handleDeleteClick}
+                    disabled={isOnlyTrack}
+                    title={isOnlyTrack ? "No se puede eliminar la única capa" : "Eliminar capa"}
                 >
                     <TrashIcon />
                 </Button>
             </div>
+
+            <ConfirmDialog
+                isOpen={showDeleteConfirm}
+                title="Eliminar capa"
+                message={<>¿Estás seguro de que quieres eliminar la capa <strong>&ldquo;{track.name}&rdquo;</strong>? Esta acción no se puede deshacer.</>}
+                confirmLabel="Eliminar"
+                cancelLabel="Cancelar"
+                confirmVariant="danger"
+                onConfirm={handleConfirmDelete}
+                onCancel={() => setShowDeleteConfirm(false)}
+            />
         </div>
     );
 }

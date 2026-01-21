@@ -26,11 +26,11 @@ export function Button({
   ...props
 }: ButtonProps) {
   // Base styles
-  const baseStyles = 'rounded transition-colors select-none flex items-center gap-1';
+  const baseStyles = 'rounded transition-colors select-none flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none';
 
   // Variant styles with active states
   const variantStyles = {
-    primary: isActive 
+    primary: isActive
       ? 'bg-blue-700 hover:bg-blue-600 text-white'
       : 'bg-blue-600 hover:bg-blue-700 text-white',
     secondary: isActive

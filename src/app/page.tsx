@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { VideoViewport } from '@/components/video-editor/VideoViewport';
 import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
+import { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
 import { ExportButton } from '@/components/video-editor/ExportButton';
 import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
 
@@ -98,7 +99,7 @@ export default function Home() {
     // No necesitamos hacer nada aquí
   };
 
-  const handleAnimationStyleChange = (style: any) => {
+  const handleAnimationStyleChange = (style: SubtitleAnimationStyle) => {
     if (activeTrack) {
       updateTrackStyle(activeTrack.id, style);
     }
@@ -135,7 +136,7 @@ export default function Home() {
           videoFile={videoFile}
           subtitles={subtitles}
           fps={detectedFps || 30}
-          animationStyle={animationStyle as any}
+          animationStyle={animationStyle}
         />
       </header>
 
@@ -149,7 +150,7 @@ export default function Home() {
               showThirdsGuide={showThirdsGuide}
               showDevinGuide={showDevinGuide}
               showMetaInfo={showMetaInfo}
-              animationStyle={animationStyle as any}
+              animationStyle={animationStyle}
               onAudioExtracted={handleAudioExtracted}
               showSubtitles={showSubtitles}
               subtitles={subtitles}
@@ -238,7 +239,7 @@ export default function Home() {
                 }
               }}
               isGeneratingSubtitles={isGeneratingSubtitles}
-              animationStyle={animationStyle as any}
+              animationStyle={animationStyle}
               onAnimationStyleChange={handleAnimationStyleChange}
             />
           </div>

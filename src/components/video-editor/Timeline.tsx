@@ -11,7 +11,6 @@ import { Button } from '../design-system/Button';
 import { PlusIcon } from '../icons/PlusIcon';
 import { EyeIcon } from '../icons/EyeIcon';
 import { useTimelineStore } from '@/stores/timeline-store';
-import { AnimationStyle } from '@/types/timeline';
 import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
 import { TimelinePlayhead } from './TimelinePlayhead';
@@ -22,7 +21,6 @@ interface TimelineProps {
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
-  subtitles: Subtitle[]; // Legacy compatibility
   selectedSubtitleId?: string | null;
   isPlaying?: boolean;
   onPlayPause?: () => void;
@@ -42,7 +40,6 @@ export function Timeline({
   currentTime = 0,
   onTimeUpdate,
   onSubtitleClick,
-  subtitles, // We'll map this to tracks if tracks are empty
   selectedSubtitleId,
   isPlaying = false,
   onPlayPause,
@@ -56,7 +53,7 @@ export function Timeline({
   showSubtitles = true,
   onSubtitlesVisibilityToggle
 }: TimelineProps) {
-  const { zoomLevel, setZoom, tracks, setTracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId } = useTimelineStore();
+  const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId } = useTimelineStore();
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -65,20 +62,7 @@ export function Timeline({
   const virtualScrollLeftRef = useRef(0);
   const pendingScrollRef = useRef<number | null>(null);
 
-  // Sync state with legacy props if tracks are empty
-  useEffect(() => {
-    if (tracks.length === 0 && subtitles.length > 0) {
-      const trackId = addTrack('Subtítulos (Auto)');
-      setTracks([{
-        id: trackId,
-        name: 'Subtítulos (Auto)',
-        isVisible: true,
-        isLocked: false,
-        subtitles: subtitles,
-        style: tracks.find(t => t.id === trackId)?.style || {} as AnimationStyle
-      }]);
-    }
-  }, [subtitles, tracks, addTrack, setTracks]);
+
 
   // Scroll synchronization
   const handleScroll = (source: 'ruler' | 'tracks') => {

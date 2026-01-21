@@ -78,8 +78,7 @@ export const useTimelineStore = create<TimelineStore>((set) => ({
             }];
             return {
                 tracks: newTracks,
-                // Si es la primera o única capa, la hacemos activa
-                activeTrackId: state.activeTrackId || id
+                activeTrackId: id
             };
         });
         return id;
@@ -135,9 +134,14 @@ export const useTimelineStore = create<TimelineStore>((set) => ({
         )
     })),
 
-    setTracks: (tracks) => set((state) => ({
-        tracks,
-        activeTrackId: state.activeTrackId || (tracks.length > 0 ? tracks[0].id : null)
-    })),
-    setActiveTrackId: (id) => set({ activeTrackId: id })
+    setTracks: (tracks) => set((state) => {
+        const isValidActive = tracks.some(t => t.id === state.activeTrackId);
+        return {
+            tracks,
+            activeTrackId: isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null)
+        };
+    }),
+    setActiveTrackId: (id) => set((state) => ({
+        activeTrackId: state.tracks.some(t => t.id === id) ? id : (state.tracks.length > 0 ? state.tracks[0].id : null)
+    }))
 }));
