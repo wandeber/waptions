@@ -2,13 +2,14 @@ import { useRef, useEffect } from 'react';
 import type { Subtitle } from '../SubtitleTrack';
 import { Button } from '../../design-system/Button';
 import { MagicMicIcon } from '../../icons/MagicMicIcon';
+import { SpinnerIcon } from '../../icons/SpinnerIcon';
 import { PlusIcon } from '../../icons/PlusIcon';
 import { CloseIcon } from '../../icons/CloseIcon';
 
 interface SubtitleListProps {
   subtitles: Subtitle[];
   selectedSubtitleId?: string | null;
-  editingText: {[key: string]: string};
+  editingText: { [key: string]: string };
   currentTime: number;
   onSubtitleClick?: (subtitle: Subtitle) => void;
   onDelete?: (subtitleId: string) => void;
@@ -32,7 +33,7 @@ export function SubtitleList({
   onTextChange,
   onKeyDown
 }: SubtitleListProps) {
-  const textAreasRef = useRef<{[key: string]: HTMLTextAreaElement | null}>({});
+  const textAreasRef = useRef<{ [key: string]: HTMLTextAreaElement | null }>({});
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -63,7 +64,7 @@ export function SubtitleList({
             disabled={isGeneratingSubtitles}
             title="Generar subtítulos automáticamente con IA"
           >
-            <MagicMicIcon />
+            {isGeneratingSubtitles ? <SpinnerIcon /> : <MagicMicIcon />}
           </Button>
           <Button
             variant="secondary"
@@ -99,7 +100,7 @@ export function SubtitleList({
         [...subtitles]
           .sort((a, b) => a.startTime - b.startTime)
           .map(subtitle => (
-            <div 
+            <div
               key={subtitle.id}
               className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
                 ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
@@ -121,7 +122,7 @@ export function SubtitleList({
                   <CloseIcon />
                 </Button>
               </div>
-              
+
               <textarea
                 ref={el => {
                   textAreasRef.current[subtitle.id] = el;

@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New export system using mediabunny with WebCodecs for significantly faster video encoding
+- Export options UI with format selection (MP4/WebM) and quality settings
+- Zustand stores infrastructure (`playback-store`, `video-store`) for future refactoring
+- Video cache system using mediabunny's CanvasSink for efficient frame decoding
+
+### Changed
+- Replaced FFmpeg-based export and native video preview with native WebCodecs via mediabunny (10-50x faster)
+- Refactored VideoViewport to use Canvas-only rendering with VideoCache for a professional editing experience
+- Migrated playback and video state management to Zustand stores
+- Unified Play/Pause controls in Timeline with dynamic icon switching (Removed redundant Stop button)
+- Added visual feedback (Spinner) in transcription button during subtitle generation
+- **Transcription Fixes**: 
+    - Fixed high-speed audio extraction and transcoding to AAC/MP4 on the client (fixes 400 error and 25MB limit)
+    - Fixed `AudioSample` resource leak in transcription process
+    - Fixed `audioUrl` synchronization between VideoViewport and page state
+    - Removed legacy `videoRef` validation
+- Fixed Video Preview speed by ensuring only one timer loop is active in playback-store
+- Improved Audio Preview synchronization and added loading event logs
+- Fixed Audio `AbortError` and improved synchronization logic in VideoViewport
+- ExportButton now shows format and quality options before exporting (positioned below the button for better visibility)
+
+### Technical
+- Added dependencies: `mediabunny`, `zustand`
+- New files: `src/lib/video-cache.ts`, `src/lib/export.ts`, `src/lib/mediabunny-utils.ts`
+- New stores: `src/stores/playback-store.ts`, `src/stores/video-store.ts`
+- New types: `src/types/export.ts`
+- Removed dependency on native <video> element for visual rendering in VideoViewport
+
+### Added
 - Design System: Enhanced Button component with new variants (ghost) and sizes (xs)
 - Refactored core components to use the new Button system
 - Initial setup of end-to-end tests with Playwright

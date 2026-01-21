@@ -2,8 +2,8 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { SubtitleTrack, type Subtitle } from './SubtitleTrack';
-import { StopIcon } from '../icons/StopIcon';
 import { PlayIcon } from '../icons/PlayIcon';
+import { PauseIcon } from '../icons/PauseIcon';
 import { GridIcon } from '../icons/GridIcon';
 import { InfoIcon } from '../icons/InfoIcon';
 import { DevinIcon } from '../icons/DevinIcon';
@@ -35,9 +35,9 @@ interface TimelineProps {
   onSubtitlesVisibilityToggle?: () => void;
 }
 
-export function Timeline({ 
-  duration, 
-  currentTime = 0, 
+export function Timeline({
+  duration,
+  currentTime = 0,
   onTimeUpdate,
   onSubtitleClick,
   subtitles,
@@ -78,7 +78,7 @@ export function Timeline({
       const { total: totalFrames } = getCurrentFrame();
       const frameFromCurrent = Math.min(Math.floor(currentTime * fps) + 1, totalFrames);
       const frameFromLocal = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
-      
+
       // Solo actualizamos si hay diferencia de frames y no estamos en frames adyacentes
       if (Math.abs(frameFromCurrent - frameFromLocal) > 1) {
         const newTime = Math.min((frameFromCurrent - 1) / fps, duration);
@@ -89,13 +89,13 @@ export function Timeline({
 
   const getTimeFromClick = useCallback((clientX: number): number => {
     if (!timelineRef.current) return localTime;
-    
+
     const rect = timelineRef.current.getBoundingClientRect();
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, x / rect.width));
     const exactTime = percentage * duration;
     const totalFrames = Math.ceil(duration * fps);
-    
+
     // Usamos Math.ceil en lugar de Math.round para asegurarnos de llegar al último frame
     const frameCount = Math.ceil(exactTime * fps);
     // Aseguramos que el frame esté entre 1 y el total de frames
@@ -114,7 +114,7 @@ export function Timeline({
   const getTimeMarkers = useCallback(() => {
     const markers = [];
     const { total: totalFrames } = getCurrentFrame();
-    
+
     // Marcadores de segundos
     for (let second = 0; second <= duration; second++) {
       markers.push(
@@ -174,8 +174,8 @@ export function Timeline({
   const handleMouseDownLocal = (event: React.MouseEvent<HTMLDivElement>) => {
     // Solo deseleccionar si el clic fue directamente en el área de track o en el área de marcadores
     const target = event.target as HTMLElement;
-    const isEmptyArea = target.classList.contains('timeline-track') || 
-                       target.classList.contains('timeline-markers');
+    const isEmptyArea = target.classList.contains('timeline-track') ||
+      target.classList.contains('timeline-markers');
 
     if (isEmptyArea && onSubtitleClick) {
       onSubtitleClick(null);
@@ -195,7 +195,7 @@ export function Timeline({
     if (!onTimeUpdate) return;
 
     const { current: currentFrameNumber, total: totalFrames } = getCurrentFrame();
-    
+
     let newFrame;
     if (direction === 'next' && currentFrameNumber < totalFrames) {
       newFrame = currentFrameNumber + 1;
@@ -230,28 +230,11 @@ export function Timeline({
       <div className="flex items-center gap-4">
         <div className="flex gap-2">
           <Button
-            variant="secondary"
-            onClick={() => {
-              if (isPlaying) {
-                onPlayPause?.();
-              }
-            }}
-            title="Detener"
+            variant={isPlaying ? 'primary' : 'secondary'}
+            onClick={onPlayPause}
+            title={isPlaying ? "Pausar" : "Reproducir"}
           >
-            <StopIcon />
-          </Button>
-
-          <Button
-            variant={isPlaying ? 'danger' : 'secondary'}
-            isActive={isPlaying}
-            onClick={() => {
-              if (!isPlaying) {
-                onPlayPause?.();
-              }
-            }}
-            title="Reproducir"
-          >
-            <PlayIcon />
+            {isPlaying ? <PauseIcon /> : <PlayIcon />}
           </Button>
         </div>
 
@@ -296,7 +279,7 @@ export function Timeline({
           <div className="h-8 flex items-center justify-center">
             <Button
               variant="secondary"
-              onClick={() => {}}
+              onClick={() => { }}
               title="Añadir track"
               className="w-8 h-8 p-1"
             >
@@ -320,7 +303,7 @@ export function Timeline({
 
         {/* Timeline */}
         <div className="flex-1 h-[88px] bg-gray-900 rounded-r-lg overflow-hidden">
-          <div 
+          <div
             ref={timelineRef}
             className="w-full h-full relative timeline-track"
             onMouseDown={handleMouseDownLocal}
@@ -356,7 +339,7 @@ export function Timeline({
             */}
             <div className="absolute inset-0 pointer-events-none">
               {/* Resaltado del frame */}
-              <div 
+              <div
                 className="absolute inset-0 bg-white/10"
                 style={{
                   left: `${(currentFrame.start / duration) * 100}%`,
@@ -364,9 +347,9 @@ export function Timeline({
                 }}
               />
               {/* Línea del cabezal */}
-              <div 
+              <div
                 className="absolute inset-0 w-0.5 bg-red-500 z-10"
-                style={{ 
+                style={{
                   left: `${(currentFrame.start / duration) * 100}%`
                 }}
               />

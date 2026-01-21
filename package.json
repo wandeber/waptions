@@ -19,10 +19,12 @@
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "autoprefixer": "^10.4.20",
+    "mediabunny": "^1.29.1",
     "next": "^15.1.6",
     "openai": "^4.83.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

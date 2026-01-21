@@ -7,12 +7,27 @@ import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
 import { ExportButton } from '@/components/video-editor/ExportButton';
 import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
 
+import { usePlaybackStore } from '@/stores/playback-store';
+import { useVideoStore } from '@/stores/video-store';
+import { extractAudio } from '@/lib/mediabunny-utils';
+
 export default function Home() {
-  const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
+  const {
+    isPlaying,
+    currentTime,
+    duration: playbackDuration,
+    pause,
+    toggle: togglePlayback,
+    seek,
+    setDuration: setPlaybackDuration
+  } = usePlaybackStore();
+
+  const {
+    videoFile,
+  } = useVideoStore();
+
   const [selectedSubtitle, setSelectedSubtitle] = useState<Subtitle | null>(null);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
@@ -52,16 +67,19 @@ export default function Home() {
     backgroundOffsetX: 0,
     backgroundOffsetY: 0
   });
-  const videoRef = useRef<HTMLVideoElement>(null);
+  /* eslint-disable @typescript-eslint/no-unused-vars */
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  // No need for local handleTimeUpdate as we use seek directly or setPlaybackCurrentTime
+  /*
   const handleTimeUpdate = (time: number) => {
-    setCurrentTime(time);
+    setPlaybackCurrentTime(time);
   };
+  */
 
-  const handleVideoLoad = (videoDuration: number, detectedFps: number | null) => {
-    setDuration(videoDuration);
-    setDetectedFps(detectedFps);
+  const handleVideoLoad = (videoDuration: number, fps: number | null, _file?: File) => {
+    setPlaybackDuration(videoDuration);
+    setDetectedFps(fps);
   };
 
   const handleSubtitleClick = (subtitle: Subtitle | null) => {
@@ -71,7 +89,7 @@ export default function Home() {
   };
 
   const handlePlayPause = () => {
-    setIsPlaying(!isPlaying);
+    togglePlayback();
   };
 
   const handleThirdsGuideToggle = () => {
@@ -118,9 +136,8 @@ export default function Home() {
       <header className="flex-none p-4 bg-gray-800 flex justify-between items-center">
         <h1 className="text-2xl font-bold select-none">Waptions</h1>
         <ExportButton
-          videoRef={videoRef}
+          videoFile={videoFile}
           subtitles={subtitles}
-          canvasRef={canvasRef}
           fps={detectedFps || 30}
           animationStyle={animationStyle}
         />
@@ -130,26 +147,21 @@ export default function Home() {
       <main className="flex-1 p-4 min-h-0">
         <div className="h-full flex gap-4">
           <div className="flex-1 flex flex-col gap-4 min-h-0">
-            <VideoViewport 
+            <VideoViewport
               onVideoLoad={handleVideoLoad}
-              onTimeUpdate={handleTimeUpdate}
-              currentTime={currentTime}
-              videoRef={videoRef}
-              isPlaying={isPlaying}
-              subtitles={subtitles}
-              canvasRef={canvasRef}
-              onEnded={() => setIsPlaying(false)}
+              onEnded={() => pause()}
               showThirdsGuide={showThirdsGuide}
               showDevinGuide={showDevinGuide}
               showMetaInfo={showMetaInfo}
               animationStyle={animationStyle}
               onAudioExtracted={handleAudioExtracted}
               showSubtitles={showSubtitles}
+              subtitles={subtitles}
             />
-            <Timeline 
-              duration={duration}
+            <Timeline
+              duration={playbackDuration}
               currentTime={currentTime}
-              onTimeUpdate={handleTimeUpdate}
+              onTimeUpdate={seek}
               onSubtitleClick={handleSubtitleClick}
               subtitles={subtitles}
               onSubtitlesChange={setSubtitles}
@@ -179,18 +191,18 @@ export default function Home() {
               onSubtitlesChange={setSubtitles}
               currentTime={currentTime}
               onGenerateSubtitles={async () => {
-                if (!videoRef.current || !audioUrl) {
+                if (!videoFile || !audioUrl) {
                   alert('Por favor, carga un video primero');
                   return;
                 }
 
                 try {
                   setIsGeneratingSubtitles(true);
-                  
-                  // Crear FormData con el audio
+
+                  // Extraer solo el audio para optimizar el envío a Whisper (< 25MB)
+                  const audioBlob = await extractAudio(videoFile);
                   const formData = new FormData();
-                  const audioBlob = await fetch(audioUrl).then(r => r.blob());
-                  formData.append('audio', audioBlob);
+                  formData.append('audio', audioBlob, 'audio.mp4');
 
                   // Llamar al endpoint
                   const response = await fetch('/api/generate-subtitles', {

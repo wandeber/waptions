@@ -1,347 +1,104 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import type { Subtitle } from './SubtitleTrack';
+import { useState } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { ExportIcon } from '../icons/ExportIcon';
 import { Button } from '../design-system/Button';
+import {
+  exportProject,
+  getExportMimeType,
+  getExportFileExtension,
+  DEFAULT_EXPORT_OPTIONS,
+} from '@/lib/export';
+import type { Subtitle } from './SubtitleTrack';
+import type { SubtitleAnimationStyle } from './subtitle-editor/types';
+import { defaultAnimationStyle } from './subtitle-editor/types';
+import type { ExportFormat, ExportQuality } from '@/types/export';
 
 interface ExportButtonProps {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
+  videoFile: File | null;
   subtitles: Subtitle[];
-  canvasRef?: React.RefObject<HTMLCanvasElement | null>;
   fps: number;
-  animationStyle?: {
-    fadeInDuration: number;
-    fadeOutDuration: number;
-    initialScale: number;
-    bounceStrength: number;
-    useElasticEffect: boolean;
-    fontSize: number;
-    textColor: string;
-    strokeWidth: number;
-    strokeColor: string;
-    fontWeight: number;
-    textCase: 'normal' | 'uppercase' | 'lowercase';
-    hidePunctuation: boolean;
-    punctuationChars: string;
-    removeAccents: boolean;
-  };
+  animationStyle?: SubtitleAnimationStyle;
 }
 
-export function ExportButton({ videoRef, subtitles, canvasRef, fps, animationStyle }: ExportButtonProps) {
+export function ExportButton({
+  videoFile,
+  subtitles,
+  fps,
+  animationStyle = defaultAnimationStyle,
+}: ExportButtonProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [timeElapsed, setTimeElapsed] = useState(0);
   const [currentStep, setCurrentStep] = useState<string>('');
-  const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const frameCountRef = useRef(0);
-  const totalFramesRef = useRef(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const [showOptions, setShowOptions] = useState(false);
 
-  // Efecto para manejar el contador de tiempo
-  useEffect(() => {
-    if (isExporting) {
-      startTimeRef.current = Date.now();
-      timerRef.current = setInterval(() => {
-        const elapsedMs = Date.now() - startTimeRef.current;
-        setTimeElapsed(elapsedMs / 1000);
-      }, 100);
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      setTimeElapsed(0);
-    }
-
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [isExporting]);
-
-  // Inicializar FFmpeg solo en el cliente
-  useEffect(() => {
-    const loadFFmpeg = async () => {
-      try {
-        const ffmpegInstance = new FFmpeg();
-        console.log('FFmpeg instancia creada');
-        
-        // Configurar el logger antes de cargar
-        ffmpegInstance.on('log', ({ message }) => {
-          console.log('FFmpeg Log:', message);
-          // Extraer el progreso de la codificación
-          const frameMatch = message.match(/frame=\s*(\d+)/);
-          const timeMatch = message.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
-          
-          if (frameMatch && timeMatch) {
-            const hours = parseInt(timeMatch[1]);
-            const minutes = parseInt(timeMatch[2]);
-            const seconds = parseInt(timeMatch[3]);
-            const centiseconds = parseInt(timeMatch[4]);
-            
-            const totalSeconds = hours * 3600 + minutes * 60 + seconds + centiseconds / 100;
-            if (videoRef.current) {
-              const progress = (totalSeconds / videoRef.current.duration) * 100;
-              setProgress(Math.min(progress, 100));
-            }
-          }
-        });
-        
-        console.log('Iniciando carga de FFmpeg...');
-        await ffmpegInstance.load({
-          coreURL: '/ffmpeg-core.js',
-          wasmURL: '/ffmpeg-core.wasm',
-          workerURL: '/ffmpeg-core.worker.js'
-        });
-        
-        console.log('FFmpeg cargado exitosamente');
-        setFFmpeg(ffmpegInstance);
-      } catch (error) {
-        console.error('Error al cargar FFmpeg:', error);
-        if (error instanceof Error) {
-          console.error('Detalles del error:', {
-            message: error.message,
-            stack: error.stack,
-            name: error.name
-          });
-        }
-      }
-    };
-
-    if (typeof window !== 'undefined') {
-      loadFFmpeg();
-    }
-  }, [videoRef]);
+  // Export options
+  const [format, setFormat] = useState<ExportFormat>(DEFAULT_EXPORT_OPTIONS.format);
+  const [quality, setQuality] = useState<ExportQuality>(DEFAULT_EXPORT_OPTIONS.quality);
+  const [includeAudio] = useState(DEFAULT_EXPORT_OPTIONS.includeAudio ?? true);
 
   const handleExport = async () => {
-    if (!videoRef.current || !ffmpeg || !canvasRef?.current) return;
+    console.log('handleExport triggered', { videoFile, subtitlesCount: subtitles.length, isExporting });
+    if (!videoFile) return;
 
     try {
       setIsExporting(true);
       setProgress(0);
-      startTimeRef.current = Date.now();
-      frameCountRef.current = 0;
+      setCurrentStep('Preparando exportación...');
+      setShowOptions(false);
 
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      
-      totalFramesRef.current = Math.ceil(video.duration * fps);
-
-      setCurrentStep('Preparando video...');
-      const videoUrl = video.src;
-      const videoBlob = await fetch(videoUrl).then(r => r.blob());
-      const videoArrayBuffer = await videoBlob.arrayBuffer();
-      await ffmpeg.writeFile('input.mp4', new Uint8Array(videoArrayBuffer));
-
-      // Extraer el audio primero
-      setCurrentStep('Extrayendo audio...');
-      await ffmpeg.exec([
-        '-i', 'input.mp4',
-        '-vn', '-acodec', 'copy',
-        'audio.mp4'
-      ]);
-
-      // Capturar frames con subtítulos
-      setCurrentStep('Capturando frames...');
-      video.currentTime = 0;
-      let frameCount = 0;
-
-      const captureFrame = async () => {
-        await new Promise<void>((resolve) => {
-          const handler = () => {
-            video.removeEventListener('seeked', handler);
-            resolve();
-          };
-          video.addEventListener('seeked', handler);
-        });
-
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        // Dibujar el frame del video
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        // Renderizar subtítulos activos con animaciones
-        const subtitlesToRender = subtitles.filter(subtitle => {
-          const isActive = video.currentTime >= subtitle.startTime && video.currentTime < subtitle.endTime;
-          const isExiting = video.currentTime >= subtitle.endTime - (animationStyle?.fadeOutDuration || 0.15) && 
-                           video.currentTime < subtitle.endTime;
-          return isActive || isExiting;
-        });
-
-        // Funciones de easing
-        const easeOutBack = (x: number): number => {
-          if (!animationStyle?.useElasticEffect) return x;
-          const c1 = animationStyle?.bounceStrength || 1.70158;
-          const c3 = c1 + 1;
-          return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
-        };
-
-        const easeOutExpo = (x: number): number => {
-          return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
-        };
-
-        // Renderizar cada subtítulo
-        subtitlesToRender.forEach(subtitle => {
-          let opacity = 1;
-          let scale = 1;
-          
-          // Fade in con escala
-          if (video.currentTime >= subtitle.startTime && 
-              video.currentTime < subtitle.startTime + (animationStyle?.fadeInDuration || 0.15)) {
-            const progress = (video.currentTime - subtitle.startTime) / (animationStyle?.fadeInDuration || 0.15);
-            opacity = easeOutExpo(progress);
-            const scaleProgress = easeOutBack(progress);
-            scale = 1 + (((animationStyle?.initialScale || 1.5) - 1) * (1 - scaleProgress));
-          }
-          // Fade out
-          else if (video.currentTime >= subtitle.endTime - (animationStyle?.fadeOutDuration || 0.15) && 
-                   video.currentTime < subtitle.endTime) {
-            const progress = (subtitle.endTime - video.currentTime) / (animationStyle?.fadeOutDuration || 0.15);
-            opacity = progress;
-          }
-          
-          // Asegurar que la opacidad esté entre 0 y 1
-          opacity = Math.max(0, Math.min(1, opacity));
-
-          // Configurar estilo del texto
-          const fontSize = (animationStyle?.fontSize || 48) * (canvas.height / 1080);
-          ctx.font = `${animationStyle?.fontWeight || 700} ${fontSize}px sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'bottom';
-          ctx.fillStyle = `${animationStyle?.textColor || '#ffffff'}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
-          ctx.strokeStyle = `${animationStyle?.strokeColor || '#000000'}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
-          ctx.lineWidth = fontSize * ((animationStyle?.strokeWidth || 4) / 48);
-
-          // Aplicar la transformación de escala
-          ctx.save();
-          const x = canvas.width / 2;
-          const y = canvas.height * 0.9;
-          ctx.translate(x, y);
-          ctx.scale(scale, scale);
-          ctx.translate(-x, -y);
-
-          // Procesar el texto según los estilos
-          const processedText = (text: string) => {
-            let result = text;
-            if (animationStyle?.textCase === 'uppercase') {
-              result = result.toUpperCase();
-            } else if (animationStyle?.textCase === 'lowercase') {
-              result = result.toLowerCase();
+      const result = await exportProject({
+        videoFile,
+        subtitles: subtitles.map((s) => ({
+          id: s.id,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          text: s.text,
+        })),
+        animationStyle,
+        options: {
+          format,
+          quality,
+          fps,
+          includeAudio,
+          onProgress: (p) => {
+            setProgress(p * 100);
+            if (p < 0.1) {
+              setCurrentStep('Inicializando...');
+            } else if (p < 0.9) {
+              setCurrentStep(`Renderizando frames... ${Math.round(p * 100)}%`);
+            } else {
+              setCurrentStep('Finalizando...');
             }
-            if (animationStyle?.hidePunctuation) {
-              const regex = new RegExp(`[${(animationStyle?.punctuationChars || '').replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`, 'g');
-              result = result.replace(regex, '');
-            }
-            if (animationStyle?.removeAccents) {
-              result = result
-                .replace(/[áàäâã]/g, 'a')
-                .replace(/[éèëê]/g, 'e')
-                .replace(/[íìïî]/g, 'i')
-                .replace(/[óòöôõ]/g, 'o')
-                .replace(/[úùüû]/g, 'u')
-                .replace(/[ÁÀÄÂÃ]/g, 'A')
-                .replace(/[ÉÈËÊ]/g, 'E')
-                .replace(/[ÍÌÏÎ]/g, 'I')
-                .replace(/[ÓÒÖÔÕ]/g, 'O')
-                .replace(/[ÚÙÜÛ]/g, 'U');
-            }
-            return result;
-          };
+          },
+          onCancel: () => false,
+        },
+      });
 
-          ctx.strokeText(
-            processedText(subtitle.text),
-            x,
-            y
-          );
-          ctx.fillText(
-            processedText(subtitle.text),
-            x,
-            y
-          );
-          
-          // Restaurar el contexto
-          ctx.restore();
-        });
+      if (result.success && result.buffer) {
+        // Download the file
+        const mimeType = getExportMimeType(format);
+        const extension = getExportFileExtension(format);
+        const blob = new Blob([result.buffer], { type: mimeType });
+        const url = URL.createObjectURL(blob);
 
-        const blob = await new Promise<Blob>((resolve) => 
-          canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.8) // Reducido de 0.95 a 0.8
-        );
-        const frameData = await blob.arrayBuffer();
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `video_con_subtitulos${extension}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
 
-        const paddedIndex = String(frameCount).padStart(6, '0');
-        const frameName = `frame_${paddedIndex}.jpg`;
-        await ffmpeg.writeFile(frameName, new Uint8Array(frameData));
-
-        frameCountRef.current++;
-        setProgress((frameCountRef.current / totalFramesRef.current) * 50); // Primera mitad del progreso
-        
-        frameCount++;
-      };
-
-      while (video.currentTime < video.duration) {
-        await captureFrame();
-        video.currentTime += 1/fps;
+        console.log('Exportación completada con éxito');
+      } else if (result.error) {
+        console.error('Error de exportación:', result.error);
+        alert(`Error al exportar: ${result.error}`);
       }
-
-      setCurrentStep('Generando video final...');
-      // Combinar frames en video intermedio con calidad reducida
-      await ffmpeg.exec([
-        '-framerate', fps.toString(),
-        '-i', 'frame_%06d.jpg',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast', // Cambiado de veryfast a ultrafast
-        '-crf', '28', // Aumentado de 23 a 28 (menor calidad)
-        '-tune', 'zerolatency',
-        '-movflags', '+faststart',
-        'temp.mp4'
-      ]);
-
-      // Combinar con el audio original
-      setCurrentStep('Combinando audio...');
-      await ffmpeg.exec([
-        '-i', 'temp.mp4',
-        '-i', 'audio.mp4',
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        '-shortest',
-        'output.mp4'
-      ]);
-
-      setCurrentStep('Finalizando...');
-      const data = await ffmpeg.readFile('output.mp4');
-      
-      const blob = new Blob([data], { type: 'video/mp4' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'video_con_subtitulos.mp4';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      // Limpiar archivos temporales
-      for (let i = 0; i < frameCount; i++) {
-        const paddedIndex = String(i).padStart(6, '0');
-        await ffmpeg.deleteFile(`frame_${paddedIndex}.jpg`);
-      }
-      await ffmpeg.deleteFile('temp.mp4');
-      await ffmpeg.deleteFile('audio.mp4');
-      await ffmpeg.deleteFile('input.mp4');
-      await ffmpeg.deleteFile('output.mp4');
-
-      console.log('Exportación completada con éxito');
     } catch (error) {
       console.error('Error durante la exportación:', error);
+      alert('Error inesperado durante la exportación');
     } finally {
       setIsExporting(false);
       setProgress(0);
@@ -349,35 +106,112 @@ export function ExportButton({ videoRef, subtitles, canvasRef, fps, animationSty
     }
   };
 
+  const canExport = videoFile && subtitles.length > 0 && !isExporting;
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 relative">
       {isExporting && (
         <div className="flex items-center gap-2">
           <div className="flex flex-col gap-1">
             <div className="w-32 h-2 bg-gray-700 rounded-full overflow-hidden">
-              <div 
+              <div
                 className="h-full bg-green-500 transition-all duration-300"
                 style={{ width: `${progress}%` }}
               />
             </div>
             <div className="text-xs text-gray-400">{currentStep}</div>
           </div>
-          <span className="text-sm text-gray-300">
-            {Math.round(progress)}% - {Math.round(timeElapsed)}s
-          </span>
+          <span className="text-sm text-gray-300">{Math.round(progress)}%</span>
         </div>
       )}
+
+      {/* Options dropdown */}
+      {showOptions && !isExporting && (
+        <div className="absolute top-full right-0 mt-2 bg-gray-800 border border-gray-700 rounded-lg p-4 shadow-xl z-50 min-w-[280px]">
+          <h3 className="text-sm font-medium text-white mb-3">Opciones de exportación</h3>
+
+          {/* Format */}
+          <div className="mb-3">
+            <label className="text-xs text-gray-400 block mb-1">Formato</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setFormat('mp4')}
+                className={`px-3 py-1.5 text-xs rounded ${format === 'mp4'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+              >
+                MP4 (H.264)
+              </button>
+              <button
+                onClick={() => setFormat('webm')}
+                className={`px-3 py-1.5 text-xs rounded ${format === 'webm'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+              >
+                WebM (VP9)
+              </button>
+            </div>
+          </div>
+
+          {/* Quality */}
+          <div className="mb-3">
+            <label className="text-xs text-gray-400 block mb-1">Calidad</label>
+            <select
+              value={quality}
+              onChange={(e) => setQuality(e.target.value as ExportQuality)}
+              className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1.5 border border-gray-600"
+            >
+              <option value="low">Baja - Archivo pequeño</option>
+              <option value="medium">Media - Balanceado</option>
+              <option value="high">Alta - Recomendado</option>
+              <option value="very_high">Muy alta - Archivo grande</option>
+            </select>
+          </div>
+
+          {/* Include audio 
+          <div className="mb-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeAudio}
+                onChange={(e) => setIncludeAudio(e.target.checked)}
+                className="rounded bg-gray-700 border-gray-600"
+              />
+              <span className="text-xs text-gray-300">Incluir audio</span>
+            </label>
+          </div>
+          */}
+
+          {/* Export button */}
+          <Button
+            variant="primary"
+            onClick={handleExport}
+            disabled={!canExport}
+            className="w-full"
+          >
+            <ExportIcon />
+            <span>Exportar</span>
+          </Button>
+        </div>
+      )}
+
       <Button
         variant="primary"
-        onClick={handleExport}
-        disabled={!videoRef.current?.src || subtitles.length === 0 || isExporting}
-        title={!videoRef.current?.src 
-          ? "Necesitas cargar un video primero"
-          : subtitles.length === 0 
-            ? "Necesitas añadir subtítulos primero"
-            : isExporting
-              ? "Exportando..."
-              : "Exportar video con subtítulos"
+        onClick={() => {
+          console.log('Main Export button clicked', { videoFile: !!videoFile, subtitlesCount: subtitles.length });
+          if (!isExporting) setShowOptions(!showOptions);
+        }}
+        disabled={!videoFile || subtitles.length === 0}
+        title={
+          !videoFile
+            ? 'Necesitas cargar un video primero'
+            : subtitles.length === 0
+              ? 'Necesitas añadir subtítulos primero'
+              : isExporting
+                ? 'Exportando...'
+                : 'Exportar video con subtítulos'
         }
       >
         {isExporting ? (
@@ -394,4 +228,4 @@ export function ExportButton({ videoRef, subtitles, canvasRef, fps, animationSty
       </Button>
     </div>
   );
-} 
+}

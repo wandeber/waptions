@@ -83,10 +83,21 @@
 ## Technical Details
 
 ### Video Processing
-- FFmpeg WebAssembly for client-side processing
-- Metadata extraction: FPS, resolution, bitrate, audio
-- Performance optimizations and memory management
-- Canvas-based subtitle rendering
+- **mediabunny** (WebCodecs) for video encoding and frame decoding - used in both preview and export.
+- Video cache (`video-cache.ts`) with CanvasSink for high-performance frame access (eliminates native <video> lag).
+- **Audio Sync**: Managed via a hidden `<audio>` element in VideoViewport, synchronized with the global playback store.
+- Canvas-based subtitle rendering with proper animation timing and compositing.
+
+### Export System
+- `src/lib/export.ts`: Main export function using mediabunny (hardware accelerated).
+- Supports MP4 (H.264) and WebM (VP9) formats.
+- Quality presets: low, medium, high, very_high.
+- Audio: Copied directly from source without re-encoding (preserves original quality).
+
+### Zustand Stores
+- `playback-store.ts`: Centralized playback state (isPlaying, currentTime, duration, speed).
+- `video-store.ts`: Loaded video metadata (width, height, fps) and File reference.
+- **Benefits**: Eliminates prop drilling and ensures consistent state between Viewport, Timeline, and ExportButton.
 
 ### Subtitle System
 - Frame-accurate timing using detected video FPS

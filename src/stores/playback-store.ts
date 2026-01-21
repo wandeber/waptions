@@ -1,0 +1,162 @@
+import { create } from 'zustand';
+
+interface PlaybackState {
+    isPlaying: boolean;
+    currentTime: number;
+    duration: number;
+    volume: number;
+    muted: boolean;
+    previousVolume: number;
+    speed: number;
+}
+
+interface PlaybackActions {
+    play: () => void;
+    pause: () => void;
+    toggle: () => void;
+    seek: (time: number) => void;
+    setVolume: (volume: number) => void;
+    setSpeed: (speed: number) => void;
+    setDuration: (duration: number) => void;
+    setCurrentTime: (time: number) => void;
+    mute: () => void;
+    unmute: () => void;
+    toggleMute: () => void;
+}
+
+type PlaybackStore = PlaybackState & PlaybackActions;
+
+let playbackTimer: number | null = null;
+
+const startTimer = (store: () => PlaybackStore) => {
+    // Only one loop allowed
+    if (playbackTimer) return;
+
+    let lastUpdate = performance.now();
+
+    const updateTime = () => {
+        const state = store();
+        if (!state.isPlaying) {
+            playbackTimer = null;
+            return;
+        }
+
+        const now = performance.now();
+        const delta = (now - lastUpdate) / 1000;
+        lastUpdate = now;
+
+        // Skip huge jumps (e.g. background tab)
+        if (delta > 0 && delta < 0.2) {
+            const newTime = state.currentTime + delta * state.speed;
+
+            if (newTime >= state.duration) {
+                const stopTime = Math.max(0, state.duration - 0.001);
+                state.pause();
+                state.setCurrentTime(stopTime);
+                window.dispatchEvent(
+                    new CustomEvent('playback-seek', { detail: { time: stopTime } })
+                );
+            } else {
+                state.setCurrentTime(newTime);
+                window.dispatchEvent(
+                    new CustomEvent('playback-update', { detail: { time: newTime } })
+                );
+            }
+        }
+
+        playbackTimer = requestAnimationFrame(updateTime);
+    };
+
+    playbackTimer = requestAnimationFrame(updateTime);
+};
+
+const stopTimer = () => {
+    if (playbackTimer) {
+        cancelAnimationFrame(playbackTimer);
+        playbackTimer = null;
+    }
+};
+
+export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
+    isPlaying: false,
+    currentTime: 0,
+    duration: 0,
+    volume: 1,
+    muted: false,
+    previousVolume: 1,
+    speed: 1.0,
+
+    play: () => {
+        const state = get();
+        // If at the end, restart from beginning
+        if (state.duration > 0 && state.currentTime >= state.duration - 0.001) {
+            get().seek(0);
+        }
+        set({ isPlaying: true });
+        startTimer(get);
+    },
+
+    pause: () => {
+        set({ isPlaying: false });
+        stopTimer();
+    },
+
+    toggle: () => {
+        const { isPlaying } = get();
+        if (isPlaying) {
+            get().pause();
+        } else {
+            get().play();
+        }
+    },
+
+    seek: (time: number) => {
+        const { duration } = get();
+        const clampedTime = Math.max(0, Math.min(duration, time));
+        set({ currentTime: clampedTime });
+        window.dispatchEvent(
+            new CustomEvent('playback-seek', { detail: { time: clampedTime } })
+        );
+    },
+
+    setVolume: (volume: number) =>
+        set((state) => ({
+            volume: Math.max(0, Math.min(1, volume)),
+            muted: volume === 0,
+            previousVolume: volume > 0 ? volume : state.previousVolume,
+        })),
+
+    setSpeed: (speed: number) => {
+        const newSpeed = Math.max(0.1, Math.min(2.0, speed));
+        set({ speed: newSpeed });
+        window.dispatchEvent(
+            new CustomEvent('playback-speed', { detail: { speed: newSpeed } })
+        );
+    },
+
+    setDuration: (duration: number) => set({ duration }),
+    setCurrentTime: (time: number) => set({ currentTime: time }),
+
+    mute: () => {
+        const { volume, previousVolume } = get();
+        set({
+            muted: true,
+            previousVolume: volume > 0 ? volume : previousVolume,
+            volume: 0,
+        });
+    },
+
+    unmute: () => {
+        const { previousVolume } = get();
+        set({ muted: false, volume: previousVolume ?? 1 });
+    },
+
+    toggleMute: () => {
+        const { muted } = get();
+        if (muted) {
+            get().unmute();
+        } else {
+            get().mute();
+        }
+    },
+}));
