@@ -174,8 +174,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
         const id = crypto.randomUUID();
         const defaultStyle: AnimationStyle = style || {
-            fadeInDuration: 0,
-            fadeOutDuration: 0,
+            fadeInDuration: 0.2,
+            fadeOutDuration: 0.2,
             initialScale: 1.5,
             bounceStrength: 1.7,
             useElasticEffect: true,

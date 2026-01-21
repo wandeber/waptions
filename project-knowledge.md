@@ -49,6 +49,10 @@
 
 ### Note on Persistence (IndexedDB)
 - **Video Persistence:** Video files are stored in `waptions-timelines-{projectId}` -> `video-file`. `ProjectStore` loads the video into `VideoStore` on project open. `VideoViewport` automatically detects changes in `VideoStore.videoFile` and synchronizes metadata (duration, fps) to `PlaybackStore`.
+- **Styles and Presets**:
+    - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
+    - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.
+    - Presets are managed via `presetUtils.ts` and synced across the UI and store.
 - **Project Metadata**:
     - Automatic capture of the first frame (thumbnail) and video duration when a video is loaded.
     - Captures the frame respecting the original aspect ratio to avoid deformation.

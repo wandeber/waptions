@@ -53,18 +53,18 @@ export interface SubtitleAnimationStyle {
 }
 
 export const defaultAnimationStyle: SubtitleAnimationStyle = {
-  fadeInDuration: 0,
-  fadeOutDuration: 0,
+  fadeInDuration: 0.2,
+  fadeOutDuration: 0.2,
   initialScale: 1.5,
-  bounceStrength: 1.70158,
+  bounceStrength: 1.7,
   useElasticEffect: true,
   fontSize: 48,
-  fontFamily: 'Inter',
+  fontFamily: 'Arial',
   textColor: '#FFD000',
   strokeWidth: 6,
   strokeColor: '#000000',
   fontWeight: 800,
-  textCase: 'normal',
+  textCase: 'uppercase',
   textAlign: 'center',
   hidePunctuation: false,
   punctuationChars: '¿?:-,.;¡!',
@@ -76,11 +76,11 @@ export const defaultAnimationStyle: SubtitleAnimationStyle = {
   },
   backgroundColor: '#000000',
   backgroundOpacity: 0.5,
-  backgroundBorderColor: '#000000',
-  backgroundBorderWidth: 0,
+  backgroundBorderColor: '#FFD000',
+  backgroundBorderWidth: 2,
   backgroundMarginVertical: 8,
   backgroundMarginHorizontal: 16,
-  backgroundBorderRadius: 4,
+  backgroundBorderRadius: 8,
   backgroundOffsetX: 0,
   backgroundOffsetY: 0
 };
@@ -92,12 +92,13 @@ export interface StylePreset {
   isDefault?: boolean;
 }
 
-export const eduSiverioPreset: StylePreset = {
-  id: 'edu-siverio',
-  name: 'Edu Siverio',
-  isDefault: true,
+export const miAlterEduPreset: StylePreset = {
+  id: 'mi-alter-edu',
+  name: 'Mi Alter Edu',
   style: {
     ...defaultAnimationStyle,
+    fadeInDuration: 0,
+    fadeOutDuration: 0,
     fontSize: 48,
     fontFamily: 'Verdana',
     textColor: '#FFD000',
@@ -118,4 +119,11 @@ export const eduSiverioPreset: StylePreset = {
     numberOfLines: 2,
     hidePunctuation: true,
   }
-}; 
+};
+
+export const waptionsDefaultPreset: StylePreset = {
+  id: 'waptions-default',
+  name: 'Predeterminado',
+  isDefault: true,
+  style: defaultAnimationStyle
+};
