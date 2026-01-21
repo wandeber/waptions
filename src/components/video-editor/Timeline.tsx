@@ -292,7 +292,7 @@ export function Timeline({
         <div className="w-48 flex-none border-r border-gray-800 bg-gray-900 z-20 flex flex-col">
           {/* Header spacer for ruler */}
           <div className="h-8 border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-            Capas
+
           </div>
           <div
             ref={sidebarContentRef}
@@ -365,7 +365,9 @@ export function Timeline({
               style={{
                 width: timelineWidth,
                 minHeight: '100%',
-                backgroundImage: 'linear-gradient(to bottom, #1f2937 1px, transparent 1px)',
+                backgroundImage: tracks.length > 1
+                  ? 'linear-gradient(to bottom, transparent 63px, #1f2937 1px)'
+                  : 'none',
                 backgroundSize: '100% 64px'
               }}
             >

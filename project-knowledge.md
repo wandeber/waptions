@@ -33,6 +33,12 @@
 - **Multi-Track**: Supports multiple `SubtitleTrack` with independent `AnimationStyle`.
 - **Zoom & Scroll**: Pixel-based positioning (`time * pps * zoom`).
 - **Sync**: Linked scroll between Ruler, Sidebar, and Tracks via refs.
+- **Ruler Markers (3-Tier Dynamic System)**:
+    - **Tier 1 (Dominant)**: Full-height line (`h-full`) with time label. Spaced dynamically (min. 200px) to show 1-2 numbers at once.
+    - **Tier 2 (Medium)**: Reduced-height line (`h-4`, `bg-gray-700/60`) for secondary intervals.
+    - **Tier 3 (Detail)**: Shortest ticks (`h-1.5`, `bg-gray-800/80`) representing frames or divisions.
+    - **Precision**: Sub-second ticks use floating point precision to ensure inclusion of the last frame before a Tier 2/1 marker.
+- **Background Grid**: The horizontal separator lines in the timeline background are only shown when there are multiple tracks (`tracks.length > 1`). The separator is aligned to the bottom of each track (64px) to avoid visual overlap with the ruler's border.
 
 ### Subtitle Rendering
 - Rendered directly on Canvas for high performance.

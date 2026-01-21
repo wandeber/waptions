@@ -53,6 +53,9 @@ export function TimelinePlayhead({
         window.addEventListener('mouseup', handleMouseUp);
     };
 
+    const pixelsPerFrame = fps > 0 ? pps / fps : 0;
+    const showFrameHighlight = pixelsPerFrame > 2;
+
     return (
         <div
             className="absolute top-0 bottom-0 z-50 flex flex-col items-center cursor-ew-resize group pointer-events-auto"
@@ -63,11 +66,22 @@ export function TimelinePlayhead({
             }}
             onMouseDown={handleMouseDown}
         >
+            {/* current frame highlight area */}
+            {showFrameHighlight && (
+                <div
+                    className="absolute top-0 bottom-0 bg-red-500/10 border-r border-red-500/20 pointer-events-none"
+                    style={{
+                        left: '50%',
+                        width: `${pixelsPerFrame}px`
+                    }}
+                />
+            )}
+
             {/* Cabezal (triángulo/diamante) */}
             <div className="w-5 h-5 bg-red-600 clip-playhead shadow-[0_0_10px_rgba(220,38,38,0.5)] group-hover:bg-red-500 transition-colors z-[60]" />
 
             {/* Línea vertical */}
-            <div className="flex-1 w-[1px] bg-red-600/60 shadow-[0_0_5px_rgba(220,38,38,0.3)] z-[55]" />
+            <div className="flex-1 w-[1px] bg-red-600 shadow-[0_0_5px_rgba(220,38,38,0.3)] z-[55]" />
 
             <style jsx>{`
                 .clip-playhead {

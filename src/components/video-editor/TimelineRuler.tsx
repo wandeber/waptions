@@ -47,67 +47,82 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         window.addEventListener('mouseup', handleMouseUp);
     };
 
-    const getTimeInterval = (z: number) => {
-        const currentPps = pixelsPerSecond * z;
-        if (currentPps >= 400) return 0.1;
-        if (currentPps >= 200) return 0.5;
-        if (currentPps >= 100) return 1;
-        if (currentPps >= 50) return 2;
-        if (currentPps >= 25) return 5;
-        if (currentPps >= 10) return 10;
-        return 30;
+    const getIntervals = (currentPps: number) => {
+        // We want labels to have more space to avoid dominance (at least 200px)
+        const targetLabelSpace = 200;
+        const potentialIntervals = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200, 3600];
+
+        const labelInt = potentialIntervals.find(v => v * currentPps >= targetLabelSpace) || potentialIntervals[potentialIntervals.length - 1];
+
+        // Marker behavior: non-labeled lines should be at least 10px apart to not clutter
+        const targetMarkerSpace = 10;
+        const markerInt = potentialIntervals.find(v => v * currentPps >= targetMarkerSpace) || 1;
+
+        return {
+            labelInt: Math.max(labelInt, markerInt),
+            markerInt
+        };
     };
 
-    const interval = getTimeInterval(zoom);
-    const markerCount = Math.ceil(duration / interval) + 1;
+    const { labelInt, markerInt } = getIntervals(pps);
+    const pixelsPerFrame = pps * frameDuration;
+    const showFrameTicks = pixelsPerFrame > 5;
+    const showIntermediateTicks = pixelsPerFrame > 2;
 
-    // Drawing frames as small dots if zoomed in enough
-    const framesPerInterval = interval / frameDuration;
-    const showFrameDots = (pps * frameDuration) > 5; // Pixels per frame > 5px
+    const markers: React.ReactNode[] = [];
+    const formatTime = (t: number) => {
+        const h = Math.floor(t / 3600);
+        const m = Math.floor((t % 3600) / 60);
+        const s = Math.floor(t % 60);
+        if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    };
 
-    const markers = Array.from({ length: markerCount }, (_, i) => {
-        const time = i * interval;
-        if (time > duration) return null;
-
+    // Main marker loop - iterate by markerInterval
+    for (let time = 0; time <= duration; time += markerInt) {
         const left = time * pps;
-        const isMainMarker = interval >= 1 ? (time % Math.max(1, Math.floor(interval * 5)) === 0) : (i % 10 === 0);
+        const isLabel = time % labelInt === 0;
 
-        const formatTime = (t: number) => {
-            const m = Math.floor(t / 60);
-            const s = Math.floor(t % 60);
-            const f = Math.round((t % 1) * fps);
-            return `${m}:${s.toString().padStart(2, '0')}${pps > 200 ? (':' + f.toString().padStart(2, '0')) : ''}`;
-        };
+        markers.push(
+            <div key={`m-${time}`}>
+                {/* Tier 1 (Full) or Tier 2 (Medium) */}
+                <div
+                    className={`absolute bottom-0 w-px ${isLabel ? 'h-full bg-gray-500' : 'h-4 bg-gray-700/60'}`}
+                    style={{ left: `${left}px` }}
+                />
 
-        return (
-            <div
-                key={i}
-                className="absolute top-0 border-l border-gray-600 h-full"
-                style={{ left: `${left}px` }}
-            >
-                {isMainMarker && (
-                    <span className="absolute top-1 left-1 text-[10px] text-gray-400 select-none whitespace-nowrap">
+                {/* Label (Tier 1) */}
+                {isLabel && (
+                    <span
+                        className="absolute top-1 text-[10px] text-gray-400 select-none whitespace-nowrap"
+                        style={{ left: `${left + 4}px` }}
+                    >
                         {formatTime(time)}
                     </span>
                 )}
-                <div className={`absolute bottom-0 left-0 w-px ${isMainMarker ? 'h-4 bg-gray-400' : 'h-2 bg-gray-600'}`} />
 
-                {/* Frame dots between markers */}
-                {showFrameDots && !isMainMarker && Array.from({ length: Math.floor(framesPerInterval) - 1 }).map((_, fIdx) => {
-                    const frameTime = time + (fIdx + 1) * frameDuration;
-                    if (frameTime >= time + interval || frameTime > duration) return null;
-                    const frameLeft = (fIdx + 1) * frameDuration * pps;
+                {/* Tier 3: Detail ticks (frames or divisions) - only if marker interval is <= 1s */}
+                {markerInt <= 1 && (showFrameTicks || showIntermediateTicks) && Array.from({ length: Math.ceil(fps) - 1 }).map((_, fIdx) => {
+                    const frameNumber = fIdx + 1;
+                    const frameTime = time + (frameNumber / fps);
+                    if (frameTime > duration || frameTime > time + 0.999) return null;
+
+                    const frameLeft = left + (frameNumber / fps * pps);
+                    const isTickVisible = pixelsPerFrame > 2; // Threshold for showing any detail
+
+                    if (!isTickVisible) return null;
+
                     return (
                         <div
-                            key={fIdx}
-                            className="absolute bottom-1 w-0.5 h-0.5 bg-gray-700 rounded-full"
+                            key={`frame-${time}-${fIdx}`}
+                            className="absolute bottom-0 w-px h-1.5 bg-gray-800/80"
                             style={{ left: `${frameLeft}px` }}
                         />
                     );
                 })}
             </div>
         );
-    });
+    }
 
     return (
         <div

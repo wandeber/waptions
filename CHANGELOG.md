@@ -7,19 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Professional Timeline UI with zoom (Ctrl+Wheel) and horizontal scrolling.
-- Multi-track subtitle support with independent styles per track.
-- `TimelineStore` for centralized state management (zoom, scroll, tracks).
-- Normalized Icon library with `className` support for consistent styling.
-- Native Audio support in both preview and export projects (AAC transcoding).
-- Optimized AI transcription flow (audio-only extraction for Whisper).
-- Frame-rate detection and stabilization for smoother canvas rendering.
-- Export options UI with format/quality selection (positioned below header button).
-- **Project Dashboard**: New entry point to manage, load, and create projects.
-- **Auto-Save & Dirty State**: Optimized "unsaved changes" warnings; timeline auto-saves to local DB.
-- **Undo/Redo Support**: Full history stack implementation for Timeline (Ctrl+Z / Ctrl+Shift+Z).
-- **Project Management**: Save/Load projects functionality with IndexedDB persistence.
+- **Timeline Ruler Refactor**: Implemented a 3-tier dynamic system (Dominant, Medium, Detail) that rotates prominence based on zoom level.
+- Refined visual hierarchy: Only labeled markers (min. 200px apart) are full-height; frames and sub-intervals are grouped into a subtle "Detail" tier.
+- Added frame highlight (shading) to the playhead for high-zoom precision.
+- Conditional horizontal track separators: only show when `tracks.length > 1`.
+- Aligned timeline background grid to the bottom of tracks to avoid ruler border overlap.
 
 ### Fixed
 - Fixed high-speed audio extraction and transcoding to AAC/MP4 on the client.
