@@ -1,24 +1,22 @@
 import { SVGProps } from 'react';
 
-interface GridIconProps extends SVGProps<SVGSVGElement> {
-  className?: string;
-}
-
-export function GridIcon({ className = 'w-5 h-5', ...props }: GridIconProps) {
+export function GridIcon({ className = 'w-5 h-5', ...props }: SVGProps<SVGSVGElement>) {
   return (
-    <svg 
-      className={className} 
-      fill="none" 
-      viewBox="0 0 24 24" 
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
       stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
       {...props}
     >
-      <path 
-        strokeLinecap="round" 
-        strokeLinejoin="round" 
-        strokeWidth={2} 
-        d="M4 8h16M4 16h16M16 4v16M8 4v16" 
-      />
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
     </svg>
   );
-} 
+}

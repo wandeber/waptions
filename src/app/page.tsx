@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { VideoViewport } from '@/components/video-editor/VideoViewport';
 import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
@@ -9,6 +9,7 @@ import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
 
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
+import { useTimelineStore } from '@/stores/timeline-store';
 import { extractAudio } from '@/lib/mediabunny-utils';
 
 export default function Home() {
@@ -26,8 +27,15 @@ export default function Home() {
     videoFile,
   } = useVideoStore();
 
+  const {
+    tracks,
+    addTrack,
+    updateTrackStyle,
+    removeSubtitleFromTrack,
+    setTracks
+  } = useTimelineStore();
+
   const [selectedSubtitle, setSelectedSubtitle] = useState<Subtitle | null>(null);
-  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
   const [showThirdsGuide, setShowThirdsGuide] = useState(false);
@@ -35,47 +43,21 @@ export default function Home() {
   const [showMetaInfo, setShowMetaInfo] = useState(true);
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [animationStyle, setAnimationStyle] = useState({
-    fadeInDuration: 0,
-    fadeOutDuration: 0,
-    initialScale: 1.5,
-    bounceStrength: 1.70158,
-    useElasticEffect: true,
-    fontSize: 48,
-    textColor: '#FFD000',
-    strokeWidth: 6,
-    strokeColor: '#000000',
-    fontWeight: 800,
-    textCase: 'normal' as 'normal' | 'uppercase' | 'lowercase',
-    textAlign: 'center' as 'left' | 'center' | 'right',
-    hidePunctuation: false,
-    punctuationChars: '¿?:-,.;¡!',
-    removeAccents: false,
-    fontFamily: 'Arial',
-    numberOfLines: 1,
-    position: {
-      x: 50,
-      y: 80
-    },
-    backgroundColor: '#000000',
-    backgroundOpacity: 0.5,
-    backgroundBorderColor: '#FFD000',
-    backgroundBorderWidth: 2,
-    backgroundMarginVertical: 8,
-    backgroundMarginHorizontal: 16,
-    backgroundBorderRadius: 8,
-    backgroundOffsetX: 0,
-    backgroundOffsetY: 0
-  });
+
+  // Default track and style from the first track
+  const activeTrack = tracks[0];
+  const subtitles = activeTrack?.subtitles || [];
+  const animationStyle = activeTrack?.style;
+
+  // Initialize first track if none exists
+  useEffect(() => {
+    if (tracks.length === 0) {
+      addTrack('Subtítulos 1');
+    }
+  }, [tracks.length, addTrack]);
+
   /* eslint-disable @typescript-eslint/no-unused-vars */
   const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  // No need for local handleTimeUpdate as we use seek directly or setPlaybackCurrentTime
-  /*
-  const handleTimeUpdate = (time: number) => {
-    setPlaybackCurrentTime(time);
-  };
-  */
 
   const handleVideoLoad = (videoDuration: number, fps: number | null, _file?: File) => {
     setPlaybackDuration(videoDuration);
@@ -115,14 +97,27 @@ export default function Home() {
     // No necesitamos hacer nada aquí
   };
 
-  const handleAnimationStyleChange = (style: typeof animationStyle) => {
-    setAnimationStyle(style);
+  const handleAnimationStyleChange = (style: any) => {
+    if (activeTrack) {
+      updateTrackStyle(activeTrack.id, style);
+    }
   };
 
   const handleDelete = (subtitleId: string) => {
-    setSubtitles(prev => prev.filter(s => s.id !== subtitleId));
-    if (selectedSubtitle?.id === subtitleId) {
-      setSelectedSubtitle(null);
+    if (activeTrack) {
+      removeSubtitleFromTrack(activeTrack.id, subtitleId);
+      if (selectedSubtitle?.id === subtitleId) {
+        setSelectedSubtitle(null);
+      }
+    }
+  };
+
+  const handleSubtitlesChange = (newSubtitles: Subtitle[]) => {
+    if (activeTrack) {
+      const updatedTracks = tracks.map(t =>
+        t.id === activeTrack.id ? { ...t, subtitles: newSubtitles } : t
+      );
+      setTracks(updatedTracks);
     }
   };
 
@@ -139,21 +134,21 @@ export default function Home() {
           videoFile={videoFile}
           subtitles={subtitles}
           fps={detectedFps || 30}
-          animationStyle={animationStyle}
+          animationStyle={animationStyle as any}
         />
       </header>
 
       {/* Main content */}
       <main className="flex-1 p-4 min-h-0">
         <div className="h-full flex gap-4">
-          <div className="flex-1 flex flex-col gap-4 min-h-0">
+          <div className="flex-1 flex flex-col gap-4 min-h-0 min-w-0 overflow-hidden">
             <VideoViewport
               onVideoLoad={handleVideoLoad}
               onEnded={() => pause()}
               showThirdsGuide={showThirdsGuide}
               showDevinGuide={showDevinGuide}
               showMetaInfo={showMetaInfo}
-              animationStyle={animationStyle}
+              animationStyle={animationStyle as any}
               onAudioExtracted={handleAudioExtracted}
               showSubtitles={showSubtitles}
               subtitles={subtitles}
@@ -164,7 +159,6 @@ export default function Home() {
               onTimeUpdate={seek}
               onSubtitleClick={handleSubtitleClick}
               subtitles={subtitles}
-              onSubtitlesChange={setSubtitles}
               selectedSubtitleId={selectedSubtitle?.id}
               isPlaying={isPlaying}
               onPlayPause={handlePlayPause}
@@ -175,8 +169,6 @@ export default function Home() {
               onDevinGuideToggle={handleDevinGuideToggle}
               showMetaInfo={showMetaInfo}
               onMetaInfoToggle={handleMetaInfoToggle}
-              audioUrl={audioUrl || undefined}
-              onWaveformReady={handleWaveformReady}
               showSubtitles={showSubtitles}
               onSubtitlesVisibilityToggle={handleSubtitlesVisibilityToggle}
             />
@@ -188,8 +180,9 @@ export default function Home() {
               selectedSubtitleId={selectedSubtitle?.id}
               onSubtitleClick={handleSubtitleClick}
               onDelete={handleDelete}
-              onSubtitlesChange={setSubtitles}
+              onSubtitlesChange={handleSubtitlesChange}
               currentTime={currentTime}
+              fps={detectedFps || 30}
               onGenerateSubtitles={async () => {
                 if (!videoFile || !audioUrl) {
                   alert('Por favor, carga un video primero');
@@ -216,7 +209,23 @@ export default function Home() {
                     throw new Error(data.error || 'Error al generar subtítulos');
                   }
 
-                  setSubtitles(data.subtitles);
+                  // Aplicar snap a frames en los subtítulos generados
+                  const fps = detectedFps || 30;
+                  const frameDuration = 1 / fps;
+                  const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
+
+                  const snappedSubtitles = (data.subtitles as Subtitle[]).map(s => ({
+                    ...s,
+                    startTime: snapTime(s.startTime),
+                    endTime: snapTime(s.endTime)
+                  }));
+
+                  if (activeTrack) {
+                    const updatedTracks = tracks.map(t =>
+                      t.id === activeTrack.id ? { ...t, subtitles: snappedSubtitles } : t
+                    );
+                    setTracks(updatedTracks);
+                  }
                 } catch (error) {
                   console.error('Error detallado al generar subtítulos:', {
                     error,
@@ -228,7 +237,7 @@ export default function Home() {
                 }
               }}
               isGeneratingSubtitles={isGeneratingSubtitles}
-              animationStyle={animationStyle}
+              animationStyle={animationStyle as any}
               onAnimationStyleChange={handleAnimationStyleChange}
             />
           </div>

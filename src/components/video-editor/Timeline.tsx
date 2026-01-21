@@ -1,24 +1,28 @@
 'use client';
 
-import { useRef, useState, useCallback, useEffect } from 'react';
-import { SubtitleTrack, type Subtitle } from './SubtitleTrack';
+import { useRef, useEffect, useLayoutEffect } from 'react';
+import { Subtitle } from './SubtitleTrack';
 import { PlayIcon } from '../icons/PlayIcon';
 import { PauseIcon } from '../icons/PauseIcon';
 import { GridIcon } from '../icons/GridIcon';
 import { InfoIcon } from '../icons/InfoIcon';
 import { DevinIcon } from '../icons/DevinIcon';
-import { EyeIcon } from '../icons/EyeIcon';
-import { EyeOffIcon } from '../icons/EyeOffIcon';
 import { Button } from '../design-system/Button';
 import { PlusIcon } from '../icons/PlusIcon';
+import { EyeIcon } from '../icons/EyeIcon';
+import { useTimelineStore } from '@/stores/timeline-store';
+import { AnimationStyle } from '@/types/timeline';
+import { TimelineRuler } from './TimelineRuler';
+import { TimelineTrackHeader } from './TimelineTrackHeader';
+import { TimelinePlayhead } from './TimelinePlayhead';
+import { TimelineTrackOverlay } from './TimelineTrackOverlay';
 
 interface TimelineProps {
   duration: number;
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
-  subtitles: Subtitle[];
-  onSubtitlesChange?: (subtitles: Subtitle[]) => void;
+  subtitles: Subtitle[]; // Legacy compatibility
   selectedSubtitleId?: string | null;
   isPlaying?: boolean;
   onPlayPause?: () => void;
@@ -29,8 +33,6 @@ interface TimelineProps {
   onDevinGuideToggle?: () => void;
   showMetaInfo?: boolean;
   onMetaInfoToggle?: () => void;
-  audioUrl?: string;
-  onWaveformReady?: () => void;
   showSubtitles?: boolean;
   onSubtitlesVisibilityToggle?: () => void;
 }
@@ -40,8 +42,7 @@ export function Timeline({
   currentTime = 0,
   onTimeUpdate,
   onSubtitleClick,
-  subtitles,
-  onSubtitlesChange,
+  subtitles, // We'll map this to tracks if tracks are empty
   selectedSubtitleId,
   isPlaying = false,
   onPlayPause,
@@ -55,308 +56,278 @@ export function Timeline({
   showSubtitles = true,
   onSubtitlesVisibilityToggle
 }: TimelineProps) {
-  const timelineRef = useRef<HTMLDivElement>(null);
-  const [localTime, setLocalTime] = useState(currentTime);
-  const [isSeeking, setIsSeeking] = useState(false);
+  const { zoomLevel, setZoom, tracks, setTracks, addTrack, pixelsPerSecond } = useTimelineStore();
 
-  const getCurrentFrame = useCallback(() => {
-    const totalFrames = Math.ceil(duration * fps);
-    const frameCount = Math.round(localTime * fps) + 1;
-    const adjustedFrameCount = Math.min(frameCount, totalFrames);
-    const frameStart = ((adjustedFrameCount - 1) / fps);
+  const tracksContentRef = useRef<HTMLDivElement>(null);
+  const rulerContentRef = useRef<HTMLDivElement>(null);
+  const sidebarContentRef = useRef<HTMLDivElement>(null);
+  const isSyncingRef = useRef(false);
+  const virtualScrollLeftRef = useRef(0);
+  const pendingScrollRef = useRef<number | null>(null);
 
-    return {
-      start: frameStart,
-      current: adjustedFrameCount,
-      total: totalFrames
-    };
-  }, [localTime, fps, duration]);
-
+  // Sync state with legacy props if tracks are empty
   useEffect(() => {
-    // Solo sincronizamos si no estamos buscando y la diferencia es significativa
-    if (!isSeeking && Math.abs(currentTime - localTime) > 0.1) {
-      const { total: totalFrames } = getCurrentFrame();
-      const frameFromCurrent = Math.min(Math.floor(currentTime * fps) + 1, totalFrames);
-      const frameFromLocal = Math.min(Math.floor(localTime * fps) + 1, totalFrames);
-
-      // Solo actualizamos si hay diferencia de frames y no estamos en frames adyacentes
-      if (Math.abs(frameFromCurrent - frameFromLocal) > 1) {
-        const newTime = Math.min((frameFromCurrent - 1) / fps, duration);
-        setLocalTime(newTime);
-      }
+    if (tracks.length === 0 && subtitles.length > 0) {
+      const trackId = addTrack('Subtítulos (Auto)');
+      setTracks([{
+        id: trackId,
+        name: 'Subtítulos (Auto)',
+        isVisible: true,
+        isLocked: false,
+        subtitles: subtitles,
+        style: tracks.find(t => t.id === trackId)?.style || {} as AnimationStyle
+      }]);
     }
-  }, [currentTime, fps, isSeeking, localTime, duration, getCurrentFrame]);
+  }, [subtitles, tracks, addTrack, setTracks]);
 
-  const getTimeFromClick = useCallback((clientX: number): number => {
-    if (!timelineRef.current) return localTime;
+  // Scroll synchronization
+  const handleScroll = (source: 'ruler' | 'tracks') => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
 
-    const rect = timelineRef.current.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const percentage = Math.max(0, Math.min(1, x / rect.width));
-    const exactTime = percentage * duration;
-    const totalFrames = Math.ceil(duration * fps);
+    const tracksEl = tracksContentRef.current;
+    const rulerEl = rulerContentRef.current;
+    const sidebarEl = sidebarContentRef.current;
+    const playheadSyncEl = document.getElementById('timeline-playhead-sync')?.parentElement; // El contenedor overflow-hidden
 
-    // Usamos Math.ceil en lugar de Math.round para asegurarnos de llegar al último frame
-    const frameCount = Math.ceil(exactTime * fps);
-    // Aseguramos que el frame esté entre 1 y el total de frames
-    const adjustedFrame = Math.max(1, Math.min(frameCount, totalFrames));
-    // Restamos 1 al frame para mantener la consistencia con getCurrentFrame
-    return Number(((adjustedFrame - 1) / fps).toFixed(3));
-  }, [duration, fps, localTime]);
+    if (source === 'tracks' && tracksEl && rulerEl) {
+      rulerEl.scrollLeft = tracksEl.scrollLeft;
+      virtualScrollLeftRef.current = tracksEl.scrollLeft;
+      if (playheadSyncEl) playheadSyncEl.scrollLeft = tracksEl.scrollLeft;
+    } else if (source === 'ruler' && rulerEl && tracksEl) {
+      tracksEl.scrollLeft = rulerEl.scrollLeft;
+      virtualScrollLeftRef.current = rulerEl.scrollLeft;
+      if (playheadSyncEl) playheadSyncEl.scrollLeft = rulerEl.scrollLeft;
+    }
+
+    if (tracksEl && sidebarEl) {
+      sidebarEl.scrollTop = tracksEl.scrollTop;
+    }
+
+    isSyncingRef.current = false;
+  };
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
-    const ms = Math.floor((seconds % 1) * 1000);
-    return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+    const ms = Math.floor((seconds % 1) * 100);
+    return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   };
 
-  const getTimeMarkers = useCallback(() => {
-    const markers = [];
-    const { total: totalFrames } = getCurrentFrame();
+  const timelineWidth = duration * pixelsPerSecond * zoomLevel;
 
-    // Marcadores de segundos
-    for (let second = 0; second <= duration; second++) {
-      markers.push(
-        <div
-          key={`second-${second}`}
-          className="absolute border-l border-gray-500"
-          style={{
-            left: `${(second / duration) * 100}%`,
-            height: '32px'
-          }}
-        >
-          <span className="absolute bottom-0 left-1 text-xs text-gray-300 select-none">
-            {second}s
-          </span>
-        </div>
-      );
-    }
-
-    // Marcadores de frames (sin números)
-    for (let frame = 1; frame <= totalFrames; frame++) {
-      const time = (frame - 1) / fps;
-      if (Math.floor(time) === time) continue;
-      markers.push(
-        <div
-          key={`frame-${frame}`}
-          className="absolute border-l border-gray-600"
-          style={{
-            left: `${(time / duration) * 100}%`,
-            height: '8px'
-          }}
-        />
-      );
-    }
-
-    return markers;
-  }, [duration, fps, getCurrentFrame]);
-
-  const currentFrame = getCurrentFrame();
-
-  // Funciones globales para seguir el ratón
-  const handleGlobalMouseMove = useCallback((event: MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const newTime = getTimeFromClick(event.clientX);
-    setLocalTime(newTime);
-    onTimeUpdate?.(newTime);
-  }, [getTimeFromClick, onTimeUpdate]);
-
-  const handleGlobalMouseUp = useCallback((event: MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsSeeking(false);
-    document.removeEventListener('mousemove', handleGlobalMouseMove);
-    document.removeEventListener('mouseup', handleGlobalMouseUp);
-  }, [handleGlobalMouseMove]);
-
-  const handleMouseDownLocal = (event: React.MouseEvent<HTMLDivElement>) => {
-    // Solo deseleccionar si el clic fue directamente en el área de track o en el área de marcadores
-    const target = event.target as HTMLElement;
-    const isEmptyArea = target.classList.contains('timeline-track') ||
-      target.classList.contains('timeline-markers');
-
-    if (isEmptyArea && onSubtitleClick) {
-      onSubtitleClick(null);
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    setIsSeeking(true);
-    const finalTime = getTimeFromClick(event.clientX);
-    setLocalTime(finalTime);
-    onTimeUpdate?.(finalTime);
-    document.addEventListener('mousemove', handleGlobalMouseMove);
-    document.addEventListener('mouseup', handleGlobalMouseUp);
-  };
-
-  const moveFrame = useCallback((direction: 'next' | 'prev') => {
-    if (!onTimeUpdate) return;
-
-    const { current: currentFrameNumber, total: totalFrames } = getCurrentFrame();
-
-    let newFrame;
-    if (direction === 'next' && currentFrameNumber < totalFrames) {
-      newFrame = currentFrameNumber + 1;
-    } else if (direction === 'prev' && currentFrameNumber > 1) {
-      newFrame = currentFrameNumber - 1;
-    } else {
-      console.log(`No se puede mover ${direction}. Frame actual: ${currentFrameNumber}, Total frames: ${totalFrames}`);
-      return;
-    }
-
-    const newTime = Math.min((newFrame - 1) / fps, duration);
-    console.log(`Frame ${currentFrameNumber} -> ${newFrame} (${newTime}s)`);
-    setLocalTime(newTime);
-    onTimeUpdate(newTime);
-  }, [fps, duration, getCurrentFrame, onTimeUpdate]);
-
+  // Sync refs for wheel handler to avoid effect re-runs
+  const currentTimeRef = useRef(currentTime);
+  const ppsRef = useRef(pixelsPerSecond);
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'ArrowRight') {
-        moveFrame('next');
-      } else if (event.key === 'ArrowLeft') {
-        moveFrame('prev');
+    currentTimeRef.current = currentTime;
+    ppsRef.current = pixelsPerSecond;
+  }, [currentTime, pixelsPerSecond]);
+
+  // Apply pending scroll after zoom render
+  useLayoutEffect(() => {
+    if (pendingScrollRef.current !== null && tracksContentRef.current) {
+      tracksContentRef.current.scrollLeft = pendingScrollRef.current;
+      if (rulerContentRef.current) {
+        rulerContentRef.current.scrollLeft = pendingScrollRef.current;
+      }
+      virtualScrollLeftRef.current = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+    }
+  }, [zoomLevel]);
+
+  // Zoom handling with non-passive listener to ensure preventDefault works
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleWheelRaw = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        const newZoom = Math.max(0.1, Math.min(10, zoomLevel * delta));
+
+        if (newZoom !== zoomLevel) {
+          // Smart Zoom Logic: anchor to playhead position
+          const oldPPS = ppsRef.current * zoomLevel;
+          const newPPS = ppsRef.current * newZoom;
+
+          // Usamos el scroll virtual para evitar saltos si el DOM aún no se ha actualizado
+          const currentScrollLeft = virtualScrollLeftRef.current;
+
+          // Posición del cabezal relativa al viewport antes del zoom
+          const playheadScreenPosition = (currentTimeRef.current * oldPPS) - currentScrollLeft;
+
+          // Calculamos el nuevo scroll necesario para mantener esa posición de pantalla
+          const newScrollLeft = Math.round((currentTimeRef.current * newPPS) - playheadScreenPosition);
+
+          pendingScrollRef.current = newScrollLeft;
+          setZoom(newZoom);
+        }
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [moveFrame]);
+    el.addEventListener('wheel', handleWheelRaw, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheelRaw);
+  }, [zoomLevel, setZoom]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-4">
-        <div className="flex gap-2">
+    <div
+      ref={containerRef}
+      className="flex flex-col bg-gray-900 border-t border-gray-800 min-w-0 overflow-hidden"
+    >
+      {/* Toolbar */}
+      <div className="flex items-center gap-4 p-2 bg-gray-800/50 border-b border-gray-800">
+        <div className="flex items-center gap-2">
           <Button
             variant={isPlaying ? 'primary' : 'secondary'}
             onClick={onPlayPause}
-            title={isPlaying ? "Pausar" : "Reproducir"}
+            className="w-10 h-10 p-0"
           >
-            {isPlaying ? <PauseIcon /> : <PlayIcon />}
+            {isPlaying ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
           </Button>
         </div>
 
-        <div className="text-sm text-gray-300 select-none">
-          {formatTime(localTime)} / {formatTime(duration)} ({currentFrame.current} / {currentFrame.total})
+        <div className="flex items-center gap-4 text-xs font-mono text-gray-400">
+          <div className="flex flex-col">
+            <span className="text-blue-400">{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+          <div className="w-px h-8 bg-gray-700" />
+          <div className="flex flex-col">
+            <span>FPS: {fps.toFixed(2)}</span>
+            <span>Zoom: {(zoomLevel * 100).toFixed(0)}%</span>
+          </div>
         </div>
 
         <div className="flex gap-2 ml-auto">
-          <Button
-            variant="secondary"
-            isActive={showThirdsGuide}
-            onClick={onThirdsGuideToggle}
-            title="Mostrar guía de tercios"
-          >
-            <GridIcon />
+          <Button variant="secondary" isActive={showThirdsGuide} onClick={onThirdsGuideToggle} title="Guía de tercios">
+            <GridIcon className="w-[18px] h-[18px]" />
           </Button>
-
-          <Button
-            variant="secondary"
-            isActive={showDevinGuide}
-            onClick={onDevinGuideToggle}
-            title="Mostrar guía de Devin"
-          >
-            <DevinIcon />
+          <Button variant="secondary" isActive={showDevinGuide} onClick={onDevinGuideToggle} title="Guía Devin">
+            <DevinIcon className="w-[18px] h-[18px]" />
           </Button>
-
+          <Button variant="secondary" isActive={showMetaInfo} onClick={onMetaInfoToggle} title="Info">
+            <InfoIcon className="w-[18px] h-[18px]" />
+          </Button>
+          <div className="w-px h-6 bg-gray-800 mx-1" />
           <Button
             variant="secondary"
-            isActive={showMetaInfo}
-            onClick={onMetaInfoToggle}
-            title="Mostrar información"
+            isActive={showSubtitles}
+            onClick={onSubtitlesVisibilityToggle}
+            title="Mostrar/Ocultar Subtítulos"
           >
-            <InfoIcon />
+            <EyeIcon className="w-[18px] h-[18px]" />
+          </Button>
+          <div className="w-px h-6 bg-gray-800 mx-1" />
+          <Button variant="secondary" onClick={() => addTrack()} title="Nueva Capa">
+            <PlusIcon className="w-[18px] h-[18px]" />
           </Button>
         </div>
       </div>
 
-      <div className="flex gap-2">
-        {/* Track controls */}
-        <div className="w-8 h-[88px] bg-gray-900 rounded-l-lg flex flex-col">
-          {/* Área de la regla de tiempo */}
-          <div className="h-8 flex items-center justify-center">
-            <Button
-              variant="secondary"
-              onClick={() => { }}
-              title="Añadir track"
-              className="w-8 h-8 p-1"
-            >
-              <PlusIcon />
-            </Button>
+      <div className="flex flex-1 min-h-0 relative">
+        {/* Track Labels Sidebar */}
+        <div className="w-48 flex-none border-r border-gray-800 bg-gray-900 z-20 flex flex-col">
+          {/* Header spacer for ruler */}
+          <div className="h-8 border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+            Capas
           </div>
-
-          {/* Área del track de subtítulos */}
-          <div className="flex-1 flex items-center justify-center">
-            <Button
-              variant="secondary"
-              isActive={showSubtitles}
-              onClick={onSubtitlesVisibilityToggle}
-              title={showSubtitles ? "Ocultar subtítulos" : "Mostrar subtítulos"}
-              className="w-8 h-8 p-1"
-            >
-              {showSubtitles ? <EyeIcon /> : <EyeOffIcon />}
-            </Button>
+          <div
+            ref={sidebarContentRef}
+            className="flex-1 overflow-hidden bg-gray-900/50"
+          >
+            {tracks.map(track => (
+              <TimelineTrackHeader
+                key={track.id}
+                track={track}
+                onToggleVisibility={(id) => {
+                  const { tracks, setTracks } = useTimelineStore.getState();
+                  setTracks(tracks.map(t => t.id === id ? { ...t, isVisible: !t.isVisible } : t));
+                }}
+                onOpenSettings={() => { }}
+              />
+            ))}
           </div>
         </div>
 
-        {/* Timeline */}
-        <div className="flex-1 h-[88px] bg-gray-900 rounded-r-lg overflow-hidden">
+        {/* Timeline Content Area */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+          {/* Global Playhead Overlay (covers ruler and tracks) */}
           <div
-            ref={timelineRef}
-            className="w-full h-full relative timeline-track"
-            onMouseDown={handleMouseDownLocal}
+            className="absolute inset-0 pointer-events-none z-50 overflow-hidden"
+            style={{ left: 0 }}
           >
-            {/* Regla de tiempo */}
-            <div className="absolute top-0 left-0 right-0 h-8 bg-gray-700 timeline-markers">
-              {getTimeMarkers()}
-            </div>
-
-            {/* Track de subtítulos */}
-            <div className="absolute top-8 left-0 right-0 bottom-0">
-              <SubtitleTrack
+            <div
+              id="timeline-playhead-sync"
+              className="relative h-full"
+              style={{ width: timelineWidth }}
+            >
+              <TimelinePlayhead
+                currentTime={currentTime}
                 duration={duration}
-                currentTime={localTime}
-                onSubtitleClick={onSubtitleClick}
-                subtitles={subtitles}
-                onSubtitlesChange={onSubtitlesChange}
-                selectedSubtitleId={selectedSubtitleId}
                 fps={fps}
-                onTimeUpdate={(time) => {
-                  setLocalTime(time);
-                  onTimeUpdate?.(time);
-                }}
+                zoomLevel={zoomLevel}
+                pixelsPerSecond={pixelsPerSecond}
+                onTimeUpdate={onTimeUpdate}
               />
             </div>
+          </div>
 
-            {/* Current frame highlight and playhead */}
-            {/* 
-              Note: When no video is loaded (duration = 0), the highlight position calculations
-              (width and left) result in invalid values (NaN or Infinity). This causes the div with
-              bg-white/10 to extend across the entire timeline, creating a lighter visual effect.
-              This is expected behavior since the frame highlight only makes sense with a loaded video.
-            */}
-            <div className="absolute inset-0 pointer-events-none">
-              {/* Resaltado del frame */}
-              <div
-                className="absolute inset-0 bg-white/10"
-                style={{
-                  left: `${(currentFrame.start / duration) * 100}%`,
-                  width: `${(1 / fps / duration) * 100}%`
-                }}
-              />
-              {/* Línea del cabezal */}
-              <div
-                className="absolute inset-0 w-0.5 bg-red-500 z-10"
-                style={{
-                  left: `${(currentFrame.start / duration) * 100}%`
-                }}
-              />
+          {/* Ruler */}
+          <div
+            ref={rulerContentRef}
+            className="h-8 border-b border-gray-800 overflow-hidden bg-gray-900 relative z-0"
+            onScroll={() => handleScroll('ruler')}
+          >
+            <TimelineRuler
+              duration={duration}
+              fps={fps}
+              zoomLevel={zoomLevel}
+              pixelsPerSecond={pixelsPerSecond}
+              onTimeUpdate={onTimeUpdate}
+            />
+          </div>
+
+          {/* Tracks Area */}
+          <div
+            ref={tracksContentRef}
+            className="flex-1 overflow-x-scroll overflow-y-scroll relative scrollbar-thin scrollbar-thumb-gray-700 z-10"
+            style={{
+              scrollbarGutter: 'stable'
+            }}
+            onScroll={() => handleScroll('tracks')}
+          >
+            <div
+              className="relative"
+              style={{
+                width: timelineWidth,
+                minHeight: '100%',
+                backgroundImage: 'linear-gradient(to bottom, #1f2937 1px, transparent 1px)',
+                backgroundSize: '100% 64px'
+              }}
+            >
+              {/* Tracks rendered as overlays */}
+              {tracks.map(track => (
+                <TimelineTrackOverlay
+                  key={track.id}
+                  duration={duration}
+                  track={track}
+                  zoomLevel={zoomLevel}
+                  pixelsPerSecond={pixelsPerSecond}
+                  fps={fps}
+                  onTimeUpdate={onTimeUpdate}
+                  onSubtitleClick={onSubtitleClick}
+                  selectedSubtitleId={selectedSubtitleId}
+                />
+              ))}
             </div>
           </div>
         </div>
       </div>
     </div>
   );
-} 
+}

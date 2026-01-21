@@ -14,19 +14,23 @@ import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
 import { defaultAnimationStyle } from './types';
 import { getSelectedPreset } from './presetUtils';
 
-export function SubtitleEditor({ 
-  subtitles, 
-  selectedSubtitleId, 
-  onSubtitleClick, 
-  onDelete, 
-  onSubtitlesChange, 
-  currentTime, 
-  onGenerateSubtitles, 
+export function SubtitleEditor({
+  subtitles,
+  selectedSubtitleId,
+  onSubtitleClick,
+  onDelete,
+  onSubtitlesChange,
+  currentTime,
+  onGenerateSubtitles,
   isGeneratingSubtitles,
   onAnimationStyleChange,
-  animationStyle = defaultAnimationStyle
-}: SubtitleEditorProps) {
-  const [editingText, setEditingText] = useState<{[key: string]: string}>({});
+  animationStyle = defaultAnimationStyle,
+  fps = 30
+}: SubtitleEditorProps & { fps?: number }) {
+  const frameDuration = fps > 0 ? 1 / fps : 0.01;
+  const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
+
+  const [editingText, setEditingText] = useState<{ [key: string]: string }>({});
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
   const [expandedStyleSection, setExpandedStyleSection] = useState<string | null>(null);
   const [hasLoadedPreset, setHasLoadedPreset] = useState(false);
@@ -63,7 +67,7 @@ export function SubtitleEditor({
 
   // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
   useEffect(() => {
-    const newEditingText: {[key: string]: string} = {};
+    const newEditingText: { [key: string]: string } = {};
     let needsUpdate = false;
 
     subtitles.forEach(subtitle => {
@@ -74,15 +78,15 @@ export function SubtitleEditor({
     });
 
     if (needsUpdate) {
-      setEditingText(prev => ({...prev, ...newEditingText}));
+      setEditingText(prev => ({ ...prev, ...newEditingText }));
     }
   }, [subtitles, editingText]);
 
   const handleTextChange = (subtitle: Subtitle, newText: string) => {
-    setEditingText(prev => ({...prev, [subtitle.id]: newText}));
-    
+    setEditingText(prev => ({ ...prev, [subtitle.id]: newText }));
+
     if (onSubtitlesChange) {
-      const updatedSubtitles = subtitles.map(s => 
+      const updatedSubtitles = subtitles.map(s =>
         s.id === subtitle.id ? { ...s, text: newText } : s
       );
       onSubtitlesChange(updatedSubtitles);
@@ -90,7 +94,7 @@ export function SubtitleEditor({
   };
 
   const handleStyleChange = (
-    key: keyof SubtitleAnimationStyle, 
+    key: keyof SubtitleAnimationStyle,
     value: SubtitleAnimationStyle[keyof SubtitleAnimationStyle]
   ) => {
     const newStyle = { ...localAnimationStyle, [key]: value };
@@ -107,7 +111,7 @@ export function SubtitleEditor({
         const currentText = editingText[subtitle.id] || '';
         const newText = currentText.slice(0, cursorPosition) + '\n' + currentText.slice(cursorPosition);
         handleTextChange(subtitle, newText);
-        
+
         // Mover el cursor después del salto de línea
         requestAnimationFrame(() => {
           textarea.setSelectionRange(cursorPosition + 1, cursorPosition + 1);
@@ -116,7 +120,7 @@ export function SubtitleEditor({
       }
 
       e.preventDefault();
-      
+
       const textarea = e.currentTarget;
       const cursorPosition = textarea.selectionStart;
       const currentText = editingText[subtitle.id] || '';
@@ -125,11 +129,11 @@ export function SubtitleEditor({
       if (!currentText.trim()) {
         return;
       }
-      
+
       // Dividir el texto en dos partes según la posición del cursor y limpiar espacios en la zona del split
       const firstPart = currentText.slice(0, cursorPosition).replace(/\s+$/, '');
       const secondPart = currentText.slice(cursorPosition).replace(/^\s+/, '');
-      
+
       // Calcular los tiempos para los dos nuevos subtítulos
       const originalDuration = subtitle.endTime - subtitle.startTime;
       const splitRatio = cursorPosition / currentText.length;
@@ -137,21 +141,21 @@ export function SubtitleEditor({
       // Si estamos al final del texto, asegurar una duración mínima de 1 segundo para el nuevo subtítulo
       const isAtEnd = cursorPosition >= currentText.length;
       const minDuration = 1; // 1 segundo
-      
+
       let splitTime: number;
       let newSubtitle: Subtitle;
-      
+
       if (isAtEnd) {
-        splitTime = subtitle.endTime;
+        splitTime = snapTime(subtitle.endTime);
         // Ajustar el tiempo final del nuevo subtítulo para asegurar la duración mínima
-        const newEndTime = splitTime + minDuration;
-        
+        const newEndTime = snapTime(splitTime + minDuration);
+
         // Actualizar el subtítulo original (sin cambios en su duración)
         const updatedOriginal: Subtitle = {
           ...subtitle,
           text: firstPart
         };
-        
+
         // Crear el nuevo subtítulo con la duración mínima
         newSubtitle = {
           id: Date.now().toString(),
@@ -159,16 +163,16 @@ export function SubtitleEditor({
           endTime: newEndTime,
           text: secondPart
         };
-        
+
         // Actualizar el estado local de edición
         setEditingText(prev => ({
           ...prev,
           [updatedOriginal.id]: firstPart,
           [newSubtitle.id]: secondPart
         }));
-        
+
         // Guardar ambos subtítulos
-        onSubtitlesChange?.([...subtitles.map(s => 
+        onSubtitlesChange?.([...subtitles.map(s =>
           s.id === subtitle.id ? { ...s, text: firstPart, endTime: splitTime } : s
         ), newSubtitle]);
         onSubtitleClick?.(newSubtitle);
@@ -183,32 +187,32 @@ export function SubtitleEditor({
         });
       } else {
         // Comportamiento normal para división en medio del texto
-        splitTime = subtitle.startTime + (originalDuration * splitRatio);
-        
+        splitTime = snapTime(subtitle.startTime + (originalDuration * splitRatio));
+
         // Actualizar el subtítulo original con la primera parte
         const updatedOriginal: Subtitle = {
           ...subtitle,
           text: firstPart,
           endTime: splitTime
         };
-        
+
         // Crear el nuevo subtítulo con la segunda parte
         newSubtitle = {
           id: Date.now().toString(),
           startTime: splitTime,
-          endTime: subtitle.endTime,
+          endTime: snapTime(subtitle.endTime),
           text: secondPart
         };
-        
+
         // Actualizar el estado local de edición
         setEditingText(prev => ({
           ...prev,
           [updatedOriginal.id]: firstPart,
           [newSubtitle.id]: secondPart
         }));
-        
+
         // Guardar ambos subtítulos
-        onSubtitlesChange?.([...subtitles.map(s => 
+        onSubtitlesChange?.([...subtitles.map(s =>
           s.id === subtitle.id ? { ...s, text: firstPart, endTime: splitTime } : s
         ), newSubtitle]);
         onSubtitleClick?.(newSubtitle);
@@ -225,7 +229,7 @@ export function SubtitleEditor({
     } else if (e.key === 'Backspace') {
       const textarea = e.currentTarget;
       const currentText = editingText[subtitle.id] || '';
-      
+
       // Si el texto no está vacío y no estamos al inicio, permitir el comportamiento normal
       if (currentText.length > 0 && textarea.selectionStart !== 0) {
         return;
@@ -247,7 +251,7 @@ export function SubtitleEditor({
         // Actualizar el subtítulo anterior para que llegue hasta el final del actual
         const updatedPrevious: Subtitle = {
           ...previousSubtitle,
-          endTime: subtitle.endTime
+          endTime: snapTime(subtitle.endTime)
         };
 
         // Actualizar el estado local de edición
@@ -261,7 +265,7 @@ export function SubtitleEditor({
         const updatedSubtitles = subtitles
           .filter(s => s.id !== subtitle.id)
           .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
-        
+
         onSubtitlesChange?.(updatedSubtitles);
         onSubtitleClick?.(updatedPrevious);
 
@@ -301,7 +305,7 @@ export function SubtitleEditor({
       const updatedSubtitles = subtitles
         .filter(s => s.id !== subtitle.id)
         .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
-      
+
       onSubtitlesChange?.(updatedSubtitles);
       onSubtitleClick?.(updatedPrevious);
 
@@ -436,8 +440,8 @@ export function SubtitleEditor({
   ];
 
   return (
-    <div 
-      className="flex-1 flex flex-col overflow-hidden select-none" 
+    <div
+      className="flex-1 flex flex-col overflow-hidden select-none"
       data-testid="subtitle-editor"
     >
       <Tabs

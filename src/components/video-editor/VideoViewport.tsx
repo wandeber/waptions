@@ -12,6 +12,9 @@ import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
 import { videoCache } from '@/lib/video-cache';
 import { getVideoInfo } from '@/lib/mediabunny-utils';
+import { useTimelineStore } from '@/stores/timeline-store';
+import { AnimationStyle } from '@/types/timeline';
+import { Subtitle } from './SubtitleTrack';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number | null, file?: File) => void;
@@ -173,217 +176,189 @@ export function VideoViewport({
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
 
-      // Render Subtitles
-      if (!showSubtitles || subtitles.length === 0) return;
+      // Render Subtitles from Timeline Store
+      if (!showSubtitles) return;
 
-      // ... (rest of subtitle rendering logic unchanged)
+      const { tracks } = useTimelineStore.getState();
 
-      // Find active subtitles at this time
-      const activeSubtitles = subtitles.filter((subtitle) => {
-        const isActive = currentTime >= subtitle.startTime && currentTime < subtitle.endTime;
-        const isExiting = currentTime >= subtitle.endTime - animationStyle.fadeOutDuration
-          && currentTime < subtitle.endTime;
-        return isActive || isExiting;
-      });
+      const renderTrackSubtitles = (
+        ctx: CanvasRenderingContext2D,
+        trackSubtitles: Subtitle[],
+        style: AnimationStyle,
+        currentTime: number,
+        width: number,
+        height: number
+      ) => {
+        // Find active subtitles for this track
+        const activeSubtitles = trackSubtitles.filter((subtitle) => {
+          const isActive = currentTime >= subtitle.startTime && currentTime < subtitle.endTime;
+          const isExiting = currentTime >= subtitle.endTime - style.fadeOutDuration
+            && currentTime < subtitle.endTime;
+          return isActive || isExiting;
+        });
 
-      if (activeSubtitles.length === 0) return;
+        if (activeSubtitles.length === 0) return;
 
-      // Process text helper
-      const processText = (text: string): string => {
-        let result = text;
-        if (animationStyle.textCase === 'uppercase') {
-          result = result.toUpperCase();
-        } else if (animationStyle.textCase === 'lowercase') {
-          result = result.toLowerCase();
+        // Process text helper
+        const processText = (text: string, style: AnimationStyle): string => {
+          let result = text;
+          if (style.textCase === 'uppercase') {
+            result = result.toUpperCase();
+          } else if (style.textCase === 'lowercase') {
+            result = result.toLowerCase();
+          }
+          if (style.hidePunctuation) {
+            const regex = new RegExp(
+              `[${style.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`,
+              'g'
+            );
+            result = result.replace(regex, '');
+          }
+          if (style.removeAccents) {
+            result = result
+              .replace(/[áàäâã]/g, 'a')
+              .replace(/[éèëê]/g, 'e')
+              .replace(/[íìïî]/g, 'i')
+              .replace(/[óòöôõ]/g, 'o')
+              .replace(/[úùüû]/g, 'u')
+              .replace(/[ÁÀÄÂÃ]/g, 'A')
+              .replace(/[ÉÈËÊ]/g, 'E')
+              .replace(/[ÍÌÏÎ]/g, 'I')
+              .replace(/[ÓÒÖÔÕ]/g, 'O')
+              .replace(/[ÚÙÜÛ]/g, 'U');
+          }
+          return result;
+        };
+
+        // Easing functions
+        const easeOutBack = (x: number, style: AnimationStyle): number => {
+          if (!style.useElasticEffect) return x;
+          const c1 = style.bounceStrength;
+          const c3 = c1 + 1;
+          return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+        };
+
+        const easeOutExpo = (x: number): number => {
+          return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
+        };
+
+        // Sort and get the timing bounds
+        const sortedActive = [...activeSubtitles].sort((a, b) => a.startTime - b.startTime);
+        const firstSubtitle = sortedActive[0];
+        const lastSubtitle = sortedActive[sortedActive.length - 1];
+
+        // Calculate opacity and scale based on animation timing
+        let opacity = 1;
+        let scale = 1;
+
+        // Fade in with scale
+        if (currentTime >= firstSubtitle.startTime
+          && currentTime < firstSubtitle.startTime + style.fadeInDuration) {
+          const progress = (currentTime - firstSubtitle.startTime) / style.fadeInDuration;
+          opacity = easeOutExpo(progress);
+          const scaleProgress = easeOutBack(progress, style);
+          scale = 1 + ((style.initialScale - 1) * (1 - scaleProgress));
         }
-        if (animationStyle.hidePunctuation) {
-          const regex = new RegExp(
-            `[${animationStyle.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`,
-            'g'
-          );
-          result = result.replace(regex, '');
+        // Fade out
+        else if (currentTime >= lastSubtitle.endTime - style.fadeOutDuration
+          && currentTime < lastSubtitle.endTime) {
+          const progress = (lastSubtitle.endTime - currentTime) / style.fadeOutDuration;
+          opacity = Math.max(0, Math.min(1, easeOutExpo(progress)));
         }
-        if (animationStyle.removeAccents) {
-          result = result
-            .replace(/[áàäâã]/g, 'a')
-            .replace(/[éèëê]/g, 'e')
-            .replace(/[íìïî]/g, 'i')
-            .replace(/[óòöôõ]/g, 'o')
-            .replace(/[úùüû]/g, 'u')
-            .replace(/[ÁÀÄÂÃ]/g, 'A')
-            .replace(/[ÉÈËÊ]/g, 'E')
-            .replace(/[ÍÌÏÎ]/g, 'I')
-            .replace(/[ÓÒÖÔÕ]/g, 'O')
-            .replace(/[ÚÙÜÛ]/g, 'U');
+
+        opacity = Math.max(0, Math.min(1, opacity));
+
+        // Configure canvas context
+        ctx.save();
+        const xPos = (width * style.position.x) / 100;
+        const yPos = (height * style.position.y) / 100;
+        ctx.translate(xPos, yPos);
+        ctx.scale(scale, scale);
+        ctx.translate(-xPos, -yPos);
+
+        const fontSize = style.fontSize * (height / 1080);
+        ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
+        ctx.textAlign = style.textAlign;
+        ctx.textBaseline = 'middle';
+
+        let allLines: { text: string; metrics: TextMetrics }[] = [];
+        for (const subtitle of sortedActive) {
+          const lines = processText(subtitle.text, style)
+            .split('\n')
+            .filter((line) => line.trim() !== '')
+            .map((line) => ({
+              text: line,
+              metrics: ctx.measureText(line),
+            }));
+          allLines.push(...lines);
         }
-        return result;
-      };
 
-      // Easing functions
-      const easeOutBack = (x: number): number => {
-        if (!animationStyle.useElasticEffect) return x;
-        const c1 = animationStyle.bounceStrength;
-        const c3 = c1 + 1;
-        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
-      };
+        allLines = allLines.slice(0, style.numberOfLines);
+        if (allLines.length === 0) {
+          ctx.restore();
+          return;
+        }
 
-      const easeOutExpo = (x: number): number => {
-        return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
-      };
+        const maxLineWidth = Math.max(...allLines.map((line) => line.metrics.width));
+        const lineHeight = fontSize * 1.2;
+        const totalTextHeight = lineHeight * allLines.length;
 
-      // Sort and get the timing bounds from active subtitles
-      const sortedActive = [...activeSubtitles].sort((a, b) => a.startTime - b.startTime);
-      const firstSubtitle = sortedActive[0];
-      const lastSubtitle = sortedActive[sortedActive.length - 1];
+        const padding = {
+          vertical: style.backgroundMarginVertical,
+          horizontal: style.backgroundMarginHorizontal,
+        };
+        const bgWidth = maxLineWidth + padding.horizontal * 2;
+        const bgHeight = totalTextHeight + padding.vertical * 2;
 
-      // Calculate opacity and scale based on animation timing
-      let opacity = 1;
-      let scale = 1;
+        let bgX: number;
+        switch (style.textAlign) {
+          case 'left':
+            bgX = xPos - bgWidth / 2 + maxLineWidth / 2 + style.backgroundOffsetX;
+            break;
+          case 'right':
+            bgX = xPos - bgWidth / 2 - maxLineWidth / 2 + style.backgroundOffsetX;
+            break;
+          default:
+            bgX = xPos - bgWidth / 2 + style.backgroundOffsetX;
+        }
+        const bgY = yPos - bgHeight / 2 + style.backgroundOffsetY;
 
-      // Fade in with scale
-      if (currentTime >= firstSubtitle.startTime
-        && currentTime < firstSubtitle.startTime + animationStyle.fadeInDuration) {
-        const progress = (currentTime - firstSubtitle.startTime) / animationStyle.fadeInDuration;
-        opacity = easeOutExpo(progress);
-        const scaleProgress = easeOutBack(progress);
-        scale = 1 + ((animationStyle.initialScale - 1) * (1 - scaleProgress));
-      }
+        if (style.backgroundOpacity > 0) {
+          ctx.fillStyle = `${style.backgroundColor}${Math.round(
+            opacity * style.backgroundOpacity * 255
+          ).toString(16).padStart(2, '0')}`;
 
-      // Fade out
-      if (currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration
-        && currentTime < lastSubtitle.endTime) {
-        const progress = (lastSubtitle.endTime - currentTime) / animationStyle.fadeOutDuration;
-        opacity = progress;
-      }
-
-      opacity = Math.max(0, Math.min(1, opacity));
-
-      // Configure canvas context
-      ctx.save();
-      const x = (canvas.width * animationStyle.position.x) / 100;
-      const y = (canvas.height * animationStyle.position.y) / 100;
-      ctx.translate(x, y);
-      ctx.scale(scale, scale);
-      ctx.translate(-x, -y);
-
-      const fontSize = animationStyle.fontSize * (canvas.height / 1080);
-      const fontWeight = animationStyle.fontWeight;
-      ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
-      ctx.textAlign = animationStyle.textAlign;
-      ctx.textBaseline = 'middle';
-
-      // Get all lines from all active subtitles
-      interface ProcessedLine {
-        text: string;
-        metrics: TextMetrics;
-      }
-
-      let allLines: ProcessedLine[] = [];
-      for (const subtitle of sortedActive) {
-        const text = processText(subtitle.text);
-        const lines = text
-          .split('\n')
-          .filter((line) => line.trim() !== '')
-          .map((line) => ({
-            text: line,
-            metrics: ctx.measureText(line),
-          }));
-        allLines.push(...lines);
-      }
-
-      // Limit to configured number of lines
-      allLines = allLines.slice(0, animationStyle.numberOfLines);
-
-      if (allLines.length === 0) {
-        ctx.restore();
-        return;
-      }
-
-      // Calculate dimensions
-      const maxLineWidth = Math.max(...allLines.map((line) => line.metrics.width));
-      const lineHeight = fontSize * 1.2;
-      const totalTextHeight = lineHeight * allLines.length;
-
-      const padding = {
-        vertical: animationStyle.backgroundMarginVertical,
-        horizontal: animationStyle.backgroundMarginHorizontal,
-      };
-      const bgWidth = maxLineWidth + padding.horizontal * 2;
-      const bgHeight = totalTextHeight + padding.vertical * 2;
-
-      // Calculate background position
-      let bgX: number;
-      switch (animationStyle.textAlign) {
-        case 'left':
-          bgX = x - bgWidth / 2 + maxLineWidth / 2 + animationStyle.backgroundOffsetX;
-          break;
-        case 'right':
-          bgX = x - bgWidth / 2 - maxLineWidth / 2 + animationStyle.backgroundOffsetX;
-          break;
-        default:
-          bgX = x - bgWidth / 2 + animationStyle.backgroundOffsetX;
-      }
-      const bgY = y - bgHeight / 2 + animationStyle.backgroundOffsetY;
-
-      // Draw background
-      if (animationStyle.backgroundOpacity > 0) {
-        ctx.fillStyle = `${animationStyle.backgroundColor}${Math.round(
-          opacity * animationStyle.backgroundOpacity * 255
-        )
-          .toString(16)
-          .padStart(2, '0')}`;
-
-        if (animationStyle.backgroundBorderRadius > 0) {
-          const radius = Math.min(animationStyle.backgroundBorderRadius, bgHeight / 2, bgWidth / 2);
+          const radius = Math.min(style.backgroundBorderRadius, bgHeight / 2, bgWidth / 2);
           ctx.beginPath();
-          ctx.moveTo(bgX + radius, bgY);
-          ctx.lineTo(bgX + bgWidth - radius, bgY);
-          ctx.quadraticCurveTo(bgX + bgWidth, bgY, bgX + bgWidth, bgY + radius);
-          ctx.lineTo(bgX + bgWidth, bgY + bgHeight - radius);
-          ctx.quadraticCurveTo(bgX + bgWidth, bgY + bgHeight, bgX + bgWidth - radius, bgY + bgHeight);
-          ctx.lineTo(bgX + radius, bgY + bgHeight);
-          ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius);
-          ctx.lineTo(bgX, bgY + radius);
-          ctx.quadraticCurveTo(bgX + radius, bgY, bgX + radius, bgY);
-          ctx.closePath();
+          ctx.beginPath();
+          ctx.roundRect(bgX, bgY, bgWidth, bgHeight, radius);
           ctx.fill();
 
-          if (animationStyle.backgroundBorderWidth > 0) {
-            ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255)
-              .toString(16)
-              .padStart(2, '0')}`;
-            ctx.lineWidth = animationStyle.backgroundBorderWidth;
+          if (style.backgroundBorderWidth > 0) {
+            ctx.strokeStyle = `${style.backgroundBorderColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+            ctx.lineWidth = style.backgroundBorderWidth;
             ctx.stroke();
           }
-        } else {
-          ctx.fillRect(bgX, bgY, bgWidth, bgHeight);
-          if (animationStyle.backgroundBorderWidth > 0) {
-            ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255)
-              .toString(16)
-              .padStart(2, '0')}`;
-            ctx.lineWidth = animationStyle.backgroundBorderWidth;
-            ctx.strokeRect(bgX, bgY, bgWidth, bgHeight);
-          }
         }
-      }
 
-      // Draw text
-      ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255)
-        .toString(16)
-        .padStart(2, '0')}`;
-      ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255)
-        .toString(16)
-        .padStart(2, '0')}`;
-      ctx.lineWidth = animationStyle.strokeWidth;
+        ctx.strokeStyle = `${style.strokeColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+        ctx.fillStyle = `${style.textColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+        ctx.lineWidth = style.strokeWidth;
 
-      let currentY = y - totalTextHeight / 2 + lineHeight / 2;
-      allLines.forEach((line) => {
-        ctx.strokeText(line.text, x, currentY);
-        ctx.fillText(line.text, x, currentY);
-        currentY += lineHeight;
+        let currentY = yPos - totalTextHeight / 2 + lineHeight / 2;
+        allLines.forEach((line) => {
+          if (style.strokeWidth > 0) ctx.strokeText(line.text, xPos, currentY);
+          ctx.fillText(line.text, xPos, currentY);
+          currentY += lineHeight;
+        });
+
+        ctx.restore();
+      };
+
+      tracks.forEach(track => {
+        if (!track.isVisible) return;
+        renderTrackSubtitles(ctx, track.subtitles, track.style, currentTime, canvas.width, canvas.height);
       });
-
-      ctx.restore();
     } finally {
       isRendering.current = false;
     }
@@ -391,16 +366,24 @@ export function VideoViewport({
 
   // Main loop
   useEffect(() => {
+    let active = true;
     const loop = () => {
+      if (!active) return;
       renderFrame();
       renderRequestId.current = requestAnimationFrame(loop);
     };
 
     renderRequestId.current = requestAnimationFrame(loop);
     return () => {
+      active = false;
       if (renderRequestId.current) cancelAnimationFrame(renderRequestId.current);
     };
   }, [renderFrame, videoFile]);
+
+  // Force render on time change (for scrubbing)
+  useEffect(() => {
+    renderFrame();
+  }, [currentTime, renderFrame]);
 
   // Audio Sync
   const lastAudioOp = useRef<Promise<void> | null>(null);
