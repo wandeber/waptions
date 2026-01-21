@@ -59,6 +59,12 @@
 - **Hook Dependencies**: Ensure complete dependency arrays in `useCallback` to avoid stale state.
 - **C++ Core Guidelines**: Apply Stroustrup's style for C++ flavored JS/TS code.
 
+### Subtitle Visibility & Precision
+- **Epsilon Strategy**: Comparison logic uses an epsilon of `0.0005` (0.5ms) to handle floating point precision issues.
+- **Inclusive Start / Exclusive End**: Subtitles are visible if `currentTime >= start - epsilon` and `currentTime < end - epsilon`. This ensures the start of a subtitle is visible when landed on exactly, while the end is exclusive.
+- **Keypoint Navigation**: `ArrowUp/Down` navigation in `Timeline.tsx` uses the same epsilon to identify boundaries, ensuring the playhead lands exactly on a frame where the subtitle state is predictable.
+- **Rounding**: Subtitle timings are internally rounded to 3 decimal places (1ms) during editing (`SubtitleTrack.tsx`) to maintain a clean timeline state.
+
 ## Environment & Testing
 - Node.js v18+, pnpm.
 - Playwright for E2E testing (`e2e/`).

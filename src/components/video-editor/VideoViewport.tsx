@@ -212,10 +212,13 @@ export function VideoViewport({
         height: number
       ) => {
         // Find active subtitles for this track
+        const EPSILON = 0.0005; // 0.5ms epsilon for robust boundary comparison
         const activeSubtitles = trackSubtitles.filter((subtitle) => {
-          const isActive = currentTime >= subtitle.startTime && currentTime < subtitle.endTime;
-          const isExiting = currentTime >= subtitle.endTime - style.fadeOutDuration
-            && currentTime < subtitle.endTime;
+          // Standard [start, end) check with epsilon:
+          // Subtitle is active at EXACT start, but inactive at EXACT end.
+          const isActive = currentTime >= subtitle.startTime - EPSILON && currentTime < subtitle.endTime - EPSILON;
+          const isExiting = currentTime >= subtitle.endTime - style.fadeOutDuration - EPSILON
+            && currentTime < subtitle.endTime - EPSILON;
           return isActive || isExiting;
         });
 

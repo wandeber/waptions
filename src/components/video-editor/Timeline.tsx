@@ -205,21 +205,23 @@ export function Timeline({
         const keyPoints = new Set<number>([0, duration]);
         tracks.forEach(track => {
           track.subtitles.forEach(s => {
+            // Guardamos con precisión de ms
             keyPoints.add(Math.round(s.startTime * 1000) / 1000);
             keyPoints.add(Math.round(s.endTime * 1000) / 1000);
           });
         });
 
         const sortedPoints = Array.from(keyPoints).sort((a, b) => a - b);
-        const current = Math.round(currentTimeRef.current * 1000) / 1000;
+        const current = currentTimeRef.current;
+        const EPSILON = 0.0005;
 
         if (e.key === 'ArrowDown') {
-          // Siguiente punto clave
-          const next = sortedPoints.find(p => p > current + 0.001);
+          // Siguiente punto clave: buscamos el primero que sea mayor que el actual + epsilon
+          const next = sortedPoints.find(p => p > current + EPSILON);
           if (next !== undefined) onTimeUpdate?.(next);
         } else {
-          // Anterior punto clave
-          const prevIndex = sortedPoints.findLastIndex(p => p < current - 0.001);
+          // Anterior punto clave: buscamos el último que sea menor que el actual - epsilon
+          const prevIndex = sortedPoints.findLastIndex(p => p < current - EPSILON);
           if (prevIndex !== -1) onTimeUpdate?.(sortedPoints[prevIndex]);
         }
 

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added frame highlight (shading) to the playhead for high-zoom precision.
 - Conditional horizontal track separators: only show when `tracks.length > 1`.
 - Aligned timeline background grid to the bottom of tracks to avoid ruler border overlap.
+- **Subtitle Visibility Precision**: Standardized boundary logic using a 0.5ms epsilon to ensure start-inclusive and end-exclusive behavior.
+- **Improved Keypoint Navigation**: ArrowUp/Down landing points now perfectly align with subtitle visibility boundaries.
+- **Rounding Consistency**: Subtitle timings are now consistently rounded to 1ms during editing.
 
 ### Fixed
 - Fixed high-speed audio extraction and transcoding to AAC/MP4 on the client.
