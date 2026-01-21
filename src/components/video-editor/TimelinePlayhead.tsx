@@ -34,13 +34,10 @@ export function TimelinePlayhead({
 
     const handleMouseDown = (e: React.MouseEvent) => {
         e.stopPropagation();
+        const parent = (e.currentTarget as HTMLElement).parentElement;
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
-            // Necesitamos saber la posición relativa al contenedor de tracks
-            // Para simplificar, podemos usar el desplazamiento del ratón o buscar el padre
-            const parent = (e.currentTarget as HTMLElement).parentElement;
             if (!parent) return;
-
             const rect = parent.getBoundingClientRect();
             const x = moveEvent.clientX - rect.left;
             const rawTime = Math.max(0, Math.min(duration, x / pps));
