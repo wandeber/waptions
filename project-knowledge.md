@@ -72,7 +72,11 @@
     - **Event Pass-through**: The playhead line uses `pointer-events: none` to allow users to interact with subtitles directly underneath it.
     - **Scrubbing**: Clicking the ruler or the track background (through the line) updates the time normally.
     - **Snapping**: Both playhead and ruler support magnetic snapping (15px threshold) to subtitle boundaries and video limits. This snapping is "silent" (no visual blue line) for navigation.
-- **Subtitle Snapping**:
+- **Waveform Rendering**:
+    - Extracted as an `AudioBuffer` on video load via `useWaveform` hook.
+    - Rendered on a `<canvas>` in `TimelineWaveform` using a unipolar upward style (vertical bars from bottom baseline) for high clarity.
+    - **Virtualization**: To handle extreme zoom levels (e.g. 500%+), the rendering is virtualized. It only draws the visible segment to a viewport-sized canvas, avoiding browser limits on absolute canvas width.
+    - Status: Automatically scales with `pps` and stays synchronized via a scroll listener on the tracks container.
     - **Optimization**: Snap points are collected once at the start of a drag/resize operation (`handleMouseDown`) to ensure performance.
     - **Snap Points**: Include 0, duration, current playhead position, and start/end boundaries of all other subtitles across all tracks.
     - **Threshold**: 15px pixel-based threshold for consistent magnetic feel across zoom levels.

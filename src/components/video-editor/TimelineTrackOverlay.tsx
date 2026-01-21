@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
@@ -84,11 +85,15 @@ interface SubtitleBlockProps {
 
 function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, onTimeUpdate, duration }: SubtitleBlockProps) {
     const { tracks, snapEnabled, setActiveSnapTime, pixelsPerSecond, zoomLevel } = useTimelineStore();
+    const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
 
     const handleMouseDown = (e: React.MouseEvent, type: 'move' | 'resize-start' | 'resize-end') => {
         e.stopPropagation();
         if (!isSelected) onClick();
+
+        if (type === 'resize-start') setActiveHandle('start');
+        if (type === 'resize-end') setActiveHandle('end');
 
         // Push history before starting the drag operation
         onPushHistory();
@@ -218,6 +223,7 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
             setActiveSnapTime(null);
+            setActiveHandle(null);
         };
 
         window.addEventListener('mousemove', handleMouseMove);
@@ -252,16 +258,20 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             {isSelected && (
                 <>
                     <div
-                        className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-yellow-400/50 flex items-center justify-center group/handle"
+                        className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize flex items-center justify-center group/handle transition-colors ${activeHandle === 'start' ? 'bg-yellow-400/50' : 'hover:bg-yellow-400/50'
+                            }`}
                         onMouseDown={(e) => handleMouseDown(e, 'resize-start')}
                     >
-                        <div className="w-[1px] h-3 bg-yellow-500/50 group-hover/handle:bg-yellow-500" />
+                        <div className={`w-[1px] h-3 transition-colors ${activeHandle === 'start' ? 'bg-yellow-500' : 'bg-yellow-500/50 group-hover/handle:bg-yellow-500'
+                            }`} />
                     </div>
                     <div
-                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-yellow-400/50 flex items-center justify-center group/handle"
+                        className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize flex items-center justify-center group/handle transition-colors ${activeHandle === 'end' ? 'bg-yellow-400/50' : 'hover:bg-yellow-400/50'
+                            }`}
                         onMouseDown={(e) => handleMouseDown(e, 'resize-end')}
                     >
-                        <div className="w-[1px] h-3 bg-yellow-500/50 group-hover/handle:bg-yellow-500" />
+                        <div className={`w-[1px] h-3 transition-colors ${activeHandle === 'end' ? 'bg-yellow-500' : 'bg-yellow-500/50 group-hover/handle:bg-yellow-500'
+                            }`} />
                     </div>
                 </>
             )}

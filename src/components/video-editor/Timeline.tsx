@@ -10,6 +10,9 @@ import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
 import { TimelinePlayhead } from './TimelinePlayhead';
 import { TimelineTrackOverlay } from './TimelineTrackOverlay';
+import { useWaveform } from '@/hooks/use-waveform';
+import { TimelineWaveform } from './TimelineWaveform';
+import { useVideoStore } from '@/stores/video-store';
 
 interface TimelineProps {
   duration: number;
@@ -45,6 +48,8 @@ export function Timeline({
   onMetaInfoToggle,
 }: TimelineProps) {
   const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled, activeSnapTime } = useTimelineStore();
+  const { videoFile } = useVideoStore();
+  const { audioBuffer } = useWaveform(videoFile);
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -308,6 +313,11 @@ export function Timeline({
                 }}
               />
             ))}
+
+            {/* Audio Track Label */}
+            <div className="h-12 border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-blue-400 uppercase tracking-wider mt-auto">
+              Audio
+            </div>
           </div>
         </div>
 
@@ -393,6 +403,20 @@ export function Timeline({
                   selectedSubtitleId={selectedSubtitleId}
                 />
               ))}
+
+              {/* Audio Waveform Area */}
+              <div
+                className="sticky bottom-0 h-12 bg-gray-900/80 border-t border-blue-500/20 z-0 flex items-center overflow-hidden relative"
+                style={{ width: timelineWidth }}
+              >
+                <TimelineWaveform
+                  audioBuffer={audioBuffer}
+                  duration={duration}
+                  pps={pixelsPerSecond * zoomLevel}
+                  height={48}
+                  containerRef={tracksContentRef}
+                />
+              </div>
             </div>
           </div>
         </div>
