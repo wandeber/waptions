@@ -29,6 +29,7 @@ export default function Home() {
 
   const {
     tracks,
+    activeTrackId,
     addTrack,
     updateTrackStyle,
     removeSubtitleFromTrack,
@@ -44,8 +45,8 @@ export default function Home() {
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
-  // Default track and style from the first track
-  const activeTrack = tracks[0];
+  // Active track and its data
+  const activeTrack = tracks.find(t => t.id === activeTrackId) || tracks[0];
   const subtitles = activeTrack?.subtitles || [];
   const animationStyle = activeTrack?.style;
 

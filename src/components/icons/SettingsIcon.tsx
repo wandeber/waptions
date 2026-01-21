@@ -1,6 +1,6 @@
 import React from 'react';
 
-export function SettingsIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
+export function SettingsIcon({ className = 'w-5 h-5', ...props }: React.SVGProps<SVGSVGElement>) {
     return (
         <svg
             viewBox="0 0 24 24"

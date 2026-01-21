@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed Audio `AbortError` and race conditions in sync logic.
 - Improved DraggableNumberInput focus management and keyboard controls.
 - Improved subtitle grouping logic and dynamic textarea height adjustments.
+- Standardized timeline layer buttons and icons using design system standards for consistency across the UI.
 
 ### Technical
 - Added dependencies: `mediabunny`, `zustand`.

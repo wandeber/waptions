@@ -7,6 +7,7 @@ interface TimelineStore {
     scrollLeft: number;
     tracks: SubtitleTrack[];
     pixelsPerSecond: number;
+    activeTrackId: string | null;
 
     // Actions
     setZoom: (zoom: number) => void;
@@ -21,6 +22,7 @@ interface TimelineStore {
     removeSubtitleFromTrack: (trackId: string, subtitleId: string) => void;
 
     setTracks: (tracks: SubtitleTrack[]) => void;
+    setActiveTrackId: (id: string | null) => void;
 }
 
 export const useTimelineStore = create<TimelineStore>((set) => ({
@@ -28,6 +30,7 @@ export const useTimelineStore = create<TimelineStore>((set) => ({
     scrollLeft: 0,
     pixelsPerSecond: 100, // Base pixels per second at zoom 1
     tracks: [],
+    activeTrackId: null,
 
     setZoom: (zoom) => set({ zoomLevel: Math.max(0.1, Math.min(10, zoom)) }),
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
@@ -64,22 +67,38 @@ export const useTimelineStore = create<TimelineStore>((set) => ({
             backgroundOffsetY: 0
         };
 
-        set((state) => ({
-            tracks: [...state.tracks, {
+        set((state) => {
+            const newTracks = [...state.tracks, {
                 id,
                 name: name || `Capa ${state.tracks.length + 1}`,
                 style: defaultStyle,
                 subtitles: [],
                 isVisible: true,
                 isLocked: false
-            }]
-        }));
+            }];
+            return {
+                tracks: newTracks,
+                // Si es la primera o única capa, la hacemos activa
+                activeTrackId: state.activeTrackId || id
+            };
+        });
         return id;
     },
 
-    removeTrack: (id) => set((state) => ({
-        tracks: state.tracks.filter(t => t.id !== id)
-    })),
+    removeTrack: (id) => set((state) => {
+        const nextTracks = state.tracks.filter(t => t.id !== id);
+        let nextActiveId = state.activeTrackId;
+
+        // Si borramos la capa activa, intentamos activar otra
+        if (state.activeTrackId === id) {
+            nextActiveId = nextTracks.length > 0 ? nextTracks[0].id : null;
+        }
+
+        return {
+            tracks: nextTracks,
+            activeTrackId: nextActiveId
+        };
+    }),
 
     updateTrackStyle: (id, styleUpdates) => set((state) => ({
         tracks: state.tracks.map(t =>
@@ -116,5 +135,9 @@ export const useTimelineStore = create<TimelineStore>((set) => ({
         )
     })),
 
-    setTracks: (tracks) => set({ tracks })
+    setTracks: (tracks) => set((state) => ({
+        tracks,
+        activeTrackId: state.activeTrackId || (tracks.length > 0 ? tracks[0].id : null)
+    })),
+    setActiveTrackId: (id) => set({ activeTrackId: id })
 }));

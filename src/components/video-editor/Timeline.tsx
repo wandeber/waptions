@@ -56,7 +56,7 @@ export function Timeline({
   showSubtitles = true,
   onSubtitlesVisibilityToggle
 }: TimelineProps) {
-  const { zoomLevel, setZoom, tracks, setTracks, addTrack, pixelsPerSecond } = useTimelineStore();
+  const { zoomLevel, setZoom, tracks, setTracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId } = useTimelineStore();
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -300,11 +300,12 @@ export function Timeline({
               <TimelineTrackHeader
                 key={track.id}
                 track={track}
+                isActive={track.id === activeTrackId}
+                onClick={() => setActiveTrackId(track.id)}
                 onToggleVisibility={(id) => {
                   const { tracks, setTracks } = useTimelineStore.getState();
                   setTracks(tracks.map(t => t.id === id ? { ...t, isVisible: !t.isVisible } : t));
                 }}
-                onOpenSettings={() => { }}
               />
             ))}
           </div>
