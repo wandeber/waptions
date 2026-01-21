@@ -407,57 +407,62 @@ export function VideoViewport({
     renderFrame();
   }, [currentTime, renderFrame]);
 
-  // Audio Sync
-  const lastAudioOp = useRef<Promise<void> | null>(null);
-
+  // Audio Sync & Playback State
   useEffect(() => {
     if (!audioRef.current || !videoFile) return;
     const audio = audioRef.current;
 
-    // Sync volume and muted
-    audio.volume = volume;
-    audio.muted = muted;
+    const handleSeek = (e: CustomEvent) => {
+      audio.currentTime = e.detail.time;
+    };
 
-    const syncAudio = async () => {
-      if (isPlaying) {
-        // Sync time if drifting
-        if (Math.abs(audio.currentTime - currentTime) > 0.15) {
-          audio.currentTime = currentTime;
-        }
-
-        // Only call play if paused
-        if (audio.paused) {
-          try {
-            lastAudioOp.current = audio.play();
-            await lastAudioOp.current;
-          } catch (error) {
-            if ((error as Error).name !== 'AbortError') {
-              console.error('Audio play error:', error);
-            }
-          }
-        }
-      } else {
-        // Only call pause if playing
-        if (!audio.paused) {
-          if (lastAudioOp.current) {
-            try {
-              await lastAudioOp.current;
-            } catch {
-              // Ignore aborts
-            }
-          }
-          audio.pause();
-        }
-
-        // Final sync when paused
-        if (Math.abs(audio.currentTime - currentTime) > 0.05) {
-          audio.currentTime = currentTime;
-        }
+    const handleUpdate = (e: CustomEvent) => {
+      const targetTime = e.detail.time;
+      // Looser drift threshold for smoother audio (0.5s)
+      if (Math.abs(audio.currentTime - targetTime) > 0.5) {
+        audio.currentTime = targetTime;
       }
     };
 
-    syncAudio();
-  }, [isPlaying, currentTime, videoFile, volume, muted]);
+    const handleSpeed = (e: CustomEvent) => {
+      audio.playbackRate = e.detail.speed;
+    };
+
+    window.addEventListener('playback-seek', handleSeek as EventListener);
+    window.addEventListener('playback-update', handleUpdate as EventListener);
+    window.addEventListener('playback-speed', handleSpeed as EventListener);
+
+    return () => {
+      window.removeEventListener('playback-seek', handleSeek as EventListener);
+      window.removeEventListener('playback-update', handleUpdate as EventListener);
+      window.removeEventListener('playback-speed', handleSpeed as EventListener);
+    };
+  }, [videoFile]);
+
+  // Handle Play/Pause and reactive volume/muted
+  useEffect(() => {
+    if (!audioRef.current || !videoFile) return;
+    const audio = audioRef.current;
+
+    audio.volume = volume;
+    audio.muted = muted;
+
+    if (isPlaying) {
+      if (audio.paused) {
+        audio.play().catch(err => {
+          if (err.name !== 'AbortError') console.error('Audio play error:', err);
+        });
+      }
+    } else {
+      if (!audio.paused) {
+        audio.pause();
+      }
+      // Precise sync on pause
+      if (Math.abs(audio.currentTime - currentTime) > 0.05) {
+        audio.currentTime = currentTime;
+      }
+    }
+  }, [isPlaying, volume, muted, videoFile, currentTime]);
 
   return (
     <div className="flex-1 flex flex-col bg-gray-800 overflow-hidden select-none" onDrop={handleDrop} onDragOver={handleDragOver}>

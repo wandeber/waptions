@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced Video Info Panel: Now displays video resolution and bitrate, alongside FPS and current time.
 - Fixed positioning and visibility of "Devin" and "Thirds" guide overlays by correcting z-index stacking and layout context.
 - Fixed timeline track misalignment by standardizing track height to 64px, perfectly matching the background grid and preventing cumulative vertical drift.
+- Optimized playback and audio synchronization by implementing event-based syncing and a more resilient drift threshold (0.5s), resolving audio stuttering issues.
+- Improved video decoding performance by increasing the frame cache pool size.
 
 ### Technical
 - Added dependencies: `mediabunny`, `zustand`.
