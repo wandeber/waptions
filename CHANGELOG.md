@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Architecture Cleanup**: Removed redundant `SubtitleTrack.tsx` and standardized the `Subtitle` interface in global types to improve maintainability.
 - **Icon Standardization**: Replaced custom timeline icons with `lucide-react` counterparts for better visual clarity and a more professional look.
 - **Snapping Refinement**: Adjusted snapping threshold to 15px and optimized visual feedback (transparent lines, hidden for initial positions).
+- **Playhead & Ruler Snapping**: Added "silent" magnetic snapping (no vertical line) to the playhead and ruler for precise navigation.
 
 ### Fixed
 - Fixed high-speed audio extraction and transcoding to AAC/MP4 on the client.

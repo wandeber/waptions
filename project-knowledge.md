@@ -68,6 +68,10 @@
 - **Rounding**: Subtitle timings are internally rounded to 3 decimal places (1ms) during editing (`TimelineTrackOverlay.tsx`) to maintain a clean timeline state.
 - **Architecture Cleanup**: Deleted redundant `SubtitleTrack.tsx`. Centralized `Subtitle` interface in `@/types/timeline.ts`.
 - **UI Standardization**: Replaced custom icons in the timeline components with standard `lucide-react` icons for better clarity and consistency.
+- **Playhead Interaction**:
+    - **Event Pass-through**: The playhead line uses `pointer-events: none` to allow users to interact with subtitles directly underneath it.
+    - **Scrubbing**: Clicking the ruler or the track background (through the line) updates the time normally.
+    - **Snapping**: Both playhead and ruler support magnetic snapping (15px threshold) to subtitle boundaries and video limits. This snapping is "silent" (no visual blue line) for navigation.
 - **Subtitle Snapping**:
     - **Optimization**: Snap points are collected once at the start of a drag/resize operation (`handleMouseDown`) to ensure performance.
     - **Snap Points**: Include 0, duration, current playhead position, and start/end boundaries of all other subtitles across all tracks.

@@ -25,11 +25,45 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
 
     const handleMouseDown = (e: React.MouseEvent) => {
         const rect = e.currentTarget.getBoundingClientRect();
+        const { snapEnabled, tracks } = useTimelineStore.getState();
+
+        // One-shot snap points
+        const snapPoints: number[] = [];
+        if (snapEnabled) {
+            const points = new Set<number>([0, duration]);
+            tracks.forEach(t => {
+                t.subtitles.forEach(s => {
+                    points.add(s.startTime);
+                    points.add(s.endTime);
+                });
+            });
+            snapPoints.push(...Array.from(points));
+        }
+
+        const applySnap = (rawTime: number) => {
+            if (!snapEnabled || snapPoints.length === 0) return rawTime;
+
+            const thresholdSeconds = 15 / pps;
+            let minDiff = thresholdSeconds;
+            let closestPoint = rawTime;
+            let foundSnap = false;
+
+            snapPoints.forEach(point => {
+                const diff = Math.abs(rawTime - point);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestPoint = point;
+                    foundSnap = true;
+                }
+            });
+
+            return foundSnap ? closestPoint : rawTime;
+        };
 
         const updateTime = (clientX: number) => {
             const x = clientX - rect.left;
             const rawTime = Math.max(0, Math.min(duration, x / pps));
-            onTimeUpdate?.(snapTime(rawTime));
+            onTimeUpdate?.(snapTime(applySnap(rawTime)));
         };
 
         updateTime(e.clientX);

@@ -34,14 +34,49 @@ export function TimelinePlayhead({
 
     const handleMouseDown = (e: React.MouseEvent) => {
         e.stopPropagation();
-        const parent = (e.currentTarget as HTMLElement).parentElement;
+        const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement; // Up to synchronization container
+        const { snapEnabled, tracks } = useTimelineStore.getState();
+
+        // One-shot snap points
+        const snapPoints: number[] = [];
+        if (snapEnabled) {
+            const points = new Set<number>([0, duration]);
+            tracks.forEach(t => {
+                t.subtitles.forEach(s => {
+                    points.add(s.startTime);
+                    points.add(s.endTime);
+                });
+            });
+            snapPoints.push(...Array.from(points));
+        }
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
             if (!parent) return;
             const rect = parent.getBoundingClientRect();
             const x = moveEvent.clientX - rect.left;
-            const rawTime = Math.max(0, Math.min(duration, x / pps));
-            onTimeUpdate?.(snapTime(rawTime));
+            let targetTime = Math.max(0, Math.min(duration, x / pps));
+
+            if (snapEnabled && snapPoints.length > 0) {
+                const thresholdSeconds = 15 / pps;
+                let minDiff = thresholdSeconds;
+                let closestPoint = targetTime;
+                let foundSnap = false;
+
+                snapPoints.forEach(point => {
+                    const diff = Math.abs(targetTime - point);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closestPoint = point;
+                        foundSnap = true;
+                    }
+                });
+
+                if (foundSnap) {
+                    targetTime = closestPoint;
+                }
+            }
+
+            onTimeUpdate?.(snapTime(targetTime));
         };
 
         const handleMouseUp = () => {
@@ -58,13 +93,12 @@ export function TimelinePlayhead({
 
     return (
         <div
-            className="absolute top-0 bottom-0 z-50 flex flex-col items-center cursor-ew-resize group pointer-events-auto"
+            className="absolute top-0 bottom-0 z-50 flex flex-col items-center group pointer-events-none"
             style={{
                 left: `${left}px`,
                 transform: 'translateX(-50%)',
                 marginTop: '0px'
             }}
-            onMouseDown={handleMouseDown}
         >
             {/* current frame highlight area */}
             {showFrameHighlight && (
@@ -78,7 +112,10 @@ export function TimelinePlayhead({
             )}
 
             {/* Cabezal (triángulo/diamante) */}
-            <div className="w-5 h-5 bg-red-600 clip-playhead shadow-[0_0_10px_rgba(220,38,38,0.5)] group-hover:bg-red-500 transition-colors z-[60]" />
+            <div
+                className="w-5 h-5 bg-red-600 clip-playhead shadow-[0_0_10px_rgba(220,38,38,0.5)] group-hover:bg-red-500 transition-colors z-[60] cursor-ew-resize pointer-events-auto"
+                onMouseDown={handleMouseDown}
+            />
 
             {/* Línea vertical */}
             <div className="flex-1 w-[1px] bg-red-600 shadow-[0_0_5px_rgba(220,38,38,0.3)] z-[55]" />
