@@ -182,7 +182,10 @@ export function Timeline({
         return;
       }
 
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (e.key === ' ') {
+        e.preventDefault();
+        onPlayPause?.();
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
         const multiplier = e.shiftKey ? 5 : 1;
         const delta = e.key === 'ArrowRight' ? frameDuration * multiplier : -frameDuration * multiplier;
@@ -196,12 +199,36 @@ export function Timeline({
 
         // Prevenir scroll lateral del navegador con las flechas si fuera necesario
         e.preventDefault();
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        // Navegación por Puntos Clave
+        const keyPoints = new Set<number>([0, duration]);
+        tracks.forEach(track => {
+          track.subtitles.forEach(s => {
+            keyPoints.add(Math.round(s.startTime * 1000) / 1000);
+            keyPoints.add(Math.round(s.endTime * 1000) / 1000);
+          });
+        });
+
+        const sortedPoints = Array.from(keyPoints).sort((a, b) => a - b);
+        const current = Math.round(currentTimeRef.current * 1000) / 1000;
+
+        if (e.key === 'ArrowDown') {
+          // Siguiente punto clave
+          const next = sortedPoints.find(p => p > current + 0.001);
+          if (next !== undefined) onTimeUpdate?.(next);
+        } else {
+          // Anterior punto clave
+          const prevIndex = sortedPoints.findLastIndex(p => p < current - 0.001);
+          if (prevIndex !== -1) onTimeUpdate?.(sortedPoints[prevIndex]);
+        }
+
+        e.preventDefault();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fps, duration, onTimeUpdate]);
+  }, [fps, duration, onTimeUpdate, tracks, onPlayPause]);
 
   return (
     <div
