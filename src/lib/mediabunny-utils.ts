@@ -89,30 +89,26 @@ export async function generateThumbnail(
         throw new Error('Could not get frame at specified time');
     }
 
+    const originalWidth = videoTrack.displayWidth;
+    const originalHeight = videoTrack.displayHeight;
+    const aspectRatio = originalWidth / originalHeight;
+
     const canvas = document.createElement('canvas');
-    canvas.width = 320;
-    canvas.height = 240;
+    const targetWidth = 400; // Slightly larger for better detail
+    const targetHeight = targetWidth / aspectRatio;
+
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
     const ctx = canvas.getContext('2d');
 
     if (!ctx) {
         throw new Error('Could not get canvas context');
     }
 
-    frame.draw(ctx, 0, 0, 320, 240);
+    frame.draw(ctx, 0, 0, targetWidth, targetHeight);
+    frame.close();
 
-    return new Promise((resolve, reject) => {
-        canvas.toBlob(
-            (blob) => {
-                if (blob) {
-                    resolve(URL.createObjectURL(blob));
-                } else {
-                    reject(new Error('Failed to create thumbnail blob'));
-                }
-            },
-            'image/jpeg',
-            0.8
-        );
-    });
+    return canvas.toDataURL('image/jpeg', 0.7);
 }
 
 /**

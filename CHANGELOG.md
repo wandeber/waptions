@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Subtitle Visibility Precision**: Standardized boundary logic using a 0.5ms epsilon to ensure start-inclusive and end-exclusive behavior.
 - **Improved Keypoint Navigation**: ArrowUp/Down landing points now perfectly align with subtitle visibility boundaries.
 - **Rounding Consistency**: Subtitle timings are now consistently rounded to 1ms during editing.
+- **Project Previews**: Projects now show a proportional thumbnail of the first frame and the video duration in the dashboard.
 - **Inline Name Editing**: Projects and layers can now be renamed directly by clicking on their titles, with support for undo/redo in layer name changes.
 - **Virtualized Audio Waveform**: Added a high-performance audio waveform at the bottom of the timeline with support for extreme zoom levels (virtualized rendering).
 - **Subtitle Snapping**: Added magnetic snapping to subtitle boundaries and playhead during displacement and resizing.

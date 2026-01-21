@@ -49,6 +49,11 @@
 
 ### Note on Persistence (IndexedDB)
 - **Video Persistence:** Video files are stored in `waptions-timelines-{projectId}` -> `video-file`. `ProjectStore` loads the video into `VideoStore` on project open. `VideoViewport` automatically detects changes in `VideoStore.videoFile` and synchronizes metadata (duration, fps) to `PlaybackStore`.
+- **Project Metadata**:
+    - Automatic capture of the first frame (thumbnail) and video duration when a video is loaded.
+    - Captures the frame respecting the original aspect ratio to avoid deformation.
+    - Stored as base64 jpeg and seconds in the project metadata (IndexedDB).
+    - Displayed in the `ProjectDashboard` for quick identification.
 - **Project Storage**: `ProjectStore` uses `storage-service` to save project metadata (`waptions-projects`) and timelines (`waptions-timelines-{projectId}`).
 - **Timeline History**: `TimelineStore` implements manual undo/redo stack (`history` + `redoStack`) and auto-saves to IndexedDB on changes.
 - **Text Editing Optimization**: Subtitle text changes are debounced (300ms) in `SubtitleEditor`. The first keystroke captures a history snapshot (state before typing), subsequent keystrokes update state with `skipHistory: true`. This groups a continuous typing session into a single undo step.

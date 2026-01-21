@@ -16,6 +16,7 @@ export interface SerializedProject {
     id: string;
     name: string;
     thumbnail?: string;
+    duration?: number;
     createdAt: string;
     updatedAt: string;
 }

@@ -40,6 +40,13 @@ export function ProjectDashboard() {
         }
     };
 
+    const formatDuration = (seconds?: number) => {
+        if (seconds === undefined) return '--:--';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+
     return (
         <div className="min-h-screen bg-gray-900 text-white p-8">
             <div className="max-w-6xl mx-auto space-y-8">
@@ -82,48 +89,53 @@ export function ProjectDashboard() {
                             <div
                                 key={project.id}
                                 onClick={() => loadProject(project.id)}
-                                className="group bg-gray-800 border border-gray-700 rounded-xl overflow-hidden cursor-pointer hover:border-blue-500/50 hover:ring-2 hover:ring-blue-500/20 transition-all flex flex-col relative"
+                                className="group bg-gray-900/40 border border-gray-800 rounded-2xl overflow-hidden cursor-pointer hover:border-blue-500/50 hover:bg-gray-800/40 transition-all duration-300 flex flex-col relative backdrop-blur-sm shadow-xl hover:shadow-blue-500/10"
                             >
-                                {/* Thumbnail Placeholder */}
-                                <div className="aspect-video bg-gray-900 flex items-center justify-center text-gray-600 relative">
+                                {/* Thumbnail Container */}
+                                <div className="aspect-video bg-gray-950 flex items-center justify-center text-gray-700 relative overflow-hidden">
                                     {project.thumbnail ? (
-                                        <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover" />
+                                        <img
+                                            src={project.thumbnail}
+                                            alt={project.name}
+                                            className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                        />
                                     ) : (
-                                        <div className="text-4xl font-bold opacity-20 select-none">
+                                        <div className="text-5xl font-black opacity-10 select-none tracking-tighter italic">
                                             {project.name.substring(0, 2).toUpperCase()}
                                         </div>
                                     )}
 
-                                    {/* Overlay Play Icon */}
-                                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                                        <span className="bg-white/10 p-3 rounded-full backdrop-blur-sm">
-                                            <span className="sr-only">Abrir</span>
-                                            <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-white">
+                                    {/* Glass Overlay on Hover */}
+                                    <div className="absolute inset-0 bg-gradient-to-t from-gray-950/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
+                                        <div className="bg-white/10 p-4 rounded-full backdrop-blur-md border border-white/20 transform translate-y-4 group-hover:translate-y-0 transition-transform duration-300">
+                                            <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 text-white drop-shadow-md">
                                                 <path d="M8 5v14l11-7z" />
                                             </svg>
-                                        </span>
+                                        </div>
                                     </div>
+
+                                    {/* Delete Button - Absolute Top Right */}
+                                    <button
+                                        onClick={(e) => handleDelete(e, project.id)}
+                                        className="absolute top-3 right-3 p-2 text-white/50 hover:text-red-400 bg-black/40 hover:bg-red-400/20 rounded-xl backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all duration-200 border border-white/5 hover:border-red-400/30 z-10"
+                                        title="Eliminar proyecto"
+                                    >
+                                        <TrashIcon className="w-4 h-4" />
+                                    </button>
                                 </div>
 
-                                {/* Info */}
-                                <div className="p-4 flex-1 flex flex-col justify-between">
-                                    <div>
-                                        <h3 className="font-medium text-lg text-gray-100 mb-1 truncate" title={project.name}>
-                                            {project.name}
-                                        </h3>
-                                        <p className="text-xs text-gray-500">
-                                            Editado: {project.updatedAt instanceof Date ? project.updatedAt.toLocaleDateString() : new Date(project.updatedAt).toLocaleDateString()}
+                                {/* Info section */}
+                                <div className="p-5 flex flex-col gap-1">
+                                    <h3 className="font-bold text-gray-100 truncate group-hover:text-blue-400 transition-colors" title={project.name}>
+                                        {project.name}
+                                    </h3>
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-[10px] uppercase underline-offset-4 decoration-blue-500/50 tracking-widest text-gray-500 font-bold">
+                                            {project.updatedAt instanceof Date ? project.updatedAt.toLocaleDateString() : new Date(project.updatedAt).toLocaleDateString()}
                                         </p>
-                                    </div>
-
-                                    <div className="mt-4 flex justify-end">
-                                        <button
-                                            onClick={(e) => handleDelete(e, project.id)}
-                                            className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
-                                            title="Eliminar proyecto"
-                                        >
-                                            <TrashIcon className="w-4 h-4" />
-                                        </button>
+                                        <span className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700 group-hover:border-blue-500/30 transition-colors tabular-nums">
+                                            {formatDuration(project.duration)}
+                                        </span>
                                     </div>
                                 </div>
                             </div>

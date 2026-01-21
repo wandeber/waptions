@@ -100,8 +100,18 @@ export function VideoViewport({
       loadVideo(file, info);
       onVideoLoad?.(info.duration, info.fps, file);
 
+      // Save project metadata
+      const projectStore = useProjectStore.getState();
+      projectStore.updateProjectDuration(info.duration);
+
+      // Generate thumbnail
+      const { generateThumbnail } = await import('@/lib/mediabunny-utils');
+      generateThumbnail(file, 0).then(thumb => {
+        projectStore.updateThumbnail(thumb);
+      }).catch(err => console.error('Failed to generate thumbnail:', err));
+
       // Save video to storage if project is active
-      const activeProject = useProjectStore.getState().activeProject;
+      const activeProject = projectStore.activeProject;
       if (activeProject) {
         storageService.saveVideo(activeProject.id, file).catch(console.error);
       }

@@ -22,6 +22,8 @@ interface ProjectStore {
     deleteProject: (id: string) => Promise<void>;
     closeProject: () => void;
     updateProjectName: (name: string) => Promise<void>;
+    updateThumbnail: (thumbnail: string) => Promise<void>;
+    updateProjectDuration: (duration: number) => Promise<void>;
     setIsDirty: (isDirty: boolean) => void;
     checkDirty: () => void;
     updateLastSavedState: () => void;
@@ -140,6 +142,20 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 try {
                     const info = await getVideoInfo(videoFile);
                     videoStore.loadVideo(videoFile, info);
+
+                    // Generate metadata if missing
+                    if (!project.thumbnail || !project.duration) {
+                        if (!project.duration) {
+                            get().updateProjectDuration(info.duration);
+                        }
+
+                        if (!project.thumbnail) {
+                            const { generateThumbnail } = await import('@/lib/mediabunny-utils');
+                            generateThumbnail(videoFile, 0).then(thumb => {
+                                get().updateThumbnail(thumb);
+                            }).catch(e => console.error("Failed to generate missing thumbnail", e));
+                        }
+                    }
                 } catch (e) {
                     console.error("Failed to load video metadata", e);
                     videoStore.clearVideo();
@@ -230,6 +246,44 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             await get().loadAllProjects();
         } catch (error) {
             console.error('Failed to update project name:', error);
+        }
+    },
+
+    updateThumbnail: async (thumbnail: string) => {
+        const { activeProject } = get();
+        if (!activeProject) return;
+
+        const updatedProject = {
+            ...activeProject,
+            thumbnail,
+            updatedAt: new Date(),
+        };
+
+        try {
+            await storageService.saveProject(updatedProject);
+            set({ activeProject: updatedProject });
+            await get().loadAllProjects();
+        } catch (error) {
+            console.error('Failed to update thumbnail:', error);
+        }
+    },
+
+    updateProjectDuration: async (duration: number) => {
+        const { activeProject } = get();
+        if (!activeProject) return;
+
+        const updatedProject = {
+            ...activeProject,
+            duration,
+            updatedAt: new Date(),
+        };
+
+        try {
+            await storageService.saveProject(updatedProject);
+            set({ activeProject: updatedProject });
+            await get().loadAllProjects();
+        } catch (error) {
+            console.error('Failed to update project duration:', error);
         }
     }
 }));

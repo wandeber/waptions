@@ -35,6 +35,7 @@ class StorageService {
             id: project.id,
             name: project.name,
             thumbnail: project.thumbnail,
+            duration: project.duration,
             createdAt: project.createdAt.toISOString(),
             updatedAt: project.updatedAt.toISOString(),
         };
@@ -51,6 +52,7 @@ class StorageService {
             id: serializedProject.id,
             name: serializedProject.name,
             thumbnail: serializedProject.thumbnail,
+            duration: serializedProject.duration,
             createdAt: new Date(serializedProject.createdAt),
             updatedAt: new Date(serializedProject.updatedAt),
         };
