@@ -6,13 +6,23 @@ import {
     WrappedCanvas,
 } from 'mediabunny';
 
+interface CachedFrame {
+    bitmap: ImageBitmap;
+    timestamp: number;
+    duration: number;
+}
+
 interface VideoSinkData {
     sink: CanvasSink;
     iterator: AsyncGenerator<WrappedCanvas, void, unknown> | null;
     currentFrame: WrappedCanvas | null;
+    frameCache: Map<number, CachedFrame>; // Timestamp -> Frame
+    cacheOrder: number[]; // For LRU
     lastTime: number;
     fileSignature: string;
 }
+
+const MAX_CACHE_SIZE = 60;
 
 const getFileSignature = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
 
@@ -38,24 +48,87 @@ export class VideoCache {
         const sinkData = this.sinks.get(mediaId);
         if (!sinkData) return null;
 
-        // Check if current frame is still valid for this time
+        // 1. Check if current frame is still valid
         if (sinkData.currentFrame && this.isFrameValid(sinkData.currentFrame, time)) {
             return sinkData.currentFrame;
         }
 
-        // If we have an iterator and we're moving forward (within 2 seconds), iterate
+        // 2. Check LRU cache for this specific time
+        const cached = Array.from(sinkData.frameCache.values()).find(f => this.isFrameValid({ timestamp: f.timestamp, duration: f.duration } as WrappedCanvas, time));
+        if (cached) {
+            // Move to end of LRU
+            this.updateLRU(sinkData, cached.timestamp);
+            const wrapped: WrappedCanvas = {
+                canvas: cached.bitmap as unknown as HTMLCanvasElement,
+                timestamp: cached.timestamp,
+                duration: cached.duration
+            };
+            sinkData.currentFrame = wrapped;
+            sinkData.lastTime = cached.timestamp;
+            return wrapped;
+        }
+
+        // 3. If we have an iterator and we're moving forward (within 2 seconds), iterate
+        let frame: WrappedCanvas | null = null;
         if (
             sinkData.iterator
             && sinkData.currentFrame
             && time >= sinkData.lastTime
             && time < sinkData.lastTime + 2.0
         ) {
-            const frame = await this.iterateToTime(sinkData, time);
-            if (frame) return frame;
+            frame = await this.iterateToTime(sinkData, time);
         }
 
-        // Otherwise, seek to the target time
-        return await this.seekToTime(sinkData, time);
+        // 4. Otherwise, seek to the target time
+        if (!frame) {
+            frame = await this.seekToTime(sinkData, time);
+        }
+
+        // 5. Add to cache if we got a frame
+        if (frame) {
+            this.addToCache(sinkData, frame);
+        }
+
+        return frame;
+    }
+
+    private updateLRU(sinkData: VideoSinkData, timestamp: number) {
+        const index = sinkData.cacheOrder.indexOf(timestamp);
+        if (index > -1) {
+            sinkData.cacheOrder.splice(index, 1);
+        }
+        sinkData.cacheOrder.push(timestamp);
+    }
+
+    private async addToCache(sinkData: VideoSinkData, frame: WrappedCanvas) {
+        if (sinkData.frameCache.has(frame.timestamp)) {
+            this.updateLRU(sinkData, frame.timestamp);
+            return;
+        }
+
+        // Evict if full
+        if (sinkData.frameCache.size >= MAX_CACHE_SIZE) {
+            const oldestTimestamp = sinkData.cacheOrder.shift();
+            if (oldestTimestamp !== undefined) {
+                const oldestCached = sinkData.frameCache.get(oldestTimestamp);
+                if (oldestCached) {
+                    oldestCached.bitmap.close(); // Correctly close ImageBitmap
+                }
+                sinkData.frameCache.delete(oldestTimestamp);
+            }
+        }
+
+        try {
+            const bitmap = await createImageBitmap(frame.canvas);
+            sinkData.frameCache.set(frame.timestamp, {
+                bitmap,
+                timestamp: frame.timestamp,
+                duration: frame.duration
+            });
+            sinkData.cacheOrder.push(frame.timestamp);
+        } catch (e) {
+            console.warn('Failed to create ImageBitmap for cache', e);
+        }
     }
 
     private isFrameValid(frame: WrappedCanvas, time: number): boolean {
@@ -166,7 +239,7 @@ export class VideoCache {
             }
 
             const sink = new CanvasSink(videoTrack, {
-                poolSize: 5,
+                poolSize: 15, // Increased for smoother playback buffer
                 fit: 'contain',
             });
 
@@ -174,6 +247,8 @@ export class VideoCache {
                 sink,
                 iterator: null,
                 currentFrame: null,
+                frameCache: new Map(),
+                cacheOrder: [],
                 lastTime: -1,
                 fileSignature: getFileSignature(file),
             });
@@ -189,6 +264,10 @@ export class VideoCache {
             if (sinkData.iterator) {
                 sinkData.iterator.return();
             }
+            // Close all cached bitmaps
+            sinkData.frameCache.forEach(f => f.bitmap.close());
+            sinkData.frameCache.clear();
+            sinkData.cacheOrder = [];
             this.sinks.delete(mediaId);
         }
         this.initPromises.delete(mediaId);
