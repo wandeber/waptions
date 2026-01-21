@@ -1,8 +1,8 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
-import { Subtitle } from './SubtitleTrack';
-import { SubtitleTrack } from '@/types/timeline';
+import { usePlaybackStore } from '@/stores/playback-store';
+import { Subtitle, SubtitleTrack } from '@/types/timeline';
 
 interface TimelineTrackOverlayProps {
     duration: number;
@@ -61,6 +61,8 @@ export function TimelineTrackOverlay({
                     onClick={() => onSubtitleClick?.(subtitle)}
                     onUpdate={(updates, options) => updateSubtitleInTrack(track.id, subtitle.id, updates, options)}
                     onPushHistory={pushHistory}
+                    onTimeUpdate={onTimeUpdate}
+                    duration={duration}
                 />
             ))}
         </div>
@@ -76,11 +78,13 @@ interface SubtitleBlockProps {
     onClick: () => void;
     onUpdate: (updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
     onPushHistory: () => void;
+    onTimeUpdate?: (time: number) => void;
+    duration: number;
 }
 
-function SubtitleBlock({ subtitle, pps, fps, isSelected, onClick, onUpdate, onPushHistory }: SubtitleBlockProps) {
-    const left = subtitle.startTime * pps;
-    const width = (subtitle.endTime - subtitle.startTime) * pps;
+function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, onTimeUpdate, duration }: SubtitleBlockProps) {
+    const { tracks, snapEnabled, setActiveSnapTime, pixelsPerSecond, zoomLevel } = useTimelineStore();
+    const pps = pixelsPerSecond * zoomLevel;
 
     const handleMouseDown = (e: React.MouseEvent, type: 'move' | 'resize-start' | 'resize-end') => {
         e.stopPropagation();
@@ -92,11 +96,76 @@ function SubtitleBlock({ subtitle, pps, fps, isSelected, onClick, onUpdate, onPu
         const startX = e.clientX;
         const initialStart = subtitle.startTime;
         const initialEnd = subtitle.endTime;
-        const frameDuration = fps > 0 ? 1 / fps : 0.01; // Default to 0.01s if fps is 0 or less
+        const frameDuration = fps > 0 ? 1 / fps : 0.01;
 
-        const snapTime = (time: number) => {
+        // Collect snap points once (one-shot optimization)
+        const snapPoints: { time: number, isInitial: boolean }[] = [];
+        if (snapEnabled) {
+            const pointsMap = new Map<number, boolean>(); // time -> isInitial
+
+            // Base points
+            pointsMap.set(0, false);
+            pointsMap.set(duration, false);
+
+            // Re-accessing store for playhead/current time
+            const playheadTime = usePlaybackStore.getState().currentTime;
+            pointsMap.set(playheadTime, false);
+
+            // Initial position (don't show line for these)
+            pointsMap.set(initialStart, true);
+            pointsMap.set(initialEnd, true);
+
+            tracks.forEach(t => {
+                t.subtitles.forEach(s => {
+                    if (s.id === subtitle.id) return;
+                    pointsMap.set(s.startTime, false);
+                    pointsMap.set(s.endTime, false);
+                });
+            });
+
+            pointsMap.forEach((isInitial, time) => {
+                snapPoints.push({ time, isInitial });
+            });
+        }
+
+        const snapToFrame = (time: number) => {
             if (fps <= 0) return time;
             return Math.round(time / frameDuration) * frameDuration;
+        };
+
+        const applySnap = (time: number, isEnd = false, durOffset = 0) => {
+            if (!snapEnabled || snapPoints.length === 0) {
+                setActiveSnapTime(null);
+                return { time, isSnapped: false };
+            }
+
+            const thresholdSeconds = 15 / pps; // Reduced to 15px
+            const targetTime = isEnd ? time + durOffset : time;
+
+            let closestPoint = targetTime;
+            let minDiff = thresholdSeconds;
+            let foundSnap = false;
+            let snappedToInitial = false;
+
+            snapPoints.forEach(point => {
+                const diff = Math.abs(targetTime - point.time);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestPoint = point.time;
+                    foundSnap = true;
+                    snappedToInitial = point.isInitial;
+                }
+            });
+
+            const finalTime = isEnd ? closestPoint - durOffset : closestPoint;
+
+            // Don't show the line if it's snapping to the original position
+            setActiveSnapTime(foundSnap && !snappedToInitial ? closestPoint : null);
+
+            return {
+                time: finalTime,
+                isSnapped: foundSnap
+            };
         };
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
@@ -104,29 +173,59 @@ function SubtitleBlock({ subtitle, pps, fps, isSelected, onClick, onUpdate, onPu
             const deltaTime = deltaX / pps;
 
             if (type === 'move') {
-                const newStart = Math.max(0, snapTime(initialStart + deltaTime));
+                let newStart = initialStart + deltaTime;
                 const duration = initialEnd - initialStart;
+
+                if (snapEnabled) {
+                    const snapStart = applySnap(newStart, false);
+                    if (snapStart.isSnapped) {
+                        newStart = snapStart.time;
+                    } else {
+                        const snapEnd = applySnap(newStart, true, duration);
+                        if (snapEnd.isSnapped) {
+                            newStart = snapEnd.time;
+                        }
+                    }
+                }
+
+                newStart = Math.max(0, snapToFrame(newStart));
                 onUpdate({
                     startTime: newStart,
-                    endTime: newStart + duration
+                    endTime: Number((newStart + duration).toFixed(3))
                 }, { skipHistory: true });
+
+                onTimeUpdate?.(newStart);
             } else if (type === 'resize-start') {
-                const newStart = Math.max(0, Math.min(subtitle.endTime - 0.1, snapTime(initialStart + deltaTime)));
+                let newStart = initialStart + deltaTime;
+                if (snapEnabled) {
+                    newStart = applySnap(newStart, false).time;
+                }
+                newStart = Math.max(0, Math.min(subtitle.endTime - 0.1, snapToFrame(newStart)));
                 onUpdate({ startTime: newStart }, { skipHistory: true });
+                onTimeUpdate?.(newStart);
             } else if (type === 'resize-end') {
-                const newEnd = Math.max(subtitle.startTime + 0.1, snapTime(initialEnd + deltaTime));
+                let newEnd = initialEnd + deltaTime;
+                if (snapEnabled) {
+                    newEnd = applySnap(newEnd, false).time;
+                }
+                newEnd = Math.max(subtitle.startTime + 0.1, snapToFrame(newEnd));
                 onUpdate({ endTime: newEnd }, { skipHistory: true });
+                onTimeUpdate?.(newEnd);
             }
         };
 
         const handleMouseUp = () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            setActiveSnapTime(null);
         };
 
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
     };
+
+    const left = subtitle.startTime * pps;
+    const width = (subtitle.endTime - subtitle.startTime) * pps;
 
     return (
         <div

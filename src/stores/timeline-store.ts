@@ -1,6 +1,5 @@
 import { create } from 'zustand';
-import { SubtitleTrack, AnimationStyle } from '@/types/timeline';
-import { Subtitle } from '@/components/video-editor/SubtitleTrack';
+import { SubtitleTrack, AnimationStyle, Subtitle } from '@/types/timeline';
 import { storageService } from '@/lib/storage/storage-service';
 import { useProjectStore } from './project-store';
 import { useVideoStore } from './video-store'; // Import useVideoStore
@@ -17,6 +16,8 @@ interface TimelineStore {
     tracks: SubtitleTrack[];
     pixelsPerSecond: number;
     activeTrackId: string | null;
+    snapEnabled: boolean;
+    activeSnapTime: number | null;
 
     // History
     history: HistorySnapshot[];
@@ -41,6 +42,8 @@ interface TimelineStore {
     undo: () => Promise<void>;
     redo: () => Promise<void>;
     pushHistory: () => void;
+    setSnapEnabled: (enabled: boolean) => void;
+    setActiveSnapTime: (time: number | null) => void;
 }
 
 // Helper to save timeline changes
@@ -69,6 +72,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     pixelsPerSecond: 100, // Base pixels per second at zoom 1
     tracks: [],
     activeTrackId: null,
+    snapEnabled: true,
+    activeSnapTime: null,
 
     history: [],
     redoStack: [],
@@ -307,5 +312,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     setActiveTrackId: (id) => set((state) => ({
         activeTrackId: state.tracks.some(t => t.id === id) ? id : (state.tracks.length > 0 ? state.tracks[0].id : null)
-    }))
+    })),
+
+    setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
+
+    setActiveSnapTime: (time) => set({ activeSnapTime: time })
 }));

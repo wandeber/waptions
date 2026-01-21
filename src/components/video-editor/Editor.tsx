@@ -8,7 +8,7 @@ import { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-edito
 import { ExportButton } from '@/components/video-editor/ExportButton';
 import { UndoIcon } from '@/components/icons/UndoIcon';
 import { RedoIcon } from '@/components/icons/RedoIcon';
-import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
+import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
 
 import { usePlaybackStore } from '@/stores/playback-store';

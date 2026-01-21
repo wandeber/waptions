@@ -1,4 +1,4 @@
-import type { Subtitle } from '../SubtitleTrack';
+import type { Subtitle } from '@/types/timeline';
 
 export interface SubtitleEditorProps {
   subtitles: Subtitle[];

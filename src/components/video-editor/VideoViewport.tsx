@@ -14,8 +14,7 @@ import { getVideoInfo } from '@/lib/mediabunny-utils';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useProjectStore } from '@/stores/project-store';
 import { storageService } from '@/lib/storage/storage-service';
-import { AnimationStyle } from '@/types/timeline';
-import { Subtitle } from './SubtitleTrack';
+import { AnimationStyle, Subtitle } from '@/types/timeline';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number | null, file?: File) => void;

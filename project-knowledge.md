@@ -11,6 +11,8 @@
 - `design-system/`: Reusable UI components (Button, DraggableNumberInput, Accordion, ConfirmDialog)
 - **Icons**: Custom icons in `components/icons/` supporting `className` for Tailwind styling.
 - **Dialogs**: Use `ConfirmDialog` for destructive actions (Delete, Exit Unsaved) instead of `window.confirm`.
+- **Architecture Cleanup**: Removed redundant `SubtitleTrack.tsx` and standardized the `Subtitle` interface in global types.
+- **Icon Standardization**: Replaced custom timeline icons with `lucide-react` counterparts for better visual clarity.
 
 ### Core Components
 - `VideoViewport.tsx**: Canvas rendering, multi-layer subtitle support, audio sync.
@@ -63,7 +65,14 @@
 - **Epsilon Strategy**: Comparison logic uses an epsilon of `0.0005` (0.5ms) to handle floating point precision issues.
 - **Inclusive Start / Exclusive End**: Subtitles are visible if `currentTime >= start - epsilon` and `currentTime < end - epsilon`. This ensures the start of a subtitle is visible when landed on exactly, while the end is exclusive.
 - **Keypoint Navigation**: `ArrowUp/Down` navigation in `Timeline.tsx` uses the same epsilon to identify boundaries, ensuring the playhead lands exactly on a frame where the subtitle state is predictable.
-- **Rounding**: Subtitle timings are internally rounded to 3 decimal places (1ms) during editing (`SubtitleTrack.tsx`) to maintain a clean timeline state.
+- **Rounding**: Subtitle timings are internally rounded to 3 decimal places (1ms) during editing (`TimelineTrackOverlay.tsx`) to maintain a clean timeline state.
+- **Architecture Cleanup**: Deleted redundant `SubtitleTrack.tsx`. Centralized `Subtitle` interface in `@/types/timeline.ts`.
+- **UI Standardization**: Replaced custom icons in the timeline components with standard `lucide-react` icons for better clarity and consistency.
+- **Subtitle Snapping**:
+    - **Optimization**: Snap points are collected once at the start of a drag/resize operation (`handleMouseDown`) to ensure performance.
+    - **Snap Points**: Include 0, duration, current playhead position, and start/end boundaries of all other subtitles across all tracks.
+    - **Threshold**: 15px pixel-based threshold for consistent magnetic feel across zoom levels.
+    - **Persistence**: Managed via `snapEnabled` in `TimelineStore`, defaulted to `true`.
 
 ## Environment & Testing
 - Node.js v18+, pnpm.

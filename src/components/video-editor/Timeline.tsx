@@ -1,17 +1,10 @@
 'use client';
 
 import { useRef, useEffect, useLayoutEffect } from 'react';
-import { Subtitle } from './SubtitleTrack';
-import { PlayIcon } from '../icons/PlayIcon';
-import { PauseIcon } from '../icons/PauseIcon';
-import { GridIcon } from '../icons/GridIcon';
-import { InfoIcon } from '../icons/InfoIcon';
+import { Subtitle } from '@/types/timeline';
+import { Play, Pause, Grid3X3, Info, Plus, ZoomIn, ZoomOut, RotateCcw, Magnet } from 'lucide-react';
 import { DevinIcon } from '../icons/DevinIcon';
 import { Button } from '../design-system/Button';
-import { PlusIcon } from '../icons/PlusIcon';
-import { ZoomInIcon } from '../icons/ZoomInIcon';
-import { ZoomOutIcon } from '../icons/ZoomOutIcon';
-import { ResetIcon } from '../icons/ResetIcon';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
@@ -51,7 +44,7 @@ export function Timeline({
   showMetaInfo = false,
   onMetaInfoToggle,
 }: TimelineProps) {
-  const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId } = useTimelineStore();
+  const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled, activeSnapTime } = useTimelineStore();
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -245,7 +238,7 @@ export function Timeline({
             variant={isPlaying ? 'primary' : 'secondary'}
             onClick={onPlayPause}
           >
-            {isPlaying ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
+            {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
           </Button>
         </div>
 
@@ -262,29 +255,32 @@ export function Timeline({
           <div className="flex items-center gap-1">
             <span className="text-xs font-mono text-gray-400 mr-2 w-10 text-right">{(zoomLevel * 100).toFixed(0)}%</span>
             <Button variant="secondary" onClick={handleZoomOut} title="Alejar">
-              <ZoomOutIcon className="w-[18px] h-[18px]" />
+              <ZoomOut className="w-[18px] h-[18px]" />
             </Button>
             <Button variant="secondary" onClick={handleZoomIn} title="Acercar">
-              <ZoomInIcon className="w-[18px] h-[18px]" />
+              <ZoomIn className="w-[18px] h-[18px]" />
             </Button>
             <Button variant="secondary" onClick={handleResetZoom} title="Ajustar a la vista">
-              <ResetIcon className="w-[18px] h-[18px]" />
+              <RotateCcw className="w-[18px] h-[18px]" />
             </Button>
           </div>
           <div className="w-px h-6 bg-gray-800 mx-1" />
 
           <Button variant="secondary" isActive={showThirdsGuide} onClick={onThirdsGuideToggle} title="Guía de tercios">
-            <GridIcon className="w-[18px] h-[18px]" />
+            <Grid3X3 className="w-[18px] h-[18px]" />
           </Button>
           <Button variant="secondary" isActive={showDevinGuide} onClick={onDevinGuideToggle} title="Guía Devin">
             <DevinIcon className="w-[18px] h-[18px]" />
           </Button>
           <Button variant="secondary" isActive={showMetaInfo} onClick={onMetaInfoToggle} title="Info">
-            <InfoIcon className="w-[18px] h-[18px]" />
+            <Info className="w-[18px] h-[18px]" />
+          </Button>
+          <Button variant="secondary" isActive={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)} title="Snap">
+            <Magnet className="w-[18px] h-[18px]" />
           </Button>
           <div className="w-px h-6 bg-gray-800 mx-1" />
           <Button variant="secondary" onClick={() => addTrack()} title="Nueva Capa">
-            <PlusIcon className="w-[18px] h-[18px]" />
+            <Plus className="w-[18px] h-[18px]" />
           </Button>
         </div>
       </div>
@@ -373,6 +369,16 @@ export function Timeline({
                 backgroundSize: '100% 64px'
               }}
             >
+              {/* Snapping Indicator (inside relative container to scroll) */}
+              {activeSnapTime !== null && (
+                <div
+                  className="absolute top-0 bottom-0 w-px bg-cyan-400/50 z-30 pointer-events-none"
+                  style={{
+                    left: `${activeSnapTime * pixelsPerSecond * zoomLevel}px`,
+                    boxShadow: '0 0 10px 2px rgba(34, 211, 238, 0.3)'
+                  }}
+                />
+              )}
               {/* Tracks rendered as overlays */}
               {tracks.map(track => (
                 <TimelineTrackOverlay

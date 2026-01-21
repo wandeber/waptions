@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react';
-import type { Subtitle } from '../SubtitleTrack';
+import { Subtitle } from '@/types/timeline';
 import { Button } from '../../design-system/Button';
 import { MagicMicIcon } from '../../icons/MagicMicIcon';
 import { SpinnerIcon } from '../../icons/SpinnerIcon';

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Subtitle } from '../SubtitleTrack';
+import { Subtitle } from '@/types/timeline';
 import { Tabs } from '../../design-system/Tabs';
 import { Accordion } from '../../design-system/Accordion';
 import { TextStyleSection } from './TextStyleSection';

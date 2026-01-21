@@ -10,7 +10,7 @@ import {
   getExportFileExtension,
   DEFAULT_EXPORT_OPTIONS,
 } from '@/lib/export';
-import type { Subtitle } from './SubtitleTrack';
+import { Subtitle } from '@/types/timeline';
 import type { SubtitleAnimationStyle } from './subtitle-editor/types';
 import { defaultAnimationStyle } from './subtitle-editor/types';
 import type { ExportFormat, ExportQuality } from '@/types/export';

@@ -1,4 +1,9 @@
-import type { Subtitle } from '@/components/video-editor/SubtitleTrack';
+export interface Subtitle {
+    id: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+}
 
 export interface AnimationStyle {
     fadeInDuration: number;

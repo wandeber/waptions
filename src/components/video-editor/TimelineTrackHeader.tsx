@@ -1,9 +1,7 @@
 'use client';
 
 import { SubtitleTrack } from '@/types/timeline';
-import { EyeIcon } from '../icons/EyeIcon';
-import { EyeOffIcon } from '../icons/EyeOffIcon';
-import { TrashIcon } from '../icons/TrashIcon';
+import { Eye, EyeOff, Trash2 } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { ConfirmDialog } from '../design-system/ConfirmDialog';
 import { useTimelineStore } from '@/stores/timeline-store';
@@ -54,7 +52,7 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
                     onClick={() => onToggleVisibility(track.id)}
                     title={track.isVisible ? "Ocultar capa" : "Mostrar capa"}
                 >
-                    {track.isVisible ? <EyeIcon /> : <EyeOffIcon />}
+                    {track.isVisible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
                 </Button>
 
                 <Button
@@ -63,9 +61,8 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
                     className="text-gray-400 hover:text-white"
                     onClick={handleDeleteClick}
                     disabled={isOnlyTrack}
-                    title={isOnlyTrack ? "No se puede eliminar la única capa" : "Eliminar capa"}
                 >
-                    <TrashIcon />
+                    <Trash2 className="w-4 h-4" />
                 </Button>
             </div>
 
