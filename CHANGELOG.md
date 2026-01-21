@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implemented dedicated timeline zoom controls: Zoom In/Out buttons and a Reset Zoom button to fit the entire video duration within the view.
 - Enhanced Video Info Panel: Now displays video resolution and bitrate, alongside FPS and current time.
 - Fixed positioning and visibility of "Devin" and "Thirds" guide overlays by correcting z-index stacking and layout context.
+- Fixed timeline track misalignment by standardizing track height to 64px, perfectly matching the background grid and preventing cumulative vertical drift.
 
 ### Technical
 - Added dependencies: `mediabunny`, `zustand`.

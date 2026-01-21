@@ -46,7 +46,7 @@ export function TimelineTrackOverlay({
 
     return (
         <div
-            className="relative h-14 border-b border-gray-800/50 hover:bg-white/5 transition-colors cursor-crosshair"
+            className="relative h-16 border-b border-gray-800/50 hover:bg-white/5 transition-colors cursor-crosshair"
             style={{ width: `${duration * pps}px` }}
             onMouseDown={handleMouseClick}
         >
