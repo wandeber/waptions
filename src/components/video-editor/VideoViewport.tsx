@@ -1,7 +1,5 @@
 'use client';
 
-import { WrappedCanvas } from 'mediabunny';
-
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { LoadVideoIcon } from '../icons/LoadVideoIcon';
@@ -167,7 +165,6 @@ export function VideoViewport({
   }, [videoFile, originalWidth, originalHeight]);
 
   const isRendering = useRef(false);
-  const lastFrameRef = useRef<WrappedCanvas | null>(null);
 
   const renderFrame = useCallback(async () => {
     if (!videoFile || !canvasRef.current || !videoContainerRef.current || isRendering.current) return;
@@ -193,15 +190,9 @@ export function VideoViewport({
 
       const frame = await videoCache.getFrameAt('preview', videoFile, currentTime);
 
-      // Anti-flicker: if we don't have a new frame yet, use the last one
-      const frameToDraw = frame || lastFrameRef.current;
-
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (frameToDraw) {
-        ctx.drawImage(frameToDraw.canvas, 0, 0, canvas.width, canvas.height);
-        if (frame) {
-          lastFrameRef.current = frame;
-        }
+      if (frame) {
+        ctx.drawImage(frame.canvas, 0, 0, canvas.width, canvas.height);
       } else {
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
