@@ -174,6 +174,35 @@ export function Timeline({
     return () => el.removeEventListener('wheel', handleWheelRaw);
   }, [zoomLevel, setZoom]);
 
+  // Keyboard navigation (Frame-by-Frame)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // No interferir si el usuario está escribiendo en un input o textarea
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+        return;
+      }
+
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+        const multiplier = e.shiftKey ? 5 : 1;
+        const delta = e.key === 'ArrowRight' ? frameDuration * multiplier : -frameDuration * multiplier;
+
+        const newTime = Math.max(0, Math.min(duration, currentTimeRef.current + delta));
+
+        // Cuantizar el tiempo al frame más cercano para evitar derivas
+        const snappedTime = Math.round(newTime / frameDuration) * frameDuration;
+
+        onTimeUpdate?.(snappedTime);
+
+        // Prevenir scroll lateral del navegador con las flechas si fuera necesario
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [fps, duration, onTimeUpdate]);
+
   return (
     <div
       ref={containerRef}
