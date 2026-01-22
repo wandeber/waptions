@@ -243,7 +243,7 @@ export function Timeline({
             variant={isPlaying ? 'primary' : 'secondary'}
             onClick={onPlayPause}
           >
-            {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+            {isPlaying ? <Pause className="w-[18px] h-[18px]" /> : <Play className="w-[18px] h-[18px]" />}
           </Button>
         </div>
 

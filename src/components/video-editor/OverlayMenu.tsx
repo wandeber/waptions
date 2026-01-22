@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Check, Layers, ChevronDown, Grid3X3, Info } from 'lucide-react';
 import { DevinIcon } from '../icons/DevinIcon';
+import { Button } from '../design-system/Button';
 
 interface OverlayMenuProps {
     showThirdsGuide: boolean;
@@ -67,17 +68,15 @@ export function OverlayMenu({
 
     return (
         <div className="relative" ref={menuRef}>
-            <button
+            <Button
+                variant={isOpen || options.some(o => o.active) ? 'primary' : 'secondary'}
                 onClick={toggleMenu}
-                className={`flex items-center gap-1 h-8 px-2 rounded text-sm font-medium transition-all ${isOpen || options.some(o => o.active)
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white'
-                    }`}
                 title="Capas y Guías"
+                className="flex items-center gap-1"
             >
-                <Layers className="w-4 h-4" />
+                <Layers className="w-[18px] h-[18px]" />
                 <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-            </button>
+            </Button>
 
             {isOpen && (
                 <div className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-700 rounded-lg shadow-2xl z-50 py-1 animate-in fade-in slide-in-from-top-2 duration-200">
