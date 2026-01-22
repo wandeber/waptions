@@ -19,7 +19,6 @@ interface TimelineProps {
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
-  selectedSubtitleId?: string | null;
   isPlaying?: boolean;
   onPlayPause?: () => void;
   fps: number;
@@ -36,7 +35,6 @@ export function Timeline({
   currentTime = 0,
   onTimeUpdate,
   onSubtitleClick,
-  selectedSubtitleId,
   isPlaying = false,
   onPlayPause,
   fps,
@@ -402,7 +400,6 @@ export function Timeline({
                   fps={fps}
                   onTimeUpdate={onTimeUpdate}
                   onSubtitleClick={onSubtitleClick}
-                  selectedSubtitleId={selectedSubtitleId}
                 />
               ))}
 

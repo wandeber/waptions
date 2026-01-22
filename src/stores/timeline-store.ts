@@ -16,6 +16,8 @@ interface TimelineStore {
     tracks: SubtitleTrack[];
     pixelsPerSecond: number;
     activeTrackId: string | null;
+    selectedSubtitleIds: string[];
+    lastSelectedId: string | null;
     snapEnabled: boolean;
     activeSnapTime: number | null;
 
@@ -35,10 +37,13 @@ interface TimelineStore {
     addSubtitleToTrack: (trackId: string, subtitle: Omit<Subtitle, 'id'>) => string;
     updateSubtitleInTrack: (trackId: string, subtitleId: string, updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
     moveSubtitleToTrack: (subtitleId: string, sourceTrackId: string, targetTrackId: string) => void;
+    moveSubtitlesToTrack: (subtitleIds: string[], deltaTrackIndex: number, options?: { skipHistory?: boolean }) => void;
     removeSubtitleFromTrack: (trackId: string, subtitleId: string) => void;
 
     setTracks: (tracks: SubtitleTrack[]) => void;
     setActiveTrackId: (id: string | null) => void;
+    toggleSubtitleSelection: (id: string, isMulti?: boolean, isRange?: boolean) => void;
+    clearSelection: () => void;
 
     // History Actions
     undo: () => Promise<void>;
@@ -74,6 +79,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     pixelsPerSecond: 100, // Base pixels per second at zoom 1
     tracks: [],
     activeTrackId: null,
+    selectedSubtitleIds: [],
+    lastSelectedId: null,
     snapEnabled: true,
     activeSnapTime: null,
 
@@ -332,6 +339,61 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         });
     },
 
+    moveSubtitlesToTrack: (subtitleIds, deltaTrackIndex, options) => {
+        if (deltaTrackIndex === 0 || subtitleIds.length === 0) return;
+
+        if (!options?.skipHistory) get().pushHistory();
+        set((state) => {
+            const currentTracks = state.tracks;
+            const subtitleLocations = new Map<string, { trackId: string, subtitle: Subtitle }>();
+
+            // 1. Locate all subtitles to move
+            currentTracks.forEach(track => {
+                track.subtitles.forEach(s => {
+                    if (subtitleIds.includes(s.id)) {
+                        subtitleLocations.set(s.id, { trackId: track.id, subtitle: { ...s } });
+                    }
+                });
+            });
+
+            // 2. Identify target tracks and check bounds
+            const trackIds = currentTracks.map(t => t.id);
+            const updates = new Map<string, string>(); // subtitleId -> newTrackId
+
+            for (const [sId, loc] of Array.from(subtitleLocations.entries())) {
+                const currentIdx = trackIds.indexOf(loc.trackId);
+                const targetIdx = currentIdx + deltaTrackIndex;
+
+                if (targetIdx < 0 || targetIdx >= trackIds.length) {
+                    // If ANY subtitle would go out of bounds, we cancel the track shift for the WHOLE group
+                    // or just cap it? Caps are safer for group movement.
+                    return state;
+                }
+                updates.set(sId, trackIds[targetIdx]);
+            }
+
+            // 3. Perform the move
+            const newTracks = currentTracks.map(track => {
+                // Remove subtitles that are moving OUT of this track
+                let subtitles = track.subtitles.filter(s => !updates.has(s.id) || updates.get(s.id) === track.id);
+
+                // Add subtitles that are moving IN to this track
+                const movingIn = Array.from(updates.entries())
+                    .filter(([, tId]) => tId === track.id)
+                    .map(([sId]) => subtitleLocations.get(sId)!.subtitle);
+
+                if (movingIn.length > 0) {
+                    subtitles = [...subtitles, ...movingIn].sort((a, b) => a.startTime - b.startTime);
+                }
+
+                return { ...track, subtitles };
+            });
+
+            saveTimelineToStorage(newTracks);
+            return { tracks: newTracks };
+        });
+    },
+
     removeSubtitleFromTrack: (trackId, subtitleId) => {
         get().pushHistory();
         set((state) => {
@@ -341,7 +403,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
                     : t
             );
             saveTimelineToStorage(newTracks);
-            return { tracks: newTracks };
+            return {
+                tracks: newTracks,
+                selectedSubtitleIds: state.selectedSubtitleIds.filter(id => id !== subtitleId)
+            };
         });
     },
 
@@ -351,6 +416,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         return {
             tracks,
             activeTrackId: isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null),
+            selectedSubtitleIds: [],
+            lastSelectedId: null,
             history: [],
             redoStack: []
         };
@@ -359,6 +426,56 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     setActiveTrackId: (id) => set((state) => ({
         activeTrackId: state.tracks.some(t => t.id === id) ? id : (state.tracks.length > 0 ? state.tracks[0].id : null)
     })),
+
+    toggleSubtitleSelection: (id, isMulti, isRange) => set((state) => {
+        let newSelection: string[] = [];
+
+        if (isRange && state.lastSelectedId) {
+            // Range selection
+            const allSubs = state.tracks.flatMap(t => t.subtitles).sort((a, b) => a.startTime - b.startTime);
+            const idx1 = allSubs.findIndex(s => s.id === state.lastSelectedId);
+            const idx2 = allSubs.findIndex(s => s.id === id);
+
+            if (idx1 !== -1 && idx2 !== -1) {
+                const start = Math.min(idx1, idx2);
+                const end = Math.max(idx1, idx2);
+                const range = allSubs.slice(start, end + 1).map(s => s.id);
+
+                if (isMulti) {
+                    newSelection = Array.from(new Set([...state.selectedSubtitleIds, ...range]));
+                } else {
+                    newSelection = range;
+                }
+            } else {
+                newSelection = [id];
+            }
+        } else if (isMulti) {
+            // Toggle selection
+            if (state.selectedSubtitleIds.includes(id)) {
+                newSelection = state.selectedSubtitleIds.filter(sid => sid !== id);
+            } else {
+                newSelection = [...state.selectedSubtitleIds, id];
+            }
+        } else {
+            // Single selection
+            newSelection = [id];
+        }
+
+        // Find track of the last selected subtitle to make it active
+        let newActiveTrackId = state.activeTrackId;
+        const trackWithSubtitle = state.tracks.find(t => t.subtitles.some(s => s.id === id));
+        if (trackWithSubtitle) {
+            newActiveTrackId = trackWithSubtitle.id;
+        }
+
+        return {
+            selectedSubtitleIds: newSelection,
+            lastSelectedId: id,
+            activeTrackId: newActiveTrackId
+        };
+    }),
+
+    clearSelection: () => set({ selectedSubtitleIds: [], lastSelectedId: null }),
 
     setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
 

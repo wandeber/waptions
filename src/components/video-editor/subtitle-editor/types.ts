@@ -2,7 +2,6 @@ import type { Subtitle } from '@/types/timeline';
 
 export interface SubtitleEditorProps {
   subtitles: Subtitle[];
-  selectedSubtitleId?: string | null;
   onSubtitleClick?: (subtitle: Subtitle) => void;
   onDelete?: (subtitleId: string) => void;
   onSubtitlesChange?: (subtitles: Subtitle[]) => void;

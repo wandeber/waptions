@@ -5,10 +5,10 @@ import { MagicMicIcon } from '../../icons/MagicMicIcon';
 import { SpinnerIcon } from '../../icons/SpinnerIcon';
 import { PlusIcon } from '../../icons/PlusIcon';
 import { CloseIcon } from '../../icons/CloseIcon';
+import { useTimelineStore } from '@/stores/timeline-store';
 
 interface SubtitleListProps {
   subtitles: Subtitle[];
-  selectedSubtitleId?: string | null;
   editingText: { [key: string]: string };
   currentTime: number;
   onSubtitleClick?: (subtitle: Subtitle) => void;
@@ -23,7 +23,6 @@ interface SubtitleListProps {
 
 export function SubtitleList({
   subtitles,
-  selectedSubtitleId,
   editingText,
   currentTime,
   onSubtitleClick,
@@ -35,6 +34,8 @@ export function SubtitleList({
   onTextChange,
   onKeyDown
 }: SubtitleListProps) {
+  const { selectedSubtitleIds, toggleSubtitleSelection, clearSelection } = useTimelineStore();
+  const selectedSubtitleId = selectedSubtitleIds[selectedSubtitleIds.length - 1]; // Main selected for scrolling
   const textAreasRef = useRef<{ [key: string]: HTMLTextAreaElement | null }>({});
   const isInternalInteraction = useRef(false);
 
@@ -99,14 +100,27 @@ export function SubtitleList({
     }
   }, [selectedSubtitleId]);
 
-  const handleInternalSelect = (subtitle: Subtitle) => {
+  const handleInternalSelect = (e: React.MouseEvent, subtitle: Subtitle) => {
     isInternalInteraction.current = true;
+    const isMulti = e.metaKey;
+    const isRange = e.shiftKey;
+    toggleSubtitleSelection(subtitle.id, isMulti, isRange);
+    onSubtitleClick?.(subtitle);
+  };
+
+  const handleFocus = (subtitle: Subtitle) => {
+    isInternalInteraction.current = true;
+    // Only toggle (clearing others if no mods) if NOT already selected.
+    // This allows focusing to edit text WITHOUT losing multi-selection.
+    if (!selectedSubtitleIds.includes(subtitle.id)) {
+      toggleSubtitleSelection(subtitle.id);
+    }
     onSubtitleClick?.(subtitle);
   };
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <div className="flex justify-between items-center">
+    <div className="flex flex-col gap-4 p-4" onClick={() => clearSelection()}>
+      <div className="flex justify-between items-center" onClick={e => e.stopPropagation()}>
         <div></div>
         <div className="flex gap-2 ml-auto">
           <Button
@@ -130,9 +144,7 @@ export function SubtitleList({
                   text: ''
                 };
                 const newId = onAddSubtitle(newSubtitleBase);
-
-                const newSub = { ...newSubtitleBase, id: newId };
-                onSubtitleClick?.(newSub);
+                toggleSubtitleSelection(newId);
 
                 requestAnimationFrame(() => {
                   const textarea = textAreasRef.current[newId];
@@ -150,7 +162,7 @@ export function SubtitleList({
                 text: ''
               };
               onSubtitlesChange?.([...subtitles, newSubtitle]);
-              onSubtitleClick?.(newSubtitle);
+              toggleSubtitleSelection(newSubtitle.id);
               requestAnimationFrame(() => {
                 const textarea = textAreasRef.current[newSubtitle.id];
                 if (textarea) {
@@ -176,8 +188,11 @@ export function SubtitleList({
             <div
               key={subtitle.id}
               className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
-                ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
-              onClick={() => handleInternalSelect(subtitle)}
+                ${selectedSubtitleIds.includes(subtitle.id) ? 'ring-2 ring-white' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleInternalSelect(e, subtitle);
+              }}
             >
               <div className="flex justify-between items-center">
                 <div className="text-sm text-gray-400">
@@ -211,9 +226,9 @@ export function SubtitleList({
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleInternalSelect(subtitle);
+                  handleInternalSelect(e, subtitle);
                 }}
-                onFocus={() => handleInternalSelect(subtitle)}
+                onFocus={() => handleFocus(subtitle)}
                 onMouseDown={(e) => e.stopPropagation()}
                 onKeyDown={(e) => onKeyDown(e, subtitle)}
                 placeholder="Escribe el texto del subtítulo aquí..."

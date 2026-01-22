@@ -59,7 +59,9 @@
 - **Subtitle Interaction**:
     - **Independent Drag Preview**: During dragging or resizing, the video viewport follows the interaction (`previewTime` in `PlaybackStore`) while the playhead remains fixed as a reference.
     - **Playhead Snapping**: The current playhead position is a mandatory magnetic snap point during move/resize operations.
-    - **Vertical Dragging**: Subtitles can be moved between different tracks/layers by dragging vertically.
+    - **Multi-Selection**: Centralized in `TimelineStore`. Handles range (`Shift+Click`) and toggle (`Cmd+Click`) selection strictly following Mac standards. Focus management maintains selection context during text editing.
+    - **Group Dragging**: Selected subtitles move together horizontally and vertically, preserving relative positions. Optimized to push history only once per operation.
+    - **Group Snapping**: Specialized logic in `TimelineTrackOverlay` that only snaps the selection's overall boundaries to minimize noise.
 - **Styles and Presets**:
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
     - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.

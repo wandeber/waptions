@@ -46,12 +46,13 @@ export function Editor() {
         undo,
         redo,
         history,
-        redoStack
+        redoStack,
+        selectedSubtitleIds,
+        clearSelection
     } = useTimelineStore();
 
     const { saveCurrentProject, activeProject, closeProject, isDirty, updateProjectName } = useProjectStore();
 
-    const [selectedSubtitle, setSelectedSubtitle] = useState<Subtitle | null>(null);
     const [detectedFps, setDetectedFps] = useState<number | null>(null);
     const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
     const [showThirdsGuide, setShowThirdsGuide] = useState(false);
@@ -65,6 +66,7 @@ export function Editor() {
     const subtitles = activeTrack?.subtitles || [];
     const animationStyle = activeTrack?.style;
 
+
     // Initialize first track if none exists
     useEffect(() => {
         if (tracks.length === 0) {
@@ -72,9 +74,17 @@ export function Editor() {
         }
     }, [tracks.length, addTrack]);
 
-    // Keyboard shortcuts for Undo/Redo
+    // Keyboard shortcuts for Undo/Redo and Multi-Delete
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            // Si estamos escribiendo en un input o textarea, no procesar atajos globales
+            if (
+                e.target instanceof HTMLInputElement ||
+                e.target instanceof HTMLTextAreaElement
+            ) {
+                return;
+            }
+
             // Undo: Ctrl+Z or Cmd+Z
             if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
                 e.preventDefault();
@@ -88,11 +98,25 @@ export function Editor() {
                 e.preventDefault();
                 redo();
             }
+
+            // Multi-Delete: Backspace or Delete
+            if (e.key === 'Backspace' || e.key === 'Delete') {
+                if (selectedSubtitleIds.length > 0) {
+                    e.preventDefault();
+                    [...selectedSubtitleIds].forEach(id => {
+                        const track = tracks.find(t => t.subtitles.some(s => s.id === id));
+                        if (track) {
+                            removeSubtitleFromTrack(track.id, id);
+                        }
+                    });
+                    clearSelection();
+                }
+            }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo]);
+    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks]);
 
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -103,8 +127,11 @@ export function Editor() {
     }, [setPlaybackDuration]);
 
     const handleSubtitleClick = (subtitle: Subtitle | null) => {
-        if (subtitle !== null || !selectedSubtitle) {
-            setSelectedSubtitle(subtitle);
+        // Selection is now handled directly by SubtitleList and TimelineTrackOverlay
+        // based on modifiers (Cmd/Shift). We only keep this for clearing selection
+        // when clicking background if needed, or other side effects.
+        if (!subtitle) {
+            clearSelection();
         }
     };
 
@@ -144,9 +171,6 @@ export function Editor() {
     const handleDelete = (subtitleId: string) => {
         if (activeTrack) {
             removeSubtitleFromTrack(activeTrack.id, subtitleId);
-            if (selectedSubtitle?.id === subtitleId) {
-                setSelectedSubtitle(null);
-            }
         }
     };
 
@@ -263,7 +287,6 @@ export function Editor() {
                             currentTime={currentTime}
                             onTimeUpdate={seek}
                             onSubtitleClick={handleSubtitleClick}
-                            selectedSubtitleId={selectedSubtitle?.id}
                             isPlaying={isPlaying}
                             onPlayPause={handlePlayPause}
                             fps={detectedFps ?? 0}
@@ -279,7 +302,6 @@ export function Editor() {
                     <div className="w-96 flex flex-col gap-4">
                         <SubtitleEditor
                             subtitles={subtitles}
-                            selectedSubtitleId={selectedSubtitle?.id}
                             onSubtitleClick={handleSubtitleClick}
                             onDelete={handleDelete}
                             onSubtitlesChange={handleSubtitlesChange}

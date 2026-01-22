@@ -12,6 +12,7 @@ import { SubtitleList } from './SubtitleList';
 import { StylePresetSelector } from './StylePresetSelector';
 import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
 import { defaultAnimationStyle } from './types';
+import { useTimelineStore } from '@/stores/timeline-store';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function debounce<T extends (...args: any[]) => void>(func: T, wait: number) {
@@ -24,7 +25,6 @@ function debounce<T extends (...args: any[]) => void>(func: T, wait: number) {
 
 export function SubtitleEditor({
   subtitles,
-  selectedSubtitleId,
   onSubtitleClick,
   onDelete,
   onSubtitlesChange,
@@ -37,6 +37,7 @@ export function SubtitleEditor({
   animationStyle = defaultAnimationStyle,
   fps = 30
 }: SubtitleEditorProps & { fps?: number }) {
+  const { selectedSubtitleIds } = useTimelineStore();
   const frameDuration = fps > 0 ? 1 / fps : 0.01;
   const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
 
@@ -339,18 +340,20 @@ export function SubtitleEditor({
   // Efecto para manejar atajos de teclado
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Si no hay subtítulo seleccionado, no hacemos nada
-      if (!selectedSubtitleId) return;
+      // Si no hay subtítulos seleccionados, no hacemos nada
+      if (selectedSubtitleIds.length === 0) return;
 
-      // Borrar subtítulo con tecla Supr/Delete
+      // Borrar subtítulos seleccionados con tecla Supr/Delete
       if (e.key === 'Delete') {
-        onDelete?.(selectedSubtitleId);
+        selectedSubtitleIds.forEach(id => {
+          onDelete?.(id);
+        });
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedSubtitleId, onDelete]);
+  }, [selectedSubtitleIds, onDelete]);
 
   const handlePresetStyleChange = useCallback((newStyle: SubtitleAnimationStyle) => {
     setLocalAnimationStyle(newStyle);
@@ -434,7 +437,6 @@ export function SubtitleEditor({
       content: (
         <SubtitleList
           subtitles={subtitles}
-          selectedSubtitleId={selectedSubtitleId}
           editingText={editingText}
           currentTime={currentTime}
           onSubtitleClick={onSubtitleClick}

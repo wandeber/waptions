@@ -13,7 +13,6 @@ interface TimelineTrackOverlayProps {
     fps: number;
     onTimeUpdate?: (time: number) => void;
     onSubtitleClick?: (subtitle: Subtitle | null) => void;
-    selectedSubtitleId?: string | null;
 }
 
 export function TimelineTrackOverlay({
@@ -23,11 +22,9 @@ export function TimelineTrackOverlay({
     pixelsPerSecond,
     fps,
     onTimeUpdate,
-    onSubtitleClick,
-    selectedSubtitleId
+    onSubtitleClick
 }: TimelineTrackOverlayProps) {
-    const updateSubtitleInTrack = useTimelineStore(state => state.updateSubtitleInTrack);
-    const pushHistory = useTimelineStore(state => state.pushHistory);
+    const { updateSubtitleInTrack, pushHistory, selectedSubtitleIds } = useTimelineStore();
     const pps = pixelsPerSecond * zoomLevel;
 
     // Helper to calculate time from click
@@ -58,7 +55,7 @@ export function TimelineTrackOverlay({
                     subtitle={subtitle}
                     pps={pps}
                     fps={fps}
-                    isSelected={selectedSubtitleId === subtitle.id}
+                    isSelected={selectedSubtitleIds.includes(subtitle.id)}
                     onClick={() => onSubtitleClick?.(subtitle)}
                     onUpdate={(updates, options) => updateSubtitleInTrack(track.id, subtitle.id, updates, options)}
                     onPushHistory={pushHistory}
@@ -82,48 +79,92 @@ interface SubtitleBlockProps {
 }
 
 function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, duration }: SubtitleBlockProps) {
-    const { tracks, snapEnabled, setActiveSnapTime, pixelsPerSecond, zoomLevel } = useTimelineStore();
+    const { pixelsPerSecond, zoomLevel } = useTimelineStore();
     const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
 
     const handleMouseDown = (e: React.MouseEvent, type: 'move' | 'resize-start' | 'resize-end') => {
         e.stopPropagation();
-        if (!isSelected) onClick();
+
+        const {
+            toggleSubtitleSelection,
+            moveSubtitlesToTrack,
+            updateSubtitleInTrack,
+            setActiveSnapTime,
+            snapEnabled,
+            tracks: allTracks
+        } = useTimelineStore.getState();
+
+        // Handle selection toggle/multiselect
+        const isMulti = e.metaKey;
+        const isShift = e.shiftKey;
+
+        if (type === 'move') {
+            // If it's already selected and we are just clicking (no mods), we DON'T toggle yet
+            // to allow dragging the selection. We toggle on onClick if it wasn't a drag.
+            // But if it's NOT selected, or mods are pressed, we toggle immediately.
+            if (!isSelected || isMulti || isShift) {
+                toggleSubtitleSelection(subtitle.id, isMulti, isShift);
+            }
+        } else {
+            // Resize always ensures selection of the single object
+            if (!isSelected) toggleSubtitleSelection(subtitle.id);
+        }
 
         if (type === 'resize-start') setActiveHandle('start');
         if (type === 'resize-end') setActiveHandle('end');
+
+        // Capture initial state for ALL selected subtitles
+        const currentSelectedIds = useTimelineStore.getState().selectedSubtitleIds;
+        const targetIds = currentSelectedIds.includes(subtitle.id) ? currentSelectedIds : [subtitle.id];
 
         // Push history before starting the drag operation
         onPushHistory();
 
         const startX = e.clientX;
         const startY = e.clientY;
-        const initialStart = subtitle.startTime;
-        const initialEnd = subtitle.endTime;
+
+        // Map of subtitleId -> initial values for group movement
+        const initialStates = new Map<string, { startTime: number, endTime: number, trackId: string }>();
+        targetIds.forEach(id => {
+            allTracks.forEach(t => {
+                const sub = t.subtitles.find(s => s.id === id);
+                if (sub) {
+                    initialStates.set(id, {
+                        startTime: sub.startTime,
+                        endTime: sub.endTime,
+                        trackId: t.id
+                    });
+                }
+            });
+        });
+
         const frameDuration = fps > 0 ? 1 / fps : 0.01;
-        const initialTrackIndex = tracks.findIndex(t => t.subtitles.some(s => s.id === subtitle.id));
         let lastShift = 0;
+
+        // Group boundaries for snapping
+        const groupMinStart = Math.min(...Array.from(initialStates.values()).map(s => s.startTime));
+        const groupMaxEnd = Math.max(...Array.from(initialStates.values()).map(s => s.endTime));
+        const groupDuration = groupMaxEnd - groupMinStart;
 
         // Collect snap points once (one-shot optimization)
         const snapPoints: { time: number, isInitial: boolean }[] = [];
         if (snapEnabled) {
             const pointsMap = new Map<number, boolean>(); // time -> isInitial
 
-            // Base points
             pointsMap.set(0, false);
             pointsMap.set(duration, false);
 
-            // Re-accessing store for playhead/current time
             const playheadTime = usePlaybackStore.getState().currentTime;
             pointsMap.set(playheadTime, false);
 
             // Initial position (don't show line for these)
-            pointsMap.set(initialStart, true);
-            pointsMap.set(initialEnd, true);
+            pointsMap.set(groupMinStart, true);
+            pointsMap.set(groupMaxEnd, true);
 
-            tracks.forEach(t => {
+            allTracks.forEach(t => {
                 t.subtitles.forEach(s => {
-                    if (s.id === subtitle.id) return;
+                    if (targetIds.includes(s.id)) return;
                     pointsMap.set(s.startTime, false);
                     pointsMap.set(s.endTime, false);
                 });
@@ -145,7 +186,7 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
                 return { time, isSnapped: false };
             }
 
-            const thresholdSeconds = 15 / pps; // Reduced to 15px
+            const thresholdSeconds = 15 / pps;
             const targetTime = isEnd ? time + durOffset : time;
 
             let closestPoint = targetTime;
@@ -164,8 +205,6 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             });
 
             const finalTime = isEnd ? closestPoint - durOffset : closestPoint;
-
-            // Don't show the line if it's snapping to the original position
             setActiveSnapTime(foundSnap && !snappedToInitial ? closestPoint : null);
 
             return {
@@ -182,75 +221,78 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             const { setPreviewTime } = usePlaybackStore.getState();
 
             if (type === 'move') {
-                // Vertical track switching logic
+                // 1. Vertical track switching (Group)
                 const trackIndexShift = Math.round(deltaY / 64);
-
                 if (trackIndexShift !== lastShift) {
-                    const targetTrackIndex = Math.max(0, Math.min(tracks.length - 1, initialTrackIndex + trackIndexShift));
-
-                    // We need to know the track where the subtitle is RIGHT NOW to move it successfully
-                    const currentTracks = useTimelineStore.getState().tracks;
-                    const currentTrack = currentTracks.find(t => t.subtitles.some(s => s.id === subtitle.id));
-                    const targetTrack = tracks[targetTrackIndex];
-
-                    if (currentTrack && targetTrack && currentTrack.id !== targetTrack.id) {
-                        useTimelineStore.getState().moveSubtitleToTrack(subtitle.id, currentTrack.id, targetTrack.id);
-                        lastShift = trackIndexShift;
-                    }
+                    // Try to move all selected subtitles
+                    moveSubtitlesToTrack(targetIds, trackIndexShift - lastShift, { skipHistory: true });
+                    lastShift = trackIndexShift;
                 }
 
-                let newStart = initialStart + deltaTime;
-                const duration = initialEnd - initialStart;
+                // 2. Horizontal movement (Group)
+                let currentGroupStart = groupMinStart + deltaTime;
 
                 if (snapEnabled) {
-                    const snapStart = applySnap(newStart, false);
+                    const snapStart = applySnap(currentGroupStart, false);
                     if (snapStart.isSnapped) {
-                        newStart = snapStart.time;
+                        currentGroupStart = snapStart.time;
                     } else {
-                        const snapEnd = applySnap(newStart, true, duration);
+                        const snapEnd = applySnap(currentGroupStart, true, groupDuration);
                         if (snapEnd.isSnapped) {
-                            newStart = snapEnd.time;
+                            currentGroupStart = snapEnd.time;
                         }
                     }
                 }
 
-                newStart = Math.max(0, snapToFrame(newStart));
+                currentGroupStart = Math.max(0, snapToFrame(currentGroupStart));
+                const finalDeltaTime = currentGroupStart - groupMinStart;
 
-                // Get current track because it might have changed due to vertical drag
+                // Apply finalDeltaTime to all subtitles in the selection
                 const currentTracks = useTimelineStore.getState().tracks;
-                const activeTrack = currentTracks.find(t => t.subtitles.some(s => s.id === subtitle.id));
+                targetIds.forEach(id => {
+                    const initial = initialStates.get(id);
+                    if (!initial) return;
 
-                if (activeTrack) {
-                    useTimelineStore.getState().updateSubtitleInTrack(activeTrack.id, subtitle.id, {
-                        startTime: newStart,
-                        endTime: Number((newStart + duration).toFixed(3))
-                    }, { skipHistory: true });
-                }
+                    const activeTrack = currentTracks.find(t => t.subtitles.some(s => s.id === id));
+                    if (activeTrack) {
+                        const newStart = initial.startTime + finalDeltaTime;
+                        updateSubtitleInTrack(activeTrack.id, id, {
+                            startTime: newStart,
+                            endTime: Number((newStart + (initial.endTime - initial.startTime)).toFixed(3))
+                        }, { skipHistory: true });
+                    }
+                });
 
-                setPreviewTime(newStart);
-            } else if (type === 'resize-start') {
-                let newStart = initialStart + deltaTime;
-                if (snapEnabled) {
-                    newStart = applySnap(newStart, false).time;
+                setPreviewTime(currentGroupStart);
+            } else if (type === 'resize-start' || type === 'resize-end') {
+                // Resize still works on individual elements for now as per plan
+                const initial = initialStates.get(subtitle.id);
+                if (!initial) return;
+
+                if (type === 'resize-start') {
+                    let newStart = initial.startTime + deltaTime;
+                    if (snapEnabled) {
+                        newStart = applySnap(newStart, false).time;
+                    }
+                    newStart = Math.max(0, Math.min(subtitle.endTime - 0.1, snapToFrame(newStart)));
+                    onUpdate({ startTime: newStart }, { skipHistory: true });
+                    setPreviewTime(newStart);
+                } else {
+                    let newEnd = initial.endTime + deltaTime;
+                    if (snapEnabled) {
+                        newEnd = applySnap(newEnd, false).time;
+                    }
+                    newEnd = Math.max(subtitle.startTime + 0.1, snapToFrame(newEnd));
+                    onUpdate({ endTime: newEnd }, { skipHistory: true });
+                    setPreviewTime(newEnd);
                 }
-                newStart = Math.max(0, Math.min(subtitle.endTime - 0.1, snapToFrame(newStart)));
-                onUpdate({ startTime: newStart }, { skipHistory: true });
-                setPreviewTime(newStart);
-            } else if (type === 'resize-end') {
-                let newEnd = initialEnd + deltaTime;
-                if (snapEnabled) {
-                    newEnd = applySnap(newEnd, false).time;
-                }
-                newEnd = Math.max(subtitle.startTime + 0.1, snapToFrame(newEnd));
-                onUpdate({ endTime: newEnd }, { skipHistory: true });
-                setPreviewTime(newEnd);
             }
         };
 
         const handleMouseUp = () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
-            setActiveSnapTime(null);
+            useTimelineStore.getState().setActiveSnapTime(null);
             setActiveHandle(null);
             usePlaybackStore.getState().setPreviewTime(null);
         };
