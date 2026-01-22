@@ -2,8 +2,7 @@
 
 import { useRef, useEffect, useLayoutEffect } from 'react';
 import { Subtitle } from '@/types/timeline';
-import { Play, Pause, Grid3X3, Info, Plus, ZoomIn, ZoomOut, RotateCcw, Magnet } from 'lucide-react';
-import { DevinIcon } from '../icons/DevinIcon';
+import { Play, Pause, Plus, ZoomIn, ZoomOut, RotateCcw, Magnet } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { TimelineRuler } from './TimelineRuler';
@@ -12,6 +11,7 @@ import { TimelinePlayhead } from './TimelinePlayhead';
 import { TimelineTrackOverlay } from './TimelineTrackOverlay';
 import { useWaveform } from '@/hooks/use-waveform';
 import { TimelineWaveform } from './TimelineWaveform';
+import { OverlayMenu } from './OverlayMenu';
 import { useVideoStore } from '@/stores/video-store';
 
 interface TimelineProps {
@@ -237,7 +237,7 @@ export function Timeline({
       className="flex flex-col bg-gray-900 border-t border-gray-800 min-w-0 overflow-hidden"
     >
       {/* Toolbar */}
-      <div className="flex items-center gap-4 p-2 bg-gray-800/50 border-b border-gray-800">
+      <div className="flex items-center gap-4 p-2 bg-gray-800/50 border-b border-gray-800 relative z-30">
         <div className="flex items-center gap-2">
           <Button
             variant={isPlaying ? 'primary' : 'secondary'}
@@ -271,15 +271,14 @@ export function Timeline({
           </div>
           <div className="w-px h-6 bg-gray-800 mx-1" />
 
-          <Button variant="secondary" isActive={showThirdsGuide} onClick={onThirdsGuideToggle} title="Guía de tercios">
-            <Grid3X3 className="w-[18px] h-[18px]" />
-          </Button>
-          <Button variant="secondary" isActive={showDevinGuide} onClick={onDevinGuideToggle} title="Guía Devin">
-            <DevinIcon className="w-[18px] h-[18px]" />
-          </Button>
-          <Button variant="secondary" isActive={showMetaInfo} onClick={onMetaInfoToggle} title="Info">
-            <Info className="w-[18px] h-[18px]" />
-          </Button>
+          <OverlayMenu
+            showThirdsGuide={showThirdsGuide}
+            onThirdsGuideToggle={() => onThirdsGuideToggle?.()}
+            showDevinGuide={showDevinGuide}
+            onDevinGuideToggle={() => onDevinGuideToggle?.()}
+            showMetaInfo={showMetaInfo}
+            onMetaInfoToggle={() => onMetaInfoToggle?.()}
+          />
           <Button variant="secondary" isActive={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)} title="Snap">
             <Magnet className="w-[18px] h-[18px]" />
           </Button>
