@@ -51,6 +51,10 @@
 
 ### Note on Persistence (IndexedDB)
 - **Video Persistence:** Video files are stored in `waptions-timelines-{projectId}` -> `video-file`. `ProjectStore` loads the video into `VideoStore` on project open. `VideoViewport` automatically detects changes in `VideoStore.videoFile` and synchronizes metadata (duration, fps) to `PlaybackStore`.
+- **Resource Monitoring (Info Panel)**:
+    - **Performance Metrics**: Shows resolution, fps, and bitrate.
+    - **Resource usage**: Displays current project size (metadata + video in DB), Video Cache memory estimate (Canvas buffers), and JS Heap Usage (Chrome only).
+    - **Optimization**: Stats poll every 5 seconds. Heavy DB size checks are automatically paused during video playback (`isPlaying`) to avoid frame drops.
 - **Subtitle Interaction**:
     - Horizontal dragging for positioning with magnetic snapping.
     - Vertical dragging to move subtitles between different tracks/layers.
@@ -59,8 +63,10 @@
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
     - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.
     - Presets are managed via `presetUtils.ts` and synced across the UI and store.
+    - **Manual Modification**: Selector automatically switches to "Estilo personalizado (sin guardar)" when a preset is modified, identifying custom styles via deep comparison.
 - **Font Selection System**:
     - **Tabbed Selector**: Organized into App (curated), System (local), and Google Fonts.
+    - **Smart Auto-selection**: Automatically switches to the correct tab (App, Google, or System) based on the current font when opening the style panel.
     - **Dynamic Google Fonts**: Custom `google-fonts.ts` utility handles dynamic `<link>` injection for Google Fonts on demand.
     - **Persistence & Auto-loading**: `GoogleFontManager` automatically scans all tracks and loads required fonts from Google Fonts when a project is opened.
     - **Manual Search**: Supports searching by name; if a font is not in the popular list (~1000 fonts), typing the exact name allows direct loading from Google.

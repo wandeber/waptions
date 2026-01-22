@@ -98,4 +98,33 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
             request.onsuccess = () => resolve();
         });
     }
+
+    async calculateSize(): Promise<number> {
+        const db = await this.getDB();
+        const transaction = db.transaction([this.storeName], "readonly");
+        const store = transaction.objectStore(this.storeName);
+
+        return new Promise((resolve, reject) => {
+            let totalSize = 0;
+            const request = store.openCursor();
+
+            request.onerror = () => reject(request.error);
+            request.onsuccess = (event) => {
+                const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+                if (cursor) {
+                    const value = cursor.value.data;
+                    if (value instanceof Blob || value instanceof File) {
+                        totalSize += value.size;
+                    } else if (typeof value === 'string') {
+                        totalSize += value.length * 2; // Rough estimate for UTF-16
+                    } else if (value && typeof value === 'object') {
+                        totalSize += JSON.stringify(value).length * 2;
+                    }
+                    cursor.continue();
+                } else {
+                    resolve(totalSize);
+                }
+            };
+        });
+    }
 }

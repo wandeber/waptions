@@ -476,6 +476,55 @@ export function VideoViewport({
     }
   }, [isPlaying, volume, muted, videoFile, currentTime]);
 
+  interface MemoryInfo {
+    usedJSHeapSize: number;
+    totalJSHeapSize: number;
+    jsHeapSizeLimit: number;
+  }
+
+  // Stats state
+  const [projectSize, setProjectSize] = useState<number>(0);
+  const [cacheStats, setCacheStats] = useState(videoCache.getStats());
+  const [jsMemory, setJsMemory] = useState<{ used: number; total: number } | null>(null);
+
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  useEffect(() => {
+    const updateStats = async () => {
+      // 1. Update Video Cache Stats (Very light)
+      const stats = videoCache.getStats();
+      setCacheStats(stats);
+
+      // 2. Update Storage Stats (Heavier - skip if playing)
+      const isPlayingNow = usePlaybackStore.getState().isPlaying;
+      const activeProject = useProjectStore.getState().activeProject;
+
+      if (!isPlayingNow && activeProject) {
+        const size = await storageService.getProjectStorageSize(activeProject.id);
+        setProjectSize(size);
+      }
+
+      // 3. Update Memory Stats (Proprietary Chrome API)
+      if ('memory' in performance) {
+        const mem = (performance as unknown as { memory: MemoryInfo }).memory;
+        setJsMemory({
+          used: mem.usedJSHeapSize,
+          total: mem.jsHeapSizeLimit
+        });
+      }
+    };
+
+    updateStats();
+    const interval = setInterval(updateStats, 5000); // Update every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="flex-1 flex flex-col bg-gray-800 overflow-hidden select-none" onDrop={handleDrop} onDragOver={handleDragOver}>
       <input type="file" ref={fileInputRef} className="hidden" accept="video/*" onChange={handleFileSelect} />
@@ -497,11 +546,40 @@ export function VideoViewport({
             />
 
             {showMetaInfo && (
-              <div className="absolute top-2 left-2 bg-black/50 p-2 rounded text-xs text-white z-20 font-mono tracking-wide">
-                <div className="flex flex-col gap-0.5">
-                  <div className="opacity-80">{originalWidth}x{originalHeight}</div>
-                  <div className="opacity-80">FPS: {fps.toFixed(2)}</div>
-                  <div className="opacity-80">Bitrate: {((bitrate || 0) / 1000000).toFixed(2)} Mbps</div>
+              <div className="absolute top-2 left-2 bg-black/60 p-2.5 rounded-lg text-[10px] text-white z-20 font-mono tracking-tight backdrop-blur-md border border-white/10 shadow-xl">
+                <div className="flex flex-col gap-1.5 min-w-[180px]">
+                  <div className="flex justify-between items-baseline gap-4 border-b border-white/5 pb-1 mb-0.5">
+                    <span className="opacity-60">Resolution</span>
+                    <span className="font-bold text-gray-200">{originalWidth}x{originalHeight}</span>
+                  </div>
+
+                  <div className="flex justify-between items-baseline gap-4 opacity-80">
+                    <span className="opacity-60">Performance</span>
+                    <span className="text-gray-200">{fps.toFixed(1)} FPS / {((bitrate || 0) / 1000000).toFixed(1)} Mb</span>
+                  </div>
+
+                  <div className="flex justify-between items-baseline gap-4 opacity-80">
+                    <span className="opacity-60 text-blue-300/70">Project Size</span>
+                    <span className="text-blue-200">{formatBytes(projectSize)}</span>
+                  </div>
+
+                  <div className="flex flex-col gap-0.5 mt-0.5 pt-1 border-t border-white/5">
+                    <div className="flex justify-between items-baseline gap-4 opacity-80">
+                      <span className="opacity-60 text-green-300/70">Video Cache</span>
+                      <span className="text-green-200">{formatBytes(cacheStats.estimatedMemoryBytes)}</span>
+                    </div>
+                    <div className="flex justify-between items-baseline gap-4 text-[8px] opacity-40 italic">
+                      <span>sinks/frames</span>
+                      <span>{cacheStats.totalSinks} / {cacheStats.cachedFrames}</span>
+                    </div>
+                  </div>
+
+                  {jsMemory && (
+                    <div className="flex justify-between items-baseline gap-4 opacity-80 pt-1 border-t border-white/5">
+                      <span className="opacity-60 text-purple-300/70">JS Memory</span>
+                      <span className="text-purple-200">{formatBytes(jsMemory.used)}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

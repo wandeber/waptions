@@ -202,10 +202,22 @@ export class VideoCache {
     }
 
     getStats() {
+        let estimatedMemoryBytes = 0;
+        let cachedFrames = 0;
+
+        for (const sink of Array.from(this.sinks.values())) {
+            if (sink.currentFrame) {
+                cachedFrames++;
+                const { canvas } = sink.currentFrame;
+                estimatedMemoryBytes += canvas.width * canvas.height * 4;
+            }
+        }
+
         return {
             totalSinks: this.sinks.size,
             activeSinks: Array.from(this.sinks.values()).filter((s) => s.iterator).length,
-            cachedFrames: Array.from(this.sinks.values()).filter((s) => s.currentFrame).length,
+            cachedFrames,
+            estimatedMemoryBytes
         };
     }
 }

@@ -107,6 +107,34 @@ class StorageService {
         const adapter = this.getProjectDbAdapter<File>(projectId);
         await adapter.remove("video-file");
     }
+
+    // Size calculation
+    async getProjectStorageSize(projectId: string): Promise<number> {
+        try {
+            const timelineAdapter = this.getProjectDbAdapter(projectId);
+            return await timelineAdapter.calculateSize();
+        } catch (error) {
+            console.error('Error calculating project size:', error);
+            return 0;
+        }
+    }
+
+    async getTotalStorageSize(): Promise<number> {
+        try {
+            const projectsSize = await this.projectsAdapter.calculateSize();
+            const projectIds = await this.projectsAdapter.list();
+
+            let totalTimelineSize = 0;
+            for (const id of projectIds) {
+                totalTimelineSize += await this.getProjectStorageSize(id);
+            }
+
+            return projectsSize + totalTimelineSize;
+        } catch (error) {
+            console.error('Error calculating total storage size:', error);
+            return 0;
+        }
+    }
 }
 
 export const storageService = new StorageService();
