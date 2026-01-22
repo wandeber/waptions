@@ -36,6 +36,7 @@ export function SubtitleList({
   onKeyDown
 }: SubtitleListProps) {
   const textAreasRef = useRef<{ [key: string]: HTMLTextAreaElement | null }>({});
+  const isInternalInteraction = useRef(false);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -53,6 +54,55 @@ export function SubtitleList({
       }
     });
   }, [editingText]);
+
+  // Scroll al subtítulo seleccionado
+  useEffect(() => {
+    if (selectedSubtitleId && textAreasRef.current[selectedSubtitleId]) {
+      // Si el cambio de selección viene de un clic interno en la lista, no hacemos scroll
+      if (isInternalInteraction.current) {
+        isInternalInteraction.current = false;
+        return;
+      }
+
+      const textarea = textAreasRef.current[selectedSubtitleId];
+      const card = textarea?.closest('.bg-gray-700') as HTMLElement;
+      const scrollParent = card?.parentElement?.parentElement; // El div con overflow-y-auto en Tabs.tsx
+
+      if (card && scrollParent) {
+        const targetScrollTop = card.offsetTop - (scrollParent.offsetHeight / 2) + (card.offsetHeight / 2);
+
+        // Animación suave con duración fija (400ms)
+        const startScrollTop = scrollParent.scrollTop;
+        const distance = targetScrollTop - startScrollTop;
+        const duration = 400;
+        let startTime: number | null = null;
+
+        const animate = (currentTime: number) => {
+          if (!startTime) startTime = currentTime;
+          const timeElapsed = currentTime - startTime;
+          const progress = Math.min(timeElapsed / duration, 1);
+
+          // Easing function: easeInOutQuad
+          const easing = progress < 0.5
+            ? 2 * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+          scrollParent.scrollTop = startScrollTop + distance * easing;
+
+          if (timeElapsed < duration) {
+            requestAnimationFrame(animate);
+          }
+        };
+
+        requestAnimationFrame(animate);
+      }
+    }
+  }, [selectedSubtitleId]);
+
+  const handleInternalSelect = (subtitle: Subtitle) => {
+    isInternalInteraction.current = true;
+    onSubtitleClick?.(subtitle);
+  };
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -72,6 +122,7 @@ export function SubtitleList({
             variant="secondary"
             size="sm"
             onClick={() => {
+              isInternalInteraction.current = true;
               if (onAddSubtitle) {
                 const newSubtitleBase = {
                   startTime: currentTime,
@@ -126,7 +177,7 @@ export function SubtitleList({
               key={subtitle.id}
               className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
                 ${subtitle.id === selectedSubtitleId ? 'ring-2 ring-white' : ''}`}
-              onClick={() => onSubtitleClick?.(subtitle)}
+              onClick={() => handleInternalSelect(subtitle)}
             >
               <div className="flex justify-between items-center">
                 <div className="text-sm text-gray-400">
@@ -160,9 +211,9 @@ export function SubtitleList({
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSubtitleClick?.(subtitle);
+                  handleInternalSelect(subtitle);
                 }}
-                onFocus={() => onSubtitleClick?.(subtitle)}
+                onFocus={() => handleInternalSelect(subtitle)}
                 onMouseDown={(e) => e.stopPropagation()}
                 onKeyDown={(e) => onKeyDown(e, subtitle)}
                 placeholder="Escribe el texto del subtítulo aquí..."
@@ -173,4 +224,4 @@ export function SubtitleList({
       )}
     </div>
   );
-} 
+}
