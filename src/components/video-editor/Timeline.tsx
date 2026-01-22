@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useLayoutEffect } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { Subtitle } from '@/types/timeline';
 import { Play, Pause, Plus, ZoomIn, ZoomOut, RotateCcw, Magnet } from 'lucide-react';
 import { Button } from '../design-system/Button';
@@ -116,6 +116,26 @@ export function Timeline({
     }
   }, [zoomLevel]);
 
+  const applySmartZoom = useCallback((newZoom: number) => {
+    if (newZoom === zoomLevel) return;
+
+    // Smart Zoom Logic: anchor to playhead position
+    const oldPPS = ppsRef.current * zoomLevel;
+    const newPPS = ppsRef.current * newZoom;
+
+    // Usamos el scroll virtual para evitar saltos si el DOM aún no se ha actualizado
+    const currentScrollLeft = virtualScrollLeftRef.current;
+
+    // Posición del cabezal relativa al viewport antes del zoom
+    const playheadScreenPosition = (currentTimeRef.current * oldPPS) - currentScrollLeft;
+
+    // Calculamos el nuevo scroll necesario para mantener esa posición de pantalla
+    const newScrollLeft = Math.round((currentTimeRef.current * newPPS) - playheadScreenPosition);
+
+    pendingScrollRef.current = newScrollLeft;
+    setZoom(newZoom);
+  }, [zoomLevel, setZoom]);
+
   // Zoom handling with non-passive listener to ensure preventDefault works
   const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -129,39 +149,22 @@ export function Timeline({
 
         const delta = e.deltaY > 0 ? 0.9 : 1.1;
         const newZoom = Math.max(0.1, Math.min(10, zoomLevel * delta));
-
-        if (newZoom !== zoomLevel) {
-          // Smart Zoom Logic: anchor to playhead position
-          const oldPPS = ppsRef.current * zoomLevel;
-          const newPPS = ppsRef.current * newZoom;
-
-          // Usamos el scroll virtual para evitar saltos si el DOM aún no se ha actualizado
-          const currentScrollLeft = virtualScrollLeftRef.current;
-
-          // Posición del cabezal relativa al viewport antes del zoom
-          const playheadScreenPosition = (currentTimeRef.current * oldPPS) - currentScrollLeft;
-
-          // Calculamos el nuevo scroll necesario para mantener esa posición de pantalla
-          const newScrollLeft = Math.round((currentTimeRef.current * newPPS) - playheadScreenPosition);
-
-          pendingScrollRef.current = newScrollLeft;
-          setZoom(newZoom);
-        }
+        applySmartZoom(newZoom);
       }
     };
 
     el.addEventListener('wheel', handleWheelRaw, { passive: false });
     return () => el.removeEventListener('wheel', handleWheelRaw);
-  }, [zoomLevel, setZoom]);
+  }, [zoomLevel, applySmartZoom]);
 
   const handleZoomIn = () => {
     const newZoom = Math.min(10, zoomLevel * 1.2);
-    setZoom(newZoom);
+    applySmartZoom(newZoom);
   };
 
   const handleZoomOut = () => {
     const newZoom = Math.max(0.1, zoomLevel / 1.2);
-    setZoom(newZoom);
+    applySmartZoom(newZoom);
   };
 
   const handleResetZoom = () => {
