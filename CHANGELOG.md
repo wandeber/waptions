@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Improved Font Selector**: Refactored the font selection system with a tabbed interface (App, System, Google Fonts).
+- **Google Fonts Integration**: Added dynamic loading for over 1000 Google Fonts with manual search and automatic project-wide font management.
 - **Timeline Ruler Refactor**: Implemented a 3-tier dynamic system (Dominant, Medium, Detail) that rotates prominence based on zoom level.
 - Refined visual hierarchy: Only labeled markers (min. 200px apart) are full-height; frames and sub-intervals are grouped into a subtle "Detail" tier.
 - Added frame highlight (shading) to the playhead for high-zoom precision.

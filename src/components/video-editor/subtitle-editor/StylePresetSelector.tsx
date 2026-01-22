@@ -5,12 +5,11 @@ import { SaveIcon } from '../../icons/SaveIcon';
 import { PlusIcon } from '../../icons/PlusIcon';
 import { Button } from '../../design-system/Button';
 import type { StylePreset, SubtitleAnimationStyle } from './types';
-import { 
-  getStylePresets, 
-  saveStylePreset, 
+import {
+  getStylePresets,
+  saveStylePreset,
   deleteStylePreset,
-  updateStylePreset,
-  getSelectedPreset
+  updateStylePreset
 } from './presetUtils';
 import { OverwritePresetDialog } from './OverwritePresetDialog';
 import { DeletePresetDialog } from './DeletePresetDialog';
@@ -22,9 +21,9 @@ interface StylePresetSelectorProps {
   onStyleChange: (style: SubtitleAnimationStyle) => void;
 }
 
-export function StylePresetSelector({ 
-  currentStyle, 
-  onStyleChange 
+export function StylePresetSelector({
+  currentStyle,
+  onStyleChange
 }: StylePresetSelectorProps) {
   const [presets, setPresets] = useState<StylePreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
@@ -37,25 +36,27 @@ export function StylePresetSelector({
   useEffect(() => {
     // Asegurar que no hay duplicados en la lista de presets
     const allPresets = getStylePresets();
-    const uniquePresets = allPresets.filter((preset, index, self) => 
+    const uniquePresets = allPresets.filter((preset, index, self) =>
       index === self.findIndex(p => p.id === preset.id)
     );
     setPresets(uniquePresets);
   }, []);
 
+  // Update selectedPresetId whenever currentStyle or presets change
   useEffect(() => {
-    // Recuperar el preset seleccionado usando getSelectedPreset
-    const selectedPreset = getSelectedPreset();
-    if (selectedPreset) {
-      setSelectedPresetId(selectedPreset.id);
-      onStyleChange(selectedPreset.style);
+    const matchingPreset = presets.find(p => JSON.stringify(p.style) === JSON.stringify(currentStyle));
+    if (matchingPreset) {
+      setSelectedPresetId(matchingPreset.id);
+    } else {
+      setSelectedPresetId('custom');
     }
-  }, []);
+  }, [currentStyle, presets]);
 
   const handlePresetSelect = (presetId: string) => {
+    if (presetId === 'custom') return;
+
     const preset = presets.find(p => p.id === presetId);
     if (preset) {
-      setSelectedPresetId(presetId);
       onStyleChange(preset.style);
       // Guardar el preset seleccionado en localStorage
       localStorage.setItem(SELECTED_PRESET_KEY, presetId);
@@ -86,7 +87,7 @@ export function StylePresetSelector({
   const handleSaveNew = () => {
     const trimmedName = newPresetName.trim();
     if (!validatePresetName(trimmedName)) return;
-    
+
     const newPreset = saveStylePreset(trimmedName, currentStyle);
     setPresets(getStylePresets());
     setSelectedPresetId(newPreset.id);
@@ -173,9 +174,13 @@ export function StylePresetSelector({
             <select
               value={selectedPresetId || ''}
               onChange={(e) => handlePresetSelect(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded p-1 text-sm appearance-none"
+              className={`w-full bg-gray-700 text-white rounded p-1 text-sm appearance-none ${selectedPresetId === 'custom' ? 'text-yellow-400 italic' : ''
+                }`}
             >
-              <option value="">Seleccionar preset...</option>
+              <option value="" disabled>Seleccionar preset...</option>
+              {selectedPresetId === 'custom' && (
+                <option value="custom">Estilo personalizado (sin guardar)</option>
+              )}
               {presets.map(preset => (
                 <option key={preset.id} value={preset.id}>
                   {preset.name} {preset.isDefault ? '(predeterminado)' : ''}

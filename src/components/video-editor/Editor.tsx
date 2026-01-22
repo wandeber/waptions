@@ -6,6 +6,7 @@ import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
 import { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
 import { ExportButton } from '@/components/video-editor/ExportButton';
+import { GoogleFontManager } from '@/components/video-editor/GoogleFontManager';
 import { UndoIcon } from '@/components/icons/UndoIcon';
 import { RedoIcon } from '@/components/icons/RedoIcon';
 import { Subtitle } from '@/types/timeline';
@@ -192,6 +193,7 @@ export function Editor() {
 
     return (
         <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
+            <GoogleFontManager />
             {/* Header */}
             <header className="flex-none p-4 bg-gray-800 flex justify-between items-center border-b border-gray-700">
                 <div className="flex items-center gap-4">

@@ -352,15 +352,17 @@ export function SubtitleEditor({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedSubtitleId, onDelete]);
 
+  const handlePresetStyleChange = useCallback((newStyle: SubtitleAnimationStyle) => {
+    setLocalAnimationStyle(newStyle);
+    onAnimationStyleChange?.(newStyle);
+  }, [onAnimationStyleChange]);
+
   const styleContent = (
     <div className="flex flex-col gap-6">
       <div className="px-4 pt-4">
         <StylePresetSelector
           currentStyle={localAnimationStyle}
-          onStyleChange={(newStyle) => {
-            setLocalAnimationStyle(newStyle);
-            onAnimationStyleChange?.(newStyle);
-          }}
+          onStyleChange={handlePresetStyleChange}
         />
       </div>
 

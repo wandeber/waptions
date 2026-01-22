@@ -59,6 +59,11 @@
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
     - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.
     - Presets are managed via `presetUtils.ts` and synced across the UI and store.
+- **Font Selection System**:
+    - **Tabbed Selector**: Organized into App (curated), System (local), and Google Fonts.
+    - **Dynamic Google Fonts**: Custom `google-fonts.ts` utility handles dynamic `<link>` injection for Google Fonts on demand.
+    - **Persistence & Auto-loading**: `GoogleFontManager` automatically scans all tracks and loads required fonts from Google Fonts when a project is opened.
+    - **Manual Search**: Supports searching by name; if a font is not in the popular list (~1000 fonts), typing the exact name allows direct loading from Google.
 - **Project Metadata**:
     - Automatic capture of the first frame (thumbnail) and video duration when a video is loaded.
     - Captures the frame respecting the original aspect ratio to avoid deformation.

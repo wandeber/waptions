@@ -1,17 +1,25 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
-import { ChevronDownIcon } from '../icons/ChevronDownIcon';
-import { WarningIcon } from '../icons/WarningIcon';
+import { POPULAR_GOOGLE_FONTS, loadGoogleFont } from '@/lib/fonts/google-fonts';
 
 interface FontSelectorProps {
   value: string;
   onChange: (font: string) => void;
 }
 
-// Fuentes de respaldo en caso de que la API no esté disponible
-const fallbackFonts = [
+interface FontData {
+  family: string;
+  fullName?: string;
+  postscriptName?: string;
+  style?: string;
+}
+
+const APP_FONTS = [
+  'Inter',
+  'Montserrat',
+  'Roboto',
   'Arial',
   'Helvetica',
   'Verdana',
@@ -22,22 +30,122 @@ const fallbackFonts = [
   'Comic Sans MS',
   'Tahoma',
   'Trebuchet MS',
-  'Inter',
 ];
 
+type TabType = 'app' | 'system' | 'google';
+
+interface FontItemProps {
+  font: FontData;
+  isActive: boolean;
+  onSelect: (family: string) => void;
+  shouldLoadPreview: boolean;
+}
+
+function FontItem({ font, isActive, onSelect, shouldLoadPreview }: FontItemProps) {
+  const [ref, setRef] = useState<HTMLElement | null>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    if (!ref || !shouldLoadPreview) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(ref);
+    return () => observer.disconnect();
+  }, [ref, shouldLoadPreview]);
+
+  useEffect(() => {
+    if (isVisible && shouldLoadPreview) {
+      loadGoogleFont(font.family, true);
+    }
+  }, [isVisible, shouldLoadPreview, font.family]);
+
+  return (
+    <button
+      ref={(el) => setRef(el)}
+      onClick={() => onSelect(font.family)}
+      className={`flex items-center justify-between px-3 py-2 text-sm hover:bg-gray-600 text-left transition-colors ${isActive ? 'bg-blue-600/30 text-blue-400' : 'text-gray-200'
+        }`}
+      style={{ fontFamily: isVisible || !shouldLoadPreview ? font.family : 'inherit' }}
+    >
+      <span>{font.family}</span>
+      {isActive && (
+        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 export function FontSelector({ value, onChange }: FontSelectorProps) {
-  const [fonts, setFonts] = useState<FontData[]>(fallbackFonts.map(family => ({
-    family,
-    fullName: family,
-    postscriptName: family,
-    style: 'Regular'
-  })));
+  const [activeTab, setActiveTab] = useState<TabType>('app');
+  const [systemFonts, setSystemFonts] = useState<FontData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [hasSystemFonts, setHasSystemFonts] = useState(false);
 
-  const loadFonts = async () => {
+  // Determine initial tab based on value
+  useEffect(() => {
+    if (!value) return;
+
+    const determineTab = (): TabType => {
+      // 1. App Fonts (standard web-safe + project defaults)
+      if (APP_FONTS.includes(value)) return 'app';
+
+      // 2. Popular Google Fonts
+      if (POPULAR_GOOGLE_FONTS.includes(value)) return 'google';
+
+      // 3. Check if we have a direct google font link already in the document
+      const googleLinkId = `google-font-${value.toLowerCase().replace(/\s+/g, '-')}`;
+      const previewLinkId = `google-font-p-${value.toLowerCase().replace(/\s+/g, '-')}`;
+      if (typeof document !== 'undefined' && (document.getElementById(googleLinkId) || document.getElementById(previewLinkId))) {
+        return 'google';
+      }
+
+      // 4. If it's in our already loaded system fonts (if user gave permission before)
+      if (systemFonts.some(f => f.family === value)) return 'system';
+
+      // 5. Fallback: If it's not in App/Popular Google, it's either a system font 
+      // or a custom Google font. We'll default to 'google' for unrecognized fonts
+      // because Google is the primary way users add new specific fonts.
+      return 'google';
+    };
+
+    const targetTab = determineTab();
+    if (targetTab !== activeTab) {
+      setActiveTab(targetTab);
+      // Auto-load system fonts if that's the determined category
+      if (targetTab === 'system' && !hasSystemFonts && !isLoading) {
+        loadSystemFonts();
+      }
+    }
+
+    // If we are on Google tab and the value is not in popular fonts,
+    // set search term to value so the "custom" entry appears and is selected.
+    if (targetTab === 'google' && value && !POPULAR_GOOGLE_FONTS.includes(value) && !searchTerm) {
+      setSearchTerm(value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, hasSystemFonts]); // Only run when value or system font availability changes
+
+  // Load Google Font for the current value if it's likely a Google Font
+  useEffect(() => {
+    if (value && !APP_FONTS.includes(value)) {
+      loadGoogleFont(value);
+    }
+  }, [value]);
+
+  const loadSystemFonts = async () => {
     if (!('queryLocalFonts' in window)) {
       setError('Tu navegador no soporta la carga de fuentes locales');
       return;
@@ -46,28 +154,30 @@ export function FontSelector({ value, onChange }: FontSelectorProps) {
     try {
       setIsLoading(true);
       setError(null);
-      const fontList = await window.queryLocalFonts();
-      
-      // Eliminar duplicados basados en el nombre de la familia
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const queryLocalFonts = (window as any).queryLocalFonts;
+      if (!queryLocalFonts) {
+        throw new Error('queryLocalFonts not found');
+      }
+      const fontList = await queryLocalFonts();
+
       const uniqueFonts = Array.from(
-        new Map(fontList.map(font => [font.family, font])).values()
-      );
-      
-      // Ordenar alfabéticamente
+        new Map(fontList.map((font: FontData) => [font.family, font])).values()
+      ).map((font) => ({
+        family: (font as FontData).family,
+        fullName: (font as FontData).fullName,
+        postscriptName: (font as FontData).postscriptName,
+        style: (font as FontData).style
+      }));
+
       uniqueFonts.sort((a, b) => a.family.localeCompare(b.family));
-      
-      setFonts(uniqueFonts);
+
+      setSystemFonts(uniqueFonts);
       setHasSystemFonts(true);
       setError(null);
     } catch (err) {
       console.error('Error al cargar las fuentes:', err);
-      // Volver a las fuentes de respaldo si falla la carga
-      setFonts(fallbackFonts.map(family => ({
-        family,
-        fullName: family,
-        postscriptName: family,
-        style: 'Regular'
-      })));
       if (err instanceof Error && err.name === 'SecurityError') {
         setError('No se ha permitido el acceso a las fuentes locales');
       } else {
@@ -79,98 +189,128 @@ export function FontSelector({ value, onChange }: FontSelectorProps) {
     }
   };
 
-  // Filtrar fuentes basadas en el término de búsqueda
-  const filteredFonts = fonts.filter(font => 
-    font.family.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredFonts = useMemo(() => {
+    let baseList: string[] = [];
+    if (activeTab === 'app') {
+      baseList = APP_FONTS;
+    } else if (activeTab === 'google') {
+      baseList = POPULAR_GOOGLE_FONTS;
+    } else {
+      return systemFonts.filter(f =>
+        f.family.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+
+    const filtered = baseList.filter(f =>
+      f.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    // If on Google tab and no matches, but there is a search term, allow "Custom" entry
+    if (activeTab === 'google' && searchTerm && !filtered.some(f => f.toLowerCase() === searchTerm.toLowerCase())) {
+      return [searchTerm, ...filtered].map(f => ({ family: f }));
+    }
+
+    return filtered.map(f => ({ family: f }));
+  }, [activeTab, searchTerm, systemFonts]);
+
+  const handleFontSelect = (fontFamily: string) => {
+    if (activeTab === 'google' || (activeTab === 'app' && POPULAR_GOOGLE_FONTS.includes(fontFamily))) {
+      loadGoogleFont(fontFamily);
+    }
+    onChange(fontFamily);
+  };
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="Buscar fuente..."
-          className="flex-1 bg-gray-700 text-white rounded px-2 py-1.5 text-sm"
-        />
-      </div>
-
-      <div className="relative">
-        <select
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full bg-gray-700 text-white rounded px-2 py-1.5 text-sm appearance-none"
-          style={{ fontFamily: value }}
-          disabled={isLoading}
-        >
-          {isLoading ? (
-            <option>Cargando fuentes...</option>
-          ) : filteredFonts.length === 0 ? (
-            // Si no hay coincidencias en la búsqueda o no hay fuentes cargadas,
-            // mostramos las fuentes de respaldo
-            fallbackFonts.map(family => (
-              <option 
-                key={family}
-                value={family}
-                style={{ fontFamily: family }}
-              >
-                {family}
-              </option>
-            ))
-          ) : (
-            filteredFonts.map(font => (
-              <option 
-                key={font.postscriptName} 
-                value={font.family}
-                style={{ fontFamily: font.family }}
-              >
-                {font.family}
-              </option>
-            ))
-          )}
-        </select>
-        <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
-          {isLoading ? (
-            <SpinnerIcon />
-          ) : (
-            <ChevronDownIcon />
-          )}
-        </div>
-      </div>
-
-      {'queryLocalFonts' in window && !hasSystemFonts && (
-        <div className="flex flex-col gap-2">
-          <button
-            onClick={loadFonts}
-            disabled={isLoading}
-            className={`w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1.5 text-sm transition-colors flex items-center justify-center gap-2 ${
-              isLoading ? 'opacity-50 cursor-not-allowed' : ''
+    <div className="flex flex-col gap-3">
+      {/* Tabs */}
+      <div className="flex bg-gray-800 p-1 rounded-lg">
+        <button
+          onClick={() => setActiveTab('app')}
+          className={`flex-1 py-1 px-2 text-xs font-medium rounded-md transition-colors ${activeTab === 'app' ? 'bg-gray-700 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
             }`}
-          >
-            {isLoading ? (
-              <>
-                <SpinnerIcon />
-                <span>Cargando fuentes...</span>
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                <span>Cargar fuentes del sistema</span>
-              </>
-            )}
-          </button>
+        >
+          App
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('system');
+            if (!hasSystemFonts) loadSystemFonts();
+          }}
+          className={`flex-1 py-1 px-2 text-xs font-medium rounded-md transition-colors ${activeTab === 'system' ? 'bg-gray-700 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
+            }`}
+        >
+          Sistema
+        </button>
+        <button
+          onClick={() => setActiveTab('google')}
+          className={`flex-1 py-1 px-2 text-xs font-medium rounded-md transition-colors ${activeTab === 'google' ? 'bg-gray-700 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
+            }`}
+        >
+          Google
+        </button>
+      </div>
 
-          {error && (
-            <div className="text-yellow-500 text-sm flex items-center gap-2 bg-yellow-500/10 px-3 py-2 rounded">
-              <WarningIcon className="flex-shrink-0" />
-              <span>{error}</span>
+      <div className="flex flex-col gap-2">
+        <div className="relative">
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder={activeTab === 'google' ? "Buscar o escribir nombre..." : "Buscar fuente..."}
+            className="w-full bg-gray-700 text-white rounded px-3 py-2 text-sm border border-gray-600 focus:border-blue-500 outline-none transition-colors"
+          />
+          {isLoading && (
+            <div className="absolute right-3 top-2.5">
+              <SpinnerIcon className="w-4 h-4 animate-spin text-gray-400" />
             </div>
           )}
         </div>
+
+        <div className="bg-gray-700 rounded-md overflow-hidden max-h-[200px] overflow-y-auto border border-gray-600">
+          {activeTab === 'system' && !hasSystemFonts && !isLoading && (
+            <div className="p-4 text-center">
+              <button
+                onClick={loadSystemFonts}
+                className="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors"
+              >
+                Permitir acceso a fuentes locales
+              </button>
+              {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+            </div>
+          )}
+
+          {activeTab === 'system' && isLoading && (
+            <div className="p-8 flex flex-col items-center gap-2 text-gray-400">
+              <SpinnerIcon className="w-6 h-6 animate-spin" />
+              <span className="text-sm">Escaneando fuentes del sistema...</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1">
+            {filteredFonts.map((font) => (
+              <FontItem
+                key={`${activeTab}-${font.family}`}
+                font={font}
+                isActive={value === font.family}
+                onSelect={handleFontSelect}
+                shouldLoadPreview={activeTab === 'google' || (activeTab === 'app' && POPULAR_GOOGLE_FONTS.includes(font.family))}
+              />
+            ))}
+
+            {filteredFonts.length === 0 && !isLoading && (
+              <div className="p-4 text-center text-gray-500 text-sm italic">
+                No se encontraron fuentes
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {activeTab === 'google' && searchTerm && !filteredFonts.some(f => f.family.toLowerCase() === searchTerm.toLowerCase()) && (
+        <p className="text-[10px] text-gray-500 italic">
+          Pulsa en lo que has escrito para intentar cargar &quot;{searchTerm}&quot; desde Google Fonts
+        </p>
       )}
     </div>
   );
-} 
+}
