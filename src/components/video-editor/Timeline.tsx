@@ -406,7 +406,7 @@ export function Timeline({
 
               {/* Audio Waveform Area */}
               <div
-                className="sticky bottom-0 h-12 bg-gray-900/80 border-t border-blue-500/20 z-0 flex items-center overflow-hidden relative"
+                className="sticky bottom-0 h-12 bg-gray-900/80 z-0 flex items-center overflow-hidden relative"
                 style={{ width: timelineWidth }}
               >
                 <TimelineWaveform

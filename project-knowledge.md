@@ -44,6 +44,8 @@
 
 ### Subtitle Rendering
 - Rendered directly on Canvas for high performance.
+- Improved video decoding performance by increasing the frame cache pool size.
+- Fixed redundant border in the timeline waveform container for a cleaner visual separation.
 - Iterates over all visible tracks in `VideoViewport`.
 - Supports animations (fade, scale), positioning (X, Y %), and smart grouping.
 
@@ -89,7 +91,7 @@
     - Extracted as an `AudioBuffer` on video load via `useWaveform` hook.
     - Rendered on a `<canvas>` in `TimelineWaveform` using a unipolar upward style (vertical bars from bottom baseline) for high clarity.
     - **Virtualization**: To handle extreme zoom levels (e.g. 500%+), the rendering is virtualized. It only draws the visible segment to a viewport-sized canvas, avoiding browser limits on absolute canvas width.
-    - Status: Automatically scales with `pps` and stays synchronized via a scroll listener on the tracks container.
+    - Status: Automatically scales with `pps` and stays synchronized via a scroll listener on the tracks container. The top border was removed to avoid thickness issues with track separators.
     - **Optimization**: Snap points are collected once at the start of a drag/resize operation (`handleMouseDown`) to ensure performance.
     - **Snap Points**: Include 0, duration, current playhead position, and start/end boundaries of all other subtitles across all tracks.
     - **Threshold**: 15px pixel-based threshold for consistent magnetic feel across zoom levels.

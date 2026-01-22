@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed timeline track misalignment by standardizing track height to 64px, perfectly matching the background grid and preventing cumulative vertical drift.
 - Optimized playback and audio synchronization by implementing event-based syncing and a more resilient drift threshold (0.5s), resolving audio stuttering issues.
 - Improved video decoding performance by increasing the frame cache pool size.
+- Fixed redundant border in the timeline waveform container for a cleaner visual separation.
 
 ### Technical
 - Added dependencies: `mediabunny`, `zustand`.
