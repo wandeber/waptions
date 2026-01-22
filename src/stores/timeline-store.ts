@@ -20,6 +20,7 @@ interface TimelineStore {
     lastSelectedId: string | null;
     snapEnabled: boolean;
     activeSnapTime: number | null;
+    clipboard: { subtitle: Subtitle, relativeTrackIndex: number }[] | null;
 
     // History
     history: HistorySnapshot[];
@@ -44,6 +45,8 @@ interface TimelineStore {
     setActiveTrackId: (id: string | null) => void;
     toggleSubtitleSelection: (id: string, isMulti?: boolean, isRange?: boolean) => void;
     clearSelection: () => void;
+    copySelection: () => void;
+    pasteSelection: (startTime: number) => void;
 
     // History Actions
     undo: () => Promise<void>;
@@ -83,6 +86,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     lastSelectedId: null,
     snapEnabled: true,
     activeSnapTime: null,
+    clipboard: null,
 
     history: [],
     redoStack: [],
@@ -479,5 +483,79 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
 
-    setActiveSnapTime: (time) => set({ activeSnapTime: time })
+    setActiveSnapTime: (time) => set({ activeSnapTime: time }),
+
+    copySelection: () => set((state) => {
+        if (state.selectedSubtitleIds.length === 0) return state;
+
+        const clipboard: { subtitle: Subtitle, relativeTrackIndex: number }[] = [];
+        const baseTrackIndex = state.tracks.findIndex(t => t.id === state.activeTrackId);
+        const refTrackIndex = baseTrackIndex !== -1 ? baseTrackIndex : 0;
+
+        state.tracks.forEach((track, tIdx) => {
+            track.subtitles.forEach(sub => {
+                if (state.selectedSubtitleIds.includes(sub.id)) {
+                    clipboard.push({
+                        subtitle: { ...sub },
+                        relativeTrackIndex: tIdx - refTrackIndex
+                    });
+                }
+            });
+        });
+
+        return { clipboard };
+    }),
+
+    pasteSelection: (targetStartTime) => {
+        const { clipboard, tracks, activeTrackId, pushHistory, toggleSubtitleSelection, clearSelection } = get();
+        if (!clipboard || clipboard.length === 0) return;
+
+        pushHistory();
+
+        const baseTrackIndex = tracks.findIndex(t => t.id === activeTrackId);
+        const refTrackIndex = baseTrackIndex !== -1 ? baseTrackIndex : 0;
+
+        // Find reference start time (earliest among clipboard items)
+        const earliestTime = Math.min(...clipboard.map(item => item.subtitle.startTime));
+
+        const newSelectionIds: string[] = [];
+        const newTracks = tracks.map((track, tIdx) => {
+            const itemsForThisTrack = clipboard.filter(item => {
+                const targetTrackIdx = refTrackIndex + item.relativeTrackIndex;
+                return targetTrackIdx === tIdx;
+            });
+
+            if (itemsForThisTrack.length === 0) return track;
+
+            const pastedSubs = itemsForThisTrack.map(item => {
+                const id = crypto.randomUUID();
+                newSelectionIds.push(id);
+                const offset = item.subtitle.startTime - earliestTime;
+                const duration = item.subtitle.endTime - item.subtitle.startTime;
+
+                return {
+                    ...item.subtitle,
+                    id,
+                    startTime: targetStartTime + offset,
+                    endTime: targetStartTime + offset + duration
+                };
+            });
+
+            return {
+                ...track,
+                subtitles: [...track.subtitles, ...pastedSubs].sort((a, b) => a.startTime - b.startTime)
+            };
+        });
+
+        set({ tracks: newTracks });
+        saveTimelineToStorage(newTracks);
+
+        // Select the newly pasted subtitles
+        if (newSelectionIds.length > 0) {
+            clearSelection();
+            newSelectionIds.forEach((id, idx) => {
+                toggleSubtitleSelection(id, idx > 0);
+            });
+        }
+    }
 }));

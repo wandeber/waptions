@@ -7,12 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Multi-Subtitle Selection & Group Interaction (Refined)
-- **Selection**: Supports `Cmd+Click` (toggle) and `Shift+Click` (range) following Mac standards.
-- **Bug Fixes**: Resolved a duplication bug during track switching.
-- **Improved UX**: Prevented selection reset when clicking or focusing already selected items.
-- **Optimized History**: Group movements now push a single history snapshot instead of cluttering the stack with intermediate moves.
-- **Multi-Delete**: Correctly removes selections across multiple tracks using `Backspace`/`Delete`.
+### Subtitle Improvements
+- **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
+- **Multi-Selection & Group Interaction (Refined)**:
+    - **Selection**: Supports `Cmd+Click` (toggle) and `Shift+Click` (range) following Mac standards.
+    - **Group Dragging**: Selected subtitles move together horizontally and vertically. Optimized history (single snapshot per move).
+    - **Bug Fixes**: Resolved duplication issues during track shifts.
+    - **Multi-Delete**: Correctly removes selections across tracks with `Backspace`/`Delete`.
 
 - **Improved Font Selector**: Refactored the font selection system with a tabbed interface (App, System, Google Fonts).
 - **Google Fonts Integration**: Added dynamic loading for over 1000 Google Fonts with manual search and automatic project-wide font management.

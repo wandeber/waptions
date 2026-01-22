@@ -9,6 +9,8 @@ import { ExportButton } from '@/components/video-editor/ExportButton';
 import { GoogleFontManager } from '@/components/video-editor/GoogleFontManager';
 import { UndoIcon } from '@/components/icons/UndoIcon';
 import { RedoIcon } from '@/components/icons/RedoIcon';
+import { CopyIcon } from '@/components/icons/CopyIcon';
+import { PasteIcon } from '@/components/icons/PasteIcon';
 import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
 import { InlineEditor } from '@/components/design-system/InlineEditor';
@@ -48,7 +50,10 @@ export function Editor() {
         history,
         redoStack,
         selectedSubtitleIds,
-        clearSelection
+        clearSelection,
+        copySelection,
+        pasteSelection,
+        clipboard
     } = useTimelineStore();
 
     const { saveCurrentProject, activeProject, closeProject, isDirty, updateProjectName } = useProjectStore();
@@ -99,6 +104,18 @@ export function Editor() {
                 redo();
             }
 
+            // Copy: Ctrl+C or Cmd+C
+            if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+                e.preventDefault();
+                copySelection();
+            }
+
+            // Paste: Ctrl+V or Cmd+V
+            if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+                e.preventDefault();
+                pasteSelection(currentTime);
+            }
+
             // Multi-Delete: Backspace or Delete
             if (e.key === 'Backspace' || e.key === 'Delete') {
                 if (selectedSubtitleIds.length > 0) {
@@ -116,7 +133,7 @@ export function Editor() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks]);
+    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks, copySelection, currentTime, pasteSelection]);
 
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -248,6 +265,25 @@ export function Editor() {
                         title="Rehacer (Ctrl+Shift+Z)"
                     >
                         <RedoIcon width={16} height={16} />
+                    </button>
+
+                    <div className="w-[1px] h-6 bg-gray-700 mx-1" />
+
+                    <button
+                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${selectedSubtitleIds.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        onClick={copySelection}
+                        disabled={selectedSubtitleIds.length === 0}
+                        title="Copiar (Cmd+C)"
+                    >
+                        <CopyIcon width={16} height={16} />
+                    </button>
+                    <button
+                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!clipboard || clipboard.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        onClick={() => pasteSelection(currentTime)}
+                        disabled={!clipboard || clipboard.length === 0}
+                        title="Pegar (Cmd+V)"
+                    >
+                        <PasteIcon width={16} height={16} />
                     </button>
 
                     <button
