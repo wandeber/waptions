@@ -20,11 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Project Previews**: Projects now show a proportional thumbnail of the first frame and the video duration in the dashboard.
 - **Inline Name Editing**: Projects and layers can now be renamed directly by clicking on their titles, with support for undo/redo in layer name changes.
 - **Virtualized Audio Waveform**: Added a high-performance audio waveform at the bottom of the timeline with support for extreme zoom levels (virtualized rendering).
-- **Subtitle Snapping**: Added magnetic snapping to subtitle boundaries and playhead during displacement and resizing.
-- **Architecture Cleanup**: Removed redundant `SubtitleTrack.tsx` and standardized the `Subtitle` interface in global types to improve maintainability.
-- **Style Refinement**: Added 200ms entry/exit animations to the default style and renamed the "Edu Siverio" preset to "Mi Alter Edu".
+- **Independent Drag Preview**: Decoupled video preview from playhead movement during drag/resize events, allowing the playhead to serve as a fixed reference point.
+- **Playhead Snapping**: The current playhead position now acts as a magnetic snap point during displacement and resizing operations.
+- **Unified Toolbar UI**: Grouped all overlay toggles into a single "Capas y Guías" menu and standardized all toolbar buttons to match a consistent dimensions and icon sizing (18x18px).
+- **Smart Toolbar Zoom**: Zoom buttons in the toolbar now anchor to the playhead position for a more intuitive and consistent editing experience.
 - **Snapping Refinement**: Adjusted snapping threshold to 15px and optimized visual feedback (transparent lines, hidden for initial positions).
-- **Playhead & Ruler Snapping**: Added "silent" magnetic snapping (no vertical line) to the playhead and ruler for precise navigation.
 
 ### Fixed
 - Fixed high-speed audio extraction and transcoding to AAC/MP4 on the client.

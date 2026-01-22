@@ -40,7 +40,7 @@ export function VideoViewport({
   onAudioExtracted,
 }: VideoViewportProps) {
   // Stores
-  const { currentTime, isPlaying, volume, muted } = usePlaybackStore();
+  const { currentTime, isPlaying, volume, muted, previewTime } = usePlaybackStore();
   const { videoFile, width: originalWidth, height: originalHeight, fps, duration, bitrate, loadVideo } = useVideoStore();
 
   // Sync video metadata to parent (needed when loading project)
@@ -178,7 +178,8 @@ export function VideoViewport({
   const renderFrame = useCallback(async () => {
     if (!videoFile || !canvasRef.current || !videoContainerRef.current || isRendering.current) return;
 
-    const { currentTime } = usePlaybackStore.getState();
+    const { currentTime, previewTime } = usePlaybackStore.getState();
+    const renderTime = previewTime !== null ? previewTime : currentTime;
     const rect = getVideoDisplayRect();
     if (!rect) return;
 
@@ -197,7 +198,7 @@ export function VideoViewport({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const frame = await videoCache.getFrameAt('preview', videoFile, currentTime);
+      const frame = await videoCache.getFrameAt('preview', videoFile, renderTime);
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (frame) {
@@ -417,7 +418,7 @@ export function VideoViewport({
   // Force render on time change (for scrubbing)
   useEffect(() => {
     renderFrame();
-  }, [currentTime, renderFrame]);
+  }, [currentTime, previewTime, renderFrame]);
 
   // Audio Sync & Playback State
   useEffect(() => {

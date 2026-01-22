@@ -62,7 +62,6 @@ export function TimelineTrackOverlay({
                     onClick={() => onSubtitleClick?.(subtitle)}
                     onUpdate={(updates, options) => updateSubtitleInTrack(track.id, subtitle.id, updates, options)}
                     onPushHistory={pushHistory}
-                    onTimeUpdate={onTimeUpdate}
                     duration={duration}
                 />
             ))}
@@ -79,11 +78,10 @@ interface SubtitleBlockProps {
     onClick: () => void;
     onUpdate: (updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
     onPushHistory: () => void;
-    onTimeUpdate?: (time: number) => void;
     duration: number;
 }
 
-function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, onTimeUpdate, duration }: SubtitleBlockProps) {
+function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, duration }: SubtitleBlockProps) {
     const { tracks, snapEnabled, setActiveSnapTime, pixelsPerSecond, zoomLevel } = useTimelineStore();
     const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
@@ -181,6 +179,8 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             const deltaY = moveEvent.clientY - startY;
             const deltaTime = deltaX / pps;
 
+            const { setPreviewTime } = usePlaybackStore.getState();
+
             if (type === 'move') {
                 // Vertical track switching logic
                 const trackIndexShift = Math.round(deltaY / 64);
@@ -227,7 +227,7 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
                     }, { skipHistory: true });
                 }
 
-                onTimeUpdate?.(newStart);
+                setPreviewTime(newStart);
             } else if (type === 'resize-start') {
                 let newStart = initialStart + deltaTime;
                 if (snapEnabled) {
@@ -235,7 +235,7 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
                 }
                 newStart = Math.max(0, Math.min(subtitle.endTime - 0.1, snapToFrame(newStart)));
                 onUpdate({ startTime: newStart }, { skipHistory: true });
-                onTimeUpdate?.(newStart);
+                setPreviewTime(newStart);
             } else if (type === 'resize-end') {
                 let newEnd = initialEnd + deltaTime;
                 if (snapEnabled) {
@@ -243,7 +243,7 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
                 }
                 newEnd = Math.max(subtitle.startTime + 0.1, snapToFrame(newEnd));
                 onUpdate({ endTime: newEnd }, { skipHistory: true });
-                onTimeUpdate?.(newEnd);
+                setPreviewTime(newEnd);
             }
         };
 
@@ -252,6 +252,7 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             window.removeEventListener('mouseup', handleMouseUp);
             setActiveSnapTime(null);
             setActiveHandle(null);
+            usePlaybackStore.getState().setPreviewTime(null);
         };
 
         window.addEventListener('mousemove', handleMouseMove);

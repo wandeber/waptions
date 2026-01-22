@@ -8,6 +8,7 @@ interface PlaybackState {
     muted: boolean;
     previousVolume: number;
     speed: number;
+    previewTime: number | null;
 }
 
 interface PlaybackActions {
@@ -19,6 +20,7 @@ interface PlaybackActions {
     setSpeed: (speed: number) => void;
     setDuration: (duration: number) => void;
     setCurrentTime: (time: number) => void;
+    setPreviewTime: (time: number | null) => void;
     mute: () => void;
     unmute: () => void;
     toggleMute: () => void;
@@ -86,6 +88,7 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
     muted: false,
     previousVolume: 1,
     speed: 1.0,
+    previewTime: null,
 
     play: () => {
         const state = get();
@@ -137,6 +140,7 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
 
     setDuration: (duration: number) => set({ duration }),
     setCurrentTime: (time: number) => set({ currentTime: time }),
+    setPreviewTime: (time: number | null) => set({ previewTime: time }),
 
     mute: () => {
         const { volume, previousVolume } = get();

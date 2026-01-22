@@ -12,7 +12,8 @@
 - **Icons**: Custom icons in `components/icons/` supporting `className` for Tailwind styling.
 - **Dialogs**: Use `ConfirmDialog` for destructive actions (Delete, Exit Unsaved) instead of `window.confirm`.
 - **Architecture Cleanup**: Removed redundant `SubtitleTrack.tsx` and standardized the `Subtitle` interface in global types.
-- **Icon Standardization**: Replaced custom timeline icons with `lucide-react` counterparts for better visual clarity.
+- **Icon Standardization**: All toolbar buttons use `lucide-react` icons (18x18px) for clarity.
+- **Unified Sizing**: Toolbar elements (Play, Zoom, Snap, Overlays) use the standard `Button` component with matching `md` size (px-3 py-1).
 
 ### Core Components
 - `VideoViewport.tsx**: Canvas rendering, multi-layer subtitle support, audio sync.
@@ -56,9 +57,9 @@
     - **Resource usage**: Displays current project size (metadata + video in DB), Video Cache memory estimate (Canvas buffers), and JS Heap Usage (Chrome only).
     - **Optimization**: Stats poll every 5 seconds. Heavy DB size checks are automatically paused during video playback (`isPlaying`) to avoid frame drops.
 - **Subtitle Interaction**:
-    - Horizontal dragging for positioning with magnetic snapping.
-    - Vertical dragging to move subtitles between different tracks/layers.
-    - Resizing from edges to adjust duration.
+    - **Independent Drag Preview**: During dragging or resizing, the video viewport follows the interaction (`previewTime` in `PlaybackStore`) while the playhead remains fixed as a reference.
+    - **Playhead Snapping**: The current playhead position is a mandatory magnetic snap point during move/resize operations.
+    - **Vertical Dragging**: Subtitles can be moved between different tracks/layers by dragging vertically.
 - **Styles and Presets**:
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
     - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.
