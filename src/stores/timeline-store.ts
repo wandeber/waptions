@@ -570,48 +570,86 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const fps = useVideoStore.getState().fps || 30;
         const frameDuration = 1 / fps;
 
-        // Find subtitle under playhead. 
-        // 1. Check active track
-        // 2. Fallback to any track
+        // 1. Find the target track and subtitle
         let targetTrackId: string | null = null;
         let targetSubtitle: Subtitle | null = null;
+        let mode: 'trim' | 'extend' = 'trim';
 
         const findOnTrack = (track: SubtitleTrack) => {
-            const EPSILON = 0.005; // 5ms buffer for floating point/snapping
+            const EPSILON = 0.005;
             return track.subtitles.find(s => time >= s.startTime - EPSILON && time < s.endTime - EPSILON);
         };
 
         const activeTrack = tracks.find(t => t.id === activeTrackId);
-        if (activeTrack) {
-            const sub = findOnTrack(activeTrack);
-            if (sub) {
-                targetTrackId = activeTrack.id;
-                targetSubtitle = sub;
-            }
-        }
 
+        // Try to find subtitle under playhead on active track or fallback
+        if (activeTrack) {
+            targetSubtitle = findOnTrack(activeTrack) || null;
+            if (targetSubtitle) targetTrackId = activeTrack.id;
+        }
         if (!targetSubtitle) {
             for (const track of tracks) {
-                const sub = findOnTrack(track);
-                if (sub) {
+                targetSubtitle = findOnTrack(track) || null;
+                if (targetSubtitle) {
                     targetTrackId = track.id;
-                    targetSubtitle = sub;
                     break;
                 }
             }
         }
 
-        if (targetTrackId && targetSubtitle) {
+        // 2. Decide if we trim the current sub or extend a neighbor
+        if (targetSubtitle && targetTrackId) {
+            if (side === 'start') {
+                // If we are at the very start of the sub (or within 1 frame), we extend previous sub instead of trimming
+                if (time < targetSubtitle.startTime + frameDuration + 0.001) {
+                    mode = 'extend';
+                }
+            } else {
+                // If we are at the very end of the sub (or within 1 frame), we extend next sub instead of trimming
+                if (time > targetSubtitle.endTime - frameDuration - 0.001) {
+                    mode = 'extend';
+                }
+            }
+        } else {
+            // If no sub under playhead, we are in a gap, so we extend
+            mode = 'extend';
+            targetTrackId = activeTrackId || (tracks.length > 0 ? tracks[0].id : null);
+        }
+
+        if (!targetTrackId) return;
+        const track = tracks.find(t => t.id === targetTrackId);
+        if (!track) return;
+
+        if (mode === 'trim' && targetSubtitle) {
             const newStartTime = side === 'start' ? time : targetSubtitle.startTime;
             const newEndTime = side === 'end' ? time : targetSubtitle.endTime;
             const newDuration = newEndTime - newStartTime;
 
-            // If resulting duration is less than 1 frame, delete it
             if (newDuration < frameDuration - 0.001) {
                 removeSubtitleFromTrack(targetTrackId, targetSubtitle.id);
             } else {
-                const updates = side === 'start' ? { startTime: time } : { endTime: time };
-                updateSubtitleInTrack(targetTrackId, targetSubtitle.id, updates);
+                updateSubtitleInTrack(targetTrackId, targetSubtitle.id, side === 'start' ? { startTime: time } : { endTime: time });
+            }
+        } else {
+            // Extend Neighbor
+            if (side === 'start') {
+                // Extension (Q): Find sub that ends BEFORE time
+                const prevSub = [...track.subtitles]
+                    .filter(s => s.endTime <= time + 0.001)
+                    .sort((a, b) => b.endTime - a.endTime)[0];
+
+                if (prevSub) {
+                    updateSubtitleInTrack(targetTrackId, prevSub.id, { endTime: time });
+                }
+            } else {
+                // Extension (W): Find sub that starts AFTER time
+                const nextSub = [...track.subtitles]
+                    .filter(s => s.startTime >= time - 0.001)
+                    .sort((a, b) => a.startTime - b.startTime)[0];
+
+                if (nextSub) {
+                    updateSubtitleInTrack(targetTrackId, nextSub.id, { startTime: time });
+                }
             }
         }
     },

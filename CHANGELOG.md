@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Subtitle Improvements
 - **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
-- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead from the left or right, respectively. Automatic deletion occurs if the resulting subtitle duration is less than one frame.
+- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead. 
+    - **Gap Filling**: If pressed at a boundary or in a gap, it extends the previous (`Q`) or next (`W`) subtitle to meet the playhead.
+    - **Auto-Deletion**: Subtitles are automatically removed if trimmed to less than one frame duration.
 - **Edit Shortcuts**:
     - `Enter`: Selects and focuses the subtitle under the playhead for immediate editing. If no subtitle is present, it **automatically creates a new one** on the active track and focuses its text editor.
     - `V`: Selects the subtitle under the playhead without giving focus to the text editor.

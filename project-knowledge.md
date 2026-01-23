@@ -62,6 +62,7 @@
     - **Multi-Selection**: Centralized in `TimelineStore`. Handles range (`Shift+Click`) and toggle (`Cmd+Click`) selection strictly following Mac standards.
     - **Copy/Paste**: Support for duplicating selections via `Cmd+C/V`. Preserves relative timing and track distribution. Pates starting at the playhead position.
     - **Edit Shortcuts**: `Enter` selects and focuses the subtitle under the playhead. If no subtitle exists at that point, it creates a new one (capped by next sub or 2s) and focuses it. `V` selects without focusing. `Esc` blurs the editor.
+    - **Trimming Shortcuts**: `Q` and `W` keys allow fast trimming. If pressed at a sub boundary or in a gap, they **extend** the neighbor (previous for Q, next for W) to fill the space. Automatic deletion occurs if resulting duration < 1 frame.
     - **Group Dragging**: Selected subtitles move together horizontally and vertically, preserving relative positions. Optimized history (single snapshot per operation).
 - **Styles and Presets**:
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
