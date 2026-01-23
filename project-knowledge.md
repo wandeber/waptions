@@ -111,6 +111,7 @@
     - **Interaction**: They enforce a **200ms hover delay** before expanding and a **400ms collapse hysteresis**.
     - **Atomic Swap**: To prevent layout jumps during transition, gaps support an `isInstant` prop. When a drop is detected, the gap collapses to 24px in **0ms**, precisely as the new 60px line appears. This creates a mathematically perfect spatial exchange without component overlap.
     - **Drop Reliability**: `handleDragEnd` uses the `expandedGapIndex` state to lock the drop target, ensuring reliability even with pointer jitter.
+    - **Stability & Performance**: Component hardened against infinite re-renders ("Maximum update depth exceeded") via strict `useCallback` stabilization of all event handlers, memoization of sortable sub-elements, and recursive update prevention in `useEffect` (deep comparing store state before sync).
 - **Auto-Cleanup**: Groups (lines) are automatically deleted when their last word is dragged out. Creating a new group is done by dropping on a Gap.
 
 ## Development Guidelines

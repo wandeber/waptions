@@ -779,10 +779,13 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const containerIds: string[] = [];
 
         const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
+        const timestamp = Date.now();
 
         for (let i = 0; i < sorted.length; i += wordsPerLine) {
             const chunk = sorted.slice(i, i + wordsPerLine);
-            const groupId = `group-${i}-${Date.now()}`; // Unique ID to avoid collision
+            // Use the first word's ID to make the group ID stable during a single session
+            const firstWordId = chunk[0].id.toString().slice(0, 8);
+            const groupId = `group-${firstWordId}-${i}-${timestamp}`;
             groups[groupId] = chunk;
             containerIds.push(groupId);
         }

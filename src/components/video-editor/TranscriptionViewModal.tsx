@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/design-system/Button';
 import { Subtitle } from '@/types/timeline';
 import { Layers } from 'lucide-react';
@@ -40,7 +40,7 @@ interface TranscriptionViewModalProps {
 }
 
 // --- Sortable Item (Word Badge) ---
-function SortableWord({
+const SortableWord = React.memo(function SortableWord({
     id,
     subtitle,
     isDraggable,
@@ -162,10 +162,10 @@ function SortableWord({
             <span>{subtitle.text}</span>
         </div>
     );
-}
+});
 
 // --- Droppable Gap (Between Lines) ---
-function DroppableGap({
+const DroppableGap = React.memo(function DroppableGap({
     id,
     index,
     isExpanded,
@@ -190,7 +190,7 @@ function DroppableGap({
         let timer: NodeJS.Timeout;
         if (isOver) {
             timer = setTimeout(() => {
-                onExpandChange(true);
+                if (!isExpanded) onExpandChange(true);
             }, 200);
         } else {
             // Hysteresis: wait 400ms before collapsing if it was expanded
@@ -198,8 +198,6 @@ function DroppableGap({
                 timer = setTimeout(() => {
                     onExpandChange(false);
                 }, 400);
-            } else {
-                onExpandChange(false);
             }
         }
         return () => clearTimeout(timer);
@@ -226,10 +224,10 @@ function DroppableGap({
             </div>
         </div>
     );
-}
+});
 
 // --- Droppable Container (Line) ---
-function DroppableLine({
+const DroppableLine = React.memo(function DroppableLine({
     id,
     items,
     selectedId,
@@ -304,7 +302,7 @@ function DroppableLine({
             </SortableContext>
         </div>
     );
-}
+});
 
 export function TranscriptionViewModal({
     isOpen,
@@ -350,7 +348,11 @@ export function TranscriptionViewModal({
     // SYNC TO STORE: Keep work-in-progress state in the global store for persistence
     useEffect(() => {
         if (isOpen && Object.keys(groups).length > 0) {
-            setTranscriptionState(groups, containerIds.map(id => id.toString()));
+            // Check if state actually drifted to avoid infinite loops
+            const currentStoreGroups = useTimelineStore.getState().transcriptionGroups;
+            if (JSON.stringify(currentStoreGroups) !== JSON.stringify(groups)) {
+                setTranscriptionState(groups, containerIds.map(id => id.toString()));
+            }
         }
     }, [groups, containerIds, isOpen, setTranscriptionState]);
 
@@ -430,21 +432,21 @@ export function TranscriptionViewModal({
         return () => window.removeEventListener('keydown', handleGlobalKeyDown);
     }, [isOpen, selectedId, editingId, isEditing]);
 
-    const findContainer = (id: UniqueIdentifier) => {
+    const findContainer = useCallback((id: UniqueIdentifier) => {
         if (id in groups) {
             return id;
         }
         return Object.keys(groups).find((key) => groups[key].find((s) => s.id === id));
-    };
+    }, [groups]);
 
-    const handleDragStart = (event: DragStartEvent) => {
+    const handleDragStart = useCallback((event: DragStartEvent) => {
         if (isEditing) return;
         setActiveId(event.active.id);
         setSelectedId(null);
         setExpandedGapIndex(null);
-    };
+    }, [isEditing]);
 
-    const handleCommitEdit = (id: string, newText: string) => {
+    const handleCommitEdit = useCallback((id: string, newText: string) => {
         const trimmed = newText.trim();
         if (!trimmed) {
             setEditingId(null);
@@ -489,7 +491,7 @@ export function TranscriptionViewModal({
 
         setEditingId(null);
         setSelectedId(null);
-    };
+    }, [groups, findContainer]); // containerIds removed as it's not used here
 
     const handleDeleteConfirm = () => {
         if (!itemToDelete) return;
@@ -589,7 +591,7 @@ export function TranscriptionViewModal({
         });
     };
 
-    const handleDragEnd = (event: DragEndEvent) => {
+    const handleDragEnd = useCallback((event: DragEndEvent) => {
         const { active, over } = event;
         const activeContainer = findContainer(active.id);
 
@@ -646,7 +648,7 @@ export function TranscriptionViewModal({
 
         setActiveId(null);
         setExpandedGapIndex(null);
-    };
+    }, [groups, containerIds, expandedGapIndex, findContainer]);
 
     // GAP PRIORITY COLLISION STRATEGY
     const customCollisionDetection: CollisionDetection = (args) => {

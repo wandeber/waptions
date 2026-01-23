@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Real-Time persistence**: Every drag, merge, or text edit in the transcription grouper is now persisted to IndexedDB in real-time, preventing data loss across reloads.
 - **Auto-Save Fixes**: Added missing save triggers in `setTracks` and `setTranscriptionState` to ensure all changes are committed to storage immediately.
 - **Premium UI Refinement**: Standardized modal header and buttons with the application's premium aesthetic (gradients, rings, and backdrop-blur). Improved popover styling for the auto-group configuration. Renamed "Aplicar cambios" to "Aplicar" and ensured popover buttons follow the design system variants.
+- **Stability Fix**: Resolved "Maximum update depth exceeded" infinite loop in `TranscriptionViewModal` by stabilizing callbacks with `useCallback`, memoizing subcomponents (`SortableWord`, `DroppableGap`), and adding safety guards to state synchronization effects.
 - **Design System Fixes**: Added automatic content centering to the base `Button` component.
 - **Backend Architecture**: Updated the `/api/generate-subtitles` endpoint to support model parameters and switched to `verbose_json` with `word` granularity.
 
