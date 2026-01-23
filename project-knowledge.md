@@ -14,6 +14,7 @@
 - **Architecture Cleanup**: Removed redundant `SubtitleTrack.tsx` and standardized the `Subtitle` interface in global types.
 - **Icon Standardization**: All toolbar buttons use `lucide-react` icons (18x18px) for clarity.
 - **Unified Sizing**: Toolbar elements (Play, Zoom, Snap, Overlays) use the standard `Button` component with matching `md` size (px-3 py-1).
+- **Button Centering**: Added `justify-center` to the base `Button` component to ensure content is always centered, especially when using `flex-1`.
 
 ### Core Components
 - `VideoViewport.tsx**: Canvas rendering, multi-layer subtitle support, audio sync.
@@ -21,7 +22,7 @@
 - `SubtitleEditor/`: Subtitle management with presets and AI transcription.
 
 ### API Routes
-- `/api/generate-subtitles`: OpenAI Whisper integration via audio extraction.
+- `/api/generate-subtitles`: Multi-model endpoint returning raw **word-level** timestamps. Grouping logic is delegated to the client or separate processes.
 
 ## Technical Details
 
@@ -80,9 +81,31 @@
     - Captures the frame respecting the original aspect ratio to avoid deformation.
     - Stored as base64 jpeg and seconds in the project metadata (IndexedDB).
     - Displayed in the `ProjectDashboard` for quick identification.
+- **AI Transcription Engine**:
+    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram, Local).
+    - **Modal Flow**: Transcription is not instant; a `TranscriptionModal` allows configuration before processing.
+    - **Audio Extraction**: Audio is extracted and transcoded to AAC/MP4 on the client before upload to minimize bandwidth.
 - **Project Storage**: `ProjectStore` uses `storage-service` to save project metadata (`waptions-projects`) and timelines (`waptions-timelines-{projectId}`).
 - **Timeline History**: `TimelineStore` implements manual undo/redo stack (`history` + `redoStack`) and auto-saves to IndexedDB on changes.
 - **Text Editing Optimization**: Subtitle text changes are debounced (300ms) in `SubtitleEditor`. The first keystroke captures a history snapshot (state before typing), subsequent keystrokes update state with `skipHistory: true`. This groups a continuous typing session into a single undo step.
+
+### Transcription & UX (Subtitle Grouper "Mode Sagrado")
+- **Drag & Drop Engine**: Uses `dnd-kit` for high-performance sortable lists.
+- **Sacred Order (Orden Sagrado)**: The grouper enforces strict chronological sorting.
+    - **Locks**: Middle words are locked and cannot be dragged. Use dragging only to adjust boundaries.
+    - **Constraints**: 
+        - **First Word**: Can only be dragged **UP** (to join the previous line). Cannot create new lines (cannot drop on gaps).
+        - **Last Word**: Can only be dragged **DOWN** (to join the next line or create a new line after by dropping on the gap below).
+    - This ensures that time never flows backwards.
+    - This ensures that time never flows backwards.
+    - **Zero-Shift Footprint**: Expanded gaps have an exact height of **108px**, which perfectly accommodates the Gap (24px) + Line (60px) + Gap (24px) resulting stack.
+    - **Chronological Merging**: When merging UP, the word is appended to the **END** of the target group. When merging DOWN, it is prepended to the **START**. This maintains a perfect time sequence.
+    - **Directional Adjacency**: The **first word** of a group can only move UP; the **last word** can only move DOWN.
+    - **Interaction**: They enforce a **200ms hover delay** before expanding and a **400ms collapse hysteresis**.
+    - **Atomic Swap**: To prevent layout jumps during transition, gaps support an `isInstant` prop. When a drop is detected, the gap collapses to 24px in **0ms**, precisely as the new 60px line appears. This creates a mathematically perfect spatial exchange without component overlap.
+    - **Drop Reliability**: `handleDragEnd` uses the `expandedGapIndex` state to lock the drop target, ensuring reliability even with pointer jitter.
+- **Auto-Cleanup**: Groups (lines) are automatically deleted when their last word is dragged out. Creating a new group is done by dropping on a Gap.
+- **Persistence**: The granular "word-by-word" structure of the transcription grouper is persisted in `TimelineStore` (`transcriptionGroups`, `transcriptionContainerIds`). This ensures that manual edits, splits, and custom groupings are preserved even when closing and reopening the modal. The structure is saved to the store only when the user clicks **Aplicar**.
 
 ## Development Guidelines
 
@@ -121,6 +144,7 @@
 
 - **Timeline Render Loop**: The main `Timeline` component re-renders at ~60fps during playback because it receives `currentTime` as a prop. To maintain responsiveness, all sub-components (`TimelineRuler`, `TimelineTrackOverlay`, etc.) are wrapped in `React.memo`.
 - **Navigation Optimization**: `ArrowUp`/`ArrowDown` navigation calculates "key points" from all tracks. This list is memoized with `useMemo` to ensure O(1) jump calculation during fast keyboard repeats.
+- **SubtitleEditor State Sync**: The local `editingText` state in `SubtitleEditor.tsx` is synchronized with the `subtitles` prop to detect and reflect external edits (like merging words into groups in the transcription modal). It avoids overwriting the state while the user is actively typing.
 - **Callback Stability**: All handlers passed from `Editor.tsx` to the timeline tree are wrapped in `useCallback` to prevent breaking memoization.
 
 ## Video Rendering & Caching Architecture

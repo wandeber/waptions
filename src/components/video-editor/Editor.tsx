@@ -14,6 +14,8 @@ import { PasteIcon } from '@/components/icons/PasteIcon';
 import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
 import { InlineEditor } from '@/components/design-system/InlineEditor';
+import { TranscriptionModal } from '@/components/video-editor/TranscriptionModal';
+import { TranscriptionModelId } from '@/types/transcription';
 
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
@@ -72,6 +74,7 @@ export function Editor() {
     const [showMetaInfo, setShowMetaInfo] = useState(true);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [showExitConfirm, setShowExitConfirm] = useState(false);
+    const [showTranscriptionModal, setShowTranscriptionModal] = useState(false);
 
     // Active track and its data
     const activeTrack = tracks.find(t => t.id === activeTrackId) || tracks[0];
@@ -242,6 +245,59 @@ export function Editor() {
         }
     };
 
+    const handleConfirmTranscription = async (modelId: TranscriptionModelId) => {
+        if (!videoFile || !audioUrl) return;
+
+        try {
+            setIsGeneratingSubtitles(true);
+
+            // Extraer solo el audio para optimizar el envío a Whisper (< 25MB)
+            const audioBlob = await extractAudio(videoFile);
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'audio.mp4');
+            formData.append('model', modelId);
+
+            // Llamar al endpoint
+            const response = await fetch('/api/generate-subtitles', {
+                method: 'POST',
+                body: formData,
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Error al generar subtítulos');
+            }
+
+            // Aplicar snap a frames en los subtítulos generados
+            const fps = detectedFps || 30;
+            const frameDuration = 1 / fps;
+            const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
+
+            const snappedSubtitles = (data.subtitles as Subtitle[]).map(s => ({
+                ...s,
+                startTime: snapTime(s.startTime),
+                endTime: snapTime(s.endTime)
+            }));
+
+            if (activeTrack) {
+                const updatedTracks = tracks.map(t =>
+                    t.id === activeTrack.id ? { ...t, subtitles: snappedSubtitles } : t
+                );
+                setTracks(updatedTracks);
+            }
+            setShowTranscriptionModal(false);
+        } catch (error) {
+            console.error('Error detallado al generar subtítulos:', {
+                error,
+                message: error instanceof Error ? error.message : 'Error desconocido'
+            });
+            alert(error instanceof Error ? error.message : 'Error al generar los subtítulos. Por favor, intenta de nuevo.');
+        } finally {
+            setIsGeneratingSubtitles(false);
+        }
+    };
+
 
 
     const handleSave = async () => {
@@ -374,58 +430,12 @@ export function Editor() {
                             onAddSubtitle={handleAddSubtitle}
                             currentTime={currentTime}
                             fps={detectedFps || 30}
-                            onGenerateSubtitles={async () => {
+                            onGenerateSubtitles={() => {
                                 if (!videoFile || !audioUrl) {
                                     alert('Por favor, carga un video primero');
                                     return;
                                 }
-
-                                try {
-                                    setIsGeneratingSubtitles(true);
-
-                                    // Extraer solo el audio para optimizar el envío a Whisper (< 25MB)
-                                    const audioBlob = await extractAudio(videoFile);
-                                    const formData = new FormData();
-                                    formData.append('audio', audioBlob, 'audio.mp4');
-
-                                    // Llamar al endpoint
-                                    const response = await fetch('/api/generate-subtitles', {
-                                        method: 'POST',
-                                        body: formData,
-                                    });
-
-                                    const data = await response.json();
-
-                                    if (!response.ok) {
-                                        throw new Error(data.error || 'Error al generar subtítulos');
-                                    }
-
-                                    // Aplicar snap a frames en los subtítulos generados
-                                    const fps = detectedFps || 30;
-                                    const frameDuration = 1 / fps;
-                                    const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
-
-                                    const snappedSubtitles = (data.subtitles as Subtitle[]).map(s => ({
-                                        ...s,
-                                        startTime: snapTime(s.startTime),
-                                        endTime: snapTime(s.endTime)
-                                    }));
-
-                                    if (activeTrack) {
-                                        const updatedTracks = tracks.map(t =>
-                                            t.id === activeTrack.id ? { ...t, subtitles: snappedSubtitles } : t
-                                        );
-                                        setTracks(updatedTracks);
-                                    }
-                                } catch (error) {
-                                    console.error('Error detallado al generar subtítulos:', {
-                                        error,
-                                        message: error instanceof Error ? error.message : 'Error desconocido'
-                                    });
-                                    alert(error instanceof Error ? error.message : 'Error al generar los subtítulos. Por favor, intenta de nuevo.');
-                                } finally {
-                                    setIsGeneratingSubtitles(false);
-                                }
+                                setShowTranscriptionModal(true);
                             }}
                             isGeneratingSubtitles={isGeneratingSubtitles}
                             animationStyle={animationStyle}
@@ -434,6 +444,13 @@ export function Editor() {
                     </div>
                 </div>
             </main>
+
+            <TranscriptionModal
+                isOpen={showTranscriptionModal}
+                onClose={() => setShowTranscriptionModal(false)}
+                onConfirm={handleConfirmTranscription}
+                isProcessing={isGeneratingSubtitles}
+            />
 
             <ConfirmDialog
                 isOpen={showExitConfirm}

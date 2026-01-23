@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { Subtitle } from '@/types/timeline';
 import { Button } from '../../design-system/Button';
 import { MagicMicIcon } from '../../icons/MagicMicIcon';
@@ -6,6 +6,8 @@ import { SpinnerIcon } from '../../icons/SpinnerIcon';
 import { PlusIcon } from '../../icons/PlusIcon';
 import { CloseIcon } from '../../icons/CloseIcon';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { FileText } from 'lucide-react';
+import { TranscriptionViewModal } from '../TranscriptionViewModal';
 
 interface SubtitleListProps {
   subtitles: Subtitle[];
@@ -38,6 +40,7 @@ export function SubtitleList({
   const selectedSubtitleId = selectedSubtitleIds[selectedSubtitleIds.length - 1]; // Main selected for scrolling
   const textAreasRef = useRef<{ [key: string]: HTMLTextAreaElement | null }>({});
   const isInternalInteraction = useRef(false);
+  const [showTranscriptionView, setShowTranscriptionView] = useState(false);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -133,124 +136,148 @@ export function SubtitleList({
   };
 
   return (
-    <div className="flex flex-col gap-4 p-4" onClick={() => clearSelection()}>
-      <div className="flex justify-between items-center" onClick={e => e.stopPropagation()}>
-        <div></div>
-        <div className="flex gap-2 ml-auto">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onGenerateSubtitles}
-            disabled={isGeneratingSubtitles}
-            title="Generar subtítulos automáticamente con IA"
-          >
-            {isGeneratingSubtitles ? <SpinnerIcon /> : <MagicMicIcon />}
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              isInternalInteraction.current = true;
-              if (onAddSubtitle) {
-                const newSubtitleBase = {
+    <>
+      <div className="flex flex-col gap-4 p-4" onClick={() => clearSelection()}>
+        <div className="flex justify-between items-center" onClick={e => e.stopPropagation()}>
+          <div></div>
+          <div className="flex gap-2 ml-auto">
+            {subtitles.length > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setShowTranscriptionView(true)}
+                title="Ver transcripción completa"
+                className="w-8 justify-center"
+              >
+                <FileText className="w-4 h-4" />
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onGenerateSubtitles}
+              disabled={isGeneratingSubtitles}
+              title="Generar subtítulos automáticamente con IA"
+              className="w-8 justify-center"
+            >
+              {isGeneratingSubtitles ? <SpinnerIcon /> : <MagicMicIcon />}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                isInternalInteraction.current = true;
+                if (onAddSubtitle) {
+                  const newSubtitleBase = {
+                    startTime: currentTime,
+                    endTime: currentTime + 2,
+                    text: ''
+                  };
+                  const newId = onAddSubtitle(newSubtitleBase);
+                  toggleSubtitleSelection(newId);
+
+                  requestAnimationFrame(() => {
+                    const textarea = textAreasRef.current[newId];
+                    if (textarea) {
+                      textarea.focus();
+                    }
+                  });
+                  return;
+                }
+
+                const newSubtitle: Subtitle = {
+                  id: Date.now().toString(),
                   startTime: currentTime,
                   endTime: currentTime + 2,
                   text: ''
                 };
-                const newId = onAddSubtitle(newSubtitleBase);
-                toggleSubtitleSelection(newId);
-
+                onSubtitlesChange?.([...subtitles, newSubtitle]);
+                toggleSubtitleSelection(newSubtitle.id);
                 requestAnimationFrame(() => {
-                  const textarea = textAreasRef.current[newId];
+                  const textarea = textAreasRef.current[newSubtitle.id];
                   if (textarea) {
                     textarea.focus();
                   }
                 });
-                return;
-              }
-
-              const newSubtitle: Subtitle = {
-                id: Date.now().toString(),
-                startTime: currentTime,
-                endTime: currentTime + 2,
-                text: ''
-              };
-              onSubtitlesChange?.([...subtitles, newSubtitle]);
-              toggleSubtitleSelection(newSubtitle.id);
-              requestAnimationFrame(() => {
-                const textarea = textAreasRef.current[newSubtitle.id];
-                if (textarea) {
-                  textarea.focus();
-                }
-              });
-            }}
-            title="Añadir subtítulo"
-          >
-            <PlusIcon />
-          </Button>
-        </div>
-      </div>
-
-      {subtitles.length === 0 ? (
-        <div className="text-gray-500 text-center text-sm mt-8">
-          No hay subtítulos añadidos
-        </div>
-      ) : (
-        [...subtitles]
-          .sort((a, b) => a.startTime - b.startTime)
-          .map(subtitle => (
-            <div
-              key={subtitle.id}
-              className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
-                ${selectedSubtitleIds.includes(subtitle.id) ? 'ring-2 ring-white' : ''}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleInternalSelect(e, subtitle);
               }}
+              title="Añadir subtítulo"
+              className="w-8 justify-center"
             >
-              <div className="flex justify-between items-center">
-                <div className="text-sm text-gray-400">
-                  <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete?.(subtitle.id);
-                  }}
-                  title="Eliminar subtítulo"
-                >
-                  <CloseIcon />
-                </Button>
-              </div>
+              <PlusIcon />
+            </Button>
+          </div>
+        </div>
 
-              <textarea
-                ref={el => {
-                  textAreasRef.current[subtitle.id] = el;
-                }}
-                id={`subtitle-${subtitle.id}`}
-                className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden transition-colors border border-transparent focus:border-blue-500/50 focus:bg-gray-700 focus:outline-none min-h-[2rem]"
-                value={editingText[subtitle.id] || ''}
-                onChange={(e) => {
-                  onTextChange(subtitle, e.target.value);
-                  // Ajustar altura inmediatamente al escribir
-                  e.target.style.height = 'auto';
-                  e.target.style.height = `${e.target.scrollHeight}px`;
-                }}
+        {subtitles.length === 0 ? (
+          <div className="text-gray-500 text-center text-sm mt-8">
+            No hay subtítulos añadidos
+          </div>
+        ) : (
+          [...subtitles]
+            .sort((a, b) => a.startTime - b.startTime)
+            .map(subtitle => (
+              <div
+                key={subtitle.id}
+                className={`bg-gray-700 rounded p-3 flex flex-col gap-2 transition-colors cursor-pointer
+                  ${selectedSubtitleIds.includes(subtitle.id) ? 'ring-2 ring-white' : ''}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleInternalSelect(e, subtitle);
                 }}
-                onFocus={() => handleFocus(subtitle)}
-                onMouseDown={(e) => e.stopPropagation()}
-                onKeyDown={(e) => onKeyDown(e, subtitle)}
-                placeholder="Escribe el texto del subtítulo aquí..."
-                rows={1}
-              />
-            </div>
-          ))
-      )}
-    </div>
+              >
+                <div className="flex justify-between items-center">
+                  <div className="text-sm text-gray-400">
+                    <span className="select-none">{formatTime(subtitle.startTime)} - {formatTime(subtitle.endTime)}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete?.(subtitle.id);
+                    }}
+                    title="Eliminar subtítulo"
+                  >
+                    <CloseIcon />
+                  </Button>
+                </div>
+
+                <textarea
+                  ref={el => {
+                    textAreasRef.current[subtitle.id] = el;
+                  }}
+                  id={`subtitle-${subtitle.id}`}
+                  className="bg-gray-600 rounded p-2 text-white text-sm resize-none overflow-hidden transition-colors border border-transparent focus:border-blue-500/50 focus:bg-gray-700 focus:outline-none min-h-[2rem]"
+                  value={editingText[subtitle.id] || ''}
+                  onChange={(e) => {
+                    onTextChange(subtitle, e.target.value);
+                    // Ajustar altura inmediatamente al escribir
+                    e.target.style.height = 'auto';
+                    e.target.style.height = `${e.target.scrollHeight}px`;
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleInternalSelect(e, subtitle);
+                  }}
+                  onFocus={() => handleFocus(subtitle)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => onKeyDown(e, subtitle)}
+                  placeholder="Escribe el texto del subtítulo aquí..."
+                  rows={1}
+                />
+              </div>
+            ))
+        )}
+      </div>
+
+      <TranscriptionViewModal
+        isOpen={showTranscriptionView}
+        onClose={() => setShowTranscriptionView(false)}
+        subtitles={subtitles}
+        onApplyGroups={(newSubtitles) => {
+          onSubtitlesChange?.(newSubtitles);
+        }}
+      />
+    </>
   );
 }

@@ -59,6 +59,11 @@ interface TimelineStore {
     pushHistory: () => void;
     setSnapEnabled: (enabled: boolean) => void;
     setActiveSnapTime: (time: number | null) => void;
+
+    // Transcription Persistence
+    transcriptionGroups: { [key: string]: Subtitle[] } | null;
+    transcriptionContainerIds: string[] | null;
+    setTranscriptionState: (groups: { [key: string]: Subtitle[] } | null, containerIds: string[] | null) => void;
 }
 
 // Helper to save timeline changes
@@ -96,6 +101,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     history: [],
     redoStack: [],
+
+    transcriptionGroups: null,
+    transcriptionContainerIds: null,
 
     setZoom: (zoom) => set({ zoomLevel: Math.max(0.1, Math.min(10, zoom)) }),
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
@@ -733,5 +741,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         set({ requestEditSubtitleId: newId });
     },
 
-    clearEditRequest: () => set({ requestEditSubtitleId: null })
+    clearEditRequest: () => set({ requestEditSubtitleId: null }),
+
+    setTranscriptionState: (groups, containerIds) => set({
+        transcriptionGroups: groups,
+        transcriptionContainerIds: containerIds
+    })
 }));

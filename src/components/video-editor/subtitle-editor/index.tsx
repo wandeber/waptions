@@ -69,20 +69,30 @@ export function SubtitleEditor({
     }
   }, [animationStyle, localAnimationStyle]);
 
-  // Inicializar o actualizar el texto de edición cuando cambian los subtítulos
+  // Sincronizar el texto de edición con los subtítulos (incluyendo fusiones externas)
   useEffect(() => {
-    const newEditingText: { [key: string]: string } = {};
-    let needsUpdate = false;
-
-    subtitles.forEach(subtitle => {
-      if (!(subtitle.id in editingText)) {
-        newEditingText[subtitle.id] = subtitle.text;
-        needsUpdate = true;
-      }
+    // Construir el objeto de texto esperado basado en los subtítulos actuales
+    const expectedText: { [key: string]: string } = {};
+    subtitles.forEach(s => {
+      expectedText[s.id] = s.text;
     });
 
-    if (needsUpdate) {
-      setEditingText(prev => ({ ...prev, ...newEditingText }));
+    // Detectar si necesitamos actualizar la memoria interna
+    // 1. ¿Falta algún ID?
+    // 2. ¿Sobra algún ID (limpieza)?
+    // 3. ¿El texto de algún ID existente ha cambiado externamente (fusión)?
+    const currentIds = Object.keys(editingText);
+    const expectedIds = Object.keys(expectedText);
+
+    const hasIdMismatch = currentIds.length !== expectedIds.length ||
+      expectedIds.some(id => !editingText.hasOwnProperty(id));
+
+    const hasTextMismatch = expectedIds.some(id =>
+      editingText.hasOwnProperty(id) && editingText[id] !== expectedText[id] && !isTypingRef.current
+    );
+
+    if (hasIdMismatch || hasTextMismatch) {
+      setEditingText(expectedText);
     }
   }, [subtitles, editingText]);
 

@@ -26,7 +26,7 @@ export function Button({
   ...props
 }: ButtonProps) {
   // Base styles
-  const baseStyles = 'rounded transition-colors select-none flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none';
+  const baseStyles = 'rounded transition-colors select-none flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none';
 
   // Variant styles with active states
   const variantStyles = {
