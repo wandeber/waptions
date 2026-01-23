@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
@@ -15,7 +15,7 @@ interface TimelineTrackOverlayProps {
     onSubtitleClick?: (subtitle: Subtitle | null) => void;
 }
 
-export function TimelineTrackOverlay({
+export const TimelineTrackOverlay = memo(function TimelineTrackOverlay({
     duration,
     track,
     zoomLevel,
@@ -64,7 +64,7 @@ export function TimelineTrackOverlay({
             ))}
         </div>
     );
-}
+});
 
 // Internal component for Subtitle Block (simplification of current SubtitleTrack logic)
 interface SubtitleBlockProps {
@@ -78,7 +78,7 @@ interface SubtitleBlockProps {
     duration: number;
 }
 
-function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, duration }: SubtitleBlockProps) {
+const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, duration }: SubtitleBlockProps) {
     const { pixelsPerSecond, zoomLevel } = useTimelineStore();
     const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
@@ -348,4 +348,4 @@ function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHis
             )}
         </div>
     );
-}
+});

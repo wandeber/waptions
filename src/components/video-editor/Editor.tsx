@@ -168,30 +168,30 @@ export function Editor() {
         setDetectedFps(fps);
     }, [setPlaybackDuration]);
 
-    const handleSubtitleClick = (subtitle: Subtitle | null) => {
+    const handleSubtitleClick = useCallback((subtitle: Subtitle | null) => {
         // Selection is now handled directly by SubtitleList and TimelineTrackOverlay
         // based on modifiers (Cmd/Shift). We only keep this for clearing selection
         // when clicking background if needed, or other side effects.
         if (!subtitle) {
             clearSelection();
         }
-    };
+    }, [clearSelection]);
 
-    const handlePlayPause = () => {
+    const handlePlayPause = useCallback(() => {
         togglePlayback();
-    };
+    }, [togglePlayback]);
 
-    const handleThirdsGuideToggle = () => {
-        setShowThirdsGuide(!showThirdsGuide);
-    };
+    const handleThirdsGuideToggle = useCallback(() => {
+        setShowThirdsGuide(prev => !prev);
+    }, []);
 
-    const handleDevinGuideToggle = () => {
-        setShowDevinGuide(!showDevinGuide);
-    };
+    const handleDevinGuideToggle = useCallback(() => {
+        setShowDevinGuide(prev => !prev);
+    }, []);
 
-    const handleMetaInfoToggle = () => {
-        setShowMetaInfo(!showMetaInfo);
-    };
+    const handleMetaInfoToggle = useCallback(() => {
+        setShowMetaInfo(prev => !prev);
+    }, []);
 
     const handleAudioExtracted = useCallback((url: string) => {
         setAudioUrl(prev => {

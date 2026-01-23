@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead. 
     - **Gap Filling**: If pressed at a boundary or in a gap, it extends the previous (`Q`) or next (`W`) subtitle to meet the playhead.
     - **Auto-Deletion**: Subtitles are automatically removed if trimmed to less than one frame duration.
+- **Performance Tuning**:
+    - **Optimized Navigation**: Implemented memoized keypoint calculation for `ArrowUp`/`ArrowDown` jumps, ensuring instant navigation regardless of subtitle count.
+    - **Rendering Efficiency**: Applied `React.memo` to all critical timeline components (`SubtitleBlock`, `TimelineTrackOverlay`, `TimelineRuler`, etc.), significantly reducing CPU usage during playback and scrolling.
+    - **State Stability**: Stabilized all editor callbacks with `useCallback` to prevent unnecessary re-renders of the entire timeline tree.
 - **Edit Shortcuts**:
     - `Enter`: Selects and focuses the subtitle under the playhead for immediate editing. If no subtitle is present, it **automatically creates a new one** on the active track and focuses its text editor.
     - `V`: Selects the subtitle under the playhead without giving focus to the text editor.

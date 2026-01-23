@@ -117,3 +117,8 @@
 - Node.js v18+, pnpm.
 - Playwright for E2E testing (`e2e/`).
 - GitHub Actions for CI pipeline.
+## Performance Engineering
+
+- **Timeline Render Loop**: The main `Timeline` component re-renders at ~60fps during playback because it receives `currentTime` as a prop. To maintain responsiveness, all sub-components (`TimelineRuler`, `TimelineTrackOverlay`, etc.) are wrapped in `React.memo`.
+- **Navigation Optimization**: `ArrowUp`/`ArrowDown` navigation calculates "key points" from all tracks. This list is memoized with `useMemo` to ensure O(1) jump calculation during fast keyboard repeats.
+- **Callback Stability**: All handlers passed from `Editor.tsx` to the timeline tree are wrapped in `useCallback` to prevent breaking memoization.

@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
 import { Subtitle } from '@/types/timeline';
 import { Play, Pause, Plus, ZoomIn, ZoomOut, RotateCcw, Magnet } from 'lucide-react';
 import { Button } from '../design-system/Button';
@@ -9,6 +9,12 @@ import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
 import { TimelinePlayhead } from './TimelinePlayhead';
 import { TimelineTrackOverlay } from './TimelineTrackOverlay';
+
+// Componentes memoizados para evitar re-renders innecesarios en cada frame de reproducción
+const MemoizedTimelineRuler = memo(TimelineRuler);
+const MemoizedTimelinePlayhead = memo(TimelinePlayhead);
+const MemoizedTimelineTrackOverlay = memo(TimelineTrackOverlay);
+const MemoizedTimelineTrackHeader = memo(TimelineTrackHeader);
 import { useWaveform } from '@/hooks/use-waveform';
 import { TimelineWaveform } from './TimelineWaveform';
 import { OverlayMenu } from './OverlayMenu';
@@ -174,6 +180,18 @@ export function Timeline({
     }
   };
 
+  const memoizedKeyPoints = useMemo(() => {
+    const keyPoints = new Set<number>([0, duration]);
+    tracks.forEach(track => {
+      track.subtitles.forEach(s => {
+        // Guardamos con precisión de ms
+        keyPoints.add(Math.round(s.startTime * 1000) / 1000);
+        keyPoints.add(Math.round(s.endTime * 1000) / 1000);
+      });
+    });
+    return Array.from(keyPoints).sort((a, b) => a - b);
+  }, [tracks, duration]);
+
   // Keyboard navigation (Frame-by-Frame)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -201,16 +219,8 @@ export function Timeline({
         e.preventDefault();
       } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         // Navegación por Puntos Clave
-        const keyPoints = new Set<number>([0, duration]);
-        tracks.forEach(track => {
-          track.subtitles.forEach(s => {
-            // Guardamos con precisión de ms
-            keyPoints.add(Math.round(s.startTime * 1000) / 1000);
-            keyPoints.add(Math.round(s.endTime * 1000) / 1000);
-          });
-        });
-
-        const sortedPoints = Array.from(keyPoints).sort((a, b) => a - b);
+        // Pre-calculado con useMemo para evitar lag en cada tecla
+        const sortedPoints = memoizedKeyPoints;
         const current = currentTimeRef.current;
         const EPSILON = 0.0005;
 
@@ -230,7 +240,7 @@ export function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fps, duration, onTimeUpdate, tracks, onPlayPause]);
+  }, [fps, duration, onTimeUpdate, tracks, onPlayPause, memoizedKeyPoints]);
 
   return (
     <div
@@ -302,7 +312,7 @@ export function Timeline({
             className="flex-1 overflow-hidden bg-gray-900/50"
           >
             {tracks.map(track => (
-              <TimelineTrackHeader
+              <MemoizedTimelineTrackHeader
                 key={track.id}
                 track={track}
                 isActive={track.id === activeTrackId}
@@ -333,7 +343,7 @@ export function Timeline({
               className="relative h-full"
               style={{ width: timelineWidth }}
             >
-              <TimelinePlayhead
+              <MemoizedTimelinePlayhead
                 currentTime={currentTime}
                 duration={duration}
                 fps={fps}
@@ -350,7 +360,7 @@ export function Timeline({
             className="h-8 border-b border-gray-800 overflow-hidden bg-gray-900 relative z-0"
             onScroll={() => handleScroll('ruler')}
           >
-            <TimelineRuler
+            <MemoizedTimelineRuler
               duration={duration}
               fps={fps}
               zoomLevel={zoomLevel}
@@ -391,7 +401,7 @@ export function Timeline({
               )}
               {/* Tracks rendered as overlays */}
               {tracks.map(track => (
-                <TimelineTrackOverlay
+                <MemoizedTimelineTrackOverlay
                   key={track.id}
                   duration={duration}
                   track={track}
