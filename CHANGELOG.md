@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Quality & Export
+- **Intelligent Bitrate**: Implemented automatic bitrate deduction based on source quality for re-encoding overhead without wasting space.
+- **Native Export Quality**: Fixed a VideoCache bug that could cap export resolution to 720p; now strictly uses native dimensions.
+- **Enhanced Cache Memory**: Increased FrameCache limit to 1024MB to handle high-resolution frames without thrashering.
+- **Strict Cache Isolation**: Separated preview and export cache targets to prevent visual interference during background tasks.
+
 ### Subtitle Improvements
 - **MiAlterEdu Preset Update**: Changed the default font to "Inter Tight" Black (900) for a more premium look.
 - **Enhanced Font Loading**: Updated the Google Fonts loader to support "Black" (900) weights and added "Inter Tight" to the popular fonts list.

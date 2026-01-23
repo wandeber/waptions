@@ -162,10 +162,12 @@ To eliminate flickering and black flashes during seeks or decoding delays:
 - **Atomic Blit**: Draws the finished composition to the main viewport in a single operation. This ensures that the user never sees intermediate states (like video without subtitles or a cleared canvas).
 
 ### High-Performance Caching
-- **GPU-Stored Bitmaps**: Uses `ImageBitmap` (residing in GPU memory) instead of `ImageData`.
-- **Discrete Frame Indexing**: Keys are generated as `` `${videoId}:${Math.round(timestamp * fps)}` ``. This provides $O(1)$ lookup and avoids "near-miss" bugs from floating-point jitter.
-- **Dynamic Resolution**: The cache resolution matches the current visor size (capped at 1280px). Resizing happens via `createImageBitmap` during the cache-fill stage, reducing GPU RAM usage by up to 80% on 4K content.
-- **Eviction Strategy**: LRU based on memory size (512MB limit). Features a `lastAccessedKey` lock to protect the active frame from being evicted while it's being drawn.
+- **GPU-Stored Bitmaps**: Uses `ImageBitmap` (residing in GPU memory).
+- **Discrete Frame Indexing**: Keys are generated as `` `${videoId}:${Math.round(timestamp * fps)}` `` for $O(1)$ lookup.
+- **Dynamic Resolution**: Supports per-`mediaId` target resolution. The preview cache matches the visor size (capped at 1280px), while the **export process** sets its resolution to native quality immediately upon initialization.
+- **Resolution Persistence**: Uses a `pendingResolutions` map to ensure that specific quality targets are applied even if the video sink is initialized asynchronously after the request.
+- **Eviction Strategy**: LRU based on memory size (**1024MB** limit). Features a `lastAccessedKey` lock to protect the active frame from being evicted.
+- **Intelligent Export Bitrate**: Automatically calculates the optimal export bitrate by deducing the source bitrate and applying multipliers (0.5x to 2.0x) with resolution-aware safety bounds (e.g., 0.5Mbps - 50Mbps for 1080p).
 
 ### Navigation Optimization
 - **Burst Decoding**: When a seek occurs, the `VideoCache` decodes a small burst (e.g., 5 frames) to fill the cache around the target. This makes scrubbing feel "sedosa" (silky) as surrounding frames become instant once a region is touched.

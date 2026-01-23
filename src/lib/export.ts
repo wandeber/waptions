@@ -4,10 +4,6 @@ import {
     WebMOutputFormat,
     BufferTarget,
     CanvasSource,
-    QUALITY_LOW,
-    QUALITY_MEDIUM,
-    QUALITY_HIGH,
-    QUALITY_VERY_HIGH,
     Input,
     BlobSource,
     ALL_FORMATS,
@@ -24,14 +20,6 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     quality: 'high',
     includeAudio: true,
 };
-
-const qualityMap = {
-    low: QUALITY_LOW,
-    medium: QUALITY_MEDIUM,
-    high: QUALITY_HIGH,
-    very_high: QUALITY_VERY_HIGH,
-};
-
 
 interface ExportContext {
     videoFile: File;
@@ -72,6 +60,42 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
         const canvasWidth = videoTrack.displayWidth;
         const canvasHeight = videoTrack.displayHeight;
 
+        const mediaId = 'export-' + Date.now();
+
+        // Ensure VideoCache uses native resolution for this export mediaId
+        // IMPORTANT: Call this BEFORE any frame requests to ensure they use native resolution
+        videoCache.setTargetResolution(canvasWidth, canvasHeight, mediaId);
+
+        // Calculate intelligent bitrate
+        // 1. Estimate source bitrate in bits/sec
+        const sourceBitrate = duration > 0 ? (videoFile.size * 8) / duration : 5000000;
+
+        // 2. Define multipliers per quality level
+        const multipliers = {
+            low: 0.5,
+            medium: 0.8,
+            high: 1.2,
+            very_high: 2.0,
+        };
+
+        // 3. Calculate target bitrate with safety bounds
+        let targetBitrate = sourceBitrate * multipliers[quality];
+
+        // Safety bounds based on resolution to avoid extreme values
+        const pixelCount = canvasWidth * canvasHeight;
+        const baseBitrate = (pixelCount / (1920 * 1080)) * 10000000; // 10Mbps for 1080p as reference
+
+        const minBitrate = Math.max(500000, baseBitrate * 0.2); // At least 500kbps or 20% of base
+        const maxBitrate = Math.max(50000000, baseBitrate * 5); // Up to 50Mbps or 5x base
+
+        targetBitrate = Math.max(minBitrate, Math.min(maxBitrate, targetBitrate));
+
+        console.log('Intelligent bitrate calculated:', {
+            sourceBitrate: Math.round(sourceBitrate / 1000) + ' kbps',
+            targetBitrate: Math.round(targetBitrate / 1000) + ' kbps',
+            quality
+        });
+
         // Setup output
         const outputFormat = format === 'webm' ? new WebMOutputFormat() : new Mp4OutputFormat();
         const output = new Output({
@@ -92,14 +116,13 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
         // Add video track
         const videoSource = new CanvasSource(canvas, {
             codec: format === 'webm' ? 'vp9' : 'avc',
-            bitrate: qualityMap[quality],
+            bitrate: Math.round(targetBitrate),
         });
         output.addVideoTrack(videoSource, { frameRate: videoFps });
 
         // Render each frame
         const totalFrames = Math.ceil(duration * videoFps);
         let cancelled = false;
-        const mediaId = 'export-' + Date.now();
 
         // Handle audio track if included
         let audioSource: AudioSampleSource | null = null;

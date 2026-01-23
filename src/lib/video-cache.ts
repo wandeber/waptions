@@ -15,6 +15,8 @@ interface VideoSinkData {
     fileSignature: string;
     isBusy?: boolean; // Lock for background tasks
     fps: number;
+    targetWidth?: number;
+    targetHeight?: number;
 }
 
 const MAX_CACHE_RESOLUTION = 1280; // Cap at 720p for cache
@@ -27,6 +29,7 @@ const getFileSignature = (file: File) => `${file.name}-${file.size}-${file.lastM
 export class VideoCache {
     private sinks = new Map<string, VideoSinkData>();
     private initPromises = new Map<string, Promise<void>>();
+    private pendingResolutions = new Map<string, { width: number; height: number }>();
 
     /**
      * Get a frame at a specific time from a video file.
@@ -205,6 +208,9 @@ export class VideoCache {
             const packetStats = await videoTrack.computePacketStats(100);
             const fps = packetStats.averagePacketRate || 30;
 
+            // Apply any pending resolution for this mediaId
+            const pending = this.pendingResolutions.get(mediaId);
+
             this.sinks.set(mediaId, {
                 sink,
                 iterator: null,
@@ -212,7 +218,13 @@ export class VideoCache {
                 lastTime: -1,
                 fileSignature: getFileSignature(file),
                 fps: fps,
+                targetWidth: pending?.width,
+                targetHeight: pending?.height,
             });
+
+            if (pending) {
+                this.pendingResolutions.delete(mediaId);
+            }
         } catch (error) {
             console.error(`Failed to initialize video sink for ${mediaId}:`, error);
             throw error;
@@ -254,19 +266,42 @@ export class VideoCache {
     private targetWidth = MAX_CACHE_RESOLUTION;
     private targetHeight = MAX_CACHE_RESOLUTION;
 
-    setTargetResolution(width: number, height: number) {
-        // We still cap it at MAX_CACHE_RESOLUTION for safety
+    setTargetResolution(width: number, height: number, mediaId?: string) {
+        if (mediaId) {
+            const sinkData = this.sinks.get(mediaId);
+            if (sinkData) {
+                sinkData.targetWidth = width;
+                sinkData.targetHeight = height;
+            } else {
+                // Store in pending for when the sink is initialized
+                this.pendingResolutions.set(mediaId, { width, height });
+            }
+            return;
+        }
+        // Fallback or global target (used for new sinks and preview)
         this.targetWidth = Math.min(width, MAX_CACHE_RESOLUTION);
         this.targetHeight = Math.min(height, MAX_CACHE_RESOLUTION);
     }
 
     private async cacheFrame(mediaId: string, frame: WrappedCanvas, fps = 30) {
         try {
+            const sinkData = this.sinks.get(mediaId);
             const originalWidth = frame.canvas.width;
             const originalHeight = frame.canvas.height;
 
-            let tw = this.targetWidth;
-            let th = this.targetHeight;
+            // Determine target dimensions
+            // Priority 1: mediaId specific (e.g. set by export or viewport)
+            // Priority 2: global target (safely capped for generic preview)
+            // Priority 3: fallback to native
+            let tw = sinkData?.targetWidth ?? this.targetWidth;
+            let th = sinkData?.targetHeight ?? this.targetHeight;
+
+            // If it's a specific mediaId, we NEVER cap it with MAX_CACHE_RESOLUTION
+            // unless it's explicitly 'preview' which we treat as limited.
+            if ((!mediaId || mediaId === 'preview') && !sinkData?.targetWidth) {
+                tw = Math.min(tw, MAX_CACHE_RESOLUTION);
+                th = Math.min(th, MAX_CACHE_RESOLUTION);
+            }
 
             // Maintain aspect ratio
             const ratio = originalWidth / originalHeight;
@@ -276,10 +311,16 @@ export class VideoCache {
                 tw = Math.round(th * ratio);
             }
 
+            // If the target is larger than original, stick to original to avoid blur
+            if (tw > originalWidth) {
+                tw = originalWidth;
+                th = originalHeight;
+            }
+
             const bitmap = await createImageBitmap(frame.canvas, {
                 resizeWidth: tw,
                 resizeHeight: th,
-                resizeQuality: 'medium'
+                resizeQuality: 'high'
             });
 
             frameCache.addFrame(mediaId, frame.timestamp, bitmap, fps);

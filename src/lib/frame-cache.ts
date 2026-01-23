@@ -156,4 +156,4 @@ export class FrameCache {
     }
 }
 
-export const frameCache = new FrameCache(512); // Default 512MB
+export const frameCache = new FrameCache(1024); // Default 1024MB
