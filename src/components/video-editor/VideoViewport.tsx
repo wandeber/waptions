@@ -174,6 +174,8 @@ export function VideoViewport({
   }, [videoFile, originalWidth, originalHeight]);
 
   const isRendering = useRef(false);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const persistentVideoCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const renderFrame = useCallback(async () => {
     if (!videoFile || !canvasRef.current || !videoContainerRef.current || isRendering.current) return;
@@ -183,29 +185,54 @@ export function VideoViewport({
     const rect = getVideoDisplayRect();
     if (!rect) return;
 
+    // Update target resolution for cache to match visor size (for optimization)
+    videoCache.setTargetResolution(rect.width, rect.height);
+
     isRendering.current = true;
     try {
-      const canvas = canvasRef.current;
-      if (canvas.width !== rect.width || canvas.height !== rect.height) {
-        canvas.width = rect.width;
-        canvas.height = rect.height;
-        canvas.style.left = `${rect.left}px`;
-        canvas.style.top = `${rect.top}px`;
-        canvas.style.width = `${rect.width}px`;
-        canvas.style.height = `${rect.height}px`;
-      }
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
       const frame = await videoCache.getFrameAt('preview', videoFile, renderTime);
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Triple Buffering: Update persistent video layer if a new frame arrived
       if (frame) {
-        ctx.drawImage(frame.canvas, 0, 0, canvas.width, canvas.height);
+        if (!persistentVideoCanvasRef.current) {
+          persistentVideoCanvasRef.current = document.createElement('canvas');
+        }
+        const pCanvas = persistentVideoCanvasRef.current;
+        if (pCanvas.width !== rect.width || pCanvas.height !== rect.height) {
+          pCanvas.width = rect.width;
+          pCanvas.height = rect.height;
+        }
+        const pCtx = pCanvas.getContext('2d');
+        if (pCtx) {
+          pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+          pCtx.drawImage(frame.canvas, 0, 0, pCanvas.width, pCanvas.height);
+          pCanvas.setAttribute('data-has-frame', 'true');
+        }
+      }
+
+      // Preparation Layer: Compose video background + subtitles offscreen
+      if (!offscreenCanvasRef.current) {
+        offscreenCanvasRef.current = document.createElement('canvas');
+      }
+
+      const offscreen = offscreenCanvasRef.current;
+      if (offscreen.width !== rect.width || offscreen.height !== rect.height) {
+        offscreen.width = rect.width;
+        offscreen.height = rect.height;
+      }
+
+      const offCtx = offscreen.getContext('2d');
+      if (!offCtx) return;
+
+      offCtx.clearRect(0, 0, offscreen.width, offscreen.height);
+
+      // Draw background (Persistent Frame or Black)
+      const pCanvas = persistentVideoCanvasRef.current;
+      if (pCanvas && pCanvas.getAttribute('data-has-frame') === 'true') {
+        offCtx.drawImage(pCanvas, 0, 0);
       } else {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        offCtx.fillStyle = '#000';
+        offCtx.fillRect(0, 0, offscreen.width, offscreen.height);
       }
 
       // Render Subtitles from Timeline Store
@@ -392,8 +419,25 @@ export function VideoViewport({
 
       tracks.forEach(track => {
         if (!track.isVisible) return;
-        renderTrackSubtitles(ctx, track.subtitles, track.style, currentTime, canvas.width, canvas.height);
+        renderTrackSubtitles(offCtx, track.subtitles, track.style, currentTime, offscreen.width, offscreen.height);
       });
+
+      // FINAL BLIT to visible canvas
+      const canvas = canvasRef.current;
+      if (canvas.width !== rect.width || canvas.height !== rect.height) {
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        canvas.style.left = `${rect.left}px`;
+        canvas.style.top = `${rect.top}px`;
+        canvas.style.width = `${rect.width}px`;
+        canvas.style.height = `${rect.height}px`;
+      }
+
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(offscreen, 0, 0);
+        canvas.setAttribute('data-has-content', 'true');
+      }
     } finally {
       isRendering.current = false;
     }

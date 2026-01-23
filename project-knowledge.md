@@ -122,3 +122,22 @@
 - **Timeline Render Loop**: The main `Timeline` component re-renders at ~60fps during playback because it receives `currentTime` as a prop. To maintain responsiveness, all sub-components (`TimelineRuler`, `TimelineTrackOverlay`, etc.) are wrapped in `React.memo`.
 - **Navigation Optimization**: `ArrowUp`/`ArrowDown` navigation calculates "key points" from all tracks. This list is memoized with `useMemo` to ensure O(1) jump calculation during fast keyboard repeats.
 - **Callback Stability**: All handlers passed from `Editor.tsx` to the timeline tree are wrapped in `useCallback` to prevent breaking memoization.
+
+## Video Rendering & Caching Architecture
+
+### Rendering Pipeline: Triple-Buffering
+To eliminate flickering and black flashes during seeks or decoding delays:
+- **Persistent Frame**: A hidden canvas that stores the last valid video frame. If the decoder is "seeking", the renderer repeats this frame instead of clearing to black.
+- **Offscreen Composer**: Composes the final picture (video background + subtitles) in memory.
+- **Atomic Blit**: Draws the finished composition to the main viewport in a single operation. This ensures that the user never sees intermediate states (like video without subtitles or a cleared canvas).
+
+### High-Performance Caching
+- **GPU-Stored Bitmaps**: Uses `ImageBitmap` (residing in GPU memory) instead of `ImageData`.
+- **Discrete Frame Indexing**: Keys are generated as `` `${videoId}:${Math.round(timestamp * fps)}` ``. This provides $O(1)$ lookup and avoids "near-miss" bugs from floating-point jitter.
+- **Dynamic Resolution**: The cache resolution matches the current visor size (capped at 1280px). Resizing happens via `createImageBitmap` during the cache-fill stage, reducing GPU RAM usage by up to 80% on 4K content.
+- **Eviction Strategy**: LRU based on memory size (512MB limit). Features a `lastAccessedKey` lock to protect the active frame from being evicted while it's being drawn.
+
+### Navigation Optimization
+- **Burst Decoding**: When a seek occurs, the `VideoCache` decodes a small burst (e.g., 5 frames) to fill the cache around the target. This makes scrubbing feel "sedosa" (silky) as surrounding frames become instant once a region is touched.
+- **Backward Scrubbing**: Slow in compressed video (H.264) due to GoP structure. Caching the whole GoP converts inter-frame video into intra-frame performance for the user.
+- **Visibility Indicator**: The timeline ruler displays cached segments in real-time using a subtle, translucent green bar at the bottom.

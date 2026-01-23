@@ -20,6 +20,7 @@ import { useVideoStore } from '@/stores/video-store';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { extractAudio } from '@/lib/mediabunny-utils';
 import { useProjectStore } from '@/stores/project-store';
+import { useBackgroundRenderer } from '@/hooks/use-background-renderer';
 
 export function Editor() {
     const {
@@ -60,6 +61,9 @@ export function Editor() {
     } = useTimelineStore();
 
     const { saveCurrentProject, activeProject, closeProject, isDirty, updateProjectName } = useProjectStore();
+
+    // Activate background rendering for caching
+    useBackgroundRenderer();
 
     const [detectedFps, setDetectedFps] = useState<number | null>(null);
     const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);

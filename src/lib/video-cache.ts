@@ -5,6 +5,7 @@ import {
     CanvasSink,
     WrappedCanvas,
 } from 'mediabunny';
+import { frameCache } from './frame-cache';
 
 interface VideoSinkData {
     sink: CanvasSink;
@@ -12,8 +13,11 @@ interface VideoSinkData {
     currentFrame: WrappedCanvas | null;
     lastTime: number;
     fileSignature: string;
+    isBusy?: boolean; // Lock for background tasks
+    fps: number;
 }
 
+const MAX_CACHE_RESOLUTION = 1280; // Cap at 720p for cache
 const getFileSignature = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
 
 /**
@@ -31,31 +35,51 @@ export class VideoCache {
     async getFrameAt(
         mediaId: string,
         file: File,
-        time: number
+        time: number,
+        isPriority = true
     ): Promise<WrappedCanvas | null> {
         await this.ensureSink(mediaId, file);
 
         const sinkData = this.sinks.get(mediaId);
         if (!sinkData) return null;
 
-        // Check if current frame is still valid for this time
-        if (sinkData.currentFrame && this.isFrameValid(sinkData.currentFrame, time)) {
-            return sinkData.currentFrame;
-        }
+        // If background task tries to render while main thread is busy, skip
+        if (!isPriority && sinkData.isBusy) return null;
 
-        // If we have an iterator and we're moving forward (within 2 seconds), iterate
-        if (
-            sinkData.iterator
-            && sinkData.currentFrame
-            && time >= sinkData.lastTime
-            && time < sinkData.lastTime + 2.0
-        ) {
-            const frame = await this.iterateToTime(sinkData, time);
-            if (frame) return frame;
-        }
+        if (isPriority) sinkData.isBusy = true;
 
-        // Otherwise, seek to the target time
-        return await this.seekToTime(sinkData, time);
+        try {
+            // 1. Check persistent FrameCache first
+            const cachedBitmap = frameCache.getFrame(mediaId, time, sinkData.fps);
+            if (cachedBitmap) {
+                return {
+                    canvas: cachedBitmap as unknown as OffscreenCanvas,
+                    timestamp: time,
+                    duration: 0,
+                } as WrappedCanvas;
+            }
+
+            // 2. Check current active frame (volatile)
+            if (sinkData.currentFrame && this.isFrameValid(sinkData.currentFrame, time)) {
+                return sinkData.currentFrame;
+            }
+
+            // 3. If moving forward (within 2 seconds), iterate
+            if (
+                sinkData.iterator
+                && sinkData.currentFrame
+                && time >= sinkData.lastTime
+                && time < sinkData.lastTime + 2.0
+            ) {
+                const frame = await this.iterateToTime(mediaId, sinkData, time);
+                if (frame) return frame;
+            }
+
+            // 4. Otherwise, seek to the target time
+            return await this.seekToTime(mediaId, sinkData, time);
+        } finally {
+            if (isPriority) sinkData.isBusy = false;
+        }
     }
 
     private isFrameValid(frame: WrappedCanvas, time: number): boolean {
@@ -63,6 +87,7 @@ export class VideoCache {
     }
 
     private async iterateToTime(
+        mediaId: string,
         sinkData: VideoSinkData,
         targetTime: number
     ): Promise<WrappedCanvas | null> {
@@ -77,7 +102,12 @@ export class VideoCache {
                 sinkData.currentFrame = frame;
                 sinkData.lastTime = frame.timestamp;
 
+                // Cache the frame asynchronously
+                this.cacheFrame(mediaId, frame, sinkData.fps);
+
                 if (this.isFrameValid(frame, targetTime)) {
+                    // Burst pre-fetch: Decode a few more frames in the background to fill the GoP
+                    this.startBurst(mediaId, sinkData, sinkData.fps);
                     return frame;
                 }
 
@@ -93,6 +123,7 @@ export class VideoCache {
     }
 
     private async seekToTime(
+        mediaId: string,
         sinkData: VideoSinkData,
         time: number
     ): Promise<WrappedCanvas | null> {
@@ -111,6 +142,7 @@ export class VideoCache {
 
             if (frame) {
                 sinkData.currentFrame = frame;
+                this.cacheFrame(mediaId, frame, sinkData.fps);
                 return frame;
             }
         } catch (error) {
@@ -170,12 +202,16 @@ export class VideoCache {
                 fit: 'contain',
             });
 
+            const packetStats = await videoTrack.computePacketStats(100);
+            const fps = packetStats.averagePacketRate || 30;
+
             this.sinks.set(mediaId, {
                 sink,
                 iterator: null,
                 currentFrame: null,
                 lastTime: -1,
                 fileSignature: getFileSignature(file),
+                fps: fps,
             });
         } catch (error) {
             console.error(`Failed to initialize video sink for ${mediaId}:`, error);
@@ -199,25 +235,68 @@ export class VideoCache {
         for (const mediaId of mediaIds) {
             this.clearVideo(mediaId);
         }
+        frameCache.clear();
+    }
+
+    private async startBurst(mediaId: string, sinkData: VideoSinkData, fps: number) {
+        if (!sinkData.iterator) return;
+
+        // We only want to burst if we aren't already busy with another high-priority request
+        // But since this is called from target found, we can just grab a few frames.
+        const BURST_COUNT = 5;
+        for (let i = 0; i < BURST_COUNT; i++) {
+            const { value: frame, done } = await sinkData.iterator.next();
+            if (done || !frame) break;
+            this.cacheFrame(mediaId, frame, fps);
+        }
+    }
+
+    private targetWidth = MAX_CACHE_RESOLUTION;
+    private targetHeight = MAX_CACHE_RESOLUTION;
+
+    setTargetResolution(width: number, height: number) {
+        // We still cap it at MAX_CACHE_RESOLUTION for safety
+        this.targetWidth = Math.min(width, MAX_CACHE_RESOLUTION);
+        this.targetHeight = Math.min(height, MAX_CACHE_RESOLUTION);
+    }
+
+    private async cacheFrame(mediaId: string, frame: WrappedCanvas, fps = 30) {
+        try {
+            const originalWidth = frame.canvas.width;
+            const originalHeight = frame.canvas.height;
+
+            let tw = this.targetWidth;
+            let th = this.targetHeight;
+
+            // Maintain aspect ratio
+            const ratio = originalWidth / originalHeight;
+            if (ratio > 1) {
+                th = Math.round(tw / ratio);
+            } else {
+                tw = Math.round(th * ratio);
+            }
+
+            const bitmap = await createImageBitmap(frame.canvas, {
+                resizeWidth: tw,
+                resizeHeight: th,
+                resizeQuality: 'medium'
+            });
+
+            frameCache.addFrame(mediaId, frame.timestamp, bitmap, fps);
+        } catch (e) {
+            console.warn('Failed to cache frame to ImageBitmap:', e);
+        }
     }
 
     getStats() {
-        let estimatedMemoryBytes = 0;
-        let cachedFrames = 0;
-
-        for (const sink of Array.from(this.sinks.values())) {
-            if (sink.currentFrame) {
-                cachedFrames++;
-                const { canvas } = sink.currentFrame;
-                estimatedMemoryBytes += canvas.width * canvas.height * 4;
-            }
-        }
+        const frameStats = frameCache.getStats();
 
         return {
             totalSinks: this.sinks.size,
             activeSinks: Array.from(this.sinks.values()).filter((s) => s.iterator).length,
-            cachedFrames,
-            estimatedMemoryBytes
+            cachedFrames: frameStats.frameCount,
+            estimatedMemoryBytes: frameStats.memoryBytes,
+            maxMemoryBytes: frameStats.maxMemoryBytes
         };
     }
 }

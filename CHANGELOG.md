@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Video Performance & Rendering
+- **Triple-Buffering Engine**: Implemented a professional rendering pipeline (Persistent Frame -> Offscreen Composer -> Viewport Blitter) that eliminates all cases of flickering/black flashes during seeks.
+- **Dynamic Resolution Cache**: The `ImageBitmap` cache now automatically scales frames to match the visor size, reducing GPU memory usage by up to 80% on high-resolution videos.
+- **GoP-Aware Burst Decoding**: Added "Burst Decoding" which pre-fills the cache with 5 frames around any seek target, making backward navigation over cached regions instantaneous.
+- **Optimized Caching Structure**: Migrated caching keys from floating-point timestamps to discrete integer frame indices for $O(1)$ lookup and zero-jitter frame alignment.
+- **Eviction Protection**: Implemented a protection mechanism to ensure the active frame is never evicted by the LRU policy during composition.
+- **Subtle Cache Visibility**: Re-styled and moved the cache indicator to the bottom of the timeline ruler for a less intrusive but informative status view.
+
 ### Subtitle Improvements
 - **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
 - **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead. 

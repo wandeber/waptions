@@ -1,6 +1,8 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useState, useEffect } from 'react';
+import { frameCache } from '@/lib/frame-cache';
 
 interface TimelineRulerProps {
     duration: number;
@@ -164,7 +166,65 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
             style={{ width: `${duration * pps}px` }}
             onMouseDown={handleMouseDown}
         >
+            <TimelineCacheIndicator duration={duration} pps={pps} />
             {markers}
+        </div>
+    );
+}
+
+function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
+    const [cachedSegments, setCachedSegments] = useState<{ start: number; end: number }[]>([]);
+
+    useEffect(() => {
+        const updateSegments = () => {
+            const timestamps = frameCache.getCachedTimestamps('preview');
+            if (timestamps.length === 0) {
+                setCachedSegments([]);
+                return;
+            }
+
+            // Group adjacent timestamps into segments
+            const segments: { start: number; end: number }[] = [];
+            let currentSegment: { start: number; end: number } | null = null;
+            const threshold = 0.2; // 200ms gap max to consider adjacent
+
+            timestamps.forEach((t) => {
+                if (!currentSegment) {
+                    currentSegment = { start: t, end: t };
+                } else if (t - currentSegment.end <= threshold) {
+                    currentSegment.end = t;
+                } else {
+                    segments.push(currentSegment);
+                    currentSegment = { start: t, end: t };
+                }
+            });
+
+            if (currentSegment) {
+                segments.push(currentSegment);
+            }
+
+            setCachedSegments(segments);
+        };
+
+        const interval = setInterval(updateSegments, 500);
+        updateSegments();
+        return () => clearInterval(interval);
+    }, []);
+
+    if (cachedSegments.length === 0) return null;
+
+    return (
+        <div className="absolute bottom-0 left-0 right-0 h-[3px] pointer-events-none z-10 overflow-hidden">
+            {cachedSegments.map((seg, i) => (
+                <div
+                    key={i}
+                    className="absolute h-full bg-green-500/30"
+                    style={{
+                        left: `${seg.start * pps}px`,
+                        width: `${Math.max(2, (seg.end - seg.start) * pps)}px`,
+                    }}
+                />
+            ))}
         </div>
     );
 }
