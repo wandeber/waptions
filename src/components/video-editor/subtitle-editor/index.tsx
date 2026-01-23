@@ -117,6 +117,11 @@ export function SubtitleEditor({
   };
 
   const handleSubtitleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => {
+    if (e.key === 'Escape') {
+      e.currentTarget.blur();
+      return;
+    }
+
     if (e.key === 'Enter') {
       if (e.ctrlKey) {
         // Permitir el comportamiento por defecto para insertar salto de línea

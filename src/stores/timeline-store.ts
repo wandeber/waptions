@@ -21,6 +21,7 @@ interface TimelineStore {
     snapEnabled: boolean;
     activeSnapTime: number | null;
     clipboard: { subtitle: Subtitle, relativeTrackIndex: number }[] | null;
+    requestEditSubtitleId: string | null;
 
     // History
     history: HistorySnapshot[];
@@ -48,6 +49,9 @@ interface TimelineStore {
     copySelection: () => void;
     pasteSelection: (startTime: number) => void;
     trimSubtitleAtTime: (time: number, side: 'start' | 'end') => void;
+    selectSubtitleAtTime: (time: number) => string | null;
+    requestEditSubtitleAtTime: (time: number) => void;
+    clearEditRequest: () => void;
 
     // History Actions
     undo: () => Promise<void>;
@@ -88,6 +92,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     snapEnabled: true,
     activeSnapTime: null,
     clipboard: null,
+    requestEditSubtitleId: null,
 
     history: [],
     redoStack: [],
@@ -561,16 +566,19 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     },
 
     trimSubtitleAtTime: (time, side) => {
-        const { tracks, activeTrackId, updateSubtitleInTrack } = get();
+        const { tracks, activeTrackId, updateSubtitleInTrack, removeSubtitleFromTrack } = get();
+        const fps = useVideoStore.getState().fps || 30;
+        const frameDuration = 1 / fps;
 
         // Find subtitle under playhead. 
         // 1. Check active track
         // 2. Fallback to any track
         let targetTrackId: string | null = null;
-        let targetSubtitleId: string | null = null;
+        let targetSubtitle: Subtitle | null = null;
 
         const findOnTrack = (track: SubtitleTrack) => {
-            return track.subtitles.find(s => s.startTime < time && s.endTime > time);
+            const EPSILON = 0.005; // 5ms buffer for floating point/snapping
+            return track.subtitles.find(s => time >= s.startTime - EPSILON && time < s.endTime - EPSILON);
         };
 
         const activeTrack = tracks.find(t => t.id === activeTrackId);
@@ -578,24 +586,114 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             const sub = findOnTrack(activeTrack);
             if (sub) {
                 targetTrackId = activeTrack.id;
-                targetSubtitleId = sub.id;
+                targetSubtitle = sub;
             }
         }
 
-        if (!targetSubtitleId) {
+        if (!targetSubtitle) {
             for (const track of tracks) {
                 const sub = findOnTrack(track);
                 if (sub) {
                     targetTrackId = track.id;
-                    targetSubtitleId = sub.id;
+                    targetSubtitle = sub;
                     break;
                 }
             }
         }
 
-        if (targetTrackId && targetSubtitleId) {
-            const updates = side === 'start' ? { startTime: time } : { endTime: time };
-            updateSubtitleInTrack(targetTrackId, targetSubtitleId, updates);
+        if (targetTrackId && targetSubtitle) {
+            const newStartTime = side === 'start' ? time : targetSubtitle.startTime;
+            const newEndTime = side === 'end' ? time : targetSubtitle.endTime;
+            const newDuration = newEndTime - newStartTime;
+
+            // If resulting duration is less than 1 frame, delete it
+            if (newDuration < frameDuration - 0.001) {
+                removeSubtitleFromTrack(targetTrackId, targetSubtitle.id);
+            } else {
+                const updates = side === 'start' ? { startTime: time } : { endTime: time };
+                updateSubtitleInTrack(targetTrackId, targetSubtitle.id, updates);
+            }
         }
-    }
+    },
+
+    selectSubtitleAtTime: (time) => {
+        const { tracks, activeTrackId, toggleSubtitleSelection } = get();
+
+        let targetSubtitle: Subtitle | null = null;
+
+        const findOnTrack = (track: SubtitleTrack) => {
+            const EPSILON = 0.005; // 5ms buffer for floating point/snapping
+            return track.subtitles.find(s => time >= s.startTime - EPSILON && time < s.endTime - EPSILON);
+        };
+
+        const activeTrack = tracks.find(t => t.id === activeTrackId);
+        if (activeTrack) {
+            targetSubtitle = findOnTrack(activeTrack) || null;
+        }
+
+        if (!targetSubtitle) {
+            for (const track of tracks) {
+                targetSubtitle = findOnTrack(track) || null;
+                if (targetSubtitle) break;
+            }
+        }
+
+        if (targetSubtitle) {
+            toggleSubtitleSelection(targetSubtitle.id);
+            return targetSubtitle.id;
+        }
+        return null;
+    },
+
+    requestEditSubtitleAtTime: (time) => {
+        const { tracks, activeTrackId, selectSubtitleAtTime, addSubtitleToTrack, toggleSubtitleSelection } = get();
+        const subtitleId = selectSubtitleAtTime(time);
+
+        if (subtitleId) {
+            set({ requestEditSubtitleId: subtitleId });
+            return;
+        }
+
+        // If no subtitle found, create a new one ("Add on Enter" feature)
+        // 1. Determine target track (active or first available)
+        const targetTrackId = activeTrackId || (tracks.length > 0 ? tracks[0].id : null);
+        if (!targetTrackId) return;
+
+        const targetTrack = tracks.find(t => t.id === targetTrackId);
+        if (!targetTrack) return;
+
+        // 2. Find the next subtitle on this track to avoid overlap
+        // We use a small EPSILON to avoid overlaps caused by precision issues
+        const EPSILON = 0.001;
+        const nextSub = [...targetTrack.subtitles]
+            .sort((a, b) => a.startTime - b.startTime)
+            .find(s => s.startTime > time + EPSILON);
+
+        // 3. Calculate duration (default 2s, capped by next sub or video duration)
+        const videoDuration = useVideoStore.getState().duration;
+        let endTime = time + 2;
+
+        if (nextSub && endTime > nextSub.startTime) {
+            endTime = nextSub.startTime;
+        } else if (endTime > videoDuration) {
+            endTime = videoDuration;
+        }
+
+        // 4. Ensure we have at least one frame of space
+        const fps = useVideoStore.getState().fps || 30;
+        if (endTime - time < 1 / fps) return;
+
+        // 5. Create and focus
+        const newId = addSubtitleToTrack(targetTrackId, {
+            startTime: time,
+            endTime: endTime,
+            text: ''
+        });
+
+        // Select it (so it highlights on timeline) and request edit (so SubtitleList focuses it)
+        toggleSubtitleSelection(newId, false, false);
+        set({ requestEditSubtitleId: newId });
+    },
+
+    clearEditRequest: () => set({ requestEditSubtitleId: null })
 }));

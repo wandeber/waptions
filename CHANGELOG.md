@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Subtitle Improvements
 - **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
-- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead from the left or right, respectively.
+- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead from the left or right, respectively. Automatic deletion occurs if the resulting subtitle duration is less than one frame.
+- **Edit Shortcuts**:
+    - `Enter`: Selects and focuses the subtitle under the playhead for immediate editing. If no subtitle is present, it **automatically creates a new one** on the active track and focuses its text editor.
+    - `V`: Selects the subtitle under the playhead without giving focus to the text editor.
+    - `Esc`: Removes focus from the subtitle editor to quickly return to timeline navigation.
 - **Multi-Selection & Group Interaction (Refined)**:
+    - **Precision Fix**: Refined detection logic with a 5ms buffer for `Q`, `W`, and `Enter`, ensuring reliable activation at exact frame boundaries.
     - **Selection**: Supports `Cmd+Click` (toggle) and `Shift+Click` (range) following Mac standards.
     - **Group Dragging**: Selected subtitles move together horizontally and vertically. Optimized history (single snapshot per move).
     - **Bug Fixes**: Resolved duplication issues during track shifts.

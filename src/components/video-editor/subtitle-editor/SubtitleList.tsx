@@ -100,6 +100,20 @@ export function SubtitleList({
     }
   }, [selectedSubtitleId]);
 
+  const { requestEditSubtitleId, clearEditRequest } = useTimelineStore();
+
+  // Handle focus request from shortcuts
+  useEffect(() => {
+    if (requestEditSubtitleId) {
+      const textarea = textAreasRef.current[requestEditSubtitleId];
+      if (textarea) {
+        textarea.focus();
+        // Clear request so it can be triggered again for the same ID if needed
+        clearEditRequest();
+      }
+    }
+  }, [requestEditSubtitleId, clearEditRequest]);
+
   const handleInternalSelect = (e: React.MouseEvent, subtitle: Subtitle) => {
     isInternalInteraction.current = true;
     const isMulti = e.metaKey;

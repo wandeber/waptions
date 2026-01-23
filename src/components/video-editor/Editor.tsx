@@ -54,6 +54,8 @@ export function Editor() {
         copySelection,
         pasteSelection,
         trimSubtitleAtTime,
+        requestEditSubtitleAtTime,
+        selectSubtitleAtTime,
         clipboard
     } = useTimelineStore();
 
@@ -127,6 +129,18 @@ export function Editor() {
                 trimSubtitleAtTime(currentTime, 'end');
             }
 
+            // Enter: Select and focus subtitle under playhead
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                requestEditSubtitleAtTime(currentTime);
+            }
+
+            // V: Select subtitle under playhead without focus
+            if (e.key.toLowerCase() === 'v' && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                selectSubtitleAtTime(currentTime);
+            }
+
             // Multi-Delete: Backspace or Delete
             if (e.key === 'Backspace' || e.key === 'Delete') {
                 if (selectedSubtitleIds.length > 0) {
@@ -144,7 +158,7 @@ export function Editor() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks, copySelection, currentTime, pasteSelection, trimSubtitleAtTime]);
+    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks, copySelection, currentTime, pasteSelection, trimSubtitleAtTime, requestEditSubtitleAtTime, selectSubtitleAtTime]);
 
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const canvasRef = useRef<HTMLCanvasElement>(null);
