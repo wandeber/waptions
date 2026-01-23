@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Subtitle Improvements
 - **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
+- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead from the left or right, respectively.
 - **Multi-Selection & Group Interaction (Refined)**:
     - **Selection**: Supports `Cmd+Click` (toggle) and `Shift+Click` (range) following Mac standards.
     - **Group Dragging**: Selected subtitles move together horizontally and vertically. Optimized history (single snapshot per move).

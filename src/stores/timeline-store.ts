@@ -47,6 +47,7 @@ interface TimelineStore {
     clearSelection: () => void;
     copySelection: () => void;
     pasteSelection: (startTime: number) => void;
+    trimSubtitleAtTime: (time: number, side: 'start' | 'end') => void;
 
     // History Actions
     undo: () => Promise<void>;
@@ -556,6 +557,45 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             newSelectionIds.forEach((id, idx) => {
                 toggleSubtitleSelection(id, idx > 0);
             });
+        }
+    },
+
+    trimSubtitleAtTime: (time, side) => {
+        const { tracks, activeTrackId, updateSubtitleInTrack } = get();
+
+        // Find subtitle under playhead. 
+        // 1. Check active track
+        // 2. Fallback to any track
+        let targetTrackId: string | null = null;
+        let targetSubtitleId: string | null = null;
+
+        const findOnTrack = (track: SubtitleTrack) => {
+            return track.subtitles.find(s => s.startTime < time && s.endTime > time);
+        };
+
+        const activeTrack = tracks.find(t => t.id === activeTrackId);
+        if (activeTrack) {
+            const sub = findOnTrack(activeTrack);
+            if (sub) {
+                targetTrackId = activeTrack.id;
+                targetSubtitleId = sub.id;
+            }
+        }
+
+        if (!targetSubtitleId) {
+            for (const track of tracks) {
+                const sub = findOnTrack(track);
+                if (sub) {
+                    targetTrackId = track.id;
+                    targetSubtitleId = sub.id;
+                    break;
+                }
+            }
+        }
+
+        if (targetTrackId && targetSubtitleId) {
+            const updates = side === 'start' ? { startTime: time } : { endTime: time };
+            updateSubtitleInTrack(targetTrackId, targetSubtitleId, updates);
         }
     }
 }));

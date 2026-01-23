@@ -53,6 +53,7 @@ export function Editor() {
         clearSelection,
         copySelection,
         pasteSelection,
+        trimSubtitleAtTime,
         clipboard
     } = useTimelineStore();
 
@@ -116,6 +117,16 @@ export function Editor() {
                 pasteSelection(currentTime);
             }
 
+            // Trim shortcuts
+            if (e.key.toLowerCase() === 'q') {
+                e.preventDefault();
+                trimSubtitleAtTime(currentTime, 'start');
+            }
+            if (e.key.toLowerCase() === 'w') {
+                e.preventDefault();
+                trimSubtitleAtTime(currentTime, 'end');
+            }
+
             // Multi-Delete: Backspace or Delete
             if (e.key === 'Backspace' || e.key === 'Delete') {
                 if (selectedSubtitleIds.length > 0) {
@@ -133,7 +144,7 @@ export function Editor() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks, copySelection, currentTime, pasteSelection]);
+    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks, copySelection, currentTime, pasteSelection, trimSubtitleAtTime]);
 
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const canvasRef = useRef<HTMLCanvasElement>(null);
