@@ -281,8 +281,18 @@ export function Editor() {
             }));
 
             if (activeTrack) {
+                const timelineStore = useTimelineStore.getState();
+
+                // 1. Raw Layer (Immutable)
+                // 2. Grouper Layer (Mutable WIP Copy)
+                const { groups, containerIds } = timelineStore.generateDefaultGrouperState(snappedSubtitles);
+                timelineStore.setTranscriptionState(groups, containerIds, snappedSubtitles);
+
+                // 3. Timeline Layer (Final Subtitles)
+                // We create a fresh set of merged subtitles for the track
+                const initialTimelineSubtitles = timelineStore.generateTimelineSubtitles(snappedSubtitles);
                 const updatedTracks = tracks.map(t =>
-                    t.id === activeTrack.id ? { ...t, subtitles: snappedSubtitles } : t
+                    t.id === activeTrack.id ? { ...t, subtitles: initialTimelineSubtitles } : t
                 );
                 setTracks(updatedTracks);
             }

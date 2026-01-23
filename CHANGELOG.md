@@ -10,8 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### AI Transcription
 - **Model Selection System**: Added a premium modal allowing users to choose between transcription models (e.g., precise OpenAI Whisper vs. faster variants).
 - **Word-Level Precision**: The transcription engine now returns raw word-by-word timestamps, delegating sentence grouping to future advanced logic.
-- **Subtitle Grouper ("Modo Sagrado")**: Replaced the simple text viewer with a powerful Drag & Drop editor (`dnd-kit`). Implemented a robust hybrid collision strategy prioritizing gaps, stabilized hit areas with a 108px "Zero Shift" footprint, and achieved atomic transitions. Enforced **Directional Edge Constraints** (first moves UP, last moves DOWN) to ensure logical group growth and fusion while preventing layout chaos.
-- **Granular Persistence**: Groupings and manual edits in the transcription modal are now persisted in the global store, preventing data loss when closing the modal.
+- **3-Layer Transcription Architecture**: Implemented strict separation between Raw Transcription (Immutable), Grouper WIP (Mutable), and Timeline Subtitles.
+- **Independent Data Flow**: 
+    - Initial transcript populates both Timeline and Grouper from Raw words.
+    - "Agrupar" in modal resets the WIP layer from Raw words.
+    - "Aplicar" in modal overwrites the Timeline layer from the WIP layer.
+- **Real-Time persistence**: Every drag, merge, or text edit in the transcription grouper is now persisted to IndexedDB in real-time, preventing data loss across reloads.
+- **Auto-Save Fixes**: Added missing save triggers in `setTracks` and `setTranscriptionState` to ensure all changes are committed to storage immediately.
 - **Premium UI Refinement**: Standardized modal header and buttons with the application's premium aesthetic (gradients, rings, and backdrop-blur). Improved popover styling for the auto-group configuration. Renamed "Aplicar cambios" to "Aplicar" and ensured popover buttons follow the design system variants.
 - **Design System Fixes**: Added automatic content centering to the base `Button` component.
 - **Backend Architecture**: Updated the `/api/generate-subtitles` endpoint to support model parameters and switched to `verbose_json` with `word` granularity.

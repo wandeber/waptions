@@ -36,7 +36,6 @@ import { useTimelineStore } from '@/stores/timeline-store';
 interface TranscriptionViewModalProps {
     isOpen: boolean;
     onClose: () => void;
-    subtitles: Subtitle[];
     onApplyGroups: (groupedSubtitles: Subtitle[]) => void;
 }
 
@@ -102,7 +101,7 @@ function SortableWord({
             <div
                 ref={setNodeRef}
                 style={style}
-                className="bg-purple-600 text-white px-3 py-1.5 rounded-full text-sm font-medium shadow-lg opacity-50 cursor-grabbing border-2 border-purple-400 z-50"
+                className="bg-purple-600 text-white px-3 py-1.5 rounded-full text-sm font-medium shadow-lg opacity-50 cursor-grabbing ring-2 ring-purple-400 ring-inset z-50"
             >
                 {subtitle.text}
             </div>
@@ -310,7 +309,6 @@ function DroppableLine({
 export function TranscriptionViewModal({
     isOpen,
     onClose,
-    subtitles,
     onApplyGroups
 }: TranscriptionViewModalProps) {
     // Persistence State
@@ -349,6 +347,13 @@ export function TranscriptionViewModal({
         }
     }, [recentlyCreatedGroupId]);
 
+    // SYNC TO STORE: Keep work-in-progress state in the global store for persistence
+    useEffect(() => {
+        if (isOpen && Object.keys(groups).length > 0) {
+            setTranscriptionState(groups, containerIds.map(id => id.toString()));
+        }
+    }, [groups, containerIds, isOpen, setTranscriptionState]);
+
     // Handle clicking outside the auto-group popover
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -365,34 +370,27 @@ export function TranscriptionViewModal({
         };
     }, [showAutoGroup]);
 
-    // Initial grouping logic
+    // Initial grouping logic: Load purely from store
     useEffect(() => {
-        if (isOpen && subtitles.length > 0) {
-            // Restore from store if available
+        if (isOpen && Object.keys(groups).length === 0) {
+            // Priority 1: Restore existing WIP from store
             if (transcriptionGroups && transcriptionContainerIds) {
                 setGroups(transcriptionGroups);
                 setContainerIds(transcriptionContainerIds as UniqueIdentifier[]);
                 return;
             }
 
-            // Initial auto-grouping by chunk size
-            const WORDS_PER_LINE = 8;
-            const newGroups: { [key: string]: Subtitle[] } = {};
-            const newContainerIds: UniqueIdentifier[] = [];
-
-            const sorted = [...subtitles].sort((a, b) => a.startTime - b.startTime);
-
-            for (let i = 0; i < sorted.length; i += WORDS_PER_LINE) {
-                const chunk = sorted.slice(i, i + WORDS_PER_LINE);
-                const groupId = `group-${i}`;
-                newGroups[groupId] = chunk;
-                newContainerIds.push(groupId);
+            // Priority 2: Fallback to chunking from Raw Transcription if WIP is missing
+            const raw = useTimelineStore.getState().rawTranscription;
+            if (raw && raw.length > 0) {
+                const { groups: newGroups, containerIds: newIds } =
+                    useTimelineStore.getState().generateDefaultGrouperState(raw);
+                setGroups(newGroups);
+                setContainerIds(newIds as UniqueIdentifier[]);
             }
-
-            setGroups(newGroups);
-            setContainerIds(newContainerIds);
         }
-    }, [isOpen, subtitles, transcriptionGroups, transcriptionContainerIds]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]);
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -747,32 +745,26 @@ export function TranscriptionViewModal({
             }
         });
 
-        // Persist granular structure in store
+        // 1. Overwrite Grouper WIP state in store
         setTranscriptionState(groups, containerIds.map(id => id.toString()));
 
+        // 2. Overwrite Timeline track state in store
         onApplyGroups(newSubtitles);
+
         onClose();
     };
 
-    // AUTO-GROUP: Regroup all subtitles based on words per line
+    // AUTO-GROUP: Reset WIP state from Raw Transcription (Rewrites Grouper layer)
     const handleAutoGroup = () => {
-        // Flatten all current groups into a single sorted array
-        const allSubs = Object.values(groups).flat().sort((a, b) => a.startTime - b.startTime);
+        const raw = useTimelineStore.getState().rawTranscription;
+        if (!raw || raw.length === 0) return;
 
-        if (allSubs.length === 0) return;
-
-        const newGroups: { [key: string]: Subtitle[] } = {};
-        const newContainerIds: UniqueIdentifier[] = [];
-
-        for (let i = 0; i < allSubs.length; i += wordsPerLine) {
-            const chunk = allSubs.slice(i, i + wordsPerLine);
-            const groupId = `group-${Date.now()}-${i}`;
-            newGroups[groupId] = chunk;
-            newContainerIds.push(groupId);
-        }
+        // Reset from Raw (Immutable) with selected words count
+        const { groups: newGroups, containerIds: newIds } =
+            useTimelineStore.getState().generateDefaultGrouperState(raw, wordsPerLine);
 
         setGroups(newGroups);
-        setContainerIds(newContainerIds);
+        setContainerIds(newIds as UniqueIdentifier[]);
         setShowAutoGroup(false);
     };
 
@@ -956,7 +948,7 @@ export function TranscriptionViewModal({
 
                             <DragOverlay dropAnimation={dropAnimation}>
                                 {activeId && activeSubtitle ? (
-                                    <div className="bg-purple-600 text-white px-3 py-1.5 rounded-full text-sm font-medium shadow-lg border-2 border-purple-400 scale-105 cursor-grabbing z-50">
+                                    <div className="bg-purple-600 text-white px-3 py-1.5 rounded-full text-sm font-medium shadow-lg ring-2 ring-purple-400 ring-inset scale-105 cursor-grabbing z-50">
                                         {activeSubtitle.text}
                                     </div>
                                 ) : null}

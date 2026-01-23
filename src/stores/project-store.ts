@@ -125,12 +125,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             const project = await storageService.loadProject(id);
             if (!project) throw new Error(`Project ${id} not found`);
 
-            const tracks = await storageService.loadTimeline(id);
+            const { tracks, rawTranscription, transcriptionGroups, transcriptionContainerIds } = await storageService.loadTimeline(id);
 
             set({ activeProject: project });
 
             const timelineStore = useTimelineStore.getState();
             timelineStore.setTracks(tracks || []);
+            timelineStore.setTranscriptionState(transcriptionGroups, transcriptionContainerIds, rawTranscription);
 
             get().updateLastSavedState();
 
@@ -186,7 +187,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         try {
             await storageService.saveProject(updatedProject);
-            await storageService.saveTimeline(updatedProject.id, tracks);
+            await storageService.saveTimeline(
+                updatedProject.id,
+                tracks,
+                timelineStore.rawTranscription,
+                timelineStore.transcriptionGroups,
+                timelineStore.transcriptionContainerIds
+            );
             set({ activeProject: updatedProject });
             get().updateLastSavedState();
             await get().loadAllProjects();

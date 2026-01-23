@@ -99,13 +99,19 @@
     - This ensures that time never flows backwards.
     - This ensures that time never flows backwards.
     - **Zero-Shift Footprint**: Expanded gaps have an exact height of **108px**, which perfectly accommodates the Gap (24px) + Line (60px) + Gap (24px) resulting stack.
-    - **Chronological Merging**: When merging UP, the word is appended to the **END** of the target group. When merging DOWN, it is prepended to the **START**. This maintains a perfect time sequence.
-    - **Directional Adjacency**: The **first word** of a group can only move UP; the **last word** can only move DOWN.
+    - **3-Layer Architecture**: Data is split into three strictly independent layers:
+        1. **Raw Transcription (Immutable)**: Original word-level data. Never modified.
+        2. **Grouper (Mutable WIP)**: Granular word badges. Persists manual merges/splits in real-time to storage. Resets ONLY if the user clicks "Agrupar" (resets from Raw).
+        3. **Timeline (Final Subtitles)**: Subtitles on the track. Initialized from Raw on transcript, but overwritten by the Grouper ONLY when "Aplicar" is clicked.
+    - **Directional Adjacency**: The **first word** of a group can only move UP. The **last word** can only move DOWN.
+    - **Chronological Merging**:
+        - Moving **UP** -> word appended to **END** of target.
+        - Moving **DOWN** -> word prepended to **START** of target.
+    - **Independent Persistence**: The grouper state (`transcriptionGroups`, `transcriptionContainerIds`) is synced in real-time to storage. This ensures WIP edits (merges, text changes) are preserved independently of timeline edits across reloads.
     - **Interaction**: They enforce a **200ms hover delay** before expanding and a **400ms collapse hysteresis**.
     - **Atomic Swap**: To prevent layout jumps during transition, gaps support an `isInstant` prop. When a drop is detected, the gap collapses to 24px in **0ms**, precisely as the new 60px line appears. This creates a mathematically perfect spatial exchange without component overlap.
     - **Drop Reliability**: `handleDragEnd` uses the `expandedGapIndex` state to lock the drop target, ensuring reliability even with pointer jitter.
 - **Auto-Cleanup**: Groups (lines) are automatically deleted when their last word is dragged out. Creating a new group is done by dropping on a Gap.
-- **Persistence**: The granular "word-by-word" structure of the transcription grouper is persisted in `TimelineStore` (`transcriptionGroups`, `transcriptionContainerIds`). This ensures that manual edits, splits, and custom groupings are preserved even when closing and reopening the modal. The structure is saved to the store only when the user clicks **Aplicar**.
 
 ## Development Guidelines
 

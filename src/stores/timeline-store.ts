@@ -61,9 +61,17 @@ interface TimelineStore {
     setActiveSnapTime: (time: number | null) => void;
 
     // Transcription Persistence
+    rawTranscription: Subtitle[] | null;
     transcriptionGroups: { [key: string]: Subtitle[] } | null;
     transcriptionContainerIds: string[] | null;
-    setTranscriptionState: (groups: { [key: string]: Subtitle[] } | null, containerIds: string[] | null) => void;
+    setTranscriptionState: (
+        groups: { [key: string]: Subtitle[] } | null,
+        containerIds: string[] | null,
+        raw?: Subtitle[] | null
+    ) => void;
+    // Layer generation helpers
+    generateDefaultGrouperState: (words: Subtitle[], wordsPerLine?: number) => { groups: { [key: string]: Subtitle[] }, containerIds: string[] };
+    generateTimelineSubtitles: (words: Subtitle[], wordsPerLine?: number) => Subtitle[];
 }
 
 // Helper to save timeline changes
@@ -74,12 +82,15 @@ const saveTimelineToStorage = async (tracks: SubtitleTrack[]) => {
         const projectStore = useProjectStore.getState();
         const activeProject = projectStore.activeProject;
         if (activeProject) {
-            // Check dirty state BEFORE saving to DB because auto-save doesn't affect "saved" status relative to explicit user save
-            // Wait, "saved" means explicit user save. Auto-save is for crash recovery.
-            // So if I modify something, checkDirty() compares against last EXPLICIT save snapshot.
-            // So yes, we should check dirty.
             projectStore.checkDirty();
-            await storageService.saveTimeline(activeProject.id, tracks);
+            const timelineStore = useTimelineStore.getState();
+            await storageService.saveTimeline(
+                activeProject.id,
+                tracks,
+                timelineStore.rawTranscription,
+                timelineStore.transcriptionGroups,
+                timelineStore.transcriptionContainerIds
+            );
         }
     } catch (error) {
         console.error("Failed to auto-save timeline:", error);
@@ -102,6 +113,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     history: [],
     redoStack: [],
 
+    rawTranscription: null,
     transcriptionGroups: null,
     transcriptionContainerIds: null,
 
@@ -431,6 +443,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     setTracks: (tracks) => set((state) => {
         // Clearing history when setting tracks explicitly (e.g. loading project)
         const isValidActive = tracks.some(t => t.id === state.activeTrackId);
+
+        // Trigger auto-save
+        saveTimelineToStorage(tracks);
+
         return {
             tracks,
             activeTrackId: isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null),
@@ -743,8 +759,53 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     clearEditRequest: () => set({ requestEditSubtitleId: null }),
 
-    setTranscriptionState: (groups, containerIds) => set({
-        transcriptionGroups: groups,
-        transcriptionContainerIds: containerIds
-    })
+    setTranscriptionState: (groups, containerIds, raw) => set((state) => {
+        const nextGroups = groups;
+        const nextIds = containerIds;
+        const nextRaw = raw !== undefined ? raw : state.rawTranscription;
+
+        // Trigger auto-save for transcription state
+        saveTimelineToStorage(state.tracks);
+
+        return {
+            transcriptionGroups: nextGroups,
+            transcriptionContainerIds: nextIds,
+            rawTranscription: nextRaw
+        };
+    }),
+
+    generateDefaultGrouperState: (words, wordsPerLine = 8) => {
+        const groups: { [key: string]: Subtitle[] } = {};
+        const containerIds: string[] = [];
+
+        const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
+
+        for (let i = 0; i < sorted.length; i += wordsPerLine) {
+            const chunk = sorted.slice(i, i + wordsPerLine);
+            const groupId = `group-${i}-${Date.now()}`; // Unique ID to avoid collision
+            groups[groupId] = chunk;
+            containerIds.push(groupId);
+        }
+
+        return { groups, containerIds };
+    },
+
+    generateTimelineSubtitles: (words, wordsPerLine = 8) => {
+        const subtitles: Subtitle[] = [];
+        const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
+
+        for (let i = 0; i < sorted.length; i += wordsPerLine) {
+            const chunk = sorted.slice(i, i + wordsPerLine);
+            if (chunk.length > 0) {
+                subtitles.push({
+                    id: chunk[0].id,
+                    startTime: chunk[0].startTime,
+                    endTime: chunk[chunk.length - 1].endTime,
+                    text: chunk.map(w => w.text).join(' ')
+                });
+            }
+        }
+
+        return subtitles;
+    }
 }));

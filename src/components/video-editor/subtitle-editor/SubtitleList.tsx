@@ -273,7 +273,6 @@ export function SubtitleList({
       <TranscriptionViewModal
         isOpen={showTranscriptionView}
         onClose={() => setShowTranscriptionView(false)}
-        subtitles={subtitles}
         onApplyGroups={(newSubtitles) => {
           onSubtitlesChange?.(newSubtitles);
         }}
