@@ -16,7 +16,7 @@ export function useWaveform(videoFile: File | null) {
         }
 
         let isMounted = true;
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
         async function processAudio() {
             try {

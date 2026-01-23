@@ -16,6 +16,7 @@ export const POPULAR_GOOGLE_FONTS = [
     'Lora',
     'PT Sans',
     'Inter',
+    'Inter Tight',
     'Bebas Neue',
     'Kanit',
     'Mukta',
@@ -74,7 +75,7 @@ export function loadGoogleFont(family: string, preview: boolean = false) {
     link.id = linkId;
     link.rel = 'stylesheet';
 
-    let url = `https://fonts.googleapis.com/css2?family=${formattedFamily}:wght@400;700;800&display=swap`;
+    let url = `https://fonts.googleapis.com/css2?family=${formattedFamily}:wght@400;700;800;900&display=swap`;
     if (preview) {
         // Only load the characters of the family name for the preview
         const text = encodeURIComponent(family);
@@ -84,4 +85,31 @@ export function loadGoogleFont(family: string, preview: boolean = false) {
     link.href = url;
     document.head.appendChild(link);
     loadedFonts.add(cacheKey);
+}
+
+/**
+ * Ensures all requested font families are loaded and ready to use.
+ * Returns a promise that resolves when all fonts are ready.
+ */
+export async function waitForFonts(families: string[]): Promise<void> {
+    if (typeof window === 'undefined' || !('fonts' in document)) return;
+
+    const loads = families.map(async (family) => {
+        // Load the font metadata/link if not already done
+        loadGoogleFont(family);
+
+        // Wait for the specific font to be available in the browser's FontFaceSet
+        try {
+            // We check for 400, 700, 800, 900 weights
+            const weights = ['400', '700', '800', '900'];
+            await Promise.all(weights.map(weight =>
+                document.fonts.load(`${weight} 16px "${family}"`)
+            ));
+        } catch (e) {
+            console.warn(`Failed to wait for font "${family}":`, e);
+        }
+    });
+
+    await Promise.all(loads);
+    await document.fonts.ready;
 }

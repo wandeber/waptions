@@ -98,11 +98,11 @@ export const miAlterEduPreset: StylePreset = {
     ...defaultAnimationStyle,
     fadeInDuration: 0,
     fadeOutDuration: 0,
-    fontSize: 48,
-    fontFamily: 'Verdana',
+    fontSize: 40,
+    fontFamily: 'Inter Tight',
     textColor: '#FFF50B',
     strokeWidth: 0,
-    fontWeight: 800,
+    fontWeight: 900,
     textCase: 'uppercase',
     textAlign: 'center',
     position: {
@@ -112,11 +112,13 @@ export const miAlterEduPreset: StylePreset = {
     backgroundColor: '#000000',
     backgroundOpacity: 100,
     backgroundBorderWidth: 0,
-    backgroundMarginVertical: 8,
+    backgroundMarginVertical: 7,
     backgroundMarginHorizontal: 16,
-    backgroundBorderRadius: 2,
-    numberOfLines: 2,
+    backgroundBorderRadius: 0,
+    numberOfLines: 1,
     hidePunctuation: true,
+    backgroundOffsetY: -2,
+    punctuationChars: ':-,.;',
   }
 };
 

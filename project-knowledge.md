@@ -67,15 +67,15 @@
     - **Group Dragging**: Selected subtitles move together horizontally and vertically, preserving relative positions. Optimized history (single snapshot per operation).
 - **Styles and Presets**:
     - Default style ("Predeterminado") now includes a 200ms fade-in/out animation.
-    - Added "Mi Alter Edu" (renamed from Edu Siverio) for cinematic vertical content.
+    - "Mi Alter Edu" uses **Inter Tight Black (900)** for high-impact cinematic vertical content.
     - Presets are managed via `presetUtils.ts` and synced across the UI and store.
     - **Manual Modification**: Selector automatically switches to "Estilo personalizado (sin guardar)" when a preset is modified, identifying custom styles via deep comparison.
 - **Font Selection System**:
     - **Tabbed Selector**: Organized into App (curated), System (local), and Google Fonts.
     - **Smart Auto-selection**: Automatically switches to the correct tab (App, Google, or System) based on the current font when opening the style panel.
-    - **Dynamic Google Fonts**: Custom `google-fonts.ts` utility handles dynamic `<link>` injection for Google Fonts on demand.
+    - **Dynamic Google Fonts**: Custom `google-fonts.ts` utility handles dynamic `<link>` injection for Google Fonts on demand. It supports weights 400, 700, 800, and **900 (Black)**.
     - **Persistence & Auto-loading**: `GoogleFontManager` automatically scans all tracks and loads required fonts from Google Fonts when a project is opened.
-    - **Manual Search**: Supports searching by name; if a font is not in the popular list (~1000 fonts), typing the exact name allows direct loading from Google.
+    - **Manual Search**: Supports searching by name; if a font is not in the popular list (~1000 fonts), typing the exact name allows direct loading from Google. Added **Inter Tight** to the popular fonts list.
 - **Project Metadata**:
     - Automatic capture of the first frame (thumbnail) and video duration when a video is loaded.
     - Captures the frame respecting the original aspect ratio to avoid deformation.

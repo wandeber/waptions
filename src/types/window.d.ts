@@ -7,4 +7,5 @@ interface FontData {
 
 declare interface Window {
   queryLocalFonts(): Promise<FontData[]>;
-} 
+  webkitAudioContext: typeof AudioContext;
+}

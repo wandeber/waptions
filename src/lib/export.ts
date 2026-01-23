@@ -11,10 +11,13 @@ import {
     Input,
     BlobSource,
     ALL_FORMATS,
+    AudioSampleSource,
 } from 'mediabunny';
 import type { ExportOptions, ExportResult } from '@/types/export';
-import type { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
 import { videoCache } from './video-cache';
+import { renderSubtitles } from './subtitle-renderer';
+import { waitForFonts } from './fonts/google-fonts';
+import { AnimationStyle, Subtitle } from '@/types/timeline';
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     format: 'mp4',
@@ -29,239 +32,14 @@ const qualityMap = {
     very_high: QUALITY_VERY_HIGH,
 };
 
-export interface Subtitle {
-    id: string;
-    startTime: number;
-    endTime: number;
-    text: string;
-}
 
 interface ExportContext {
     videoFile: File;
     subtitles: Subtitle[];
-    animationStyle: SubtitleAnimationStyle;
+    animationStyle: AnimationStyle;
     options: ExportOptions;
 }
 
-/**
- * Render subtitles onto a canvas at a specific time.
- * Port from VideoViewport.tsx renderSubtitles logic.
- */
-function renderSubtitles(
-    ctx: CanvasRenderingContext2D,
-    subtitles: Subtitle[],
-    currentTime: number,
-    canvasWidth: number,
-    canvasHeight: number,
-    animationStyle: SubtitleAnimationStyle
-): void {
-    // Find active subtitles at this time
-    const activeSubtitles = subtitles.filter((subtitle) => {
-        const isActive = currentTime >= subtitle.startTime && currentTime < subtitle.endTime;
-        const isExiting = currentTime >= subtitle.endTime - animationStyle.fadeOutDuration
-            && currentTime < subtitle.endTime;
-        return isActive || isExiting;
-    });
-
-    if (activeSubtitles.length === 0) return;
-
-    // Process text helper
-    const processText = (text: string): string => {
-        let result = text;
-        if (animationStyle.textCase === 'uppercase') {
-            result = result.toUpperCase();
-        } else if (animationStyle.textCase === 'lowercase') {
-            result = result.toLowerCase();
-        }
-        if (animationStyle.hidePunctuation) {
-            const regex = new RegExp(
-                `[${animationStyle.punctuationChars.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}]`,
-                'g'
-            );
-            result = result.replace(regex, '');
-        }
-        if (animationStyle.removeAccents) {
-            result = result
-                .replace(/[áàäâã]/g, 'a')
-                .replace(/[éèëê]/g, 'e')
-                .replace(/[íìïî]/g, 'i')
-                .replace(/[óòöôõ]/g, 'o')
-                .replace(/[úùüû]/g, 'u')
-                .replace(/[ÁÀÄÂÃ]/g, 'A')
-                .replace(/[ÉÈËÊ]/g, 'E')
-                .replace(/[ÍÌÏÎ]/g, 'I')
-                .replace(/[ÓÒÖÔÕ]/g, 'O')
-                .replace(/[ÚÙÜÛ]/g, 'U');
-        }
-        return result;
-    };
-
-    // Easing functions
-    const easeOutBack = (x: number): number => {
-        if (!animationStyle.useElasticEffect) return x;
-        const c1 = animationStyle.bounceStrength;
-        const c3 = c1 + 1;
-        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
-    };
-
-    const easeOutExpo = (x: number): number => {
-        return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
-    };
-
-    // Sort and get the timing bounds from active subtitles
-    const sortedActive = [...activeSubtitles].sort((a, b) => a.startTime - b.startTime);
-    const firstSubtitle = sortedActive[0];
-    const lastSubtitle = sortedActive[sortedActive.length - 1];
-
-    // Calculate opacity and scale based on animation timing
-    let opacity = 1;
-    let scale = 1;
-
-    // Fade in with scale
-    if (currentTime >= firstSubtitle.startTime
-        && currentTime < firstSubtitle.startTime + animationStyle.fadeInDuration) {
-        const progress = (currentTime - firstSubtitle.startTime) / animationStyle.fadeInDuration;
-        opacity = easeOutExpo(progress);
-        const scaleProgress = easeOutBack(progress);
-        scale = 1 + ((animationStyle.initialScale - 1) * (1 - scaleProgress));
-    }
-
-    // Fade out
-    if (currentTime >= lastSubtitle.endTime - animationStyle.fadeOutDuration
-        && currentTime < lastSubtitle.endTime) {
-        const progress = (lastSubtitle.endTime - currentTime) / animationStyle.fadeOutDuration;
-        opacity = progress;
-    }
-
-    opacity = Math.max(0, Math.min(1, opacity));
-
-    // Configure canvas context
-    ctx.save();
-    const x = (canvasWidth * animationStyle.position.x) / 100;
-    const y = (canvasHeight * animationStyle.position.y) / 100;
-    ctx.translate(x, y);
-    ctx.scale(scale, scale);
-    ctx.translate(-x, -y);
-
-    const fontSize = animationStyle.fontSize * (canvasHeight / 1080);
-    const fontWeight = animationStyle.fontWeight;
-    ctx.font = `${fontWeight} ${fontSize}px ${animationStyle.fontFamily}`;
-    ctx.textAlign = animationStyle.textAlign;
-    ctx.textBaseline = 'middle';
-
-    // Get all lines from all active subtitles
-    interface ProcessedLine {
-        text: string;
-        metrics: TextMetrics;
-    }
-
-    let allLines: ProcessedLine[] = [];
-    for (const subtitle of sortedActive) {
-        const text = processText(subtitle.text);
-        const lines = text
-            .split('\n')
-            .filter((line) => line.trim() !== '')
-            .map((line) => ({
-                text: line,
-                metrics: ctx.measureText(line),
-            }));
-        allLines.push(...lines);
-    }
-
-    // Limit to configured number of lines
-    allLines = allLines.slice(0, animationStyle.numberOfLines);
-
-    if (allLines.length === 0) {
-        ctx.restore();
-        return;
-    }
-
-    // Calculate dimensions
-    const maxLineWidth = Math.max(...allLines.map((line) => line.metrics.width));
-    const lineHeight = fontSize * 1.2;
-    const totalTextHeight = lineHeight * allLines.length;
-
-    const padding = {
-        vertical: animationStyle.backgroundMarginVertical,
-        horizontal: animationStyle.backgroundMarginHorizontal,
-    };
-    const bgWidth = maxLineWidth + padding.horizontal * 2;
-    const bgHeight = totalTextHeight + padding.vertical * 2;
-
-    // Calculate background position
-    let bgX: number;
-    switch (animationStyle.textAlign) {
-        case 'left':
-            bgX = x - bgWidth / 2 + maxLineWidth / 2 + animationStyle.backgroundOffsetX;
-            break;
-        case 'right':
-            bgX = x - bgWidth / 2 - maxLineWidth / 2 + animationStyle.backgroundOffsetX;
-            break;
-        default:
-            bgX = x - bgWidth / 2 + animationStyle.backgroundOffsetX;
-    }
-    const bgY = y - bgHeight / 2 + animationStyle.backgroundOffsetY;
-
-    // Draw background
-    if (animationStyle.backgroundOpacity > 0) {
-        ctx.fillStyle = `${animationStyle.backgroundColor}${Math.round(
-            opacity * animationStyle.backgroundOpacity * 255
-        )
-            .toString(16)
-            .padStart(2, '0')}`;
-
-        if (animationStyle.backgroundBorderRadius > 0) {
-            const radius = Math.min(animationStyle.backgroundBorderRadius, bgHeight / 2, bgWidth / 2);
-            ctx.beginPath();
-            ctx.moveTo(bgX + radius, bgY);
-            ctx.lineTo(bgX + bgWidth - radius, bgY);
-            ctx.quadraticCurveTo(bgX + bgWidth, bgY, bgX + bgWidth, bgY + radius);
-            ctx.lineTo(bgX + bgWidth, bgY + bgHeight - radius);
-            ctx.quadraticCurveTo(bgX + bgWidth, bgY + bgHeight, bgX + bgWidth - radius, bgY + bgHeight);
-            ctx.lineTo(bgX + radius, bgY + bgHeight);
-            ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius);
-            ctx.lineTo(bgX, bgY + radius);
-            ctx.quadraticCurveTo(bgX + radius, bgY, bgX + radius, bgY);
-            ctx.closePath();
-            ctx.fill();
-
-            if (animationStyle.backgroundBorderWidth > 0) {
-                ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255)
-                    .toString(16)
-                    .padStart(2, '0')}`;
-                ctx.lineWidth = animationStyle.backgroundBorderWidth;
-                ctx.stroke();
-            }
-        } else {
-            ctx.fillRect(bgX, bgY, bgWidth, bgHeight);
-            if (animationStyle.backgroundBorderWidth > 0) {
-                ctx.strokeStyle = `${animationStyle.backgroundBorderColor}${Math.round(opacity * 255)
-                    .toString(16)
-                    .padStart(2, '0')}`;
-                ctx.lineWidth = animationStyle.backgroundBorderWidth;
-                ctx.strokeRect(bgX, bgY, bgWidth, bgHeight);
-            }
-        }
-    }
-
-    // Draw text
-    ctx.strokeStyle = `${animationStyle.strokeColor}${Math.round(opacity * 255)
-        .toString(16)
-        .padStart(2, '0')}`;
-    ctx.fillStyle = `${animationStyle.textColor}${Math.round(opacity * 255)
-        .toString(16)
-        .padStart(2, '0')}`;
-    ctx.lineWidth = animationStyle.strokeWidth;
-
-    let currentY = y - totalTextHeight / 2 + lineHeight / 2;
-    allLines.forEach((line) => {
-        ctx.strokeText(line.text, x, currentY);
-        ctx.fillText(line.text, x, currentY);
-        currentY += lineHeight;
-    });
-
-    ctx.restore();
-}
 
 /**
  * Export a video with subtitles using mediabunny.
@@ -273,6 +51,10 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
 
     try {
         console.log('exportProject started', { format, quality, duration: videoFile.size });
+
+        // ENSURE FONTS ARE LOADED
+        await waitForFonts([animationStyle.fontFamily]);
+
         // Get video info
         const input = new Input({
             source: new BlobSource(videoFile),
@@ -320,7 +102,7 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
         const mediaId = 'export-' + Date.now();
 
         // Handle audio track if included
-        let audioSource: any = null;
+        let audioSource: AudioSampleSource | null = null;
         if (includeAudio) {
             const inputAudioTrack = await input.getPrimaryAudioTrack();
             if (inputAudioTrack) {
@@ -328,7 +110,7 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
                 const codec = (await getFirstEncodableAudioCodec(['aac', 'opus'])) || 'aac';
 
                 audioSource = new AudioSampleSource({
-                    codec: codec as any,
+                    codec: codec as 'aac' | 'opus',
                     bitrate: 128000,
                 });
                 output.addAudioTrack(audioSource);
@@ -378,7 +160,7 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
             }
 
             // Render subtitles on top
-            renderSubtitles(ctx, subtitles, time, canvasWidth, canvasHeight, animationStyle);
+            renderSubtitles(ctx, subtitles, animationStyle, time, canvasWidth, canvasHeight);
 
             // Add frame to output
             const frameDuration = 1 / videoFps;
