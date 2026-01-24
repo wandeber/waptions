@@ -11,6 +11,7 @@ import {
   DEFAULT_EXPORT_OPTIONS,
 } from '@/lib/export';
 import { Subtitle } from '@/types/timeline';
+import { useProjectStore } from '@/stores/project-store';
 import type { SubtitleAnimationStyle } from './subtitle-editor/types';
 import { defaultAnimationStyle } from './subtitle-editor/types';
 import type { ExportFormat, ExportQuality } from '@/types/export';
@@ -28,6 +29,7 @@ export function ExportButton({
   fps,
   animationStyle = defaultAnimationStyle,
 }: ExportButtonProps) {
+  const { activeProject } = useProjectStore();
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState<string>('');
@@ -85,7 +87,15 @@ export function ExportButton({
 
         const a = document.createElement('a');
         a.href = url;
-        a.download = `video_con_subtitulos${extension}`;
+
+        // Use project name or fallback
+        const projectName = activeProject?.name || 'video';
+        const safeName = projectName
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '_')
+          .replace(/_+/g, '_');
+
+        a.download = `${safeName}${extension}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
