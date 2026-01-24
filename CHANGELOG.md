@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### AI Transcription
+- **Premium Transcription Mode**: Added a new "Premium" option that uses a three-step AI flow:
+    1. **Whisper**: Provides precise word-level timestamps.
+    2. **GPT-4o (Transcribe & Diarize)**: Provides high-quality text and speaker identification.
+    3. **o4-mini**: Intelligence layer that combines both, correcting Whisper text and grouping words into optimal subtitles (max 80 chars, handling silence, preserving speaker isolation).
+- **Refactored AI Layer**: Ported and extended the `AIProvider` architecture from `rocket-project`.
+- **OpenAI 6.x Migration**: Updated `openai` dependency to version 6.x to support the new `Responses` and `Diarization` APIs.
+- **Enhanced Transcription UI**: Improved `TranscriptionModal` with specific styling for the Premium option and better badge contrast.
+- **Improved Transcription Modal Flow**: The editor now handles pre-grouped transcription data, allowing for immediate application of the "Mode Sagrado" grouping without client-side re-calculation.
+
 ### Quality & Export
 - **Intelligent Bitrate**: Implemented automatic bitrate deduction based on source quality for re-encoding overhead without wasting space.
 - **Native Export Quality**: Fixed a VideoCache bug that could cap export resolution to 720p; now strictly uses native dimensions.

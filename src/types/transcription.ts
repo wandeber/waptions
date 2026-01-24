@@ -1,4 +1,4 @@
-export type TranscriptionModelId = 'whisper-1' | 'deepgram-nova-2';
+export type TranscriptionModelId = 'whisper-1' | 'deepgram-nova-2' | 'premium-whisper-gpt4o';
 
 export interface TranscriptionModel {
     id: TranscriptionModelId;
@@ -20,12 +20,20 @@ export const SUPPORTED_MODELS: TranscriptionModel[] = [
         badgeColor: 'blue'
     },
     {
+        id: 'premium-whisper-gpt4o',
+        name: 'Whisper + GPT-4o + GPT-5.2',
+        description: 'Ultimate pipeline for precisely timed, short-form subtitles with speaker isolation.',
+        provider: 'OpenAI',
+        badge: 'Premium',
+        badgeColor: 'purple',
+        isPremium: true
+    },
+    {
         id: 'deepgram-nova-2',
         name: 'Nova 2 (Deepgram)',
         description: 'Next-gen speech-to-text. Superior speed and accuracy.',
         provider: 'Deepgram',
-        badge: 'Premium',
-        badgeColor: 'purple',
-        isPremium: true
+        badge: 'Experimental',
+        badgeColor: 'green'
     }
 ];

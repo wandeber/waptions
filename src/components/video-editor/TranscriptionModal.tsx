@@ -63,14 +63,18 @@ export function TranscriptionModal({
                                 className={`
                                     relative flex items-center gap-4 p-4 rounded-lg cursor-pointer transition-all duration-200 border
                                     ${isSelected
-                                        ? 'bg-blue-500/10 border-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.15)]'
+                                        ? model.id === 'premium-whisper-gpt4o'
+                                            ? 'bg-purple-500/10 border-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.15)]'
+                                            : 'bg-blue-500/10 border-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.15)]'
                                         : 'bg-gray-800/50 border-gray-700 hover:bg-gray-800 hover:border-gray-600'
                                     }
                                 `}
                             >
                                 <div className={`
                                     flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center
-                                    ${isSelected ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-400'}
+                                    ${isSelected
+                                        ? model.id === 'premium-whisper-gpt4o' ? 'bg-purple-600 text-white' : 'bg-blue-500 text-white'
+                                        : 'bg-gray-700 text-gray-400'}
                                     transition-colors
                                 `}>
                                     {getIcon(model.provider)}
@@ -84,15 +88,15 @@ export function TranscriptionModal({
                                         {model.badge && (
                                             <span className={`
                                                 text-[10px] px-1.5 py-0.5 rounded-full font-medium tracking-wide border
-                                                ${model.badgeColor === 'purple' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : ''}
-                                                ${model.badgeColor === 'blue' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : ''}
-                                                ${model.badgeColor === 'green' ? 'bg-green-500/10 text-green-400 border-green-500/20' : ''}
+                                                ${model.badgeColor === 'purple' ? 'bg-purple-500/20 text-purple-400 border-purple-500/30' : ''}
+                                                ${model.badgeColor === 'blue' ? 'bg-blue-500/20 text-blue-400 border-blue-500/30' : ''}
+                                                ${model.badgeColor === 'green' ? 'bg-green-500/20 text-green-400 border-green-500/30' : ''}
                                             `}>
                                                 {model.badge}
                                             </span>
                                         )}
                                     </div>
-                                    <p className="text-xs text-gray-400/80 truncate">
+                                    <p className="text-xs text-gray-400/80">
                                         {model.description}
                                     </p>
                                 </div>
@@ -100,7 +104,7 @@ export function TranscriptionModal({
                                 <div className={`
                                     w-5 h-5 rounded-full border flex items-center justify-center transition-all
                                     ${isSelected
-                                        ? 'border-blue-500 bg-blue-500 text-white scale-100 opacity-100'
+                                        ? model.id === 'premium-whisper-gpt4o' ? 'border-purple-500 bg-purple-500 text-white scale-100' : 'border-blue-500 bg-blue-500 text-white scale-100'
                                         : 'border-gray-600 bg-transparent text-transparent scale-90 opacity-50'
                                     }
                                 `}>

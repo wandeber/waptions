@@ -251,7 +251,7 @@ export function Editor() {
         try {
             setIsGeneratingSubtitles(true);
 
-            // Extraer solo el audio para optimizar el envío a Whisper (< 25MB)
+            // Extraer solo el audio para optimizar el envío (< 25MB)
             const audioBlob = await extractAudio(videoFile);
             const formData = new FormData();
             formData.append('audio', audioBlob, 'audio.mp4');
@@ -269,12 +269,11 @@ export function Editor() {
                 throw new Error(data.error || 'Error al generar subtítulos');
             }
 
-            // Aplicar snap a frames en los subtítulos generados
             const fps = detectedFps || 30;
             const frameDuration = 1 / fps;
             const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
 
-            const snappedSubtitles = (data.subtitles as Subtitle[]).map(s => ({
+            const snapSubtitles = (subs: Subtitle[]) => subs.map(s => ({
                 ...s,
                 startTime: snapTime(s.startTime),
                 endTime: snapTime(s.endTime)
@@ -283,18 +282,55 @@ export function Editor() {
             if (activeTrack) {
                 const timelineStore = useTimelineStore.getState();
 
-                // 1. Raw Layer (Immutable)
-                // 2. Grouper Layer (Mutable WIP Copy)
-                const { groups, containerIds } = timelineStore.generateDefaultGrouperState(snappedSubtitles);
-                timelineStore.setTranscriptionState(groups, containerIds, snappedSubtitles);
+                if (modelId === 'premium-whisper-gpt4o') {
+                    // PREMIUM FLOW: Use pre-grouped data from API
+                    const snappedRaw = snapSubtitles(data.raw as Subtitle[]);
+                    const snappedGroups: { [key: string]: Subtitle[] } = {};
+                    const containerIds: string[] = [];
 
-                // 3. Timeline Layer (Final Subtitles)
-                // We create a fresh set of merged subtitles for the track
-                const initialTimelineSubtitles = timelineStore.generateTimelineSubtitles(snappedSubtitles);
-                const updatedTracks = tracks.map(t =>
-                    t.id === activeTrack.id ? { ...t, subtitles: initialTimelineSubtitles } : t
-                );
-                setTracks(updatedTracks);
+                    (data.groups as Array<{ id: string; words: Subtitle[] }>).forEach((groupObj) => {
+                        snappedGroups[groupObj.id] = snapSubtitles(groupObj.words);
+                        containerIds.push(groupObj.id);
+                    });
+
+                    // 1. Raw Layer
+                    // 2. Grouper Layer
+                    timelineStore.setTranscriptionState(snappedGroups, containerIds, snappedRaw);
+
+                    // 3. Timeline Layer (Final Subtitles)
+                    const initialTimelineSubtitles: Subtitle[] = [];
+                    containerIds.forEach((id: string) => {
+                        const group = snappedGroups[id];
+                        if (group && group.length > 0) {
+                            initialTimelineSubtitles.push({
+                                id: group[0].id,
+                                startTime: group[0].startTime,
+                                endTime: group[group.length - 1].endTime,
+                                text: group.map((s: Subtitle) => s.text).join(' ')
+                            });
+                        }
+                    });
+
+                    const updatedTracks = tracks.map(t =>
+                        t.id === activeTrack.id ? { ...t, subtitles: initialTimelineSubtitles } : t
+                    );
+                    setTracks(updatedTracks);
+                } else {
+                    // STANDARD FLOW: Use legacy word-to-subtitle logic
+                    const snappedSubtitles = snapSubtitles(data.subtitles as Subtitle[]);
+
+                    // 1. Raw Layer
+                    // 2. Grouper Layer
+                    const { groups, containerIds } = timelineStore.generateDefaultGrouperState(snappedSubtitles);
+                    timelineStore.setTranscriptionState(groups, containerIds, snappedSubtitles);
+
+                    // 3. Timeline Layer
+                    const initialTimelineSubtitles = timelineStore.generateTimelineSubtitles(snappedSubtitles);
+                    const updatedTracks = tracks.map(t =>
+                        t.id === activeTrack.id ? { ...t, subtitles: initialTimelineSubtitles } : t
+                    );
+                    setTracks(updatedTracks);
+                }
             }
             setShowTranscriptionModal(false);
         } catch (error) {

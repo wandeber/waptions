@@ -82,8 +82,13 @@
     - Stored as base64 jpeg and seconds in the project metadata (IndexedDB).
     - Displayed in the `ProjectDashboard` for quick identification.
 - **AI Transcription Engine**:
-    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram, Local).
-    - **Modal Flow**: Transcription is not instant; a `TranscriptionModal` allows configuration before processing.
+    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram, and Premium Whisper + GPT-4o + o4-mini).
+    - **Premium Mode**: Uses a three-step flow:
+        1. **Whisper**: Provides word-by-word timestamps.
+        2. **GPT-4o (Transcribe & Diarize)**: Provides phrase-level text and speaker identification (diarization).
+        3. **o4-mini**: Aggregates both inputs to correct Whisper text via GPT-4o context and group words into optimal subtitles (max 80 chars, silence gaps, no speaker mixing).
+    - **Integration**: Uses `AIProvider` and `OpenAIProvider` ported from `rocket-project`, extended for audio.
+    - **Modal Flow**: Configuration via `TranscriptionModal`.
     - **Audio Extraction**: Audio is extracted and transcoded to AAC/MP4 on the client before upload to minimize bandwidth.
 - **Project Storage**: `ProjectStore` uses `storage-service` to save project metadata (`waptions-projects`) and timelines (`waptions-timelines-{projectId}`).
 - **Timeline History**: `TimelineStore` implements manual undo/redo stack (`history` + `redoStack`) and auto-saves to IndexedDB on changes.
