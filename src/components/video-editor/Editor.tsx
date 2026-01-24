@@ -2,23 +2,17 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { VideoViewport } from '@/components/video-editor/VideoViewport';
-import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
 import { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
-import { ExportButton } from '@/components/video-editor/ExportButton';
 import { GoogleFontManager } from '@/components/video-editor/GoogleFontManager';
 import { useRouter } from 'next/navigation';
-import { UndoIcon } from '@/components/icons/UndoIcon';
-import { RedoIcon } from '@/components/icons/RedoIcon';
-import { CopyIcon } from '@/components/icons/CopyIcon';
-import { PasteIcon } from '@/components/icons/PasteIcon';
 import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
-import { InlineEditor } from '@/components/design-system/InlineEditor';
-import { StatusBar } from '@/components/design-system/StatusBar';
 import { TranscriptionModal } from '@/components/video-editor/TranscriptionModal';
 import { TranscriptionModelId } from '@/types/transcription';
+import { EditorHeader } from '@/components/video-editor/EditorHeader';
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
@@ -92,83 +86,28 @@ export function Editor() {
         }
     }, [tracks.length, addTrack]);
 
-    // Keyboard shortcuts for Undo/Redo and Multi-Delete
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            // Si estamos escribiendo en un input o textarea, no procesar atajos globales
-            if (
-                e.target instanceof HTMLInputElement ||
-                e.target instanceof HTMLTextAreaElement
-            ) {
-                return;
+    // Unified Keyboard Shortcuts
+    useKeyboardShortcuts({
+        SAVE: () => handleSave(),
+        UNDO: () => undo(),
+        REDO: () => redo(),
+        COPY: () => copySelection(),
+        PASTE: () => pasteSelection(currentTime),
+        TRIM_START: () => trimSubtitleAtTime(currentTime, 'start'),
+        TRIM_END: () => trimSubtitleAtTime(currentTime, 'end'),
+        DELETE: () => {
+            if (selectedSubtitleIds.length > 0) {
+                [...selectedSubtitleIds].forEach(id => {
+                    const track = tracks.find(t => t.subtitles.some(s => s.id === id));
+                    if (track) removeSubtitleFromTrack(track.id, id);
+                });
+                clearSelection();
             }
-
-            // Undo: Ctrl+Z or Cmd+Z
-            if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-                e.preventDefault();
-                undo();
-            }
-            // Redo: Ctrl+Shift+Z or Cmd+Shift+Z or Ctrl+Y
-            if (
-                ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) ||
-                ((e.ctrlKey || e.metaKey) && e.key === 'y')
-            ) {
-                e.preventDefault();
-                redo();
-            }
-
-            // Copy: Ctrl+C or Cmd+C
-            if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-                e.preventDefault();
-                copySelection();
-            }
-
-            // Paste: Ctrl+V or Cmd+V
-            if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-                e.preventDefault();
-                pasteSelection(currentTime);
-            }
-
-            // Trim shortcuts
-            if (e.key.toLowerCase() === 'q') {
-                e.preventDefault();
-                trimSubtitleAtTime(currentTime, 'start');
-            }
-            if (e.key.toLowerCase() === 'w') {
-                e.preventDefault();
-                trimSubtitleAtTime(currentTime, 'end');
-            }
-
-            // Enter: Select and focus subtitle under playhead
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                requestEditSubtitleAtTime(currentTime);
-            }
-
-            // V: Select subtitle under playhead without focus
-            if (e.key.toLowerCase() === 'v' && !e.ctrlKey && !e.metaKey) {
-                e.preventDefault();
-                selectSubtitleAtTime(currentTime);
-            }
-
-            // Multi-Delete: Backspace or Delete
-            if (e.key === 'Backspace' || e.key === 'Delete') {
-                if (selectedSubtitleIds.length > 0) {
-                    e.preventDefault();
-                    [...selectedSubtitleIds].forEach(id => {
-                        const track = tracks.find(t => t.subtitles.some(s => s.id === id));
-                        if (track) {
-                            removeSubtitleFromTrack(track.id, id);
-                        }
-                    });
-                    clearSelection();
-                }
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, selectedSubtitleIds, removeSubtitleFromTrack, clearSelection, tracks, copySelection, currentTime, pasteSelection, trimSubtitleAtTime, requestEditSubtitleAtTime, selectSubtitleAtTime]);
+        },
+        PLAY_PAUSE: () => togglePlayback(),
+        EDIT_SUBTITLE: () => requestEditSubtitleAtTime(currentTime),
+        SELECT_SUBTITLE: () => selectSubtitleAtTime(currentTime)
+    });
 
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -372,86 +311,26 @@ export function Editor() {
     return (
         <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
             <GoogleFontManager />
-            {/* Header */}
-            <header className="flex-none p-4 bg-gray-800 flex justify-between items-center border-b border-gray-700">
-                <div className="flex items-center gap-4">
-                    <button onClick={handleClose} className="text-gray-400 hover:text-white transition-colors">
-                        ← Volver
-                    </button>
-                    <InlineEditor
-                        initialValue={activeProject?.name || ""}
-                        onSave={(val) => updateProjectName(val)}
-                        textClassName="text-xl font-bold"
-                        inputClassName="text-xl font-bold h-8"
-                    />
-                </div>
-
-                <div className="flex items-center gap-4">
-                    <StatusBar />
-                    <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${history.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        onClick={undo}
-                        disabled={history.length === 0}
-                        title="Deshacer (Ctrl+Z)"
-                    >
-                        <UndoIcon width={16} height={16} />
-                    </button>
-                    <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors mr-2 flex items-center justify-center ${redoStack.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        onClick={redo}
-                        disabled={redoStack.length === 0}
-                        title="Rehacer (Ctrl+Shift+Z)"
-                    >
-                        <RedoIcon width={16} height={16} />
-                    </button>
-
-                    <div className="w-[1px] h-6 bg-gray-700 mx-1" />
-
-                    <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${selectedSubtitleIds.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        onClick={copySelection}
-                        disabled={selectedSubtitleIds.length === 0}
-                        title="Copiar (Cmd+C)"
-                    >
-                        <CopyIcon width={16} height={16} />
-                    </button>
-                    <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!clipboard || clipboard.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        onClick={() => pasteSelection(currentTime)}
-                        disabled={!clipboard || clipboard.length === 0}
-                        title="Pegar (Cmd+V)"
-                    >
-                        <PasteIcon width={16} height={16} />
-                    </button>
-
-                    <button
-                        className={`h-8 px-3 rounded text-sm font-medium transition-colors flex items-center gap-2 ${isDirty || isSaving
-                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                            : 'bg-gray-700 text-gray-400 cursor-default'
-                            }`}
-                        onClick={handleSave}
-                        disabled={!isDirty || isSaving}
-                    >
-                        {isSaving ? (
-                            <>
-                                <SpinnerIcon className="w-3 h-3" />
-                                <span>Guardando...</span>
-                            </>
-                        ) : isDirty ? (
-                            'Guardar'
-                        ) : (
-                            'Guardado'
-                        )}
-                    </button>
-                    <div className="w-px h-6 bg-gray-700 mx-2" />
-                    <ExportButton
-                        videoFile={videoFile}
-                        subtitles={subtitles}
-                        fps={detectedFps || 30}
-                        animationStyle={animationStyle}
-                    />
-                </div>
-            </header>
+            <EditorHeader
+                projectName={activeProject?.name || ""}
+                onRename={updateProjectName}
+                onClose={handleClose}
+                onUndo={undo}
+                onRedo={redo}
+                canUndo={history.length > 0}
+                canRedo={redoStack.length > 0}
+                onCopy={copySelection}
+                onPaste={() => pasteSelection(currentTime)}
+                canCopy={selectedSubtitleIds.length > 0}
+                canPaste={!!clipboard && clipboard.length > 0}
+                onSave={handleSave}
+                isDirty={isDirty}
+                isSaving={isSaving}
+                videoFile={videoFile}
+                subtitles={subtitles}
+                fps={detectedFps || 30}
+                animationStyle={animationStyle}
+            />
 
             {/* Main content */}
             <main className="flex-1 p-4 min-h-0">

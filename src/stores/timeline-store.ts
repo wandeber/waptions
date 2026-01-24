@@ -2,8 +2,13 @@ import { create } from 'zustand';
 import { SubtitleTrack, AnimationStyle, Subtitle } from '@/types/timeline';
 import { storageService } from '@/lib/storage/storage-service';
 import { useProjectStore } from './project-store';
-import { useVideoStore } from './video-store'; // Import useVideoStore
-import { getVideoInfo } from '@/lib/mediabunny-utils'; // Import getVideoInfo
+import { useVideoStore } from './video-store';
+import { getVideoInfo } from '@/lib/mediabunny-utils';
+import {
+    findSubtitleAcrossTracks,
+    generateDefaultGrouperState,
+    generateTimelineSubtitles
+} from '@/lib/timeline-utils';
 
 interface HistorySnapshot {
     tracks: SubtitleTrack[];
@@ -599,26 +604,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         let targetSubtitle: Subtitle | null = null;
         let mode: 'trim' | 'extend' = 'trim';
 
-        const findOnTrack = (track: SubtitleTrack) => {
-            const EPSILON = 0.005;
-            return track.subtitles.find(s => time >= s.startTime - EPSILON && time < s.endTime - EPSILON);
-        };
-
-        const activeTrack = tracks.find(t => t.id === activeTrackId);
-
-        // Try to find subtitle under playhead on active track or fallback
-        if (activeTrack) {
-            targetSubtitle = findOnTrack(activeTrack) || null;
-            if (targetSubtitle) targetTrackId = activeTrack.id;
-        }
-        if (!targetSubtitle) {
-            for (const track of tracks) {
-                targetSubtitle = findOnTrack(track) || null;
-                if (targetSubtitle) {
-                    targetTrackId = track.id;
-                    break;
-                }
-            }
+        const result = findSubtitleAcrossTracks(tracks, time, activeTrackId);
+        if (result) {
+            targetSubtitle = result.subtitle;
+            targetTrackId = result.trackId;
         }
 
         // 2. Decide if we trim the current sub or extend a neighbor
@@ -691,24 +680,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     selectSubtitleAtTime: (time) => {
         const { tracks, activeTrackId, toggleSubtitleSelection } = get();
 
-        let targetSubtitle: Subtitle | null = null;
-
-        const findOnTrack = (track: SubtitleTrack) => {
-            const EPSILON = 0.005; // 5ms buffer for floating point/snapping
-            return track.subtitles.find(s => time >= s.startTime - EPSILON && time < s.endTime - EPSILON);
-        };
-
-        const activeTrack = tracks.find(t => t.id === activeTrackId);
-        if (activeTrack) {
-            targetSubtitle = findOnTrack(activeTrack) || null;
-        }
-
-        if (!targetSubtitle) {
-            for (const track of tracks) {
-                targetSubtitle = findOnTrack(track) || null;
-                if (targetSubtitle) break;
-            }
-        }
+        const result = findSubtitleAcrossTracks(tracks, time, activeTrackId);
+        const targetSubtitle = result?.subtitle || null;
 
         if (targetSubtitle) {
             toggleSubtitleSelection(targetSubtitle.id);
@@ -784,83 +757,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         };
     }),
 
-    generateDefaultGrouperState: (words, wordsPerLine = 3) => {
-        const groups: { [key: string]: Subtitle[] } = {};
-        const containerIds: string[] = [];
-        const MAX_CHARS = 20;
+    generateDefaultGrouperState: (words, wordsPerLine = 3) =>
+        generateDefaultGrouperState(words, wordsPerLine),
 
-        const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
-        const timestamp = Date.now();
-
-        let currentChunk: Subtitle[] = [];
-        let currentChars = 0;
-        let groupCount = 0;
-
-        for (const word of sorted) {
-            const wordLen = word.text.length;
-            const projectedChars = currentChars + (currentChunk.length > 0 ? 1 : 0) + wordLen;
-
-            if (currentChunk.length >= wordsPerLine || (currentChunk.length > 0 && projectedChars > MAX_CHARS)) {
-                const firstWordId = currentChunk[0].id.toString().slice(0, 8);
-                const groupId = `group-${firstWordId}-${groupCount}-${timestamp}`;
-                groups[groupId] = currentChunk;
-                containerIds.push(groupId);
-
-                currentChunk = [];
-                currentChars = 0;
-                groupCount++;
-            }
-
-            currentChunk.push(word);
-            currentChars += (currentChunk.length === 1 ? 0 : 1) + wordLen;
-        }
-
-        if (currentChunk.length > 0) {
-            const firstWordId = currentChunk[0].id.toString().slice(0, 8);
-            const groupId = `group-${firstWordId}-${groupCount}-${timestamp}`;
-            groups[groupId] = currentChunk;
-            containerIds.push(groupId);
-        }
-
-        return { groups, containerIds };
-    },
-
-    generateTimelineSubtitles: (words, wordsPerLine = 3) => {
-        const subtitles: Subtitle[] = [];
-        const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
-        const MAX_CHARS = 20;
-
-        let currentChunk: Subtitle[] = [];
-        let currentChars = 0;
-
-        for (const word of sorted) {
-            const wordLen = word.text.length;
-            const projectedChars = currentChars + (currentChunk.length > 0 ? 1 : 0) + wordLen;
-
-            if (currentChunk.length >= wordsPerLine || (currentChunk.length > 0 && projectedChars > MAX_CHARS)) {
-                subtitles.push({
-                    id: currentChunk[0].id,
-                    startTime: currentChunk[0].startTime,
-                    endTime: currentChunk[currentChunk.length - 1].endTime,
-                    text: currentChunk.map(w => w.text).join(' ')
-                });
-                currentChunk = [];
-                currentChars = 0;
-            }
-
-            currentChunk.push(word);
-            currentChars += (currentChunk.length === 1 ? 0 : 1) + wordLen;
-        }
-
-        if (currentChunk.length > 0) {
-            subtitles.push({
-                id: currentChunk[0].id,
-                startTime: currentChunk[0].startTime,
-                endTime: currentChunk[currentChunk.length - 1].endTime,
-                text: currentChunk.map(w => w.text).join(' ')
-            });
-        }
-
-        return subtitles;
-    }
+    generateTimelineSubtitles: (words, wordsPerLine = 3) =>
+        generateTimelineSubtitles(words, wordsPerLine)
 }));

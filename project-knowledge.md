@@ -28,7 +28,12 @@
 ### Core Components
 - `VideoViewport.tsx**: Canvas rendering, multi-layer subtitle support, audio sync.
 - `Timeline.tsx`: Professional timeline with `TimelineStore` integration.
+- `EditorHeader.tsx`: Extracted top bar containing title navigation, undo/redo, and export actions.
 - `SubtitleEditor/`: Subtitle management with presets and AI transcription.
+
+### Logic & Utilities
+- `lib/timeline-utils.ts`: Contains the "brain" of the timeline (transcription grouping algorithms, subtitle discovery logic). Allows stores to stay reactive and lightweight.
+- `lib/export/`: Handle video encoding/muxing logic.
 
 ### API Routes
 - `/api/generate-subtitles`: Multi-model endpoint returning raw **word-level** timestamps. Grouping logic is delegated to the client or separate processes.

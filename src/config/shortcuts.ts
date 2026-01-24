@@ -68,5 +68,17 @@ export const SHORTCUTS: Record<string, ShortcutConfig> = {
         key: ' ',
         description: 'Reproducir / Pausa',
         category: 'navigation'
+    },
+    EDIT_SUBTITLE: {
+        id: 'EDIT_SUBTITLE',
+        key: 'Enter',
+        description: 'Editar subtítulo bajo cabezal',
+        category: 'edit'
+    },
+    SELECT_SUBTITLE: {
+        id: 'SELECT_SUBTITLE',
+        key: 'v',
+        description: 'Seleccionar subtítulo bajo cabezal',
+        category: 'edit'
     }
 };
