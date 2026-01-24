@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Google Authentication using Auth.js (v5).
+- Email whitelist authorization via `AUTHORIZED_EMAILS`.
+- Application-wide privacy protection via Middleware.
+- Cloudflare Turnstile integration on login page.
+
+
 ### House-Cleaning & Architecture
 - **Shortcut Centralization**: Created a central registry in `src/config/shortcuts.ts` and a reusable `useKeyboardShortcuts` hook to manage all global and context-aware shortcuts.
 - **Component Modularization**: Extracted `EditorHeader` from the main `Editor` component, reducing visual debt and improving maintainability.

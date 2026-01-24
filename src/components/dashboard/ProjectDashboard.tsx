@@ -7,6 +7,7 @@ import { useProjectStore } from '@/stores/project-store';
 import { PlusIcon } from '../icons/PlusIcon';
 import { TrashIcon } from '../icons/TrashIcon';
 import { ConfirmDialog } from '../design-system/ConfirmDialog';
+import { UserMenu } from './UserMenu';
 
 export function ProjectDashboard() {
     const { savedProjects, createProject, deleteProject } = useProjectStore();
@@ -56,12 +57,17 @@ export function ProjectDashboard() {
             <div className="max-w-6xl mx-auto space-y-8">
 
                 {/* Header */}
-                <div className="flex justify-between items-end border-b border-gray-800 pb-6">
-                    <div>
-                        <h1 className="text-3xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Waptions</h1>
-                        <p className="text-gray-400">Gestiona tus proyectos de video</p>
+                <div className="flex justify-between items-start border-b border-gray-800 pb-6">
+                    <div className="flex justify-between w-full items-start">
+                        <div>
+                            <h1 className="text-3xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Waptions</h1>
+                            <p className="text-gray-400">Gestiona tus proyectos de video</p>
+                        </div>
+                        <UserMenu />
                     </div>
+                </div>
 
+                <div className="flex justify-end">
                     <form onSubmit={handleCreate} className="flex gap-2">
                         <input
                             type="text"

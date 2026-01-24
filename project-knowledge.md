@@ -18,6 +18,13 @@
 - **Loading State Isolation**: `ProjectStore` separates `isProjectLoading` (user-facing project opening) from `isListLoading` (background database refreshes). The `StatusBar` only reacts to `isProjectLoading`.
 - **Navigation Safety**: `EditorPage` uses a `useRef` to track the last loaded ID, preventing redundant `loadProject` calls when a project is closed or renamed.
 
+### Authentication & Privacy
+- **Auth.js (v5)**: Uses Google Provider for authentication.
+- **Database-less**: Sessions are JWT-based; no database adapter is used.
+- **Whitelist**: Authorized emails are managed via `AUTHORIZED_EMAILS` environment variable.
+- **Privacy**: Entire application is protected by middleware, redirecting unauthenticated users to `/login`.
+- **Security**: Cloudflare Turnstile is integrated into the login flow.
+
 ### Centralized Shortcuts System
 - **Registry**: All shortcuts are defined in `src/config/shortcuts.ts` with metadata (keys, descriptions, categories).
 - **Execution Hook**: `useKeyboardShortcuts` implements a global listener that:
