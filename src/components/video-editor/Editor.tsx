@@ -2,11 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { VideoViewport } from '@/components/video-editor/VideoViewport';
+import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { Timeline } from '@/components/video-editor/Timeline';
 import { SubtitleEditor } from '@/components/video-editor/subtitle-editor';
 import { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
 import { ExportButton } from '@/components/video-editor/ExportButton';
 import { GoogleFontManager } from '@/components/video-editor/GoogleFontManager';
+import { useRouter } from 'next/navigation';
 import { UndoIcon } from '@/components/icons/UndoIcon';
 import { RedoIcon } from '@/components/icons/RedoIcon';
 import { CopyIcon } from '@/components/icons/CopyIcon';
@@ -14,6 +16,7 @@ import { PasteIcon } from '@/components/icons/PasteIcon';
 import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
 import { InlineEditor } from '@/components/design-system/InlineEditor';
+import { StatusBar } from '@/components/design-system/StatusBar';
 import { TranscriptionModal } from '@/components/video-editor/TranscriptionModal';
 import { TranscriptionModelId } from '@/types/transcription';
 
@@ -62,7 +65,7 @@ export function Editor() {
         clipboard
     } = useTimelineStore();
 
-    const { saveCurrentProject, activeProject, closeProject, isDirty, updateProjectName } = useProjectStore();
+    const { saveCurrentProject, activeProject, closeProject, isDirty, isSaving, updateProjectName } = useProjectStore();
 
     // Activate background rendering for caching
     useBackgroundRenderer();
@@ -346,14 +349,16 @@ export function Editor() {
 
 
 
+    const router = useRouter();
+
     const handleSave = async () => {
         await saveCurrentProject();
     };
 
     const handleClose = () => {
-        const { isDirty } = useProjectStore.getState();
         if (!isDirty) {
             closeProject();
+            router.push('/');
             return;
         }
         setShowExitConfirm(true);
@@ -361,6 +366,7 @@ export function Editor() {
 
     const handleConfirmClose = () => {
         closeProject();
+        router.push('/');
     };
 
     return (
@@ -380,7 +386,8 @@ export function Editor() {
                     />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-4">
+                    <StatusBar />
                     <button
                         className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${history.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
                         onClick={undo}
@@ -418,14 +425,23 @@ export function Editor() {
                     </button>
 
                     <button
-                        className={`h-8 px-3 rounded text-sm font-medium transition-colors flex items-center gap-2 ${isDirty
+                        className={`h-8 px-3 rounded text-sm font-medium transition-colors flex items-center gap-2 ${isDirty || isSaving
                             ? 'bg-blue-600 hover:bg-blue-700 text-white'
                             : 'bg-gray-700 text-gray-400 cursor-default'
                             }`}
                         onClick={handleSave}
-                        disabled={!isDirty}
+                        disabled={!isDirty || isSaving}
                     >
-                        {isDirty ? 'Guardar' : 'Guardado'}
+                        {isSaving ? (
+                            <>
+                                <SpinnerIcon className="w-3 h-3" />
+                                <span>Guardando...</span>
+                            </>
+                        ) : isDirty ? (
+                            'Guardar'
+                        ) : (
+                            'Guardado'
+                        )}
                     </button>
                     <div className="w-px h-6 bg-gray-700 mx-2" />
                     <ExportButton

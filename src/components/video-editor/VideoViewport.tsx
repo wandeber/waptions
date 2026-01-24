@@ -247,6 +247,8 @@ export function VideoViewport({
 
       // FINAL BLIT to visible canvas
       const canvas = canvasRef.current;
+      if (!canvas) return;
+
       if (canvas.width !== rect.width || canvas.height !== rect.height) {
         canvas.width = rect.width;
         canvas.height = rect.height;

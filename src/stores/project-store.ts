@@ -10,6 +10,7 @@ interface ProjectStore {
     activeProject: TProject | null;
     savedProjects: TProject[];
     isLoading: boolean;
+    isSaving: boolean;
     isInitialized: boolean;
     isDirty: boolean;
     lastSavedState: string;
@@ -33,6 +34,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     activeProject: null,
     savedProjects: [],
     isLoading: false,
+    isSaving: false,
     isInitialized: false,
     isDirty: false,
     lastSavedState: '',
@@ -177,6 +179,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         const { activeProject } = get();
         if (!activeProject) return;
 
+        set({ isSaving: true });
         const timelineStore = useTimelineStore.getState();
         const tracks = timelineStore.tracks;
 
@@ -199,6 +202,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             await get().loadAllProjects();
         } catch (error) {
             console.error('Failed to save project:', error);
+        } finally {
+            set({ isSaving: false });
         }
     },
 

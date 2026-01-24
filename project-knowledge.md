@@ -81,6 +81,9 @@
     - Captures the frame respecting the original aspect ratio to avoid deformation.
     - Stored as base64 jpeg and seconds in the project metadata (IndexedDB).
     - Displayed in the `ProjectDashboard` for quick identification.
+- **Project Structure**:
+    - **Dashboard**: Located at the root route (`/`). Handles project creation, listing, and deletion.
+    - **Editor**: Located at `/editor/[id]`. Dynamic route that loads a project by its ID from IndexedDB.
 - **AI Transcription Engine**:
     - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram Nova 2, and Premium Whisper + GPT-4o + GPT-5.2).
     - **Providers**:

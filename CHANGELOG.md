@@ -11,10 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deepgram Support**: Integrated Deepgram as a new transcription provider using the `@deepgram/sdk`.
     - Added `DeepgramProvider` to the AI layer.
     - Enabled `deepgram-nova-3` model (the current flagship) with smart format and diarization support.
-- **Premium Transcription Mode**: Added a new "Premium" option that uses a three-step AI flow:
-    1. **Whisper**: Provides precise word-level timestamps.
-    2. **GPT-4o (Transcribe & Diarize)**: Provides high-quality text and speaker identification.
-    3. **o4-mini**: Intelligence layer that combines both, correcting Whisper text and grouping words into optimal subtitles (max 80 chars, handling silence, preserving speaker isolation).
+- **Premium Transcription Mode**: Added a new "Premium" option that uses a three-step AI flow (Whisper + GPT-4o + GPT-5.2).
+
+### Project Structure
+- **Multi-page Routing**: Refactored the application to use Next.js App Router.
+    - **Dashboard**: Moved to the root route (`/`).
+    - **Editor**: Moved to a dynamic route (`/editor/[id]`).
+    - **Navigation**: Implemented seamless navigation between the dashboard and editor using `next/navigation`.
 - **Refactored AI Layer**: Ported and extended the `AIProvider` architecture from `rocket-project`.
 - **OpenAI 6.x Migration**: Updated `openai` dependency to version 6.x to support the new `Responses` and `Diarization` APIs.
 - **Enhanced Transcription UI**: Improved `TranscriptionModal` with specific styling for the Premium option and better badge contrast.
@@ -34,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Model Selection System**: Added a premium modal allowing users to choose between transcription models (e.g., precise OpenAI Whisper vs. faster variants).
 - **Word-Level Precision**: The transcription engine now returns raw word-by-word timestamps, delegating sentence grouping to future advanced logic.
 - **3-Layer Transcription Architecture**: Implemented strict separation between Raw Transcription (Immutable), Grouper WIP (Mutable), and Timeline Subtitles.
-- **Independent Data Flow**: 
+- **Independent Data Flow**:
     - Initial transcript populates both Timeline and Grouper from Raw words.
     - "Agrupar" in modal resets the WIP layer from Raw words.
     - "Aplicar" in modal overwrites the Timeline layer from the WIP layer.
@@ -55,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Subtitle Improvements
 - **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
-- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead. 
+- **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead.
     - **Gap Filling**: If pressed at a boundary or in a gap, it extends the previous (`Q`) or next (`W`) subtitle to meet the playhead.
     - **Auto-Deletion**: Subtitles are automatically removed if trimmed to less than one frame duration.
 - **Performance Tuning**:
@@ -83,7 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Subtitle Visibility Precision**: Standardized boundary logic using a 0.5ms epsilon to ensure start-inclusive and end-exclusive behavior.
 - **Improved Keypoint Navigation**: ArrowUp/Down landing points now perfectly align with subtitle visibility boundaries.
 - **Rounding Consistency**: Subtitle timings are now consistently rounded to 1ms during editing.
-- **Project Previews**: Projects now show a proportional thumbnail of the first frame and the video duration in the dashboard.
+- **Routing Structure**:
+    - `/`: Home page displaying the `ProjectDashboard`.
+    - `/editor/[id]`: Dynamic page rendering the `Editor` for a specific project.
+- **Project Management**:
+ Projects now show a proportional thumbnail of the first frame and the video duration in the dashboard.
 - **Inline Name Editing**: Projects and layers can now be renamed directly by clicking on their titles, with support for undo/redo in layer name changes.
 - **Virtualized Audio Waveform**: Added a high-performance audio waveform at the bottom of the timeline with support for extreme zoom levels (virtualized rendering).
 - **Independent Drag Preview**: Decoupled video preview from playhead movement during drag/resize events, allowing the playhead to serve as a fixed reference point.

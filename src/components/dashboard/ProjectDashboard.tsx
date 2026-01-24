@@ -2,16 +2,18 @@
 
 import { useState } from 'react';
 import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 import { useProjectStore } from '@/stores/project-store';
 import { PlusIcon } from '../icons/PlusIcon';
 import { TrashIcon } from '../icons/TrashIcon';
 import { ConfirmDialog } from '../design-system/ConfirmDialog';
 
 export function ProjectDashboard() {
-    const { savedProjects, createProject, loadProject, deleteProject } = useProjectStore();
+    const { savedProjects, createProject, deleteProject } = useProjectStore();
     const [isCreating, setIsCreating] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
     const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
+    const router = useRouter();
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -19,7 +21,8 @@ export function ProjectDashboard() {
 
         setIsCreating(true);
         try {
-            await createProject(newProjectName);
+            const id = await createProject(newProjectName);
+            router.push(`/editor/${id}`);
         } catch (error) {
             console.error(error);
             alert('Error al crear proyecto');
@@ -89,7 +92,7 @@ export function ProjectDashboard() {
                         savedProjects.map((project) => (
                             <div
                                 key={project.id}
-                                onClick={() => loadProject(project.id)}
+                                onClick={() => router.push(`/editor/${project.id}`)}
                                 className="group bg-gray-900/40 border border-gray-800 rounded-2xl overflow-hidden cursor-pointer hover:border-blue-500/50 hover:bg-gray-800/40 transition-all duration-300 flex flex-col relative backdrop-blur-sm shadow-xl hover:shadow-blue-500/10"
                             >
                                 {/* Thumbnail Container */}
