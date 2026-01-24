@@ -82,7 +82,10 @@
     - Stored as base64 jpeg and seconds in the project metadata (IndexedDB).
     - Displayed in the `ProjectDashboard` for quick identification.
 - **AI Transcription Engine**:
-    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram, and Premium Whisper + GPT-4o + o4-mini).
+    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram Nova 2, and Premium Whisper + GPT-4o + GPT-5.2).
+    - **Providers**:
+        - **OpenAIProvider**: Handles Whisper and GPT models.
+        - **DeepgramProvider**: New provider using `@deepgram/sdk` for highly accurate and fast transcription (Nova 2).
     - **Premium Mode**: Uses a three-step flow:
         1. **Whisper**: Provides word-by-word timestamps.
         2. **GPT-4o (Transcribe & Diarize)**: Provides phrase-level text and speaker identification (diarization).

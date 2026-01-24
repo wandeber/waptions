@@ -90,6 +90,7 @@ export abstract class AIProvider {
             temperature?: number;
             language?: string;
             chunking_strategy?: string;
+            [key: string]: unknown;
         }
     ): Promise<unknown>;
 }

@@ -774,39 +774,81 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         };
     }),
 
-    generateDefaultGrouperState: (words, wordsPerLine = 8) => {
+    generateDefaultGrouperState: (words, wordsPerLine = 3) => {
         const groups: { [key: string]: Subtitle[] } = {};
         const containerIds: string[] = [];
+        const MAX_CHARS = 20;
 
         const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
         const timestamp = Date.now();
 
-        for (let i = 0; i < sorted.length; i += wordsPerLine) {
-            const chunk = sorted.slice(i, i + wordsPerLine);
-            // Use the first word's ID to make the group ID stable during a single session
-            const firstWordId = chunk[0].id.toString().slice(0, 8);
-            const groupId = `group-${firstWordId}-${i}-${timestamp}`;
-            groups[groupId] = chunk;
+        let currentChunk: Subtitle[] = [];
+        let currentChars = 0;
+        let groupCount = 0;
+
+        for (const word of sorted) {
+            const wordLen = word.text.length;
+            const projectedChars = currentChars + (currentChunk.length > 0 ? 1 : 0) + wordLen;
+
+            if (currentChunk.length >= wordsPerLine || (currentChunk.length > 0 && projectedChars > MAX_CHARS)) {
+                const firstWordId = currentChunk[0].id.toString().slice(0, 8);
+                const groupId = `group-${firstWordId}-${groupCount}-${timestamp}`;
+                groups[groupId] = currentChunk;
+                containerIds.push(groupId);
+
+                currentChunk = [];
+                currentChars = 0;
+                groupCount++;
+            }
+
+            currentChunk.push(word);
+            currentChars += (currentChunk.length === 1 ? 0 : 1) + wordLen;
+        }
+
+        if (currentChunk.length > 0) {
+            const firstWordId = currentChunk[0].id.toString().slice(0, 8);
+            const groupId = `group-${firstWordId}-${groupCount}-${timestamp}`;
+            groups[groupId] = currentChunk;
             containerIds.push(groupId);
         }
 
         return { groups, containerIds };
     },
 
-    generateTimelineSubtitles: (words, wordsPerLine = 8) => {
+    generateTimelineSubtitles: (words, wordsPerLine = 3) => {
         const subtitles: Subtitle[] = [];
         const sorted = [...words].sort((a, b) => a.startTime - b.startTime);
+        const MAX_CHARS = 20;
 
-        for (let i = 0; i < sorted.length; i += wordsPerLine) {
-            const chunk = sorted.slice(i, i + wordsPerLine);
-            if (chunk.length > 0) {
+        let currentChunk: Subtitle[] = [];
+        let currentChars = 0;
+
+        for (const word of sorted) {
+            const wordLen = word.text.length;
+            const projectedChars = currentChars + (currentChunk.length > 0 ? 1 : 0) + wordLen;
+
+            if (currentChunk.length >= wordsPerLine || (currentChunk.length > 0 && projectedChars > MAX_CHARS)) {
                 subtitles.push({
-                    id: chunk[0].id,
-                    startTime: chunk[0].startTime,
-                    endTime: chunk[chunk.length - 1].endTime,
-                    text: chunk.map(w => w.text).join(' ')
+                    id: currentChunk[0].id,
+                    startTime: currentChunk[0].startTime,
+                    endTime: currentChunk[currentChunk.length - 1].endTime,
+                    text: currentChunk.map(w => w.text).join(' ')
                 });
+                currentChunk = [];
+                currentChars = 0;
             }
+
+            currentChunk.push(word);
+            currentChars += (currentChunk.length === 1 ? 0 : 1) + wordLen;
+        }
+
+        if (currentChunk.length > 0) {
+            subtitles.push({
+                id: currentChunk[0].id,
+                startTime: currentChunk[0].startTime,
+                endTime: currentChunk[currentChunk.length - 1].endTime,
+                text: currentChunk.map(w => w.text).join(' ')
+            });
         }
 
         return subtitles;

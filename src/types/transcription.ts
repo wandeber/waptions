@@ -33,7 +33,6 @@ export const SUPPORTED_MODELS: TranscriptionModel[] = [
         name: 'Nova 2 (Deepgram)',
         description: 'Next-gen speech-to-text. Superior speed and accuracy.',
         provider: 'Deepgram',
-        badge: 'Experimental',
         badgeColor: 'green'
     }
 ];

@@ -1,5 +1,6 @@
 import { AIProvider } from "./AIProvider";
 import { OpenAIProvider } from "./OpenAIProvider";
+import { DeepgramProvider } from "./DeepgramProvider";
 
 const aiProvidersMap: Record<string, AIProvider> = {};
 
@@ -23,6 +24,17 @@ addAiProvider(
         ["gpt-4o", "o4-mini", "o3-mini", "gpt-5.2", "whisper-1", "gpt-4o-transcribe-diarize"],
         {
             projectSecret: process.env.OPENAI_API_KEY!,
+        }
+    )
+);
+
+addAiProvider(
+    "deepgram",
+    new DeepgramProvider(
+        "deepgram",
+        ["deepgram-nova-3", "nova-3", "deepgram-nova-2", "nova-2"],
+        {
+            apiKey: process.env.DEEPGRAM_API_KEY!,
         }
     )
 );

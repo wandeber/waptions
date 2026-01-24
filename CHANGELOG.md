@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### AI Transcription
+- **Deepgram Support**: Integrated Deepgram as a new transcription provider using the `@deepgram/sdk`.
+    - Added `DeepgramProvider` to the AI layer.
+    - Enabled `deepgram-nova-3` model (the current flagship) with smart format and diarization support.
 - **Premium Transcription Mode**: Added a new "Premium" option that uses a three-step AI flow:
     1. **Whisper**: Provides precise word-level timestamps.
     2. **GPT-4o (Transcribe & Diarize)**: Provides high-quality text and speaker identification.

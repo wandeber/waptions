@@ -17,6 +17,23 @@ interface WhisperResponse {
   words: WhisperWord[];
 }
 
+interface DeepgramWord {
+  word: string;
+  start: number;
+  end: number;
+  punctuated_word?: string;
+}
+
+interface DeepgramResponse {
+  results?: {
+    channels?: Array<{
+      alternatives?: Array<{
+        words?: DeepgramWord[];
+      }>;
+    }>;
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -51,7 +68,7 @@ export async function POST(request: NextRequest) {
           chunking_strategy: "auto"
         });
 
-        // STEP 3: o4-mini for grouping and correction
+        // STEP 3: o3-mini for grouping and correction
         const groupingPrompt = `
           You are an expert subtitle editor. I will provide you with two transcriptions of the same audio:
           1. WHISPER: Word-by-word transcription with start/end timestamps.
@@ -134,8 +151,31 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(premiumResult);
       }
 
-      case 'whisper-1':
-      case 'deepgram-nova-2': { // Fallback to whisper for now as deepgram is not yet integrated in the new provider
+      case 'deepgram-nova-2': {
+        const deepgramProvider = getAiProvider('deepgram');
+        const transcription = await deepgramProvider.transcribe('deepgram-nova-2', audioFile, {
+          language: 'es',
+          smart_format: true,
+          diarize: true
+        }) as DeepgramResponse;
+
+        const words = transcription.results?.channels?.[0]?.alternatives?.[0]?.words || [];
+
+        if (words.length === 0) {
+          return NextResponse.json({ subtitles: [] });
+        }
+
+        const subtitles = words.map((word: DeepgramWord) => ({
+          id: crypto.randomUUID(),
+          startTime: word.start,
+          endTime: word.end,
+          text: word.punctuated_word || word.word
+        }));
+
+        return NextResponse.json({ subtitles });
+      }
+
+      case 'whisper-1': {
         const transcription = await whisperProvider.transcribe('whisper-1', audioFile, {
           response_format: "verbose_json",
           timestamp_granularities: ["word"],

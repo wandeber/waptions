@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { useProjectStore } from '@/stores/project-store';
 import { PlusIcon } from '../icons/PlusIcon';
 import { TrashIcon } from '../icons/TrashIcon';
@@ -94,10 +95,12 @@ export function ProjectDashboard() {
                                 {/* Thumbnail Container */}
                                 <div className="aspect-video bg-gray-950 flex items-center justify-center text-gray-700 relative overflow-hidden">
                                     {project.thumbnail ? (
-                                        <img
+                                        <Image
                                             src={project.thumbnail}
                                             alt={project.name}
-                                            className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                            fill
+                                            unoptimized
+                                            className="object-cover transition-transform duration-500 group-hover:scale-105"
                                         />
                                     ) : (
                                         <div className="text-5xl font-black opacity-10 select-none tracking-tighter italic">

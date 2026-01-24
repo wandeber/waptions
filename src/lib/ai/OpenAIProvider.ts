@@ -22,7 +22,7 @@ export class OpenAIProvider extends AIProvider {
     private getClient(): OpenAI {
         if (!this.client) {
             this.client = new OpenAI({
-                apiKey: (this.settings as any).projectSecret as string,
+                apiKey: (this.settings as unknown as OpenAISettings).projectSecret,
             });
         }
         return this.client;
@@ -49,9 +49,9 @@ export class OpenAIProvider extends AIProvider {
         }
 
         // Build content parts
-        const contentParts: Array<any> = [];
+        const contentParts: OpenAI.Responses.ResponseInputContent[] = [];
         for (const m of messages) {
-            contentParts.push({ type: "input_text", text: m.content });
+            contentParts.push({ type: "input_text", text: m.content } as OpenAI.Responses.ResponseInputTextContent);
         }
 
         if (attachments) {
@@ -60,18 +60,20 @@ export class OpenAIProvider extends AIProvider {
                     contentParts.push({
                         type: "input_image",
                         image_url: att.url as string,
-                    });
+                        detail: "auto"
+                    } as unknown as OpenAI.Responses.ResponseInputContent);
                 }
                 else {
                     const buffer = att.data instanceof ArrayBuffer
                         ? Buffer.from(new Uint8Array(att.data))
-                        : Buffer.from(att.data as any);
-                    const base64 = buffer.toString("base64");
+                        : Buffer.from(att.data as string | Uint8Array | Buffer);
+                    const Base64 = buffer.toString("base64");
                     const mime = att.mimeType || "image/png";
                     contentParts.push({
                         type: "input_image",
-                        image_url: `data:${mime};base64,${base64}`,
-                    });
+                        image_url: `data:${mime};base64,${Base64}`,
+                        detail: "auto",
+                    } as unknown as OpenAI.Responses.ResponseInputContent);
                 }
             }
         }
@@ -82,7 +84,7 @@ export class OpenAIProvider extends AIProvider {
                 {
                     role: "user",
                     content: contentParts,
-                },
+                } as OpenAI.Responses.ResponseInputMessageItem,
             ],
             include: [
                 "reasoning.encrypted_content",
@@ -125,7 +127,7 @@ export class OpenAIProvider extends AIProvider {
     async transcribe(
         model: string,
         audioFile: File | Blob,
-        options: any = {}
+        options: Record<string, unknown> = {}
     ): Promise<unknown> {
         const params = {
             ...options,
@@ -150,8 +152,9 @@ export class OpenAIProvider extends AIProvider {
         const outputTokens = usage.output_tokens || 0;
 
         // Type-safe extraction of cached tokens
-        const prompt_tokens_details = (usage as any).prompt_tokens_details;
+        const prompt_tokens_details = (usage as unknown as { prompt_tokens_details?: { cached_tokens?: number } }).prompt_tokens_details;
         const cachedTokens = prompt_tokens_details?.cached_tokens || 0;
+
 
         const pricingTable: Record<string, { input: number; cached: number; output: number }> = {
             "gpt-4o": { input: 2.50, cached: 1.25, output: 10.00 },

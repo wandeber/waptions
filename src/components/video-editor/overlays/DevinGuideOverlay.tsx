@@ -1,3 +1,5 @@
+import Image from 'next/image';
+
 interface DevinGuideOverlayProps {
   rect: {
     left: number;
@@ -19,10 +21,11 @@ export function DevinGuideOverlay({ rect }: DevinGuideOverlayProps) {
           height: `${rect.height}px`
         }}
       >
-        <img
+        <Image
           src="/overlays/devin-zone.png"
           alt="Devin Zone Guide"
-          className="w-full h-full object-cover opacity-10"
+          fill
+          className="object-cover opacity-10"
         />
       </div>
       <div
