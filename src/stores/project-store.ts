@@ -9,7 +9,8 @@ import { getVideoInfo } from '@/lib/mediabunny-utils';
 interface ProjectStore {
     activeProject: TProject | null;
     savedProjects: TProject[];
-    isLoading: boolean;
+    isProjectLoading: boolean;
+    isListLoading: boolean;
     isSaving: boolean;
     isInitialized: boolean;
     isDirty: boolean;
@@ -33,7 +34,8 @@ interface ProjectStore {
 export const useProjectStore = create<ProjectStore>((set, get) => ({
     activeProject: null,
     savedProjects: [],
-    isLoading: false,
+    isProjectLoading: false,
+    isListLoading: false,
     isSaving: false,
     isInitialized: false,
     isDirty: false,
@@ -122,7 +124,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     },
 
     loadProject: async (id: string) => {
-        set({ isLoading: true });
+        set({ isProjectLoading: true });
         try {
             const project = await storageService.loadProject(id);
             if (!project) throw new Error(`Project ${id} not found`);
@@ -171,7 +173,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             console.error('Failed to load project:', error);
             throw error;
         } finally {
-            set({ isLoading: false });
+            set({ isProjectLoading: false });
         }
     },
 
@@ -208,14 +210,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     },
 
     loadAllProjects: async () => {
-        set({ isLoading: true });
+        set({ isListLoading: true });
         try {
             const projects = await storageService.loadAllProjects();
             set({ savedProjects: projects, isInitialized: true });
         } catch (error) {
             console.error('Failed to load projects:', error);
         } finally {
-            set({ isLoading: false });
+            set({ isListLoading: false });
         }
     },
 

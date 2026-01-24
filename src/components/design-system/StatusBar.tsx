@@ -5,14 +5,14 @@ import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { useState, useEffect } from 'react';
 
 export function StatusBar() {
-    const { isLoading } = useProjectStore();
+    const { isProjectLoading, activeProject } = useProjectStore();
     const [minTimeElapsed, setMinTimeElapsed] = useState(true);
 
     useEffect(() => {
-        if (isLoading) {
+        if (isProjectLoading) {
             setMinTimeElapsed(false);
         }
-    }, [isLoading]);
+    }, [isProjectLoading]);
 
     useEffect(() => {
         if (!minTimeElapsed) {
@@ -23,7 +23,8 @@ export function StatusBar() {
         }
     }, [minTimeElapsed]);
 
-    if (!isLoading && minTimeElapsed) return null;
+    if (!isProjectLoading && minTimeElapsed) return null;
+    if (!activeProject && !isProjectLoading) return null;
 
     return (
         <div className="flex items-center gap-2 text-xs text-blue-400 animate-fade-in">

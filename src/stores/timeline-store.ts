@@ -624,13 +624,13 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         // 2. Decide if we trim the current sub or extend a neighbor
         if (targetSubtitle && targetTrackId) {
             if (side === 'start') {
-                // If we are at the very start of the sub (or within 1 frame), we extend previous sub instead of trimming
-                if (time < targetSubtitle.startTime + frameDuration + 0.001) {
+                // If we are EXACTLY at the start of the sub (or within epsilon), we extend previous sub instead of trimming
+                if (time <= targetSubtitle.startTime + 0.005) {
                     mode = 'extend';
                 }
             } else {
-                // If we are at the very end of the sub (or within 1 frame), we extend next sub instead of trimming
-                if (time > targetSubtitle.endTime - frameDuration - 0.001) {
+                // If we are EXACTLY at the end of the sub (or within epsilon), we extend next sub instead of trimming
+                if (time >= targetSubtitle.endTime - 0.005) {
                     mode = 'extend';
                 }
             }
@@ -659,20 +659,30 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             if (side === 'start') {
                 // Extension (Q): Find sub that ends BEFORE time
                 const prevSub = [...track.subtitles]
-                    .filter(s => s.endTime <= time + 0.001)
+                    .filter(s => s.endTime <= time + 0.005)
                     .sort((a, b) => b.endTime - a.endTime)[0];
 
                 if (prevSub) {
-                    updateSubtitleInTrack(targetTrackId, prevSub.id, { endTime: time });
+                    // If it's already touching the playhead, delete it
+                    if (prevSub.endTime >= time - 0.005) {
+                        removeSubtitleFromTrack(targetTrackId, prevSub.id);
+                    } else {
+                        updateSubtitleInTrack(targetTrackId, prevSub.id, { endTime: time });
+                    }
                 }
             } else {
                 // Extension (W): Find sub that starts AFTER time
                 const nextSub = [...track.subtitles]
-                    .filter(s => s.startTime >= time - 0.001)
+                    .filter(s => s.startTime >= time - 0.005)
                     .sort((a, b) => a.startTime - b.startTime)[0];
 
                 if (nextSub) {
-                    updateSubtitleInTrack(targetTrackId, nextSub.id, { startTime: time });
+                    // If it's already touching the playhead, delete it
+                    if (nextSub.startTime <= time + 0.005) {
+                        removeSubtitleFromTrack(targetTrackId, nextSub.id);
+                    } else {
+                        updateSubtitleInTrack(targetTrackId, nextSub.id, { startTime: time });
+                    }
                 }
             }
         }

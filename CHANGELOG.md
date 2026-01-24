@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Subtle Cache Visibility**: Re-styled and moved the cache indicator to the bottom of the timeline ruler for a less intrusive but informative status view.
 
 ### Subtitle Improvements
+- **Frame-Precise Trimming**: Refined `Q` and `W` shortcuts to support single-frame accuracy.
+- **Auto-Deletion at Junctions**: Shortcuts now remove adjacent subtitles when the playhead is at a boundary, interpreting the intent as removing the segment entirely.
 - **Copy/Paste**: New support for `Cmd+C` (copy) and `Cmd+V` (paste). Preserves relative timing and multi-track distribution. Assets are pasted at the current playhead position.
 - **Trimming Shortcuts**: Added `Q` and `W` keys to trim the subtitle under the playhead.
     - **Gap Filling**: If pressed at a boundary or in a gap, it extends the previous (`Q`) or next (`W`) subtitle to meet the playhead.
