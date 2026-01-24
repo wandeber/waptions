@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### House-Cleaning & Architecture
+- **Shortcut Centralization**: Created a central registry in `src/config/shortcuts.ts` and a reusable `useKeyboardShortcuts` hook to manage all global and context-aware shortcuts.
+- **Loading State Refinement**:
+    - Separated project-level loading (`isProjectLoading`) from background list refreshing (`isListLoading`) to avoid redundant UI feedback.
+    - Implemented a `ref`-based guard in `EditorPage` to prevent project re-loading during transitions.
+    - Improved `StatusBar` logic to hide during project exits or inactive states.
+- **Export Naming**: Exported files now automatically use the project name, safe-formatted for filenames (e.g., `my_awesome_video.mp4`).
+
 ### AI Transcription
 - **Deepgram Support**: Integrated Deepgram as a new transcription provider using the `@deepgram/sdk`.
     - Added `DeepgramProvider` to the AI layer.

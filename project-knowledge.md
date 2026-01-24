@@ -15,6 +15,15 @@
 - **Icon Standardization**: All toolbar buttons use `lucide-react` icons (18x18px) for clarity.
 - **Unified Sizing**: Toolbar elements (Play, Zoom, Snap, Overlays) use the standard `Button` component with matching `md` size (px-3 py-1).
 - **Button Centering**: Added `justify-center` to the base `Button` component to ensure content is always centered, especially when using `flex-1`.
+- **Loading State Isolation**: `ProjectStore` separates `isProjectLoading` (user-facing project opening) from `isListLoading` (background database refreshes). The `StatusBar` only reacts to `isProjectLoading`.
+- **Navigation Safety**: `EditorPage` uses a `useRef` to track the last loaded ID, preventing redundant `loadProject` calls when a project is closed or renamed.
+
+### Centralized Shortcuts System
+- **Registry**: All shortcuts are defined in `src/config/shortcuts.ts` with metadata (keys, descriptions, categories).
+- **Execution Hook**: `useKeyboardShortcuts` implements a global listener that:
+    - Automatically ignores events triggered from `input`, `textarea`, or `contenteditable` elements.
+    - Prevents default browser actions for registered shortcuts.
+    - Standardizes `cmd`/`ctrl` behavior across platforms.
 
 ### Core Components
 - `VideoViewport.tsx**: Canvas rendering, multi-layer subtitle support, audio sync.
@@ -31,6 +40,7 @@
 - **Video Cache**: Managed via `video-cache.ts` for fluid canvas rendering.
 - **Audio Sync**: Hidden `<audio>` element synchronized with global `playback-store.ts`.
 - **Export**: Hardware accelerated MP4 (H.264) with AAC audio transcoding.
+- **Export Naming**: Filenames are dynamically generated from the active project's name, lowercased and slugified (e.g., `mi_proyecto_final.mp4`).
 
 ### Timeline System (OpenCut style)
 - **State Management**: `timeline-store.ts` (Zustand).
