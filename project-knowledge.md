@@ -104,7 +104,10 @@
     - Stored as base64 jpeg and seconds in the project metadata (IndexedDB).
     - Displayed in the `ProjectDashboard` for quick identification.
 - **Project Structure**:
-    - **Dashboard**: Located at the root route (`/`). Handles project creation, listing, and deletion.
+    - **Dashboard**: Located at the root route (`/`). Completely redesigned with a premium look.
+        - **Premium UI**: Uses glassmorphism (`backdrop-blur`), gradient glows, and custom selection styles.
+        - **Real-time Search**: Integrated `SearchBar` component for instant project filtering.
+        - **Interactive Cards**: `ProjectCard` components handle their own hover states and transitions, including scale and shine effects.
     - **Editor**: Located at `/editor/[id]`. Dynamic route that loads a project by its ID from IndexedDB.
 - **AI Transcription Engine**:
     - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram Nova 2, and Premium Whisper + GPT-4o + GPT-5.2).

@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Dashboard Redesign**:
+    - New `SearchBar` component with real-time filtering.
+    - New `ProjectCard` component with glassmorphism, 3D hover effects, and play animations.
+    - Modern "Hero" section for project creation.
+    - Premium background effects (gradient glows and backdrop-blur).
+    - Responsive grid layout with improved spacing and balanced typography.
+
 ### Fixed
 - Profile picture from Google Login now correctly appears in the user menu (mapped in JWT and loaded with CORS to bypass COEP restrictions).
-- **Cloudflare Workers Deployment**:
     - Configured `@opennextjs/cloudflare` (OpenNext) for adaptation to Cloudflare Workers.
     - Added `wrangler.jsonc` with basic environment and R2 incremental cache bindings.
     - Added `open-next.config.ts` for OpenNext specific configuration.
