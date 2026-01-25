@@ -9,6 +9,7 @@ import {
     generateDefaultGrouperState,
     generateTimelineSubtitles
 } from '@/lib/timeline-utils';
+import { Cut } from '@/lib/video-cut/core/types';
 
 interface HistorySnapshot {
     tracks: SubtitleTrack[];
@@ -31,6 +32,11 @@ interface TimelineStore {
     // History
     history: HistorySnapshot[];
     redoStack: HistorySnapshot[];
+
+    // Video Cuts
+    cuts: Cut[];
+    detectionProgress: number;
+    isDetecting: boolean;
 
     // Actions
     setZoom: (zoom: number) => void;
@@ -57,6 +63,12 @@ interface TimelineStore {
     selectSubtitleAtTime: (time: number) => string | null;
     requestEditSubtitleAtTime: (time: number) => void;
     clearEditRequest: () => void;
+
+    // Video Cuts Actions
+    setCuts: (cuts: Cut[]) => void;
+    clearCuts: () => void;
+    setDetectionProgress: (progress: number) => void;
+    setIsDetecting: (isDetecting: boolean) => void;
 
     // History Actions
     undo: () => Promise<void>;
@@ -121,6 +133,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     rawTranscription: null,
     transcriptionGroups: null,
     transcriptionContainerIds: null,
+
+    cuts: [],
+    detectionProgress: 0,
+    isDetecting: false,
 
     setZoom: (zoom) => set({ zoomLevel: Math.max(0.1, Math.min(10, zoom)) }),
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
@@ -761,5 +777,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         generateDefaultGrouperState(words, wordsPerLine),
 
     generateTimelineSubtitles: (words, wordsPerLine = 3) =>
-        generateTimelineSubtitles(words, wordsPerLine)
+        generateTimelineSubtitles(words, wordsPerLine),
+
+    setCuts: (cuts) => set({ cuts }),
+    clearCuts: () => set({ cuts: [] }),
+    setDetectionProgress: (progress) => set({ detectionProgress: progress }),
+    setIsDetecting: (isDetecting) => set({ isDetecting })
 }));

@@ -207,3 +207,9 @@ To eliminate flickering and black flashes during seeks or decoding delays:
 - **Burst Decoding**: When a seek occurs, the `VideoCache` decodes a small burst (e.g., 5 frames) to fill the cache around the target. This makes scrubbing feel "sedosa" (silky) as surrounding frames become instant once a region is touched.
 - **Backward Scrubbing**: Slow in compressed video (H.264) due to GoP structure. Caching the whole GoP converts inter-frame video into intra-frame performance for the user.
 - **Visibility Indicator**: The timeline ruler displays cached segments in real-time using a subtle, translucent green bar at the bottom.
+- **Video Cut Detection**:
+    - **Architecture**: Modular pipeline matching Core/Detector/Adapter interfaces.
+    - **Histogram HSV Grid Detector**: Calculates 3D HSV histograms (16x8x8 bins) across a **3x3 spatial grid**. Measures change via average Bhattacharyya distance across all 9 cells. This detects jump cuts and local motion that global histograms miss.
+    - **WebCodecs Adapter (Mediabunny)**: Replaced `HTMLVideoElement` with a direct `mediabunny` decoding pipeline. Uses the `Conversion` API to intercept and analyze every single video sample (frame-accurate) without being limited by the browser's render loop or playback rate.
+    - **UI Integration**: `VideoCutPopover` in the toolbar manages parameters and state.
+    - **Visualization**: Cuts are rendered in the tracks area as white vertical lines (`z-0`, `opacity-10`) across all tracks, and registered as primary snap points.

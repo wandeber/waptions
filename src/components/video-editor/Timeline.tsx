@@ -18,6 +18,7 @@ const MemoizedTimelineTrackHeader = memo(TimelineTrackHeader);
 import { useWaveform } from '@/hooks/use-waveform';
 import { TimelineWaveform } from './TimelineWaveform';
 import { OverlayMenu } from './OverlayMenu';
+import { VideoCutPopover } from './VideoCutPopover';
 import { useVideoStore } from '@/stores/video-store';
 
 interface TimelineProps {
@@ -51,7 +52,7 @@ export function Timeline({
   showMetaInfo = false,
   onMetaInfoToggle,
 }: TimelineProps) {
-  const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled, activeSnapTime } = useTimelineStore();
+  const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled, activeSnapTime, cuts } = useTimelineStore();
   const { videoFile } = useVideoStore();
   const { audioBuffer } = useWaveform(videoFile);
 
@@ -290,6 +291,7 @@ export function Timeline({
             showMetaInfo={showMetaInfo}
             onMetaInfoToggle={() => onMetaInfoToggle?.()}
           />
+          <VideoCutPopover />
           <Button variant="secondary" isActive={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)} title="Snap">
             <Magnet className="w-[18px] h-[18px]" />
           </Button>
@@ -399,6 +401,17 @@ export function Timeline({
                   }}
                 />
               )}
+              {/* Visual Cuts */}
+              <div className="absolute inset-0 pointer-events-none z-0">
+                {cuts.map((cut, idx) => (
+                  <div
+                    key={`cut-${idx}`}
+                    className="absolute top-0 bottom-0 w-px bg-white/10"
+                    style={{ left: `${cut.timeSec * pixelsPerSecond * zoomLevel}px` }}
+                  />
+                ))}
+              </div>
+
               {/* Tracks rendered as overlays */}
               {tracks.map(track => (
                 <MemoizedTimelineTrackOverlay

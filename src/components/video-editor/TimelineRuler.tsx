@@ -27,7 +27,7 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
 
     const handleMouseDown = (e: React.MouseEvent) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        const { snapEnabled, tracks } = useTimelineStore.getState();
+        const { snapEnabled, tracks, cuts } = useTimelineStore.getState();
 
         // One-shot snap points
         const snapPoints: number[] = [];
@@ -38,6 +38,9 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
                     points.add(s.startTime);
                     points.add(s.endTime);
                 });
+            });
+            cuts.forEach(c => {
+                points.add(c.timeSec);
             });
             snapPoints.push(...Array.from(points));
         }
@@ -168,6 +171,7 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         >
             <TimelineCacheIndicator duration={duration} pps={pps} />
             {markers}
+
         </div>
     );
 }

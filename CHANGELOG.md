@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Video Cut Detection:
+    - Modular detection framework in `src/lib/video-cut`.
+    - `HistogramHsvDetector`: Improved spatial precision using a **3x3 grid** of HSV histograms and Bhattacharyya distance.
+    - `WebCodecsFrameSource`: Frame-accurate extraction using `mediabunny`'s direct decoding pipeline (replaces `HTMLVideoElement` approach).
+    - `VideoCutPopover`: UI control for configuring sensitivity and triggering detection. Fixed positioning and clipping issues using Portals.
+    - UI Refinement: Cut lines moved from `TimelineRuler` to the tracks area for better visual context.
+    - Magnetic Snapping: Cuts act as magnetic snap points for the playhead and elements.
 - Google Authentication using Auth.js (v5).
 - Email whitelist authorization via `AUTHORIZED_EMAILS`.
 - Application-wide privacy protection via Middleware.
