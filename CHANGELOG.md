@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - New `ProjectCard` component with glassmorphism, 3D hover effects, and play animations.
     - Modern "Hero" section for project creation.
     - Premium background effects (gradient glows and backdrop-blur).
-    - Responsive grid layout with improved spacing and balanced typography.
+- **Branding Customization**:
+    - New ultra-modern, icon-only logo in `public/logo.png`.
+    - Custom metadata in `layout.tsx` with the tagline: "**Subtítulos sin dolor**".
+    - Removed default Next.js branding assets and favicon.
 
 ### Fixed
 - Profile picture from Google Login now correctly appears in the user menu (mapped in JWT and loaded with CORS to bypass COEP restrictions).
