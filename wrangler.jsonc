@@ -1,0 +1,61 @@
+{
+    "name": "waptions",
+    "main": ".open-next/worker.js",
+    "compatibility_date": "2025-08-01",
+    "compatibility_flags": [
+        "nodejs_compat",
+        "global_fetch_strictly_public"
+    ],
+    "vars": {
+        "NEXT_PUBLIC_BASE_URL": "http://localhost:3000",
+        "AUTH_URL": "http://localhost:3000",
+        "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED"
+    },
+    "assets": {
+        "directory": ".open-next/assets",
+        "binding": "ASSETS"
+    },
+    // Default bucket configuration (inherited by environments if not overridden)
+    "r2_buckets": [
+        {
+            "binding": "NEXT_INC_CACHE_R2_BUCKET",
+            "bucket_name": "waptions-isr-cache",
+            "preview_bucket_name": "preview-waptions-isr-cache"
+        }
+    ],
+    "env": {
+        "preview": {
+            "vars": {
+                "NEXT_PUBLIC_BASE_URL": "http://localhost:8787",
+                "AUTH_URL": "http://localhost:8787",
+            },
+            "r2_buckets": [
+                {
+                    "binding": "NEXT_INC_CACHE_R2_BUCKET",
+                    "bucket_name": "waptions-isr-cache-preview",
+                    "preview_bucket_name": "preview-waptions-isr-cache"
+                }
+            ]
+        },
+        "production": {
+            "vars": {
+                "NEXT_PUBLIC_BASE_URL": "https://waptions.wande.dev",
+                "AUTH_URL": "https://waptions.wande.dev",
+                "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED,AUTHORIZED_EMAIL_REDACTED",
+                "AUTH_TRUST_HOST": "true",
+                "NEXTAUTH_DEBUG": "true"
+            },
+            "observability": {
+                "enabled": true
+            },
+            "workers_dev": false,
+            "r2_buckets": [
+                {
+                    "binding": "NEXT_INC_CACHE_R2_BUCKET",
+                    "bucket_name": "waptions-isr-cache",
+                    "preview_bucket_name": "preview-waptions-isr-cache"
+                }
+            ]
+        }
+    }
+}

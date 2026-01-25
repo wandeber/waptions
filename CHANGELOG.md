@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cloudflare Workers Deployment**:
+    - Configured `@opennextjs/cloudflare` (OpenNext) for adaptation to Cloudflare Workers.
+    - Added `wrangler.jsonc` with basic environment and R2 incremental cache bindings.
+    - Added `open-next.config.ts` for OpenNext specific configuration.
+    - Added `.node-version` (v22.13.1) for environment consistency.
+    - New scripts in `package.json`: `cf-build`, `cf-preview`, `cf-deploy-preview`, `cf-deploy-production`.
+    - Optimized `postinstall` script (later removed as FFmpeg was unused).
+    - **Removed unused FFmpeg dependencies and binaries** to resolve Cloudflare Workers asset size limits (avoiding the 25MB limit from `ffmpeg-core.wasm`).
 - Video Cut Detection:
     - Modular detection framework in `src/lib/video-cut`.
     - `HistogramHsvDetector`: Improved spatial precision using a **3x3 grid** of HSV histograms and Bhattacharyya distance.

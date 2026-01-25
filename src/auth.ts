@@ -12,12 +12,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             clientSecret: process.env.AUTH_GOOGLE_SECRET,
         }),
     ],
+    debug: process.env.NEXTAUTH_DEBUG === 'true',
     callbacks: {
         ...authConfig.callbacks,
         async signIn({ user }) {
             const authorizedEmails = process.env.AUTHORIZED_EMAILS?.split(",").map(e => e.trim()) || [];
 
-            if (!user.email) return false;
+            if (!user.email) {
+                console.error("Login attempt missing email");
+                return false;
+            }
 
             if (authorizedEmails.includes(user.email)) {
                 return true;

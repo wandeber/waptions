@@ -177,9 +177,31 @@
     - **Persistence**: Managed via `snapEnabled` in `TimelineStore`, defaulted to `true`.
 
 ## Environment & Testing
-- Node.js v18+, pnpm.
+- Node.js v13+, pnpm.
 - Playwright for E2E testing (`e2e/`).
 - GitHub Actions for CI pipeline.
+
+## Browser Compatibility
+- **Chrome / Edge**: Full support (primary development environment). Supports `performance.memory` for resource monitoring.
+- **Safari**: Supported since version **16.4+** (MacOS Sonoma+ / iOS 16.4+).
+  - **WebCodecs**: Required for frame-accurate decoding and encoding.
+  - **OffscreenCanvas**: Used for background processing and performance optimization.
+  - **ImageBitmap**: Used for GPU-accelerated video frame caching.
+  - **Audio**: Safari's strict autoplay policy requires a direct user gesture (e.g., clicking Play) to unmute the internal audio engine.
+  - **CSS**: Uses `backdrop-filter` which may require `-webkit-` prefixes in older Safari versions (Tailwind usually handles this if configured).
+- **Firefox**: Limited support due to ongoing stabilization of WebCodecs.
+
+## Deployment
+- **Platform**: Cloudflare Workers
+- **Domain**: `waptions.wande.dev`
+- **Build Tool**: `@opennextjs/cloudflare` (OpenNext)
+- **Configuration**:
+  - `open-next.config.ts`: Configures R2 for incremental cache.
+  - `wrangler.jsonc`: Defines worker name, compatibility flags (`nodejs_compat`), and R2 bucket bindings.
+- **Workflow**:
+  - `npm run cf-build`: Builds the Next.js app and adapts it for Cloudflare.
+  - `npm run cf-deploy-production`: Builds and deploys to the production environment.
+  - **Dependencies**: Uses `wrangler` for local preview and deployment.
 ## Performance Engineering
 
 - **Timeline Render Loop**: The main `Timeline` component re-renders at ~60fps during playback because it receives `currentTime` as a prop. To maintain responsiveness, all sub-components (`TimelineRuler`, `TimelineTrackOverlay`, etc.) are wrapped in `React.memo`.
