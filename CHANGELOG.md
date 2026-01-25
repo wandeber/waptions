@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
+- Profile picture from Google Login now correctly appears in the user menu (mapped in JWT and loaded with CORS to bypass COEP restrictions).
 - **Cloudflare Workers Deployment**:
     - Configured `@opennextjs/cloudflare` (OpenNext) for adaptation to Cloudflare Workers.
     - Added `wrangler.jsonc` with basic environment and R2 incremental cache bindings.

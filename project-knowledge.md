@@ -20,7 +20,7 @@
 
 ### Authentication & Privacy
 - **Auth.js (v5)**: Uses Google Provider for authentication.
-- **Database-less**: Sessions are JWT-based; no database adapter is used.
+- **Database-less**: Sessions are JWT-based; no database adapter is used. Propagates profile image through `jwt` and `session` callbacks.
 - **Whitelist**: Authorized emails are managed via `AUTHORIZED_EMAILS` environment variable.
 - **Privacy**: Entire application is protected by middleware, redirecting unauthenticated users to `/login`.
 - **Security**: Cloudflare Turnstile is integrated into the login flow.

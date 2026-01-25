@@ -10,11 +10,6 @@ export function UserMenu() {
     const [isOpen, setIsOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        if (session?.user?.image) {
-            console.log("Profile Image URL:", session.user.image);
-        }
-    }, [session]);
 
     useEffect(() => {
         function handleClickOutside(event: MouseEvent) {
@@ -41,6 +36,7 @@ export function UserMenu() {
                             alt={session.user.name || "User"}
                             fill
                             unoptimized
+                            crossOrigin="anonymous"
                             className="object-cover"
                         />
                     ) : (
