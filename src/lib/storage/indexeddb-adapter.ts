@@ -127,4 +127,12 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
             };
         });
     }
+
+    static async listDatabases(): Promise<string[]> {
+        if (!window.indexedDB.databases) {
+            return [];
+        }
+        const dbs = await window.indexedDB.databases();
+        return dbs.map(db => db.name || '').filter(Boolean);
+    }
 }

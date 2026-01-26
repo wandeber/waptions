@@ -151,19 +151,59 @@ class StorageService {
 
     async getTotalStorageSize(): Promise<number> {
         try {
-            const projectsSize = await this.projectsAdapter.calculateSize();
-            const projectIds = await this.projectsAdapter.list();
+            const allDbs = await IndexedDBAdapter.listDatabases();
+            const relevantDbs = allDbs.filter(db =>
+                db === this.config.projectsDb ||
+                db.startsWith(`${this.config.timelineDb}-`)
+            );
 
-            let totalTimelineSize = 0;
-            for (const id of projectIds) {
-                totalTimelineSize += await this.getProjectStorageSize(id);
+            let totalSize = 0;
+            for (const dbName of relevantDbs) {
+                // Determine store name based on DB name
+                const storeName = dbName === this.config.projectsDb ? "projects" : "timeline";
+                const adapter = new IndexedDBAdapter<unknown>(dbName, storeName, this.config.version);
+                totalSize += await adapter.calculateSize();
             }
 
-            return projectsSize + totalTimelineSize;
+            return totalSize;
         } catch (error) {
             console.error('Error calculating total storage size:', error);
             return 0;
         }
+    }
+
+    async getOrphanedDatabases(): Promise<{ id: string, size: number }[]> {
+        const allDbs = await IndexedDBAdapter.listDatabases();
+        const timelinePrefix = `${this.config.timelineDb}-`;
+        const projectIds = await this.projectsAdapter.list();
+
+        const orphaned: { id: string, size: number }[] = [];
+
+        const potentialOrphans = allDbs.filter(db =>
+            db.startsWith(timelinePrefix) && !projectIds.includes(db.replace(timelinePrefix, ''))
+        );
+
+        for (const dbName of potentialOrphans) {
+            const projectId = dbName.replace(timelinePrefix, '');
+            const size = await this.getProjectStorageSize(projectId);
+            orphaned.push({ id: projectId, size });
+        }
+
+        return orphaned;
+    }
+
+    async deleteOrphanedData(id: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const dbName = `${this.config.timelineDb}-${id}`;
+            const request = indexedDB.deleteDatabase(dbName);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+            request.onblocked = () => {
+                console.warn(`Deletion of ${dbName} is blocked`);
+                // Still resolve as there's not much we can do, it will delete eventually
+                resolve();
+            };
+        });
     }
 }
 

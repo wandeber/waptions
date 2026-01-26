@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Storage Management**:
+    - Real-time application storage monitoring in the Project Dashboard.
+    - Orphaned data detection (disconnected timelines) with integrated "Clean up" utility.
+    - More accurate per-project and total storage calculation logic in the storage service.
 - **Dashboard Redesign**:
     - New `SearchBar` component with real-time filtering.
     - New `ProjectCard` component with glassmorphism, 3D hover effects, and play animations.

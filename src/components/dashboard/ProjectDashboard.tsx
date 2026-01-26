@@ -1,6 +1,4 @@
-'use client';
-
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useProjectStore } from '@/stores/project-store';
 import { PlusIcon } from '../icons/PlusIcon';
@@ -9,7 +7,8 @@ import { UserMenu } from './UserMenu';
 import { SearchBar } from './SearchBar';
 import { ProjectCard } from './ProjectCard';
 import Image from 'next/image';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Database, Trash2, AlertCircle } from 'lucide-react';
+import { storageService } from '@/lib/storage/storage-service';
 
 export function ProjectDashboard() {
     const { savedProjects, createProject, deleteProject } = useProjectStore();
@@ -17,7 +16,46 @@ export function ProjectDashboard() {
     const [isCreating, setIsCreating] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
     const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
+    const [storageInfo, setStorageInfo] = useState<{ total: number, orphaned: { id: string, size: number }[] } | null>(null);
+    const [isCleaning, setIsCleaning] = useState(false);
     const router = useRouter();
+
+    const loadStorageInfo = useCallback(async () => {
+        const total = await storageService.getTotalStorageSize();
+        const orphaned = await storageService.getOrphanedDatabases();
+        setStorageInfo({ total, orphaned });
+    }, []);
+
+    useEffect(() => {
+        loadStorageInfo();
+    }, [loadStorageInfo]);
+
+    const handleCleanup = async () => {
+        if (!storageInfo || storageInfo.orphaned.length === 0) return;
+        setIsCleaning(true);
+        try {
+            for (const orphan of storageInfo.orphaned) {
+                await storageService.deleteOrphanedData(orphan.id);
+            }
+            await loadStorageInfo();
+        } catch (error) {
+            console.error('Error cleaning up storage:', error);
+        } finally {
+            setIsCleaning(false);
+        }
+    };
+
+    const formatBytes = (bytes: number) => {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    const orphanedSize = useMemo(() => {
+        return storageInfo?.orphaned.reduce((acc, curr) => acc + curr.size, 0) || 0;
+    }, [storageInfo]);
 
     const filteredProjects = useMemo(() => {
         return savedProjects
@@ -123,10 +161,35 @@ export function ProjectDashboard() {
 
                 {/* Projects Grid */}
                 <div className="space-y-6">
-                    <div className="flex items-center justify-between px-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-2">
                         <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-gray-500 flex items-center gap-2">
                             Tus Proyectos <span className="text-gray-700">/</span> <span className="text-blue-500/80">{filteredProjects.length}</span>
                         </h3>
+
+                        <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold tracking-wide">
+                            <div className="flex items-center gap-2 bg-gray-900/60 hover:bg-gray-900 px-3 py-1.5 rounded-xl border border-gray-800/50 transition-colors group">
+                                <Database className="w-3.5 h-3.5 text-blue-500/70 group-hover:text-blue-400 transition-colors" />
+                                <span className="text-gray-500 uppercase tracking-wider">Uso Total:</span>
+                                <span className="text-blue-100/90">{formatBytes(storageInfo?.total || 0)}</span>
+                            </div>
+
+                            {orphanedSize > 0 && (
+                                <div className="flex items-center gap-2 bg-amber-500/5 px-3 py-1.5 rounded-xl border border-amber-500/20 text-amber-200/80 animate-in fade-in slide-in-from-right-4 duration-500">
+                                    <AlertCircle className="w-3.5 h-3.5 text-amber-500/70" />
+                                    <span className="text-amber-500/70 uppercase tracking-wider">Huérfanos:</span>
+                                    <span className="text-amber-100/90 font-bold">{formatBytes(orphanedSize)}</span>
+                                    <div className="w-[1px] h-3 bg-amber-500/20 mx-1" />
+                                    <button
+                                        onClick={handleCleanup}
+                                        disabled={isCleaning}
+                                        className="flex items-center gap-1.5 text-amber-400 hover:text-amber-300 disabled:opacity-50 transition-colors transition-all active:scale-95 group"
+                                    >
+                                        <Trash2 className="w-3.5 h-3.5 group-hover:rotate-12 transition-transform" />
+                                        <span className="underline underline-offset-4 decoration-amber-500/30">Limpiar ahora</span>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">

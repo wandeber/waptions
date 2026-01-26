@@ -17,6 +17,12 @@
 - **Button Centering**: Added `justify-center` to the base `Button` component to ensure content is always centered, especially when using `flex-1`.
 - **Loading State Isolation**: `ProjectStore` separates `isProjectLoading` (user-facing project opening) from `isListLoading` (background database refreshes). The `StatusBar` only reacts to `isProjectLoading`.
 - **Navigation Safety**: `EditorPage` uses a `useRef` to track the last loaded ID, preventing redundant `loadProject` calls when a project is closed or renamed.
+## [Unreleased]
+
+### Added
+- Storage info in Project Dashboard: Displays total app usage and alerts for orphaned data.
+- Cleanup utility for orphaned timelines: Allows removing data from deleted projects.
+- Database discovery logic in `IndexedDBAdapter`.
 
 ### Authentication & Privacy
 - **Auth.js (v5)**: Uses Google Provider for authentication.
@@ -75,9 +81,11 @@
 
 ### Note on Persistence (IndexedDB)
 - **Video Persistence:** Video files are stored in `waptions-timelines-{projectId}` -> `video-file`. `ProjectStore` loads the video into `VideoStore` on project open. `VideoViewport` automatically detects changes in `VideoStore.videoFile` and synchronizes metadata (duration, fps) to `PlaybackStore`.
-- **Resource Monitoring (Info Panel)**:
-    - **Performance Metrics**: Shows resolution, fps, and bitrate.
-    - **Resource usage**: Displays current project size (metadata + video in DB), Video Cache memory estimate (Canvas buffers), and JS Heap Usage (Chrome only).
+- **Resource Monitoring (Info Panel & Dashboard)**:
+    - **Performance Metrics**: Shows resolution, fps, and bitrate in the editor.
+    - **Resource usage**: 
+        - **Editor**: Displays current project size, Video Cache memory, and JS Heap.
+        - **Dashboard**: Displays total application storage and identifies "orphaned" databases (timelines without a project record) with an option to clean them up.
     - **Optimization**: Stats poll every 5 seconds. Heavy DB size checks are automatically paused during video playback (`isPlaying`) to avoid frame drops.
 - **Subtitle Interaction**:
     - **Independent Drag Preview**: During dragging or resizing, the video viewport follows the interaction (`previewTime` in `PlaybackStore`) while the playhead remains fixed as a reference.
