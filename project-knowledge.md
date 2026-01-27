@@ -66,6 +66,7 @@
 - **Zoom & Scroll**: Pixel-based positioning (`time * pps * zoom`).
 - **Infinite Timeline**: The timeline duration is no longer strictly tied to the video duration. It calculates its width based on the maximum of (video duration, last subtitle end time) + a 60-second buffer to allow for an "infinite" feel and easy item placement beyond current content.
 - **Sync**: Linked scroll between Ruler, Sidebar, and Tracks via refs.
+- **Auto-scroll**: Implemented `scrollToTime` helper that ensures playhead visibility during keyboard navigation. Supports "centering" (smooth scroll to 50% width) for large jumps and "keep-in-view" (instant scroll to margin) for frame-by-frame moves.
 - **Ruler Markers (3-Tier Dynamic System)**:
     - **Tier 1 (Dominant)**: Full-height line (`h-full`) with time label. Spaced dynamically (min. 200px) to show 1-2 numbers at once.
     - **Tier 2 (Medium)**: Reduced-height line (`h-4`, `bg-gray-700/60`) for secondary intervals.

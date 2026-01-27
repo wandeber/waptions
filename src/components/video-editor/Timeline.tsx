@@ -184,6 +184,41 @@ export function Timeline({
     }
   };
 
+  const scrollToTime = useCallback((time: number) => {
+    const tracksEl = tracksContentRef.current;
+    if (!tracksEl) return;
+
+    const pps = pixelsPerSecond * zoomLevel;
+    const playheadX = time * pps;
+    const viewportWidth = tracksEl.clientWidth;
+    const scrollLeft = tracksEl.scrollLeft;
+
+    // Solo hacemos scroll si el cabezal está FUERA del área visible
+    // Usamos un margen de 2px para considerar "fuera"
+    const isVisible = playheadX >= scrollLeft + 2 && playheadX <= scrollLeft + viewportWidth - 2;
+
+    if (!isVisible) {
+      // El objetivo es que playheadX quede a viewportWidth / 2 de distancia del borde izquierdo
+      const targetScrollLeft = Math.round(playheadX - viewportWidth / 2);
+
+      const maxScroll = Math.max(0, tracksEl.scrollWidth - viewportWidth);
+      const FinalScrollLeft = Math.max(0, Math.min(maxScroll, targetScrollLeft));
+
+      // Usamos scroll instantáneo para evitar que múltiples eventos de teclado colisionen con la animación
+      tracksEl.scrollLeft = FinalScrollLeft;
+
+      // Sincronizamos manualmente para garantizar respuesta inmediata en todos los elementos dependientes
+      if (rulerContentRef.current) {
+        rulerContentRef.current.scrollLeft = FinalScrollLeft;
+      }
+      const playheadSyncEl = document.getElementById('timeline-playhead-sync')?.parentElement;
+      if (playheadSyncEl) {
+        playheadSyncEl.scrollLeft = FinalScrollLeft;
+      }
+      virtualScrollLeftRef.current = FinalScrollLeft;
+    }
+  }, [pixelsPerSecond, zoomLevel]);
+
   const memoizedKeyPoints = useMemo(() => {
     const rawVideoDuration = useVideoStore.getState().duration;
     const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
@@ -222,6 +257,7 @@ export function Timeline({
         const snappedTime = Math.round(newTime / frameDuration) * frameDuration;
 
         onTimeUpdate?.(snappedTime);
+        scrollToTime(snappedTime);
 
         // Prevenir scroll lateral del navegador con las flechas si fuera necesario
         e.preventDefault();
@@ -240,6 +276,7 @@ export function Timeline({
           if (next !== undefined) {
             const snappedNext = Math.round(next / frameDuration) * frameDuration;
             onTimeUpdate?.(snappedNext);
+            scrollToTime(snappedNext);
           }
         } else {
           // Anterior punto clave: buscamos el último que sea menor que el actual - epsilon
@@ -248,6 +285,7 @@ export function Timeline({
             const prev = sortedPoints[prevIndex];
             const snappedPrev = Math.round(prev / frameDuration) * frameDuration;
             onTimeUpdate?.(snappedPrev);
+            scrollToTime(snappedPrev);
           }
         }
 
@@ -257,7 +295,7 @@ export function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fps, duration, onTimeUpdate, tracks, onPlayPause, memoizedKeyPoints]);
+  }, [fps, duration, onTimeUpdate, tracks, onPlayPause, memoizedKeyPoints, scrollToTime]);
 
   return (
     <div
