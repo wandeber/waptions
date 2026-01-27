@@ -125,7 +125,7 @@
     - **Dashboard**: Located at the root route (`/`). Completely redesigned with a premium look (glassmorphism, gradient glows, real-time `SearchBar`, and interactive `ProjectCard` components).
     - **Editor**: Located at `/editor/[id]`. Dynamic route that loads a project by its ID from IndexedDB.
 - **AI Transcription Engine**:
-    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram Nova 2, and Premium Whisper + GPT-4o + GPT-5.2).
+    - **Model Selection**: User can choose between models (OpenAI Whisper, Deepgram Nova 2, and Premium Whisper + GPT-4o + o4-mini).
     - **Providers**:
         - **OpenAIProvider**: Handles Whisper and GPT models.
         - **DeepgramProvider**: New provider using `@deepgram/sdk` for highly accurate and fast transcription (Nova 2).

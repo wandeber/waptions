@@ -73,7 +73,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
                     chunking_strategy: "auto"
                 });
 
-                // STEP 3: o3-mini for grouping and correction
+                // STEP 3: o4-mini for grouping and correction
                 const groupingPrompt = `
           You are an expert subtitle editor. I will provide you with two transcriptions of the same audio:
           1. WHISPER: Word-by-word transcription with start/end timestamps.
@@ -103,7 +103,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
                 const { data: premiumResult } = await o4miniProvider.generate<{
                     raw: Subtitle[],
                     groups: Array<{ id: string; words: Subtitle[] }>
-                }>('gpt-5.2', {
+                }>('o4-mini', {
                     messages: [{ role: 'user', content: groupingPrompt }],
                     responseSchema: {
                         type: "object",

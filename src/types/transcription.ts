@@ -21,7 +21,7 @@ export const SUPPORTED_MODELS: TranscriptionModel[] = [
     },
     {
         id: 'premium-whisper-gpt4o',
-        name: 'Whisper + GPT-4o + GPT-5.2',
+        name: 'Whisper + GPT-4o + o4-mini',
         description: 'Ultimate pipeline for precisely timed, short-form subtitles with speaker isolation.',
         provider: 'OpenAI',
         badge: 'Premium',
