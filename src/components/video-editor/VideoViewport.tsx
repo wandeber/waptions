@@ -122,6 +122,9 @@ export function VideoViewport({
       console.error('Error al cargar el video:', error);
     } finally {
       setIsLoading(false);
+      if (event.target) {
+        event.target.value = '';
+      }
     }
   };
 
@@ -228,7 +231,12 @@ export function VideoViewport({
 
       // Draw background (Persistent Frame or Black)
       const pCanvas = persistentVideoCanvasRef.current;
-      if (pCanvas && pCanvas.getAttribute('data-has-frame') === 'true') {
+
+      const frameDuration = fps > 0 ? 1 / fps : 0.033;
+      const snappedDuration = Math.round(duration / frameDuration) * frameDuration;
+      const isBeyondVideo = renderTime >= snappedDuration - 0.001;
+
+      if (!isBeyondVideo && pCanvas && pCanvas.getAttribute('data-has-frame') === 'true') {
         offCtx.drawImage(pCanvas, 0, 0);
       } else {
         offCtx.fillStyle = '#000';
@@ -266,7 +274,7 @@ export function VideoViewport({
     } finally {
       isRendering.current = false;
     }
-  }, [videoFile, showSubtitles, getVideoDisplayRect, canvasRef]);
+  }, [videoFile, showSubtitles, getVideoDisplayRect, canvasRef, duration, fps]);
 
   // Main loop
   useEffect(() => {

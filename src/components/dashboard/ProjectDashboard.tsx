@@ -7,8 +7,10 @@ import { UserMenu } from './UserMenu';
 import { SearchBar } from './SearchBar';
 import { ProjectCard } from './ProjectCard';
 import Image from 'next/image';
-import { Sparkles, Database, Trash2, AlertCircle } from 'lucide-react';
+import { Sparkles, Database, Trash2, AlertCircle, FileUp } from 'lucide-react';
 import { storageService } from '@/lib/storage/storage-service';
+import { peekProjectBundle, importProjectBundle, PROJECT_BUNDLE_VERSION } from '@/lib/project-bundle';
+import { ImportWarningDialog } from '../dialogs/ImportWarningDialog';
 
 export function ProjectDashboard() {
     const { savedProjects, createProject, deleteProject } = useProjectStore();
@@ -18,6 +20,9 @@ export function ProjectDashboard() {
     const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
     const [storageInfo, setStorageInfo] = useState<{ total: number, orphaned: { id: string, size: number }[] } | null>(null);
     const [isCleaning, setIsCleaning] = useState(false);
+    const [isImporting, setIsImporting] = useState(false);
+    const [pendingImportBlob, setPendingImportBlob] = useState<Blob | null>(null);
+    const [showImportWarning, setShowImportWarning] = useState(false);
     const router = useRouter();
 
     const loadStorageInfo = useCallback(async () => {
@@ -77,6 +82,42 @@ export function ProjectDashboard() {
         } finally {
             setIsCreating(false);
             setNewProjectName('');
+        }
+    };
+
+    const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        try {
+            const metadata = await peekProjectBundle(file);
+            setPendingImportBlob(file);
+
+            if (metadata.version !== PROJECT_BUNDLE_VERSION) {
+                setShowImportWarning(true);
+            } else {
+                await executeImport(file);
+            }
+        } catch (error) {
+            console.error('Failed to peek project bundle:', error);
+            alert('El archivo no es un proyecto de Waptions válido o está dañado.');
+        } finally {
+            e.target.value = '';
+        }
+    };
+
+    const executeImport = async (blob: Blob) => {
+        setIsImporting(true);
+        try {
+            const { projectId } = await importProjectBundle(blob);
+            router.push(`/editor/${projectId}`);
+        } catch (error) {
+            console.error('Failed to import project bundle:', error);
+            alert('Error al importar el proyecto.');
+        } finally {
+            setIsImporting(false);
+            setPendingImportBlob(null);
+            setShowImportWarning(false);
         }
     };
 
@@ -151,8 +192,23 @@ export function ProjectDashboard() {
                                 className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3.5 rounded-2xl flex items-center justify-center gap-2 text-sm font-bold transition-all shadow-lg shadow-blue-600/20 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed group/btn"
                             >
                                 <PlusIcon className="w-5 h-5 group-hover/btn:rotate-90 transition-transform duration-300" />
-                                <span>Crear Proyecto</span>
+                                <span>Crear</span>
                             </button>
+
+                            <div className="hidden sm:block w-px h-10 bg-gray-800 self-center mx-2" />
+
+                            <label className="cursor-pointer">
+                                <input
+                                    type="file"
+                                    accept=".waptions"
+                                    onChange={handleImportFile}
+                                    className="hidden"
+                                />
+                                <div className={`h-full bg-gray-900 hover:bg-gray-800 text-gray-400 hover:text-white px-6 py-3.5 rounded-2xl flex items-center justify-center gap-2 text-sm font-bold border border-gray-800 transition-all active:scale-[0.95] ${isImporting ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                    <FileUp className="w-5 h-5" />
+                                    <span>Importar</span>
+                                </div>
+                            </label>
                         </form>
                     </div>
                     {/* Animated Glow on Hover */}
@@ -228,6 +284,15 @@ export function ProjectDashboard() {
                 confirmVariant="danger"
                 onConfirm={handleConfirmDelete}
                 onCancel={() => setProjectToDelete(null)}
+            />
+
+            <ImportWarningDialog
+                isOpen={showImportWarning}
+                onConfirm={() => pendingImportBlob && executeImport(pendingImportBlob)}
+                onCancel={() => {
+                    setShowImportWarning(false);
+                    setPendingImportBlob(null);
+                }}
             />
 
             <style jsx global>{`

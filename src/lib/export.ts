@@ -13,7 +13,7 @@ import type { ExportOptions, ExportResult } from '@/types/export';
 import { videoCache } from './video-cache';
 import { renderSubtitles } from './subtitle-renderer';
 import { waitForFonts } from './fonts/google-fonts';
-import { AnimationStyle, Subtitle } from '@/types/timeline';
+import { SubtitleTrack } from '@/types/timeline';
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     format: 'mp4',
@@ -23,8 +23,7 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
 
 interface ExportContext {
     videoFile: File;
-    subtitles: Subtitle[];
-    animationStyle: AnimationStyle;
+    tracks: SubtitleTrack[];
     options: ExportOptions;
 }
 
@@ -34,14 +33,15 @@ interface ExportContext {
  * Uses WebCodecs for fast encoding without FFmpeg.
  */
 export async function exportProject(context: ExportContext): Promise<ExportResult> {
-    const { videoFile, subtitles, animationStyle, options } = context;
+    const { videoFile, tracks, options } = context;
     const { format, quality, fps: optionsFps, includeAudio, onProgress, onCancel } = options;
 
     try {
         console.log('exportProject started', { format, quality, duration: videoFile.size });
 
-        // ENSURE FONTS ARE LOADED
-        await waitForFonts([animationStyle.fontFamily]);
+        // ENSURE FONTS ARE LOADED - Collect all unique fonts from tracks
+        const uniqueFonts = Array.from(new Set(tracks.map(t => t.style.fontFamily)));
+        await waitForFonts(uniqueFonts);
 
         // Get video info
         const input = new Input({
@@ -54,47 +54,42 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
             return { success: false, error: 'No video track found' };
         }
 
-        const duration = await input.computeDuration();
+        const videoDuration = await input.computeDuration();
+
+        // Calculate absolute content end from all tracks
+        const lastSubEnd = tracks.reduce((max, track) => {
+            const trackMax = track.subtitles.reduce((tMax, s) => Math.max(tMax, s.endTime), 0);
+            return Math.max(max, trackMax);
+        }, 0);
+
         const packetStats = await videoTrack.computePacketStats(100);
         const videoFps = optionsFps ?? Math.round(packetStats.averagePacketRate);
+        const frameDuration = 1 / videoFps;
+
+        // Align durations to frame boundaries for Sacred Frames
+        const snappedVideoDuration = Math.round(videoDuration / frameDuration) * frameDuration;
+        const snappedSubEnd = Math.round(lastSubEnd / frameDuration) * frameDuration;
+
+        const exportDuration = Math.max(snappedVideoDuration, snappedSubEnd);
+        const totalFrames = Math.round(exportDuration / frameDuration);
+
         const canvasWidth = videoTrack.displayWidth;
         const canvasHeight = videoTrack.displayHeight;
-
         const mediaId = 'export-' + Date.now();
 
         // Ensure VideoCache uses native resolution for this export mediaId
-        // IMPORTANT: Call this BEFORE any frame requests to ensure they use native resolution
         videoCache.setTargetResolution(canvasWidth, canvasHeight, mediaId);
 
         // Calculate intelligent bitrate
-        // 1. Estimate source bitrate in bits/sec
-        const sourceBitrate = duration > 0 ? (videoFile.size * 8) / duration : 5000000;
+        const sourceBitrate = videoDuration > 0 ? (videoFile.size * 8) / videoDuration : 5000000;
+        const multipliers = { low: 0.5, medium: 0.8, high: 1.2, very_high: 2.0 };
+        let targetBitrate = sourceBitrate * (multipliers[quality] || multipliers.high);
 
-        // 2. Define multipliers per quality level
-        const multipliers = {
-            low: 0.5,
-            medium: 0.8,
-            high: 1.2,
-            very_high: 2.0,
-        };
-
-        // 3. Calculate target bitrate with safety bounds
-        let targetBitrate = sourceBitrate * multipliers[quality];
-
-        // Safety bounds based on resolution to avoid extreme values
         const pixelCount = canvasWidth * canvasHeight;
-        const baseBitrate = (pixelCount / (1920 * 1080)) * 10000000; // 10Mbps for 1080p as reference
-
-        const minBitrate = Math.max(500000, baseBitrate * 0.2); // At least 500kbps or 20% of base
-        const maxBitrate = Math.max(50000000, baseBitrate * 5); // Up to 50Mbps or 5x base
-
+        const baseBitrate = (pixelCount / (1920 * 1080)) * 10000000;
+        const minBitrate = Math.max(500000, baseBitrate * 0.2);
+        const maxBitrate = Math.max(50000000, baseBitrate * 5);
         targetBitrate = Math.max(minBitrate, Math.min(maxBitrate, targetBitrate));
-
-        console.log('Intelligent bitrate calculated:', {
-            sourceBitrate: Math.round(sourceBitrate / 1000) + ' kbps',
-            targetBitrate: Math.round(targetBitrate / 1000) + ' kbps',
-            quality
-        });
 
         // Setup output
         const outputFormat = format === 'webm' ? new WebMOutputFormat() : new Mp4OutputFormat();
@@ -103,25 +98,19 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
             target: new BufferTarget(),
         });
 
-        // Create canvas for rendering
         const canvas = document.createElement('canvas');
         canvas.width = canvasWidth;
         canvas.height = canvasHeight;
         const ctx = canvas.getContext('2d');
 
-        if (!ctx) {
-            return { success: false, error: 'Failed to create canvas context' };
-        }
+        if (!ctx) return { success: false, error: 'Failed to create canvas context' };
 
-        // Add video track
         const videoSource = new CanvasSource(canvas, {
             codec: format === 'webm' ? 'vp9' : 'avc',
             bitrate: Math.round(targetBitrate),
         });
         output.addVideoTrack(videoSource, { frameRate: videoFps });
 
-        // Render each frame
-        const totalFrames = Math.ceil(duration * videoFps);
         let cancelled = false;
 
         // Handle audio track if included
@@ -169,24 +158,32 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
 
             const time = frameIndex / videoFps;
 
-            // Get video frame
-            const frame = await videoCache.getFrameAt(mediaId, videoFile, time);
+            // Get video frame - Only request if within video duration
+            // Use a small epsilon to avoid floating point issues at exactly the end
+            const isWithinVideo = time < snappedVideoDuration - (frameDuration / 2);
+            const frame = isWithinVideo ? await videoCache.getFrameAt(mediaId, videoFile, time) : null;
+
             if (frame) {
-                if (frameIndex % 10 === 0) console.log(`Rendering frame ${frameIndex}/${totalFrames} at ${time.toFixed(2)}s`);
+                if (frameIndex % 50 === 0) console.log(`Rendering frame ${frameIndex}/${totalFrames} at ${time.toFixed(2)}s`);
                 ctx.clearRect(0, 0, canvasWidth, canvasHeight);
                 ctx.drawImage(frame.canvas, 0, 0, canvasWidth, canvasHeight);
             } else {
-                console.warn(`No frame found at ${time.toFixed(2)}s`);
-                // Fill with black if no frame available
+                if (frameIndex % 50 === 0 && !isWithinVideo) {
+                    console.log(`Rendering black padding frame ${frameIndex}/${totalFrames} at ${time.toFixed(2)}s`);
+                }
+                // Fill with black if no frame available or beyond video duration
                 ctx.fillStyle = '#000000';
                 ctx.fillRect(0, 0, canvasWidth, canvasHeight);
             }
 
-            // Render subtitles on top
-            renderSubtitles(ctx, subtitles, animationStyle, time, canvasWidth, canvasHeight);
+            // Render subtitles from all tracks on top
+            tracks.forEach(track => {
+                if (track.isVisible) {
+                    renderSubtitles(ctx, track.subtitles, track.style, time, canvasWidth, canvasHeight);
+                }
+            });
 
             // Add frame to output
-            const frameDuration = 1 / videoFps;
             await videoSource.add(time, frameDuration);
 
             onProgress?.(frameIndex / totalFrames);

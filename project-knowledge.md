@@ -64,12 +64,13 @@
 - **State Management**: `timeline-store.ts` (Zustand).
 - **Multi-Track**: Supports multiple `SubtitleTrack` with independent `AnimationStyle`.
 - **Zoom & Scroll**: Pixel-based positioning (`time * pps * zoom`).
+- **Infinite Timeline**: The timeline duration is no longer strictly tied to the video duration. It calculates its width based on the maximum of (video duration, last subtitle end time) + a 60-second buffer to allow for an "infinite" feel and easy item placement beyond current content.
 - **Sync**: Linked scroll between Ruler, Sidebar, and Tracks via refs.
 - **Ruler Markers (3-Tier Dynamic System)**:
     - **Tier 1 (Dominant)**: Full-height line (`h-full`) with time label. Spaced dynamically (min. 200px) to show 1-2 numbers at once.
     - **Tier 2 (Medium)**: Reduced-height line (`h-4`, `bg-gray-700/60`) for secondary intervals.
     - **Tier 3 (Detail)**: Shortest ticks (`h-1.5`, `bg-gray-800/80`) representing frames or divisions.
-    - **Precision**: Sub-second ticks use floating point precision to ensure inclusion of the last frame before a Tier 2/1 marker.
+    - **Precision**: Sub-second ticks use absolute frame indices (`Math.round(time * fps)`) to ensure perfect alignment without any cumulative floating-point drift.
 - **Background Grid**: The horizontal separator lines in the timeline background are only shown when there are multiple tracks (`tracks.length > 1`). The separator is aligned to the bottom of each track (64px) to avoid visual overlap with the ruler's border.
 
 ### Subtitle Rendering
@@ -100,6 +101,12 @@
     - "Mi Alter Edu" uses **Inter Tight Black (900)** for high-impact cinematic vertical content.
     - Presets are managed via `presetUtils.ts` and synced across the UI and store.
     - **Manual Modification**: Selector automatically switches to "Estilo personalizado (sin guardar)" when a preset is modified, identifying custom styles via deep comparison.
+- **Video Selection & Deletion**:
+    - Video clips in the timeline are selectable. Clicking them sets `isVideoSelected: true` in `TimelineStore`.
+    - Selecting a video clip deselects all subtitles and vice versa.
+    - The `DELETE` keyboard shortcut handles video removal if `isVideoSelected` is true, keeping subtitles intact.
+    - The waveform in `TimelineWaveform` is reactive and clears if `audioBuffer` is null (e.g., video deleted).
+    - The file input in `VideoViewport` is reset after selection to allow re-importing the same file.
 - **Font Selection System**:
     - **Tabbed Selector**: Organized into App (curated), System (local), and Google Fonts.
     - **Smart Auto-selection**: Automatically switches to the correct tab (App, Google, or System) based on the current font when opening the style panel.
@@ -141,7 +148,6 @@
         - **First Word**: Can only be dragged **UP** (to join the previous line). Cannot create new lines (cannot drop on gaps).
         - **Last Word**: Can only be dragged **DOWN** (to join the next line or create a new line after by dropping on the gap below).
     - This ensures that time never flows backwards.
-    - This ensures that time never flows backwards.
     - **Zero-Shift Footprint**: Expanded gaps have an exact height of **108px**, which perfectly accommodates the Gap (24px) + Line (60px) + Gap (24px) resulting stack.
     - **3-Layer Architecture**: Data is split into three strictly independent layers:
         1. **Raw Transcription (Immutable)**: Original word-level data. Never modified.
@@ -177,6 +183,9 @@
     - **Event Pass-through**: The playhead line uses `pointer-events: none` to allow users to interact with subtitles directly underneath it.
     - **Scrubbing**: Clicking the ruler or the track background (through the line) updates the time normally.
     - **Snapping**: Both playhead and ruler support magnetic snapping (15px threshold) to subtitle boundaries and video limits. This snapping is "silent" (no visual blue line) for navigation.
+- **Playback Limits**:
+  - **`duration`**: Represents the total viewable/scrollable area (content + infinite buffer).
+  - **`contentDuration`**: Represents the actual end of content (Max of video end and last subtitle end). Playback automatically stops here.
 - **Waveform Rendering**:
     - Extracted as an `AudioBuffer` on video load via `useWaveform` hook.
     - Rendered on a `<canvas>` in `TimelineWaveform` using a unipolar upward style (vertical bars from bottom baseline) for high clarity.
@@ -235,6 +244,8 @@ To eliminate flickering and black flashes during seeks or decoding delays:
 - **Resolution Persistence**: Uses a `pendingResolutions` map to ensure that specific quality targets are applied even if the video sink is initialized asynchronously after the request.
 - **Eviction Strategy**: LRU based on memory size (**1024MB** limit). Features a `lastAccessedKey` lock to protect the active frame from being evicted.
 - **Intelligent Export Bitrate**: Automatically calculates the optimal export bitrate by deducing the source bitrate and applying multipliers (0.5x to 2.0x) with resolution-aware safety bounds (e.g., 0.5Mbps - 50Mbps for 1080p).
+- **Sacred Frames Philosophy**: All time-to-frame calculations are standardized to use `Math.round(time * fps)` for total counts and snapping, while `Math.floor(time * fps + epsilon)` is used for indexing. This eliminates "phantom frames" at video boundaries and ensures perfect visual alignment of the playhead, ruler ticks, and clip edges.
+- **Multi-Track Export**: The export process in `export.ts` iterates over all visible tracks and calculates the total duration based on the absolute end of the last subtitle, padding with black frames where the source video has ended.
 
 ### Navigation Optimization
 - **Burst Decoding**: When a seek occurs, the `VideoCache` decodes a small burst (e.g., 5 frames) to fill the cache around the target. This makes scrubbing feel "sedosa" (silky) as surrounding frames become instant once a region is touched.
@@ -246,3 +257,9 @@ To eliminate flickering and black flashes during seeks or decoding delays:
     - **WebCodecs Adapter (Mediabunny)**: Replaced `HTMLVideoElement` with a direct `mediabunny` decoding pipeline. Uses the `Conversion` API to intercept and analyze every single video sample (frame-accurate) without being limited by the browser's render loop or playback rate.
     - **UI Integration**: `VideoCutPopover` in the toolbar manages parameters and state.
     - **Visualization**: Cuts are rendered in the tracks area as white vertical lines (`z-0`, `opacity-10`) across all tracks, and registered as primary snap points.
+- **Project Bundling (.waptions)**:
+    - **Logic**: Implemented in `lib/project-bundle.ts` using `jszip`.
+    - **Format**: A ZIP archive containing `metadata.json` and the original video file.
+    - **Metadata**: Includes project info, timeline tracks, raw transcription state, and custom presets found in `localStorage`.
+    - **Versioning**: Uses `PROJECT_BUNDLE_VERSION` (v1.0) to warn users about potential breaking changes when importing files from older/newer versions.
+    - **Asset Handling**: Restores the video to IndexedDB during import and merges included presets with the user's local collection (avoiding name duplicates).

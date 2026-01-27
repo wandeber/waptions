@@ -18,11 +18,13 @@ const MemoizedTimelineTrackHeader = memo(TimelineTrackHeader);
 import { useWaveform } from '@/hooks/use-waveform';
 import { TimelineWaveform } from './TimelineWaveform';
 import { OverlayMenu } from './OverlayMenu';
+import { TimelineVideoTrack } from './TimelineVideoTrack';
 import { VideoCutPopover } from './VideoCutPopover';
 import { useVideoStore } from '@/stores/video-store';
 
 interface TimelineProps {
   duration: number;
+  contentDuration: number;
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
@@ -39,6 +41,7 @@ interface TimelineProps {
 
 export function Timeline({
   duration,
+  contentDuration,
   currentTime = 0,
   onTimeUpdate,
   onSubtitleClick,
@@ -182,7 +185,11 @@ export function Timeline({
   };
 
   const memoizedKeyPoints = useMemo(() => {
-    const keyPoints = new Set<number>([0, duration]);
+    const rawVideoDuration = useVideoStore.getState().duration;
+    const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+    const snappedVideoDuration = Math.round(rawVideoDuration / frameDuration) * frameDuration;
+
+    const keyPoints = new Set<number>([0, snappedVideoDuration, duration]);
     tracks.forEach(track => {
       track.subtitles.forEach(s => {
         // Guardamos con precisión de ms
@@ -191,7 +198,7 @@ export function Timeline({
       });
     });
     return Array.from(keyPoints).sort((a, b) => a - b);
-  }, [tracks, duration]);
+  }, [tracks, duration, fps]);
 
   // Keyboard navigation (Frame-by-Frame)
   useEffect(() => {
@@ -225,14 +232,23 @@ export function Timeline({
         const current = currentTimeRef.current;
         const EPSILON = 0.0005;
 
+        const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+
         if (e.key === 'ArrowDown') {
           // Siguiente punto clave: buscamos el primero que sea mayor que el actual + epsilon
           const next = sortedPoints.find(p => p > current + EPSILON);
-          if (next !== undefined) onTimeUpdate?.(next);
+          if (next !== undefined) {
+            const snappedNext = Math.round(next / frameDuration) * frameDuration;
+            onTimeUpdate?.(snappedNext);
+          }
         } else {
           // Anterior punto clave: buscamos el último que sea menor que el actual - epsilon
           const prevIndex = sortedPoints.findLastIndex(p => p < current - EPSILON);
-          if (prevIndex !== -1) onTimeUpdate?.(sortedPoints[prevIndex]);
+          if (prevIndex !== -1) {
+            const prev = sortedPoints[prevIndex];
+            const snappedPrev = Math.round(prev / frameDuration) * frameDuration;
+            onTimeUpdate?.(snappedPrev);
+          }
         }
 
         e.preventDefault();
@@ -263,7 +279,7 @@ export function Timeline({
           <div>
             <span className="text-blue-400">{formatTime(currentTime)}</span>
             <span className="mx-1 text-gray-600">/</span>
-            <span>{formatTime(duration)}</span>
+            <span>{formatTime(contentDuration)}</span>
           </div>
 
         </div>
@@ -325,6 +341,11 @@ export function Timeline({
                 }}
               />
             ))}
+
+            {/* Video Track Label */}
+            <div className="h-[48px] border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-blue-300/60 uppercase tracking-wider">
+              Video
+            </div>
 
             {/* Audio Track Label */}
             <div className="h-12 border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-blue-400 uppercase tracking-wider mt-auto">
@@ -396,7 +417,7 @@ export function Timeline({
                 <div
                   className="absolute top-0 bottom-0 w-px bg-cyan-400/50 z-30 pointer-events-none"
                   style={{
-                    left: `${activeSnapTime * pixelsPerSecond * zoomLevel}px`,
+                    left: `${Math.round(activeSnapTime * pixelsPerSecond * zoomLevel)}px`,
                     boxShadow: '0 0 10px 2px rgba(34, 211, 238, 0.3)'
                   }}
                 />
@@ -425,6 +446,11 @@ export function Timeline({
                   onSubtitleClick={onSubtitleClick}
                 />
               ))}
+
+              {/* Video track indicator */}
+              <div className="relative h-[48px] border-b border-gray-800/50">
+                <TimelineVideoTrack duration={useVideoStore.getState().duration} />
+              </div>
 
               {/* Audio Waveform Area */}
               <div

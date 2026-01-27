@@ -3,6 +3,7 @@
 import { useState, memo } from 'react';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
+import { useVideoStore } from '@/stores/video-store';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
 
 interface TimelineTrackOverlayProps {
@@ -78,7 +79,7 @@ interface SubtitleBlockProps {
     duration: number;
 }
 
-const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory, duration }: SubtitleBlockProps) {
+const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory }: SubtitleBlockProps) {
     const { pixelsPerSecond, zoomLevel } = useTimelineStore();
     const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
@@ -152,8 +153,12 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         if (snapEnabled) {
             const pointsMap = new Map<number, boolean>(); // time -> isInitial
 
+            const videoDuration = useVideoStore.getState().duration;
+            const videoFrameDuration = fps > 0 ? 1 / fps : 1 / 30;
+            const snappedVideoDuration = Math.round(videoDuration / videoFrameDuration) * videoFrameDuration;
+
             pointsMap.set(0, false);
-            pointsMap.set(duration, false);
+            pointsMap.set(snappedVideoDuration, false);
 
             const playheadTime = usePlaybackStore.getState().currentTime;
             pointsMap.set(playheadTime, false);
@@ -204,7 +209,11 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
                 }
             });
 
-            const finalTime = isEnd ? closestPoint - durOffset : closestPoint;
+            let finalTime = isEnd ? closestPoint - durOffset : closestPoint;
+
+            // SACRED FRAMES: Final quantization to frame boundary
+            finalTime = snapToFrame(finalTime);
+
             setActiveSnapTime(foundSnap && !snappedToInitial ? closestPoint : null);
 
             return {

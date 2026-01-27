@@ -1,6 +1,8 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useVideoStore } from '@/stores/video-store';
+import { usePlaybackStore } from '@/stores/playback-store';
 import { useState, useEffect } from 'react';
 import { frameCache } from '@/lib/frame-cache';
 
@@ -32,7 +34,10 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         // One-shot snap points
         const snapPoints: number[] = [];
         if (snapEnabled) {
-            const points = new Set<number>([0, duration]);
+            const { duration: videoStoreDuration } = useVideoStore.getState();
+            const snappedVideoDuration = Math.round(videoStoreDuration / frameDuration) * frameDuration;
+
+            const points = new Set<number>([0, snappedVideoDuration, duration]);
             tracks.forEach(t => {
                 t.subtitles.forEach(s => {
                     points.add(s.startTime);
@@ -118,12 +123,14 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
     };
 
     // Main marker loop - iterate by markerInterval
-    for (let time = 0; time <= duration; time += markerInt) {
-        const left = time * pps;
-        const isLabel = time % labelInt === 0;
+    for (let time = 0; time <= duration + 0.001; time += markerInt) {
+        // Ensure we don't exceed duration due to precision
+        const currentTime = Math.min(time, duration);
+        const left = Math.round(currentTime * pps);
+        const isLabel = Math.abs(currentTime % labelInt) < 0.001 || Math.abs((currentTime % labelInt) - labelInt) < 0.001;
 
         markers.push(
-            <div key={`m-${time}`}>
+            <div key={`m-${currentTime}`}>
                 {/* Tier 1 (Full) or Tier 2 (Medium) */}
                 <div
                     className={`absolute bottom-0 w-px ${isLabel ? 'h-full bg-gray-500' : 'h-4 bg-gray-700/60'}`}
@@ -136,29 +143,37 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
                         className="absolute top-1 text-[10px] text-gray-400 select-none whitespace-nowrap"
                         style={{ left: `${left + 4}px` }}
                     >
-                        {formatTime(time)}
+                        {formatTime(currentTime)}
                     </span>
                 )}
 
                 {/* Tier 3: Detail ticks (frames or divisions) - only if marker interval is <= 1s */}
-                {markerInt <= 1 && (showFrameTicks || showIntermediateTicks) && Array.from({ length: Math.ceil(fps) - 1 }).map((_, fIdx) => {
-                    const frameNumber = fIdx + 1;
-                    const frameTime = time + (frameNumber / fps);
-                    if (frameTime > duration || frameTime > time + 0.999) return null;
+                {markerInt <= 1 && (showFrameTicks || showIntermediateTicks) && (() => {
+                    const ticks = [];
+                    // Find the absolute frame range for this interval
+                    const nextMarkerTime = currentTime + markerInt;
+                    const startFrame = Math.floor(currentTime * fps + 0.001) + 1;
+                    const endFrame = Math.floor(nextMarkerTime * fps - 0.001);
 
-                    const frameLeft = left + (frameNumber / fps * pps);
-                    const isTickVisible = pixelsPerFrame > 2; // Threshold for showing any detail
+                    for (let f = startFrame; f <= endFrame; f++) {
+                        const frameTime = f / fps;
+                        if (frameTime > duration + 0.0001) continue;
 
-                    if (!isTickVisible) return null;
+                        const frameLeft = Math.round(frameTime * pps);
+                        const isTickVisible = pixelsPerFrame > 2;
 
-                    return (
-                        <div
-                            key={`frame-${time}-${fIdx}`}
-                            className="absolute bottom-0 w-px h-1.5 bg-gray-800/80"
-                            style={{ left: `${frameLeft}px` }}
-                        />
-                    );
-                })}
+                        if (isTickVisible) {
+                            ticks.push(
+                                <div
+                                    key={`frame-${f}`}
+                                    className="absolute bottom-0 w-px h-1.5 bg-gray-800/80"
+                                    style={{ left: `${frameLeft}px` }}
+                                />
+                            );
+                        }
+                    }
+                    return ticks;
+                })()}
             </div>
         );
     }
@@ -178,6 +193,8 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
 
 function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
     const [cachedSegments, setCachedSegments] = useState<{ start: number; end: number }[]>([]);
+    const fps = usePlaybackStore(s => s.fps);
+    const frameDuration = fps > 0 ? 1 / fps : 0.033;
 
     useEffect(() => {
         const updateSegments = () => {
@@ -190,7 +207,8 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
             // Group adjacent timestamps into segments
             const segments: { start: number; end: number }[] = [];
             let currentSegment: { start: number; end: number } | null = null;
-            const threshold = 0.2; // 200ms gap max to consider adjacent
+            // Gap should be slightly more than one frame to account for precision, but less than two.
+            const threshold = frameDuration * 1.5;
 
             timestamps.forEach((t) => {
                 if (!currentSegment) {
@@ -213,22 +231,33 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
         const interval = setInterval(updateSegments, 500);
         updateSegments();
         return () => clearInterval(interval);
-    }, []);
+    }, [frameDuration]);
 
     if (cachedSegments.length === 0) return null;
 
     return (
         <div className="absolute bottom-0 left-0 right-0 h-[3px] pointer-events-none z-10 overflow-hidden">
-            {cachedSegments.map((seg, i) => (
-                <div
-                    key={i}
-                    className="absolute h-full bg-green-500/30"
-                    style={{
-                        left: `${seg.start * pps}px`,
-                        width: `${Math.max(2, (seg.end - seg.start) * pps)}px`,
-                    }}
-                />
-            ))}
+            {cachedSegments.map((seg, i) => {
+                // Ensure segment boundaries are strictly aligned to frames
+                const startSnapped = Math.floor(seg.start * fps + 0.01) / fps;
+                const endSnapped = Math.floor(seg.end * fps + 0.01) / fps;
+
+                const left = Math.round(startSnapped * pps);
+                // A segment ending at frame T actually covers until T + frameDuration
+                const right = Math.round((endSnapped + frameDuration) * pps);
+                const width = Math.max(1, right - left);
+
+                return (
+                    <div
+                        key={i}
+                        className="absolute h-full bg-green-500/30"
+                        style={{
+                            left: `${left}px`,
+                            width: `${width}px`,
+                        }}
+                    />
+                );
+            })}
         </div>
     );
 }

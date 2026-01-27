@@ -2,14 +2,15 @@
 
 import { InlineEditor } from '@/components/design-system/InlineEditor';
 import { StatusBar } from '@/components/design-system/StatusBar';
+import { Button } from '../design-system/Button';
 import { UndoIcon } from '@/components/icons/UndoIcon';
 import { RedoIcon } from '@/components/icons/RedoIcon';
 import { CopyIcon } from '@/components/icons/CopyIcon';
 import { PasteIcon } from '@/components/icons/PasteIcon';
 import { SpinnerIcon } from '@/components/icons/SpinnerIcon';
+import { HardDriveDownload, Save } from 'lucide-react';
 import { ExportButton } from './ExportButton';
-import { Subtitle } from '@/types/timeline';
-import { SubtitleAnimationStyle } from './subtitle-editor/types';
+import { SubtitleTrack } from '@/types/timeline';
 
 interface EditorHeaderProps {
     projectName: string;
@@ -26,10 +27,10 @@ interface EditorHeaderProps {
     onSave: () => void;
     isDirty: boolean;
     isSaving: boolean;
+    onExportBundle: () => void;
     videoFile: File | null;
-    subtitles: Subtitle[];
+    tracks: SubtitleTrack[];
     fps: number;
-    animationStyle?: SubtitleAnimationStyle;
 }
 
 export function EditorHeader({
@@ -47,13 +48,14 @@ export function EditorHeader({
     onSave,
     isDirty,
     isSaving,
+    onExportBundle,
     videoFile,
-    subtitles,
-    fps,
-    animationStyle
+    tracks,
+    fps
 }: EditorHeaderProps) {
     return (
         <header className="flex-none p-4 bg-gray-800 flex justify-between items-center border-b border-gray-700">
+            {/* ... */}
             <div className="flex items-center gap-4">
                 <button
                     onClick={onClose}
@@ -112,33 +114,38 @@ export function EditorHeader({
                     </button>
                 </div>
 
-                <button
-                    className={`h-8 px-3 rounded text-sm font-medium transition-colors flex items-center gap-2 ${isDirty || isSaving
+                <Button
+                    className={`h-8 px-3 rounded text-sm font-medium transition-colors flex items-center justify-center ${isDirty || isSaving
                         ? 'bg-blue-600 hover:bg-blue-700 text-white'
                         : 'bg-gray-700 text-gray-400 cursor-default'
                         }`}
                     onClick={onSave}
                     disabled={!isDirty || isSaving}
+                    title={isSaving ? 'Guardando...' : isDirty ? 'Guardar cambios' : 'Todo guardado'}
                 >
                     {isSaving ? (
-                        <>
-                            <SpinnerIcon className="w-3 h-3" />
-                            <span>Guardando...</span>
-                        </>
-                    ) : isDirty ? (
-                        'Guardar'
+                        <SpinnerIcon className="w-4 h-4" />
                     ) : (
-                        'Guardado'
+                        <Save className="w-4 h-4" />
                     )}
-                </button>
+                </Button>
 
-                <div className="w-px h-6 bg-gray-700 mx-2" />
+                <Button
+                    variant="secondary"
+                    size="md"
+                    className="h-8 px-3 flex items-center justify-center"
+                    onClick={onExportBundle}
+                    title="Exportar archivo de proyecto (.waptions)"
+                >
+                    <HardDriveDownload className="w-4 h-4" />
+                </Button>
+
+                <div className="w-px h-6 bg-gray-700 mx-1" />
 
                 <ExportButton
                     videoFile={videoFile}
-                    subtitles={subtitles}
+                    tracks={tracks}
                     fps={fps}
-                    animationStyle={animationStyle}
                 />
             </div>
         </header>

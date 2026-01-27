@@ -20,20 +20,26 @@ import { useTimelineStore } from '@/stores/timeline-store';
 import { extractAudio } from '@/lib/mediabunny-utils';
 import { useProjectStore } from '@/stores/project-store';
 import { useBackgroundRenderer } from '@/hooks/use-background-renderer';
+import { storageService } from '@/lib/storage/storage-service';
+import { exportProjectBundle } from '@/lib/project-bundle';
 
 export function Editor() {
     const {
         isPlaying,
         currentTime,
         duration: playbackDuration,
+        contentDuration,
         pause,
         toggle: togglePlayback,
         seek,
-        setDuration: setPlaybackDuration
+        setFps,
+        setDuration,
+        setContentDuration
     } = usePlaybackStore();
 
     const {
         videoFile,
+        duration: videoDuration
     } = useVideoStore();
 
     const {
@@ -96,6 +102,17 @@ export function Editor() {
         TRIM_START: () => trimSubtitleAtTime(currentTime, 'start'),
         TRIM_END: () => trimSubtitleAtTime(currentTime, 'end'),
         DELETE: () => {
+            const { isVideoSelected, setVideoSelected, pushHistory } = useTimelineStore.getState();
+            const { clearVideo } = useVideoStore.getState();
+
+            if (isVideoSelected && activeProject) {
+                pushHistory();
+                clearVideo();
+                storageService.deleteVideo(activeProject.id);
+                setVideoSelected(false);
+                return;
+            }
+
             if (selectedSubtitleIds.length > 0) {
                 [...selectedSubtitleIds].forEach(id => {
                     const track = tracks.find(t => t.subtitles.some(s => s.id === id));
@@ -112,10 +129,30 @@ export function Editor() {
     /* eslint-disable @typescript-eslint/no-unused-vars */
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    const handleVideoLoad = useCallback((videoDuration: number, fps: number | null, _file?: File) => {
-        setPlaybackDuration(videoDuration);
+    const handleVideoLoad = useCallback((_videoDuration: number, fps: number | null, _file?: File) => {
         setDetectedFps(fps);
-    }, [setPlaybackDuration]);
+    }, []);
+
+    // Sync playback duration with video + subtitles
+    useEffect(() => {
+        const lastSubEnd = tracks.reduce((max, track) => {
+            const trackMax = track.subtitles.reduce((tMax, s) => Math.max(tMax, s.endTime), 0);
+            return Math.max(max, trackMax);
+        }, 0);
+
+        const { fps } = useVideoStore.getState();
+        const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+        const snappedVideoDuration = Math.round(videoDuration / frameDuration) * frameDuration;
+
+        const contentEnd = Math.max(snappedVideoDuration, lastSubEnd);
+        const viewableDuration = contentEnd + 60; // "Infinite" buffer
+
+        setContentDuration(contentEnd);
+        setDuration(viewableDuration);
+
+        // Sync FPS for accurate playhead quantization
+        setFps(fps);
+    }, [tracks, videoDuration, setContentDuration, setDuration, setFps]);
 
     const handleSubtitleClick = useCallback((subtitle: Subtitle | null) => {
         // Selection is now handled directly by SubtitleList and TimelineTrackOverlay
@@ -308,6 +345,24 @@ export function Editor() {
         router.push('/');
     };
 
+    const handleExportBundle = async () => {
+        if (!activeProject) return;
+        try {
+            const blob = await exportProjectBundle(activeProject.id);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${activeProject.name}.waptions`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Failed to export project bundle:', error);
+            alert('Error al exportar el proyecto');
+        }
+    };
+
     return (
         <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
             <GoogleFontManager />
@@ -326,10 +381,10 @@ export function Editor() {
                 onSave={handleSave}
                 isDirty={isDirty}
                 isSaving={isSaving}
+                onExportBundle={handleExportBundle}
                 videoFile={videoFile}
-                subtitles={subtitles}
+                tracks={tracks}
                 fps={detectedFps || 30}
-                animationStyle={animationStyle}
             />
 
             {/* Main content */}
@@ -347,6 +402,7 @@ export function Editor() {
                         <Timeline
                             duration={playbackDuration}
                             currentTime={currentTime}
+                            contentDuration={contentDuration}
                             onTimeUpdate={seek}
                             onSubtitleClick={handleSubtitleClick}
                             isPlaying={isPlaying}

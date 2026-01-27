@@ -25,6 +25,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@hookform/resolvers": "^5.2.2",
     "autoprefixer": "^10.4.20",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",
     "mediabunny": "^1.29.1",
     "next": "^15.1.6",

@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Project Export & Import**:
+    - Export active projects as a single `.waptions` bundle (ZIP format).
+    - Includes the original video, timeline tracks, raw transcription, groups, and custom style presets.
+    - Versioned bundle format (v1.0) with compatibility checking during import.
+    - New "Importar" button on the Dashboard with support for metadata peeking.
+    - New "Proyecto" export button in the Editor header.
+- **Infinite Timeline**:
+    - Removed video duration constraints on subtitle placement and creation.
+    - Added an automatic 60-second buffer beyond current content for an "infinite" timeline feeling.
+    - Decoupled viewable timeline duration from playback stopping point.
+    - Playback now automatically stops at the end of the last element (video or subtitles).
+    - Export process now covers the entire content duration, even if it extends beyond the original video (rendering black frames where needed).
+- **Video Selection & Deletion**:
+    - Selectable video clips in the timeline with visual highlight.
+    - Keyboard-based deletion (`Delete`/`Backspace`) with full Undo/Redo support.
+    - Automatic persistent storage synchronization for video removal.
+    - Real-time waveform cleanup matching video state.
+    - Fixed bug preventing re-importing the same video after deletion.
+- **"Sacred Frames" Architecture**:
+    - Standardized all time-snapping and UI positioning to use `Math.round` (Discrete Frame Indexing), matching industry NLE standards (Premiere, Resolve).
+    - Fixed "phantom frame" snap issue at video end by standardizing frame count calculations.
+    - Synchronized `TimelineRuler`, `TimelineCacheIndicator`, and `TimelinePlayhead` to the same pixel-perfect frame grid.
+    - Re-balanced playback loop for visual smoothness while maintaining strict frame-accurate manual seeking.
 - **Storage Management**:
     - Real-time application storage monitoring in the Project Dashboard.
     - Orphaned data detection (disconnected timelines) with integrated "Clean up" utility.

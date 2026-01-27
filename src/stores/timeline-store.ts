@@ -28,6 +28,7 @@ interface TimelineStore {
     activeSnapTime: number | null;
     clipboard: { subtitle: Subtitle, relativeTrackIndex: number }[] | null;
     requestEditSubtitleId: string | null;
+    isVideoSelected: boolean;
 
     // History
     history: HistorySnapshot[];
@@ -76,6 +77,7 @@ interface TimelineStore {
     pushHistory: () => void;
     setSnapEnabled: (enabled: boolean) => void;
     setActiveSnapTime: (time: number | null) => void;
+    setVideoSelected: (selected: boolean) => void;
 
     // Transcription Persistence
     rawTranscription: Subtitle[] | null;
@@ -137,6 +139,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     cuts: [],
     detectionProgress: 0,
     isDetecting: false,
+    isVideoSelected: false,
 
     setZoom: (zoom) => set({ zoomLevel: Math.max(0.1, Math.min(10, zoom)) }),
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
@@ -474,9 +477,16 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             selectedSubtitleIds: [],
             lastSelectedId: null,
             history: [],
-            redoStack: []
+            redoStack: [],
+            isVideoSelected: false
         };
     }),
+
+    setVideoSelected: (selected) => set((state) => ({
+        isVideoSelected: selected,
+        // Delsect subtitles if we are selecting the video
+        selectedSubtitleIds: selected ? [] : state.selectedSubtitleIds
+    })),
 
     setActiveTrackId: (id) => set((state) => ({
         activeTrackId: state.tracks.some(t => t.id === id) ? id : (state.tracks.length > 0 ? state.tracks[0].id : null)
@@ -526,11 +536,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         return {
             selectedSubtitleIds: newSelection,
             lastSelectedId: id,
-            activeTrackId: newActiveTrackId
+            activeTrackId: newActiveTrackId,
+            isVideoSelected: false // Deselect video when selecting subtitles
         };
     }),
 
-    clearSelection: () => set({ selectedSubtitleIds: [], lastSelectedId: null }),
+    clearSelection: () => set({ selectedSubtitleIds: [], lastSelectedId: null, isVideoSelected: false }),
 
     setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
 
@@ -730,14 +741,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             .sort((a, b) => a.startTime - b.startTime)
             .find(s => s.startTime > time + EPSILON);
 
-        // 3. Calculate duration (default 2s, capped by next sub or video duration)
-        const videoDuration = useVideoStore.getState().duration;
+        // 3. Calculate duration (default 2s, capped by next sub)
         let endTime = time + 2;
 
         if (nextSub && endTime > nextSub.startTime) {
             endTime = nextSub.startTime;
-        } else if (endTime > videoDuration) {
-            endTime = videoDuration;
         }
 
         // 4. Ensure we have at least one frame of space

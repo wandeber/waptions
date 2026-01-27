@@ -2,32 +2,28 @@
 
 import { useState } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
-import { ExportIcon } from '../icons/ExportIcon';
 import { Button } from '../design-system/Button';
+import { Share } from 'lucide-react';
 import {
   exportProject,
   getExportMimeType,
   getExportFileExtension,
   DEFAULT_EXPORT_OPTIONS,
 } from '@/lib/export';
-import { Subtitle } from '@/types/timeline';
+import { SubtitleTrack } from '@/types/timeline';
 import { useProjectStore } from '@/stores/project-store';
-import type { SubtitleAnimationStyle } from './subtitle-editor/types';
-import { defaultAnimationStyle } from './subtitle-editor/types';
 import type { ExportFormat, ExportQuality } from '@/types/export';
 
 interface ExportButtonProps {
   videoFile: File | null;
-  subtitles: Subtitle[];
+  tracks: SubtitleTrack[];
   fps: number;
-  animationStyle?: SubtitleAnimationStyle;
 }
 
 export function ExportButton({
   videoFile,
-  subtitles,
+  tracks,
   fps,
-  animationStyle = defaultAnimationStyle,
 }: ExportButtonProps) {
   const { activeProject } = useProjectStore();
   const [isExporting, setIsExporting] = useState(false);
@@ -41,7 +37,7 @@ export function ExportButton({
   const [includeAudio] = useState(DEFAULT_EXPORT_OPTIONS.includeAudio ?? true);
 
   const handleExport = async () => {
-    console.log('handleExport triggered', { videoFile, subtitlesCount: subtitles.length, isExporting });
+    console.log('handleExport triggered', { videoFile, tracksCount: tracks.length, isExporting });
     if (!videoFile) return;
 
     try {
@@ -52,13 +48,7 @@ export function ExportButton({
 
       const result = await exportProject({
         videoFile,
-        subtitles: subtitles.map((s) => ({
-          id: s.id,
-          startTime: s.startTime,
-          endTime: s.endTime,
-          text: s.text,
-        })),
-        animationStyle,
+        tracks,
         options: {
           format,
           quality,
@@ -116,7 +106,8 @@ export function ExportButton({
     }
   };
 
-  const canExport = videoFile && subtitles.length > 0 && !isExporting;
+  const totalSubtitles = tracks.reduce((sum, t) => sum + t.subtitles.length, 0);
+  const canExport = videoFile && totalSubtitles > 0 && !isExporting;
 
   return (
     <div className="flex items-center gap-2 relative">
@@ -199,9 +190,9 @@ export function ExportButton({
             variant="primary"
             onClick={handleExport}
             disabled={!canExport}
-            className="w-full"
+            className="w-full text-sm font-medium h-9"
           >
-            <ExportIcon />
+            <Share className="w-4 h-4" />
             <span>Exportar</span>
           </Button>
         </div>
@@ -210,14 +201,15 @@ export function ExportButton({
       <Button
         variant="primary"
         onClick={() => {
-          console.log('Main Export button clicked', { videoFile: !!videoFile, subtitlesCount: subtitles.length });
+          console.log('Main Export button clicked', { videoFile: !!videoFile, totalSubtitles });
           if (!isExporting) setShowOptions(!showOptions);
         }}
-        disabled={!videoFile || subtitles.length === 0}
+        disabled={!videoFile || totalSubtitles === 0}
+        className="text-sm font-medium h-8 px-4"
         title={
           !videoFile
             ? 'Necesitas cargar un video primero'
-            : subtitles.length === 0
+            : totalSubtitles === 0
               ? 'Necesitas añadir subtítulos primero'
               : isExporting
                 ? 'Exportando...'
@@ -226,12 +218,12 @@ export function ExportButton({
       >
         {isExporting ? (
           <>
-            <SpinnerIcon />
+            <SpinnerIcon className="w-4 h-4" />
             <span>Exportando...</span>
           </>
         ) : (
           <>
-            <ExportIcon />
+            <Share className="w-4 h-4" />
             <span>Exportar</span>
           </>
         )}

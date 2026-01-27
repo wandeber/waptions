@@ -1,6 +1,7 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useVideoStore } from '@/stores/video-store';
 
 interface TimelinePlayheadProps {
     currentTime: number;
@@ -40,7 +41,12 @@ export function TimelinePlayhead({
         // One-shot snap points
         const snapPoints: number[] = [];
         if (snapEnabled) {
-            const points = new Set<number>([0, duration]);
+            const { duration: videoStoreDuration } = useVideoStore.getState();
+            // User requested video boundaries specifically
+            const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+            const snappedVideoDuration = Math.round(videoStoreDuration / frameDuration) * frameDuration;
+
+            const points = new Set<number>([0, snappedVideoDuration, duration]);
             tracks.forEach(t => {
                 t.subtitles.forEach(s => {
                     points.add(s.startTime);
@@ -91,6 +97,12 @@ export function TimelinePlayhead({
     const pixelsPerFrame = fps > 0 ? pps / fps : 0;
     const showFrameHighlight = pixelsPerFrame > 2;
 
+    // FIND CURRENT FRAME INDEX ROBUSTLY
+    // +0.01 epsilon ensures that if currentTime is 1.0, we get frame index relative to 1.0 accurately
+    const frameIndex = Math.floor(currentTime * fps + 0.01);
+    const frameStartTime = frameIndex / fps;
+    const highlightOffset = (currentTime - frameStartTime) * pps;
+
     return (
         <div
             className="absolute top-0 bottom-0 z-50 flex flex-col items-center group pointer-events-none"
@@ -106,7 +118,8 @@ export function TimelinePlayhead({
                     className="absolute top-0 bottom-0 bg-red-500/10 border-r border-red-500/20 pointer-events-none"
                     style={{
                         left: '50%',
-                        width: `${pixelsPerFrame}px`
+                        width: `${pixelsPerFrame}px`,
+                        transform: `translateX(${-highlightOffset}px)`
                     }}
                 />
             )}

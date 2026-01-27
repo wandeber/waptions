@@ -4,10 +4,12 @@ interface PlaybackState {
     isPlaying: boolean;
     currentTime: number;
     duration: number;
+    contentDuration: number;
     volume: number;
     muted: boolean;
     previousVolume: number;
     speed: number;
+    fps: number;
     previewTime: number | null;
 }
 
@@ -19,7 +21,9 @@ interface PlaybackActions {
     setVolume: (volume: number) => void;
     setSpeed: (speed: number) => void;
     setDuration: (duration: number) => void;
+    setContentDuration: (duration: number) => void;
     setCurrentTime: (time: number) => void;
+    setFps: (fps: number) => void;
     setPreviewTime: (time: number | null) => void;
     mute: () => void;
     unmute: () => void;
@@ -48,19 +52,16 @@ const startTimer = (store: () => PlaybackStore) => {
         const delta = (now - lastUpdate) / 1000;
         lastUpdate = now;
 
-        // Skip huge jumps (e.g. background tab)
         if (delta > 0 && delta < 0.2) {
             const newTime = state.currentTime + delta * state.speed;
 
-            if (newTime >= state.duration) {
-                const stopTime = Math.max(0, state.duration - 0.001);
+            if (newTime >= state.contentDuration - 0.001) {
                 state.pause();
-                state.setCurrentTime(stopTime);
-                window.dispatchEvent(
-                    new CustomEvent('playback-seek', { detail: { time: stopTime } })
-                );
+                state.seek(state.contentDuration);
             } else {
-                state.setCurrentTime(newTime);
+                // Use a non-quantizing internal update to prevent the "stuck" behavior
+                // but keep UI reactive
+                usePlaybackStore.setState({ currentTime: newTime });
                 window.dispatchEvent(
                     new CustomEvent('playback-update', { detail: { time: newTime } })
                 );
@@ -88,6 +89,8 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
     muted: false,
     previousVolume: 1,
     speed: 1.0,
+    fps: 30,
+    contentDuration: 0,
     previewTime: null,
 
     play: () => {
@@ -115,11 +118,15 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
     },
 
     seek: (time: number) => {
-        const { duration } = get();
+        const { duration, fps } = get();
+        const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
         const clampedTime = Math.max(0, Math.min(duration, time));
-        set({ currentTime: clampedTime });
+        // Quantize to nearest frame
+        const quantizedTime = Math.round(clampedTime / frameDuration) * frameDuration;
+
+        set({ currentTime: quantizedTime });
         window.dispatchEvent(
-            new CustomEvent('playback-seek', { detail: { time: clampedTime } })
+            new CustomEvent('playback-seek', { detail: { time: quantizedTime } })
         );
     },
 
@@ -139,7 +146,19 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
     },
 
     setDuration: (duration: number) => set({ duration }),
-    setCurrentTime: (time: number) => set({ currentTime: time }),
+    setContentDuration: (contentDuration: number) => {
+        const { fps } = get();
+        const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+        const alignedDuration = Math.round(contentDuration / frameDuration) * frameDuration;
+        set({ contentDuration: alignedDuration });
+    },
+    setCurrentTime: (time: number) => {
+        const { fps } = get();
+        const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
+        const quantizedTime = Math.round(time / frameDuration) * frameDuration;
+        set({ currentTime: quantizedTime });
+    },
+    setFps: (fps: number) => set({ fps: Math.max(1, fps) }),
     setPreviewTime: (time: number | null) => set({ previewTime: time }),
 
     mute: () => {

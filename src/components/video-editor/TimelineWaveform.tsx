@@ -21,12 +21,17 @@ export function TimelineWaveform({
     const lastRenderRef = useRef<{ scrollLeft: number, pps: number }>({ scrollLeft: -1, pps: -1 });
 
     const render = useCallback(() => {
-        if (!canvasRef.current || !audioBuffer || !containerRef?.current) return;
+        if (!canvasRef.current || !containerRef?.current) return;
 
         const canvas = canvasRef.current;
         const container = containerRef.current;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
+
+        if (!audioBuffer) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            return;
+        }
 
         const viewportWidth = container.clientWidth;
         const scrollLeft = container.scrollLeft;
