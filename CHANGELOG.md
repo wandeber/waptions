@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2026.1.0] - 2026-01-27
+
 ### Added
-- **Timeline Auto-scroll**:
-    - Implemented automatic scrolling when navigating with arrow keys.
+- **Timeline Auto-scroll for Navigation**:
+    - Timeline now automatically scrolls when the playhead moves out of the viewport.
     - `ArrowUp`/`ArrowDown` (Keypoints): Scrolls to center the playhead in the timeline.
     - `ArrowLeft`/`ArrowRight` (Frame-by-frame): Ensures the playhead stays visible with a small margin.
     - Smooth scrolling behavior for centering jumps.
 - **Auto-scroll while Dragging**:
     - Timeline scrolls automatically when dragging the playhead or subtitle blocks near the edges.
     - Variable scroll speed based on proximity to the edge.
+    - Robust coordination between dragged elements and timeline scroll state.
 - **Project Export & Import**:
     - Export active projects as a single `.waptions` bundle (ZIP format).
     - Includes the original video, timeline tracks, raw transcription, groups, and custom style presets.
@@ -73,7 +76,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Email whitelist authorization via `AUTHORIZED_EMAILS`.
 - Application-wide privacy protection via Middleware.
 - Cloudflare Turnstile integration on login page.
-
 
 ### House-Cleaning & Architecture
 - **Shortcut Centralization**: Created a central registry in `src/config/shortcuts.ts` and a reusable `useKeyboardShortcuts` hook to manage all global and context-aware shortcuts.

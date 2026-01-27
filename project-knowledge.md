@@ -139,6 +139,13 @@
     - **Audio Extraction**: Audio is extracted and transcoded to AAC/MP4 on the client before upload to minimize bandwidth.
 - **Project Storage**: `ProjectStore` uses `storage-service` to save project metadata (`waptions-projects`) and timelines (`waptions-timelines-{projectId}`).
 - **Timeline History**: `TimelineStore` implements manual undo/redo stack (`history` + `redoStack`) and auto-saves to IndexedDB on changes.
+- **Auto-scroll Logic**:
+    - **Navigation (Keyboard)**: Triggered in `scrollToTime` helper. It calculates if the playhead is off-screen (2px margin) and performs an instant scroll to center it. Manual synchronization is used to avoid animation lag.
+    - **Dragging (Mouse)**: Uses an `isDragging` global state in `TimelineStore`. An effect in `Timeline.tsx` runs a `requestAnimationFrame` loop that:
+        - Detects mouse proximity to viewport edges (100px threshold).
+        - Calculates velocity exponentially based on distance to edge.
+        - Dispatches a simulated `mousemove` event to force coordinate re-sync in components while the mouse is stationary but the timeline is moving.
+    - **Coordinate Stability**: Dragging components (`TimelinePlayhead`, `TimelineRuler`, `SubtitleBlock`) calculate time using `(scrollLeft + clientX - rect.left) / pps` where `rect` is from a stable parent (the viewport scroll container).
 - **Text Editing Optimization**: Subtitle text changes are debounced (300ms) in `SubtitleEditor`. The first keystroke captures a history snapshot (state before typing), subsequent keystrokes update state with `skipHistory: true`. This groups a continuous typing session into a single undo step.
 
 ### Transcription & UX (Subtitle Grouper "Mode Sagrado")
