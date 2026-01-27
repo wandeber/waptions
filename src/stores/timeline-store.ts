@@ -29,6 +29,7 @@ interface TimelineStore {
     clipboard: { subtitle: Subtitle, relativeTrackIndex: number }[] | null;
     requestEditSubtitleId: string | null;
     isVideoSelected: boolean;
+    isDragging: boolean;
 
     // History
     history: HistorySnapshot[];
@@ -78,6 +79,7 @@ interface TimelineStore {
     setSnapEnabled: (enabled: boolean) => void;
     setActiveSnapTime: (time: number | null) => void;
     setVideoSelected: (selected: boolean) => void;
+    setIsDragging: (dragging: boolean) => void;
 
     // Transcription Persistence
     rawTranscription: Subtitle[] | null;
@@ -140,6 +142,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     detectionProgress: 0,
     isDetecting: false,
     isVideoSelected: false,
+    isDragging: false,
 
     setZoom: (zoom) => set({ zoomLevel: Math.max(0.1, Math.min(10, zoom)) }),
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
@@ -487,6 +490,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         // Delsect subtitles if we are selecting the video
         selectedSubtitleIds: selected ? [] : state.selectedSubtitleIds
     })),
+
+    setIsDragging: (dragging) => set({ isDragging: dragging }),
 
     setActiveTrackId: (id) => set((state) => ({
         activeTrackId: state.tracks.some(t => t.id === id) ? id : (state.tracks.length > 0 ? state.tracks[0].id : null)

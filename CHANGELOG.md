@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `ArrowUp`/`ArrowDown` (Keypoints): Scrolls to center the playhead in the timeline.
     - `ArrowLeft`/`ArrowRight` (Frame-by-frame): Ensures the playhead stays visible with a small margin.
     - Smooth scrolling behavior for centering jumps.
+- **Auto-scroll while Dragging**:
+    - Timeline scrolls automatically when dragging the playhead or subtitle blocks near the edges.
+    - Variable scroll speed based on proximity to the edge.
 - **Project Export & Import**:
     - Export active projects as a single `.waptions` bundle (ZIP format).
     - Includes the original video, timeline tracks, raw transcription, groups, and custom style presets.

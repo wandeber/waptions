@@ -55,7 +55,11 @@ export function Timeline({
   showMetaInfo = false,
   onMetaInfoToggle,
 }: TimelineProps) {
-  const { zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond, activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled, activeSnapTime, cuts } = useTimelineStore();
+  const {
+    zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond,
+    activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled,
+    activeSnapTime, cuts, isDragging
+  } = useTimelineStore();
   const { videoFile } = useVideoStore();
   const { audioBuffer } = useWaveform(videoFile);
 
@@ -164,6 +168,79 @@ export function Timeline({
     el.addEventListener('wheel', handleWheelRaw, { passive: false });
     return () => el.removeEventListener('wheel', handleWheelRaw);
   }, [zoomLevel, applySmartZoom]);
+
+  // Auto-scroll while dragging logic
+  useEffect(() => {
+    if (!isDragging) return;
+
+    let rafId: number;
+    let lastTime = performance.now();
+    const SCROLL_THRESHOLD = 80; // Pixels from edge
+    const MAX_SPEED = 1500; // Pixels per second at max speed
+    let mouseX = 0;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      mouseX = e.clientX;
+    };
+
+    const updateScroll = (now: number) => {
+      const tracksEl = tracksContentRef.current;
+      if (!tracksEl) return;
+
+      const rect = tracksEl.getBoundingClientRect();
+      const delta = (now - lastTime) / 1000;
+      lastTime = now;
+
+      const distLeft = mouseX - rect.left;
+      const distRight = rect.right - mouseX;
+
+      let speed = 0;
+      if (distLeft < SCROLL_THRESHOLD && distLeft > -50) {
+        // Scroll left
+        const intensity = Math.pow(1 - Math.max(0, distLeft) / SCROLL_THRESHOLD, 2);
+        speed = -MAX_SPEED * intensity;
+      } else if (distRight < SCROLL_THRESHOLD && distRight > -50) {
+        // Scroll right
+        const intensity = Math.pow(1 - Math.max(0, distRight) / SCROLL_THRESHOLD, 2);
+        speed = MAX_SPEED * intensity;
+      }
+
+      if (speed !== 0) {
+        const newScrollLeft = tracksEl.scrollLeft + speed * delta;
+        const maxScroll = tracksEl.scrollWidth - tracksEl.clientWidth;
+        const finalScroll = Math.max(0, Math.min(newScrollLeft, maxScroll));
+
+        tracksEl.scrollLeft = finalScroll;
+
+        // Sync other elements
+        if (rulerContentRef.current) {
+          rulerContentRef.current.scrollLeft = finalScroll;
+        }
+        const playheadSyncEl = document.getElementById('timeline-playhead-sync')?.parentElement;
+        if (playheadSyncEl) {
+          playheadSyncEl.scrollLeft = finalScroll;
+        }
+        virtualScrollLeftRef.current = finalScroll;
+
+        // Force re-calculation in components if speed is significant
+        // Dispatching a fake mousemove event to trigger their listeners
+        window.dispatchEvent(new MouseEvent('mousemove', {
+          clientX: mouseX,
+          clientY: 0 // Y doesn't affect X time calculation
+        }));
+      }
+
+      rafId = requestAnimationFrame(updateScroll);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    rafId = requestAnimationFrame(updateScroll);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      cancelAnimationFrame(rafId);
+    };
+  }, [isDragging]);
 
   const handleZoomIn = () => {
     const newZoom = Math.min(10, zoomLevel * 1.2);

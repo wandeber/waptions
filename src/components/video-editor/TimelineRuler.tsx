@@ -28,8 +28,10 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const { snapEnabled, tracks, cuts } = useTimelineStore.getState();
+        const { snapEnabled, tracks, cuts, setIsDragging } = useTimelineStore.getState();
+        setIsDragging(true);
+
+        const scrollEl = e.currentTarget;
 
         // One-shot snap points
         const snapPoints: number[] = [];
@@ -71,8 +73,13 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         };
 
         const updateTime = (clientX: number) => {
-            const x = clientX - rect.left;
-            const rawTime = Math.max(0, Math.min(duration, x / pps));
+            const scrollContainer = scrollEl.parentElement;
+            if (!scrollContainer) return;
+
+            const viewportRect = scrollContainer.getBoundingClientRect();
+            const x = clientX - viewportRect.left;
+            const scrollLeft = scrollContainer.scrollLeft;
+            const rawTime = Math.max(0, Math.min(duration, (scrollLeft + x) / pps));
             onTimeUpdate?.(snapTime(applySnap(rawTime)));
         };
 
@@ -85,6 +92,7 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         const handleMouseUp = () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            useTimelineStore.getState().setIsDragging(false);
         };
 
         window.addEventListener('mousemove', handleMouseMove);
@@ -92,13 +100,9 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
     };
 
     const getIntervals = (currentPps: number) => {
-        // We want labels to have more space to avoid dominance (at least 200px)
         const targetLabelSpace = 200;
         const potentialIntervals = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200, 3600];
-
         const labelInt = potentialIntervals.find(v => v * currentPps >= targetLabelSpace) || potentialIntervals[potentialIntervals.length - 1];
-
-        // Marker behavior: non-labeled lines should be at least 10px apart to not clutter
         const targetMarkerSpace = 10;
         const markerInt = potentialIntervals.find(v => v * currentPps >= targetMarkerSpace) || 1;
 
@@ -122,22 +126,17 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
-    // Main marker loop - iterate by markerInterval
     for (let time = 0; time <= duration + 0.001; time += markerInt) {
-        // Ensure we don't exceed duration due to precision
         const currentTime = Math.min(time, duration);
         const left = Math.round(currentTime * pps);
         const isLabel = Math.abs(currentTime % labelInt) < 0.001 || Math.abs((currentTime % labelInt) - labelInt) < 0.001;
 
         markers.push(
             <div key={`m-${currentTime}`}>
-                {/* Tier 1 (Full) or Tier 2 (Medium) */}
                 <div
                     className={`absolute bottom-0 w-px ${isLabel ? 'h-full bg-gray-500' : 'h-4 bg-gray-700/60'}`}
                     style={{ left: `${left}px` }}
                 />
-
-                {/* Label (Tier 1) */}
                 {isLabel && (
                     <span
                         className="absolute top-1 text-[10px] text-gray-400 select-none whitespace-nowrap"
@@ -146,11 +145,8 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
                         {formatTime(currentTime)}
                     </span>
                 )}
-
-                {/* Tier 3: Detail ticks (frames or divisions) - only if marker interval is <= 1s */}
                 {markerInt <= 1 && (showFrameTicks || showIntermediateTicks) && (() => {
                     const ticks = [];
-                    // Find the absolute frame range for this interval
                     const nextMarkerTime = currentTime + markerInt;
                     const startFrame = Math.floor(currentTime * fps + 0.001) + 1;
                     const endFrame = Math.floor(nextMarkerTime * fps - 0.001);
@@ -158,11 +154,8 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
                     for (let f = startFrame; f <= endFrame; f++) {
                         const frameTime = f / fps;
                         if (frameTime > duration + 0.0001) continue;
-
                         const frameLeft = Math.round(frameTime * pps);
-                        const isTickVisible = pixelsPerFrame > 2;
-
-                        if (isTickVisible) {
+                        if (pixelsPerFrame > 2) {
                             ticks.push(
                                 <div
                                     key={`frame-${f}`}
@@ -186,7 +179,6 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         >
             <TimelineCacheIndicator duration={duration} pps={pps} />
             {markers}
-
         </div>
     );
 }
@@ -204,10 +196,8 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
                 return;
             }
 
-            // Group adjacent timestamps into segments
             const segments: { start: number; end: number }[] = [];
             let currentSegment: { start: number; end: number } | null = null;
-            // Gap should be slightly more than one frame to account for precision, but less than two.
             const threshold = frameDuration * 1.5;
 
             timestamps.forEach((t) => {
@@ -238,12 +228,9 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
     return (
         <div className="absolute bottom-0 left-0 right-0 h-[3px] pointer-events-none z-10 overflow-hidden">
             {cachedSegments.map((seg, i) => {
-                // Ensure segment boundaries are strictly aligned to frames
                 const startSnapped = Math.floor(seg.start * fps + 0.01) / fps;
                 const endSnapped = Math.floor(seg.end * fps + 0.01) / fps;
-
                 const left = Math.round(startSnapped * pps);
-                // A segment ending at frame T actually covers until T + frameDuration
                 const right = Math.round((endSnapped + frameDuration) * pps);
                 const width = Math.max(1, right - left);
 

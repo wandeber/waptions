@@ -93,8 +93,11 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             updateSubtitleInTrack,
             setActiveSnapTime,
             snapEnabled,
-            tracks: allTracks
+            tracks: allTracks,
+            setIsDragging
         } = useTimelineStore.getState();
+
+        setIsDragging(true);
 
         // Handle selection toggle/multiselect
         const isMulti = e.metaKey;
@@ -124,6 +127,10 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
 
         const startX = e.clientX;
         const startY = e.clientY;
+        // Note: we can also get it from refs, but tracksContentRef isn't easily accessible here.
+        // Actually, we can just use the DOM since we are in a browser event.
+        const tracksEl = document.querySelector('.overflow-x-scroll'); // The tracks container
+        const startScroll = tracksEl?.scrollLeft || 0;
 
         // Map of subtitleId -> initial values for group movement
         const initialStates = new Map<string, { startTime: number, endTime: number, trackId: string }>();
@@ -223,9 +230,11 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         };
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
+            const currentScroll = tracksEl?.scrollLeft || 0;
+            const scrollDelta = currentScroll - startScroll;
             const deltaX = moveEvent.clientX - startX;
             const deltaY = moveEvent.clientY - startY;
-            const deltaTime = deltaX / pps;
+            const deltaTime = (deltaX + scrollDelta) / pps;
 
             const { setPreviewTime } = usePlaybackStore.getState();
 
@@ -302,6 +311,7 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
             useTimelineStore.getState().setActiveSnapTime(null);
+            useTimelineStore.getState().setIsDragging(false);
             setActiveHandle(null);
             usePlaybackStore.getState().setPreviewTime(null);
         };

@@ -36,7 +36,8 @@ export function TimelinePlayhead({
     const handleMouseDown = (e: React.MouseEvent) => {
         e.stopPropagation();
         const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement; // Up to synchronization container
-        const { snapEnabled, tracks } = useTimelineStore.getState();
+        const { snapEnabled, tracks, setIsDragging } = useTimelineStore.getState();
+        setIsDragging(true);
 
         // One-shot snap points
         const snapPoints: number[] = [];
@@ -58,9 +59,13 @@ export function TimelinePlayhead({
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
             if (!parent) return;
-            const rect = parent.getBoundingClientRect();
+            const scrollContainer = parent.parentElement;
+            if (!scrollContainer) return;
+
+            const rect = scrollContainer.getBoundingClientRect();
             const x = moveEvent.clientX - rect.left;
-            let targetTime = Math.max(0, Math.min(duration, x / pps));
+            const scrollLeft = scrollContainer.scrollLeft;
+            let targetTime = Math.max(0, Math.min(duration, (scrollLeft + x) / pps));
 
             if (snapEnabled && snapPoints.length > 0) {
                 const thresholdSeconds = 15 / pps;
@@ -88,6 +93,7 @@ export function TimelinePlayhead({
         const handleMouseUp = () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            useTimelineStore.getState().setIsDragging(false);
         };
 
         window.addEventListener('mousemove', handleMouseMove);
