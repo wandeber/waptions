@@ -9,7 +9,6 @@
     "vars": {
         "NEXT_PUBLIC_BASE_URL": "http://localhost:3000",
         "AUTH_URL": "http://localhost:3000",
-        "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED",
         "AUTH_ENABLED": "false",
         "NEXT_PUBLIC_AUTH_ENABLED": "false",
         "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
@@ -51,7 +50,6 @@
             "vars": {
                 "NEXT_PUBLIC_BASE_URL": "https://waptions.wande.dev",
                 "AUTH_URL": "https://waptions.wande.dev",
-                "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED,AUTHORIZED_EMAIL_REDACTED",
                 "AUTH_TRUST_HOST": "true",
                 "AUTH_ENABLED": "false",
                 "NEXT_PUBLIC_AUTH_ENABLED": "false",

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added MIT licensing and an OpenCut acknowledgement.
 - Replaced Cursor-specific rules and `project-knowledge.md` with a current `AGENTS.md` guide.
 - Expanded the public README with setup, transcription, security, validation, and deployment notes.
+- Documented that the project started as an AI-built experiment.
+- Moved authorized email configuration out of plain Wrangler variables.
 
 ## [2026.1.0] - 2026-01-27
 

@@ -4,6 +4,8 @@ Waptions is a browser-based subtitle editor for creating, timing, grouping, prev
 
 The public build runs without login and without bundled paid transcription providers. Users bring their own OpenAI-compatible transcription endpoint from the editor.
 
+This project is fully built with AI assistance. It started as an experiment to see how far an AI-led development workflow could take a real browser video editor over time.
+
 Production: [https://waptions.wande.dev](https://waptions.wande.dev)
 
 ## Features
@@ -92,6 +94,8 @@ OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS=
 Set both server and `NEXT_PUBLIC_` variants to `true` only when you intentionally want to restore login or built-in paid transcription models.
 
 `OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS` accepts the production server-mode transcription hosts that the backend is allowed to contact. Keep it narrow.
+
+When authentication is enabled, store `AUTHORIZED_EMAILS` as a Cloudflare secret instead of a plain Wrangler variable.
 
 ## Security Notes
 
