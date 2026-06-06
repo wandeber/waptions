@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { videoCache } from '@/lib/video-cache';
 
 interface VideoState {
     videoFile: File | null;
@@ -42,6 +43,11 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
             URL.revokeObjectURL(videoUrl);
         }
 
+        // A new source file invalidates every preview frame even though the UI
+        // reuses the same media id. Clearing here prevents stale ImageBitmaps
+        // from a previous project/video from being drawn during the first seek.
+        videoCache.clearVideo('preview');
+
         const newUrl = URL.createObjectURL(file);
         set({
             videoFile: file,
@@ -60,6 +66,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         if (videoUrl) {
             URL.revokeObjectURL(videoUrl);
         }
+        videoCache.clearVideo('preview');
         set({
             videoFile: null,
             videoUrl: null,

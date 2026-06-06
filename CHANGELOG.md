@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Disabled login and built-in paid transcription models by default for the public release.
+- Limited public transcription to user-configured OpenAI-compatible endpoints.
+- Added MIT licensing and an OpenCut acknowledgement.
+- Replaced Cursor-specific rules and `project-knowledge.md` with a current `AGENTS.md` guide.
+- Expanded the public README with setup, transcription, security, validation, and deployment notes.
+
 ## [2026.1.0] - 2026-01-27
 
 ### Added

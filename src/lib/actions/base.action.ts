@@ -1,4 +1,5 @@
 import { AuthUser } from "@/types/auth";
+import { isAuthEnabled } from "@/lib/config/feature-flags";
 import { ForbiddenError, UnauthorizedError } from "@/lib/utils/errors";
 
 export interface ActionContext {
@@ -32,6 +33,10 @@ export abstract class BaseAction<I = unknown, O = unknown> {
      * Authorization logic. Checks if the user is authenticated and authorized (whitelist).
      */
     protected async authorize(_input: I, ctx: ActionContext): Promise<void> {
+        if (!isAuthEnabled()) {
+            return;
+        }
+
         if (!ctx.user) {
             throw new UnauthorizedError();
         }

@@ -14,6 +14,16 @@ import { Cut } from '@/lib/video-cut/core/types';
 interface HistorySnapshot {
     tracks: SubtitleTrack[];
     videoFile: File | null;
+    activeTrackId: string | null;
+    rawTranscription: Subtitle[] | null;
+    transcriptionGroups: { [key: string]: Subtitle[] } | null;
+    transcriptionContainerIds: string[] | null;
+}
+
+interface SetTracksOptions {
+    skipHistory?: boolean;
+    resetHistory?: boolean;
+    skipSave?: boolean;
 }
 
 interface TimelineStore {
@@ -55,7 +65,7 @@ interface TimelineStore {
     moveSubtitlesToTrack: (subtitleIds: string[], deltaTrackIndex: number, options?: { skipHistory?: boolean }) => void;
     removeSubtitleFromTrack: (trackId: string, subtitleId: string) => void;
 
-    setTracks: (tracks: SubtitleTrack[]) => void;
+    setTracks: (tracks: SubtitleTrack[], options?: SetTracksOptions) => void;
     setActiveTrackId: (id: string | null) => void;
     toggleSubtitleSelection: (id: string, isMulti?: boolean, isRange?: boolean) => void;
     clearSelection: () => void;
@@ -118,6 +128,33 @@ const saveTimelineToStorage = async (tracks: SubtitleTrack[]) => {
     }
 };
 
+const cloneTracks = (tracks: SubtitleTrack[]) => JSON.parse(JSON.stringify(tracks)) as SubtitleTrack[];
+const cloneSubtitles = (subtitles: Subtitle[] | null) =>
+    subtitles ? JSON.parse(JSON.stringify(subtitles)) as Subtitle[] : null;
+const cloneTranscriptionGroups = (groups: { [key: string]: Subtitle[] } | null) =>
+    groups ? JSON.parse(JSON.stringify(groups)) as { [key: string]: Subtitle[] } : null;
+const cloneContainerIds = (ids: string[] | null) => ids ? [...ids] : null;
+
+const createHistorySnapshot = (state: TimelineStore): HistorySnapshot => ({
+    // History must be detached from live state. Timeline updates are immutable
+    // today, but cloning keeps undo safe if a future drag/edit path mutates an
+    // object before replacing its parent array.
+    tracks: cloneTracks(state.tracks),
+    videoFile: useVideoStore.getState().videoFile,
+    activeTrackId: state.activeTrackId,
+    rawTranscription: cloneSubtitles(state.rawTranscription),
+    transcriptionGroups: cloneTranscriptionGroups(state.transcriptionGroups),
+    transcriptionContainerIds: cloneContainerIds(state.transcriptionContainerIds),
+});
+
+const restoreSnapshotState = (snapshot: HistorySnapshot) => ({
+    tracks: cloneTracks(snapshot.tracks),
+    activeTrackId: snapshot.activeTrackId,
+    rawTranscription: cloneSubtitles(snapshot.rawTranscription),
+    transcriptionGroups: cloneTranscriptionGroups(snapshot.transcriptionGroups),
+    transcriptionContainerIds: cloneContainerIds(snapshot.transcriptionContainerIds),
+});
+
 export const useTimelineStore = create<TimelineStore>((set, get) => ({
     zoomLevel: 1,
     scrollLeft: 0,
@@ -148,27 +185,28 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
 
     pushHistory: () => {
-        const { tracks, history } = get();
-        const videoFile = useVideoStore.getState().videoFile;
+        const state = get();
+        const { history } = state;
         set({
-            history: [...history, { tracks: JSON.parse(JSON.stringify(tracks)), videoFile }],
+            history: [...history, createHistorySnapshot(state)],
             redoStack: []
         });
     },
 
     undo: async () => {
-        const { history, redoStack, tracks } = get();
+        const state = get();
+        const { history, redoStack } = state;
         if (history.length === 0) return;
 
         const previousSnapshot = history[history.length - 1];
         const currentVideoFile = useVideoStore.getState().videoFile;
 
         // Save state for redo
-        const newRedoStack = [...redoStack, { tracks: JSON.parse(JSON.stringify(tracks)), videoFile: currentVideoFile }];
+        const newRedoStack = [...redoStack, createHistorySnapshot(state)];
         const newHistory = history.slice(0, -1);
 
         set({
-            tracks: previousSnapshot.tracks,
+            ...restoreSnapshotState(previousSnapshot),
             history: newHistory,
             redoStack: newRedoStack
         });
@@ -195,18 +233,19 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     },
 
     redo: async () => {
-        const { history, redoStack, tracks } = get();
+        const state = get();
+        const { history, redoStack } = state;
         if (redoStack.length === 0) return;
 
         const nextSnapshot = redoStack[redoStack.length - 1];
         const currentVideoFile = useVideoStore.getState().videoFile;
 
         // Save state for undo
-        const newHistory = [...history, { tracks: JSON.parse(JSON.stringify(tracks)), videoFile: currentVideoFile }];
+        const newHistory = [...history, createHistorySnapshot(state)];
         const newRedoStack = redoStack.slice(0, -1);
 
         set({
-            tracks: nextSnapshot.tracks,
+            ...restoreSnapshotState(nextSnapshot),
             history: newHistory,
             redoStack: newRedoStack
         });
@@ -344,6 +383,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     },
 
     updateSubtitleInTrack: (trackId, subtitleId, updates, options) => {
+        const track = get().tracks.find(t => t.id === trackId);
+        if (!track?.subtitles.some(s => s.id === subtitleId)) return;
+
         if (!options?.skipHistory) get().pushHistory();
         set((state) => {
             const newTracks = state.tracks.map(t => {
@@ -360,6 +402,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     moveSubtitleToTrack: (subtitleId, sourceTrackId, targetTrackId) => {
         if (sourceTrackId === targetTrackId) return;
+
+        const state = get();
+        const sourceTrack = state.tracks.find(t => t.id === sourceTrackId);
+        const targetTrack = state.tracks.find(t => t.id === targetTrackId);
+        if (!sourceTrack || !targetTrack || !sourceTrack.subtitles.some(s => s.id === subtitleId)) return;
 
         get().pushHistory();
         set((state) => {
@@ -398,6 +445,23 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     moveSubtitlesToTrack: (subtitleIds, deltaTrackIndex, options) => {
         if (deltaTrackIndex === 0 || subtitleIds.length === 0) return;
+
+        const currentTracks = get().tracks;
+        const trackIds = currentTracks.map(t => t.id);
+        const subtitleLocations = subtitleIds.flatMap(subtitleId => {
+            const currentTrackIndex = currentTracks.findIndex(track =>
+                track.subtitles.some(subtitle => subtitle.id === subtitleId)
+            );
+            return currentTrackIndex === -1 ? [] : [currentTrackIndex];
+        });
+
+        if (
+            subtitleLocations.length === 0 ||
+            subtitleLocations.some(currentTrackIndex => {
+                const targetIndex = currentTrackIndex + deltaTrackIndex;
+                return targetIndex < 0 || targetIndex >= trackIds.length;
+            })
+        ) return;
 
         if (!options?.skipHistory) get().pushHistory();
         set((state) => {
@@ -452,6 +516,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     },
 
     removeSubtitleFromTrack: (trackId, subtitleId) => {
+        const track = get().tracks.find(t => t.id === trackId);
+        if (!track?.subtitles.some(s => s.id === subtitleId)) return;
+
         get().pushHistory();
         set((state) => {
             const newTracks = state.tracks.map(t =>
@@ -467,23 +534,29 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         });
     },
 
-    setTracks: (tracks) => set((state) => {
-        // Clearing history when setting tracks explicitly (e.g. loading project)
-        const isValidActive = tracks.some(t => t.id === state.activeTrackId);
+    setTracks: (tracks, options) => {
+        if (!options?.resetHistory && !options?.skipHistory) {
+            get().pushHistory();
+        }
 
-        // Trigger auto-save
-        saveTimelineToStorage(tracks);
+        if (!options?.skipSave) {
+            saveTimelineToStorage(tracks);
+        }
 
-        return {
-            tracks,
-            activeTrackId: isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null),
-            selectedSubtitleIds: [],
-            lastSelectedId: null,
-            history: [],
-            redoStack: [],
-            isVideoSelected: false
-        };
-    }),
+        set((state) => {
+            const isValidActive = tracks.some(t => t.id === state.activeTrackId);
+
+            return {
+                tracks,
+                activeTrackId: isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null),
+                selectedSubtitleIds: [],
+                lastSelectedId: null,
+                history: options?.resetHistory ? [] : state.history,
+                redoStack: options?.resetHistory ? [] : state.redoStack,
+                isVideoSelected: false
+            };
+        });
+    },
 
     setVideoSelected: (selected) => set((state) => ({
         isVideoSelected: selected,
@@ -771,20 +844,23 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     clearEditRequest: () => set({ requestEditSubtitleId: null }),
 
-    setTranscriptionState: (groups, containerIds, raw) => set((state) => {
-        const nextGroups = groups;
-        const nextIds = containerIds;
-        const nextRaw = raw !== undefined ? raw : state.rawTranscription;
+    setTranscriptionState: (groups, containerIds, raw) => {
+        set((state) => {
+            const nextGroups = groups;
+            const nextIds = containerIds;
+            const nextRaw = raw !== undefined ? raw : state.rawTranscription;
 
-        // Trigger auto-save for transcription state
-        saveTimelineToStorage(state.tracks);
+            return {
+                transcriptionGroups: nextGroups,
+                transcriptionContainerIds: nextIds,
+                rawTranscription: nextRaw
+            };
+        });
 
-        return {
-            transcriptionGroups: nextGroups,
-            transcriptionContainerIds: nextIds,
-            rawTranscription: nextRaw
-        };
-    }),
+        // Save after Zustand has applied the new transcription fields; the
+        // storage helper reads them from the current store state.
+        saveTimelineToStorage(get().tracks);
+    },
 
     generateDefaultGrouperState: (words, wordsPerLine = 3) =>
         generateDefaultGrouperState(words, wordsPerLine),

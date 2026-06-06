@@ -15,6 +15,7 @@ import { useTimelineStore } from '@/stores/timeline-store';
 import { useProjectStore } from '@/stores/project-store';
 import { storageService } from '@/lib/storage/storage-service';
 import { renderSubtitles } from '@/lib/subtitle-renderer';
+import { frameDuration, frameIndexToTime, normalizeFps, timeToFrameIndex } from '@/lib/frame-utils';
 
 interface VideoViewportProps {
   onVideoLoad?: (duration: number, fps: number | null, file?: File) => void;
@@ -42,6 +43,7 @@ export function VideoViewport({
   // Stores
   const { currentTime, isPlaying, volume, muted, previewTime } = usePlaybackStore();
   const { videoFile, width: originalWidth, height: originalHeight, fps, duration, bitrate, loadVideo } = useVideoStore();
+  const tracks = useTimelineStore((state) => state.tracks);
 
   // Sync video metadata to parent (needed when loading project)
   useEffect(() => {
@@ -92,10 +94,7 @@ export function VideoViewport({
       // Push history state before loading new video
       useTimelineStore.getState().pushHistory();
 
-      console.log('Iniciando carga de video con mediabunny:', file.name);
-
       const info = await getVideoInfo(file);
-      console.log('Metadata detectada:', info);
 
       loadVideo(file, info);
       onVideoLoad?.(info.duration, info.fps, file);
@@ -113,13 +112,12 @@ export function VideoViewport({
       // Save video to storage if project is active
       const activeProject = projectStore.activeProject;
       if (activeProject) {
-        storageService.saveVideo(activeProject.id, file).catch(console.error);
+        storageService.saveVideo(activeProject.id, file).catch((error) => {
+          console.error('Failed to persist video file:', error);
+        });
       }
-
-      console.log(`Video cargado: ${info.duration.toFixed(2)}s @ ${info.fps.toFixed(2)}fps`);
-
     } catch (error) {
-      console.error('Error al cargar el video:', error);
+      console.error('Failed to load video:', error);
     } finally {
       setIsLoading(false);
       if (event.target) {
@@ -179,37 +177,82 @@ export function VideoViewport({
   const isRendering = useRef(false);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const persistentVideoCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastVideoLayerKeyRef = useRef<string | null>(null);
+  const lastCompositeKeyRef = useRef<string | null>(null);
+  const timelineRevisionRef = useRef(0);
+
+  useEffect(() => {
+    lastVideoLayerKeyRef.current = null;
+    lastCompositeKeyRef.current = null;
+    persistentVideoCanvasRef.current?.removeAttribute('data-has-frame');
+  }, [videoFile]);
+
+  useEffect(() => {
+    timelineRevisionRef.current += 1;
+    lastCompositeKeyRef.current = null;
+  }, [tracks, showSubtitles]);
 
   const renderFrame = useCallback(async () => {
     if (!videoFile || !canvasRef.current || !videoContainerRef.current || isRendering.current) return;
 
     const { currentTime, previewTime } = usePlaybackStore.getState();
-    const renderTime = previewTime !== null ? previewTime : currentTime;
+    const rawRenderTime = previewTime !== null ? previewTime : currentTime;
+    const playbackFps = normalizeFps(fps);
+    const renderFrameIndex = timeToFrameIndex(rawRenderTime, playbackFps);
+    const renderTime = frameIndexToTime(renderFrameIndex, playbackFps);
     const rect = getVideoDisplayRect();
     if (!rect) return;
 
-    // Update target resolution for cache to match visor size (for optimization)
-    videoCache.setTargetResolution(rect.width, rect.height);
+    const displayWidth = Math.max(1, Math.round(rect.width));
+    const displayHeight = Math.max(1, Math.round(rect.height));
+    const layoutKey = `${displayWidth}x${displayHeight}:${Math.round(rect.left)}:${Math.round(rect.top)}`;
+    const compositeKey = [
+      renderFrameIndex,
+      layoutKey,
+      showSubtitles ? timelineRevisionRef.current : 'no-subtitles',
+    ].join(':');
+
+    if (lastCompositeKeyRef.current === compositeKey && canvasRef.current.getAttribute('data-has-content') === 'true') {
+      return;
+    }
+
+    videoCache.setTargetResolution(displayWidth, displayHeight, 'preview');
 
     isRendering.current = true;
     try {
-      const frame = await videoCache.getFrameAt('preview', videoFile, renderTime);
+      const currentFrameDuration = frameDuration(playbackFps);
+      const snappedDuration = Math.round(duration / currentFrameDuration) * currentFrameDuration;
+      const isBeyondVideo = renderTime >= snappedDuration - 0.001;
+      const videoLayerKey = `${renderFrameIndex}:${layoutKey}`;
+      const shouldUpdateVideoLayer =
+        !isBeyondVideo
+        && (
+          lastVideoLayerKeyRef.current !== videoLayerKey
+          || !persistentVideoCanvasRef.current
+          || persistentVideoCanvasRef.current.getAttribute('data-has-frame') !== 'true'
+        );
+      const frame = shouldUpdateVideoLayer
+        ? await videoCache.getFrameAt('preview', videoFile, renderTime, { mode: 'visible', fps: playbackFps })
+        : null;
 
-      // Triple Buffering: Update persistent video layer if a new frame arrived
+      // The persistent layer keeps the latest video pixels separate from
+      // subtitle composition. When text changes, we can redraw overlays without
+      // asking the decoder for the same frame again.
       if (frame) {
         if (!persistentVideoCanvasRef.current) {
           persistentVideoCanvasRef.current = document.createElement('canvas');
         }
         const pCanvas = persistentVideoCanvasRef.current;
-        if (pCanvas.width !== rect.width || pCanvas.height !== rect.height) {
-          pCanvas.width = rect.width;
-          pCanvas.height = rect.height;
+        if (pCanvas.width !== displayWidth || pCanvas.height !== displayHeight) {
+          pCanvas.width = displayWidth;
+          pCanvas.height = displayHeight;
         }
         const pCtx = pCanvas.getContext('2d');
         if (pCtx) {
           pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
           pCtx.drawImage(frame.canvas, 0, 0, pCanvas.width, pCanvas.height);
           pCanvas.setAttribute('data-has-frame', 'true');
+          lastVideoLayerKeyRef.current = videoLayerKey;
         }
       }
 
@@ -219,9 +262,9 @@ export function VideoViewport({
       }
 
       const offscreen = offscreenCanvasRef.current;
-      if (offscreen.width !== rect.width || offscreen.height !== rect.height) {
-        offscreen.width = rect.width;
-        offscreen.height = rect.height;
+      if (offscreen.width !== displayWidth || offscreen.height !== displayHeight) {
+        offscreen.width = displayWidth;
+        offscreen.height = displayHeight;
       }
 
       const offCtx = offscreen.getContext('2d');
@@ -232,10 +275,6 @@ export function VideoViewport({
       // Draw background (Persistent Frame or Black)
       const pCanvas = persistentVideoCanvasRef.current;
 
-      const frameDuration = fps > 0 ? 1 / fps : 0.033;
-      const snappedDuration = Math.round(duration / frameDuration) * frameDuration;
-      const isBeyondVideo = renderTime >= snappedDuration - 0.001;
-
       if (!isBeyondVideo && pCanvas && pCanvas.getAttribute('data-has-frame') === 'true') {
         offCtx.drawImage(pCanvas, 0, 0);
       } else {
@@ -243,23 +282,20 @@ export function VideoViewport({
         offCtx.fillRect(0, 0, offscreen.width, offscreen.height);
       }
 
-      // Render Subtitles from Timeline Store
-      if (!showSubtitles) return;
-
-      const { tracks } = useTimelineStore.getState();
-
-      tracks.forEach(track => {
-        if (!track.isVisible) return;
-        renderSubtitles(offCtx, track.subtitles, track.style, currentTime, offscreen.width, offscreen.height);
-      });
+      if (showSubtitles) {
+        tracks.forEach(track => {
+          if (!track.isVisible) return;
+          renderSubtitles(offCtx, track.subtitles, track.style, renderTime, offscreen.width, offscreen.height);
+        });
+      }
 
       // FINAL BLIT to visible canvas
       const canvas = canvasRef.current;
       if (!canvas) return;
 
-      if (canvas.width !== rect.width || canvas.height !== rect.height) {
-        canvas.width = rect.width;
-        canvas.height = rect.height;
+      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+        canvas.width = displayWidth;
+        canvas.height = displayHeight;
         canvas.style.left = `${rect.left}px`;
         canvas.style.top = `${rect.top}px`;
         canvas.style.width = `${rect.width}px`;
@@ -270,11 +306,14 @@ export function VideoViewport({
       if (ctx) {
         ctx.drawImage(offscreen, 0, 0);
         canvas.setAttribute('data-has-content', 'true');
+        if (isBeyondVideo || lastVideoLayerKeyRef.current === videoLayerKey) {
+          lastCompositeKeyRef.current = compositeKey;
+        }
       }
     } finally {
       isRendering.current = false;
     }
-  }, [videoFile, showSubtitles, getVideoDisplayRect, canvasRef, duration, fps]);
+  }, [videoFile, showSubtitles, getVideoDisplayRect, canvasRef, duration, fps, tracks]);
 
   // Main loop
   useEffect(() => {
@@ -417,10 +456,9 @@ export function VideoViewport({
               className="fixed left-[-9999px]"
               playsInline
               onCanPlay={(e) => {
-                console.log('Audio listo para reproducir');
                 e.currentTarget.muted = false;
               }}
-              onError={(e) => console.error('Error en elemento audio:', e)}
+              onError={(e) => console.error('Audio element error:', e)}
             />
 
             {showMetaInfo && (
@@ -449,6 +487,14 @@ export function VideoViewport({
                     <div className="flex justify-between items-baseline gap-4 text-[8px] opacity-40 italic">
                       <span>sinks/frames</span>
                       <span>{cacheStats.totalSinks} / {cacheStats.cachedFrames}</span>
+                    </div>
+                    <div className="flex justify-between items-baseline gap-4 text-[8px] opacity-40 italic">
+                      <span>hit/seeks</span>
+                      <span>{Math.round(cacheStats.cacheHitRate * 100)}% / {cacheStats.seeks}</span>
+                    </div>
+                    <div className="flex justify-between items-baseline gap-4 text-[8px] opacity-40 italic">
+                      <span>warm/cancel</span>
+                      <span>{cacheStats.warmupFrames} / {cacheStats.cancelledWarmups}</span>
                     </div>
                   </div>
 

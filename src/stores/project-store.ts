@@ -101,7 +101,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // Reset timeline
         const timelineStore = useTimelineStore.getState();
-        timelineStore.setTracks([]);
+        timelineStore.setTracks([], { resetHistory: true });
 
         // Reset video
         useVideoStore.getState().clearVideo();
@@ -134,7 +134,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             set({ activeProject: project });
 
             const timelineStore = useTimelineStore.getState();
-            timelineStore.setTracks(tracks || []);
+            timelineStore.setTracks(tracks || [], { resetHistory: true });
             timelineStore.setTranscriptionState(transcriptionGroups, transcriptionContainerIds, rawTranscription);
 
             get().updateLastSavedState();
@@ -238,7 +238,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     closeProject: () => {
         set({ activeProject: null });
         const timelineStore = useTimelineStore.getState();
-        timelineStore.setTracks([]);
+        timelineStore.setTracks([], { resetHistory: true });
         useVideoStore.getState().clearVideo();
         usePlaybackStore.getState().reset();
     },

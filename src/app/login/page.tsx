@@ -1,7 +1,13 @@
 import { Suspense } from "react";
+import { redirect } from "next/navigation";
+import { isAuthEnabled } from "@/lib/config/feature-flags";
 import LoginForm from "./LoginForm";
 
 export default function LoginPage() {
+    if (!isAuthEnabled()) {
+        redirect("/");
+    }
+
     return (
         <main className="min-h-screen flex items-center justify-center p-4 bg-[#0a0a0a] text-white">
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-900/10 via-transparent to-transparent pointer-events-none" />

@@ -1,3 +1,5 @@
+import { frameIndexToTime, normalizeFps, timeToFrameIndex } from './frame-utils';
+
 /**
  * FrameCache manages an LRU (Least Recently Used) cache of ImageBitmap objects.
  * ImageBitmaps are stored in GPU memory, making them extremely efficient for canvas rendering.
@@ -5,6 +7,7 @@
 export interface CachedFrame {
     bitmap: ImageBitmap;
     timestamp: number;
+    frameIndex: number;
     lastUsed: number;
     sizeBytes: number;
 }
@@ -26,8 +29,18 @@ export class FrameCache {
      * Adds a bitmap to the cache. If memory limit is reached, oldest frames are evicted.
      */
     addFrame(videoId: string, timestamp: number, bitmap: ImageBitmap, fps = 30) {
-        const frameIndex = Math.round(timestamp * fps);
-        const key = this.getKey(videoId, frameIndex);
+        this.addFrameAtIndex(videoId, timeToFrameIndex(timestamp, fps), bitmap, fps);
+    }
+
+    /**
+     * Adds a bitmap by exact frame index. Playback uses this path so that every
+     * cache participant agrees on the same key before floating-point timestamps
+     * can create duplicate entries for one visual frame.
+     */
+    addFrameAtIndex(videoId: string, frameIndex: number, bitmap: ImageBitmap, fps = 30) {
+        const normalizedFps = normalizeFps(fps);
+        const safeFrameIndex = Math.max(0, Math.round(frameIndex));
+        const key = this.getKey(videoId, safeFrameIndex);
 
         // Approximate size: width * height * 4 (RGBA)
         const sizeBytes = bitmap.width * bitmap.height * 4;
@@ -40,7 +53,8 @@ export class FrameCache {
 
         this.frames.set(key, {
             bitmap,
-            timestamp,
+            timestamp: frameIndexToTime(safeFrameIndex, normalizedFps),
+            frameIndex: safeFrameIndex,
             lastUsed: Date.now(),
             sizeBytes,
         });
@@ -52,8 +66,11 @@ export class FrameCache {
      * Retrieves a frame from the cache. Updates its LRU status.
      */
     getFrame(videoId: string, timestamp: number, fps = 30): ImageBitmap | null {
-        const frameIndex = Math.round(timestamp * fps);
-        const key = this.getKey(videoId, frameIndex);
+        return this.getFrameAtIndex(videoId, timeToFrameIndex(timestamp, fps));
+    }
+
+    getFrameAtIndex(videoId: string, frameIndex: number): ImageBitmap | null {
+        const key = this.getKey(videoId, Math.max(0, Math.round(frameIndex)));
         const cached = this.frames.get(key);
 
         if (cached) {
@@ -69,8 +86,11 @@ export class FrameCache {
      * Checks if a frame exists in cache without updating LRU status.
      */
     hasFrame(videoId: string, timestamp: number, fps = 30): boolean {
-        const frameIndex = Math.round(timestamp * fps);
-        return this.frames.has(this.getKey(videoId, frameIndex));
+        return this.hasFrameAtIndex(videoId, timeToFrameIndex(timestamp, fps));
+    }
+
+    hasFrameAtIndex(videoId: string, frameIndex: number): boolean {
+        return this.frames.has(this.getKey(videoId, Math.max(0, Math.round(frameIndex))));
     }
 
     /**
@@ -100,6 +120,9 @@ export class FrameCache {
             this.currentMemoryBytes -= cached.sizeBytes;
             cached.bitmap.close(); // Crucial to release GPU memory
             this.frames.delete(key);
+            if (this.lastAccessedKey === key) {
+                this.lastAccessedKey = null;
+            }
         }
     }
 

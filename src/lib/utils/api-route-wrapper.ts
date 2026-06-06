@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { ActionContext } from "@/lib/actions/base.action";
+import { isAuthEnabled } from "@/lib/config/feature-flags";
 import { handleControllerError } from "./api-error-handler";
 import { RequestContext } from "@/types/api";
 
@@ -12,7 +13,7 @@ type Handler<P = unknown> = (
 export function restRoute<P = unknown>(handler: Handler<P>) {
     return async (request: NextRequest, context: RequestContext<P>) => {
         try {
-            const session = await auth();
+            const session = isAuthEnabled() ? await auth() : null;
             const params = await context.params;
 
             const actionContext: ActionContext = {

@@ -9,7 +9,12 @@
     "vars": {
         "NEXT_PUBLIC_BASE_URL": "http://localhost:3000",
         "AUTH_URL": "http://localhost:3000",
-        "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED"
+        "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED",
+        "AUTH_ENABLED": "false",
+        "NEXT_PUBLIC_AUTH_ENABLED": "false",
+        "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+        "NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+        "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS": ""
     },
     "assets": {
         "directory": ".open-next/assets",
@@ -28,6 +33,11 @@
             "vars": {
                 "NEXT_PUBLIC_BASE_URL": "http://localhost:8787",
                 "AUTH_URL": "http://localhost:8787",
+                "AUTH_ENABLED": "false",
+                "NEXT_PUBLIC_AUTH_ENABLED": "false",
+                "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+                "NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+                "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS": ""
             },
             "r2_buckets": [
                 {
@@ -43,7 +53,11 @@
                 "AUTH_URL": "https://waptions.wande.dev",
                 "AUTHORIZED_EMAILS": "AUTHORIZED_EMAIL_REDACTED,AUTHORIZED_EMAIL_REDACTED",
                 "AUTH_TRUST_HOST": "true",
-                "NEXTAUTH_DEBUG": "true"
+                "AUTH_ENABLED": "false",
+                "NEXT_PUBLIC_AUTH_ENABLED": "false",
+                "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+                "NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+                "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS": ""
             },
             "observability": {
                 "enabled": true

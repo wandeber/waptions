@@ -37,8 +37,6 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
     const { format, quality, fps: optionsFps, includeAudio, onProgress, onCancel } = options;
 
     try {
-        console.log('exportProject started', { format, quality, duration: videoFile.size });
-
         // ENSURE FONTS ARE LOADED - Collect all unique fonts from tracks
         const uniqueFonts = Array.from(new Set(tracks.map(t => t.style.fontFamily)));
         await waitForFonts(uniqueFonts);
@@ -161,16 +159,14 @@ export async function exportProject(context: ExportContext): Promise<ExportResul
             // Get video frame - Only request if within video duration
             // Use a small epsilon to avoid floating point issues at exactly the end
             const isWithinVideo = time < snappedVideoDuration - (frameDuration / 2);
-            const frame = isWithinVideo ? await videoCache.getFrameAt(mediaId, videoFile, time) : null;
+            const frame = isWithinVideo
+                ? await videoCache.getFrameAt(mediaId, videoFile, time, { mode: 'export', fps: videoFps })
+                : null;
 
             if (frame) {
-                if (frameIndex % 50 === 0) console.log(`Rendering frame ${frameIndex}/${totalFrames} at ${time.toFixed(2)}s`);
                 ctx.clearRect(0, 0, canvasWidth, canvasHeight);
                 ctx.drawImage(frame.canvas, 0, 0, canvasWidth, canvasHeight);
             } else {
-                if (frameIndex % 50 === 0 && !isWithinVideo) {
-                    console.log(`Rendering black padding frame ${frameIndex}/${totalFrames} at ${time.toFixed(2)}s`);
-                }
                 // Fill with black if no frame available or beyond video duration
                 ctx.fillStyle = '#000000';
                 ctx.fillRect(0, 0, canvasWidth, canvasHeight);

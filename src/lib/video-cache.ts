@@ -3,86 +3,202 @@ import {
     ALL_FORMATS,
     BlobSource,
     CanvasSink,
-    WrappedCanvas,
+    type InputVideoTrack,
+    type WrappedCanvas,
 } from 'mediabunny';
 import { frameCache } from './frame-cache';
+import { frameDuration, frameIndexToTime, normalizeFps, timeToFrameIndex } from './frame-utils';
+
+type VideoFrameRequestMode = 'visible' | 'warmup' | 'export';
+
+export interface VideoFrameRequestOptions {
+    mode?: VideoFrameRequestMode;
+    fps?: number;
+}
 
 interface VideoSinkData {
+    videoTrack: InputVideoTrack;
     sink: CanvasSink;
+    sinkResolutionKey: string;
     iterator: AsyncGenerator<WrappedCanvas, void, unknown> | null;
     currentFrame: WrappedCanvas | null;
+    nextFrame: WrappedCanvas | null;
     lastTime: number;
     fileSignature: string;
-    isBusy?: boolean; // Lock for background tasks
+    priorityRequests: number;
+    prefetching: boolean;
+    prefetchPromise: Promise<void> | null;
     fps: number;
     targetWidth?: number;
     targetHeight?: number;
 }
 
-const MAX_CACHE_RESOLUTION = 1280; // Cap at 720p for cache
+interface VideoCacheCounters {
+    cacheHits: number;
+    cacheMisses: number;
+    seeks: number;
+    sequentialReads: number;
+    warmupFrames: number;
+    cancelledWarmups: number;
+}
+
+interface TargetResolution {
+    width: number;
+    height: number;
+}
+
+const MAX_CACHE_RESOLUTION = 1280; // Cap preview cache to a 1280px long edge.
+const PREVIEW_RESOLUTION_BUCKET = 32;
 const getFileSignature = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
 
 /**
- * VideoCache manages efficient video frame decoding using mediabunny's WebCodecs API.
- * Maintains a pool of canvas sinks for each loaded video and handles seeking/iteration.
+ * VideoCache owns the Mediabunny CanvasSink instances and the shared preview
+ * ImageBitmap cache. Requests are serialized per mediaId because a CanvasSink
+ * iterator cannot be safely advanced by visible rendering and warmup at once.
  */
 export class VideoCache {
     private sinks = new Map<string, VideoSinkData>();
     private initPromises = new Map<string, Promise<void>>();
+    private frameChains = new Map<string, Promise<unknown>>();
+    private requestGenerations = new Map<string, number>();
     private pendingResolutions = new Map<string, { width: number; height: number }>();
+    private counters: VideoCacheCounters = {
+        cacheHits: 0,
+        cacheMisses: 0,
+        seeks: 0,
+        sequentialReads: 0,
+        warmupFrames: 0,
+        cancelledWarmups: 0,
+    };
 
     /**
-     * Get a frame at a specific time from a video file.
-     * Uses caching and intelligent seeking to minimize decoding work.
+     * Get a frame at a specific media time. The requested time is normalized to
+     * a frame index before any cache lookup, so playback does not create
+     * duplicate work for multiple RAF ticks that land inside the same frame.
      */
     async getFrameAt(
         mediaId: string,
         file: File,
         time: number,
-        isPriority = true
+        options: VideoFrameRequestOptions = {}
     ): Promise<WrappedCanvas | null> {
         await this.ensureSink(mediaId, file);
 
         const sinkData = this.sinks.get(mediaId);
         if (!sinkData) return null;
 
-        // If background task tries to render while main thread is busy, skip
-        if (!isPriority && sinkData.isBusy) return null;
+        const mode = options.mode ?? 'visible';
+        const isPriority = mode !== 'warmup';
+        const requestFps = normalizeFps(options.fps ?? sinkData.fps);
+        const frameIndex = timeToFrameIndex(time, requestFps);
+        const frameTime = frameIndexToTime(frameIndex, requestFps);
 
-        if (isPriority) sinkData.isBusy = true;
-
-        try {
-            // 1. Check persistent FrameCache first
-            const cachedBitmap = frameCache.getFrame(mediaId, time, sinkData.fps);
-            if (cachedBitmap) {
-                return {
-                    canvas: cachedBitmap as unknown as OffscreenCanvas,
-                    timestamp: time,
-                    duration: 0,
-                } as WrappedCanvas;
-            }
-
-            // 2. Check current active frame (volatile)
-            if (sinkData.currentFrame && this.isFrameValid(sinkData.currentFrame, time)) {
-                return sinkData.currentFrame;
-            }
-
-            // 3. If moving forward (within 2 seconds), iterate
-            if (
-                sinkData.iterator
-                && sinkData.currentFrame
-                && time >= sinkData.lastTime
-                && time < sinkData.lastTime + 2.0
-            ) {
-                const frame = await this.iterateToTime(mediaId, sinkData, time);
-                if (frame) return frame;
-            }
-
-            // 4. Otherwise, seek to the target time
-            return await this.seekToTime(mediaId, sinkData, time);
-        } finally {
-            if (isPriority) sinkData.isBusy = false;
+        // Warmup is useful only while it stays out of the visible/export path.
+        // Dropping stale warmup is cheaper than making the user-facing request
+        // wait for frames that may never be seen.
+        if (!isPriority && sinkData.priorityRequests > 0) {
+            this.counters.cancelledWarmups += 1;
+            return null;
         }
+
+        const generation = isPriority
+            ? this.bumpRequestGeneration(mediaId)
+            : this.requestGenerations.get(mediaId) ?? 0;
+
+        if (isPriority) {
+            sinkData.priorityRequests += 1;
+        }
+
+        const previous = this.frameChains.get(mediaId) ?? Promise.resolve();
+        const current = previous
+            .then(async () => {
+                if (isPriority && this.requestGenerations.get(mediaId) !== generation) {
+                    return sinkData.currentFrame ?? null;
+                }
+
+                const frame = await this.resolveFrame(
+                    mediaId,
+                    sinkData,
+                    frameIndex,
+                    frameTime,
+                    requestFps
+                );
+
+                if (frame && mode === 'warmup') {
+                    this.counters.warmupFrames += 1;
+                }
+
+                return frame;
+            })
+            .finally(() => {
+                if (isPriority) {
+                    sinkData.priorityRequests = Math.max(0, sinkData.priorityRequests - 1);
+                }
+            });
+
+        this.frameChains.set(mediaId, current.catch(() => null));
+        return current;
+    }
+
+    private bumpRequestGeneration(mediaId: string): number {
+        const nextGeneration = (this.requestGenerations.get(mediaId) ?? 0) + 1;
+        this.requestGenerations.set(mediaId, nextGeneration);
+        return nextGeneration;
+    }
+
+    private async resolveFrame(
+        mediaId: string,
+        sinkData: VideoSinkData,
+        frameIndex: number,
+        frameTime: number,
+        fps: number
+    ): Promise<WrappedCanvas | null> {
+        const cachedBitmap = frameCache.getFrameAtIndex(mediaId, frameIndex);
+        if (cachedBitmap) {
+            this.counters.cacheHits += 1;
+            return {
+                canvas: cachedBitmap as unknown as OffscreenCanvas,
+                timestamp: frameTime,
+                duration: frameDuration(fps),
+            } as WrappedCanvas;
+        }
+
+        this.counters.cacheMisses += 1;
+
+        if (sinkData.nextFrame && sinkData.nextFrame.timestamp <= frameTime) {
+            sinkData.currentFrame = sinkData.nextFrame;
+            sinkData.nextFrame = null;
+            this.startPrefetch(mediaId, sinkData, fps);
+        }
+
+        if (sinkData.currentFrame && this.isFrameValid(sinkData.currentFrame, frameTime)) {
+            if (!sinkData.nextFrame && !sinkData.prefetching) {
+                this.startPrefetch(mediaId, sinkData, fps);
+            }
+            this.cacheFrame(mediaId, sinkData.currentFrame, fps, frameIndex);
+            return sinkData.currentFrame;
+        }
+
+        if (
+            sinkData.iterator
+            && sinkData.currentFrame
+            && frameTime >= sinkData.lastTime
+            && frameTime < sinkData.lastTime + 2.0
+        ) {
+            const frame = await this.iterateToTime(mediaId, sinkData, frameTime, fps, frameIndex);
+            if (frame) {
+                if (!sinkData.nextFrame && !sinkData.prefetching) {
+                    this.startPrefetch(mediaId, sinkData, fps);
+                }
+                return frame;
+            }
+        }
+
+        const frame = await this.seekToTime(mediaId, sinkData, frameTime, fps, frameIndex);
+        if (frame && !sinkData.nextFrame && !sinkData.prefetching) {
+            this.startPrefetch(mediaId, sinkData, fps);
+        }
+        return frame;
     }
 
     private isFrameValid(frame: WrappedCanvas, time: number): boolean {
@@ -92,29 +208,43 @@ export class VideoCache {
     private async iterateToTime(
         mediaId: string,
         sinkData: VideoSinkData,
-        targetTime: number
+        targetTime: number,
+        fps: number,
+        targetFrameIndex: number
     ): Promise<WrappedCanvas | null> {
         if (!sinkData.iterator) return null;
 
         try {
             while (true) {
-                const { value: frame, done } = await sinkData.iterator.next();
+                if (sinkData.prefetching && sinkData.prefetchPromise) {
+                    await sinkData.prefetchPromise;
+                }
 
-                if (done || !frame) break;
+                let frame: WrappedCanvas | null = null;
+
+                if (sinkData.nextFrame && sinkData.nextFrame.timestamp <= targetTime + 0.05) {
+                    frame = sinkData.nextFrame;
+                    sinkData.nextFrame = null;
+                } else {
+                    const next = await sinkData.iterator.next();
+                    if (next.done || !next.value) break;
+                    frame = next.value;
+                    this.counters.sequentialReads += 1;
+                }
+
+                if (!frame) break;
 
                 sinkData.currentFrame = frame;
                 sinkData.lastTime = frame.timestamp;
 
-                // Cache the frame asynchronously
-                this.cacheFrame(mediaId, frame, sinkData.fps);
-
                 if (this.isFrameValid(frame, targetTime)) {
-                    // Burst pre-fetch: Decode a few more frames in the background to fill the GoP
-                    this.startBurst(mediaId, sinkData, sinkData.fps);
+                    this.cacheFrame(mediaId, frame, fps, targetFrameIndex);
+                    this.startPrefetch(mediaId, sinkData, fps);
                     return frame;
                 }
 
-                // If we've gone too far past the target, stop iterating
+                this.cacheFrame(mediaId, frame, fps);
+
                 if (frame.timestamp > targetTime + 1.0) break;
             }
         } catch (error) {
@@ -128,24 +258,31 @@ export class VideoCache {
     private async seekToTime(
         mediaId: string,
         sinkData: VideoSinkData,
-        time: number
+        time: number,
+        fps: number,
+        frameIndex: number
     ): Promise<WrappedCanvas | null> {
         try {
-            // Close existing iterator
+            if (sinkData.prefetching && sinkData.prefetchPromise) {
+                await sinkData.prefetchPromise;
+            }
+
             if (sinkData.iterator) {
                 await sinkData.iterator.return();
                 sinkData.iterator = null;
             }
 
-            // Start a new iterator from the target time
+            sinkData.nextFrame = null;
             sinkData.iterator = sinkData.sink.canvases(time);
             sinkData.lastTime = time;
+            this.counters.seeks += 1;
 
             const { value: frame } = await sinkData.iterator.next();
 
             if (frame) {
                 sinkData.currentFrame = frame;
-                this.cacheFrame(mediaId, frame, sinkData.fps);
+                this.cacheFrame(mediaId, frame, fps, frameIndex);
+                this.startPrefetch(mediaId, sinkData, fps);
                 return frame;
             }
         } catch (error) {
@@ -161,15 +298,11 @@ export class VideoCache {
 
         if (existing) {
             if (existing.fileSignature === signature) return;
-            // File changed, clear old sink
             this.clearVideo(mediaId);
         }
 
         if (this.initPromises.has(mediaId)) {
-            // If already initializing, wait for it
             await this.initPromises.get(mediaId);
-            // After waiting, re-check constraint (in case the initializing one was also wrong, though unlikely in single-thread flow)
-            // Recursively ensure to double check
             return this.ensureSink(mediaId, file);
         }
 
@@ -200,29 +333,29 @@ export class VideoCache {
                 throw new Error('Video codec not supported for decoding');
             }
 
-            const sink = new CanvasSink(videoTrack, {
-                poolSize: 5,
-                fit: 'contain',
-            });
-
             const packetStats = await videoTrack.computePacketStats(100);
-            const fps = packetStats.averagePacketRate || 30;
-
-            // Apply any pending resolution for this mediaId
-            const pending = this.pendingResolutions.get(mediaId);
+            const fps = normalizeFps(packetStats.averagePacketRate);
+            const target = this.pendingResolutions.get(mediaId)
+                ?? (mediaId === 'preview' ? { width: this.targetWidth, height: this.targetHeight } : undefined);
 
             this.sinks.set(mediaId, {
-                sink,
+                videoTrack,
+                sink: this.createSink(videoTrack, mediaId, target),
+                sinkResolutionKey: this.getResolutionKey(target),
                 iterator: null,
                 currentFrame: null,
+                nextFrame: null,
                 lastTime: -1,
                 fileSignature: getFileSignature(file),
-                fps: fps,
-                targetWidth: pending?.width,
-                targetHeight: pending?.height,
+                priorityRequests: 0,
+                prefetching: false,
+                prefetchPromise: null,
+                fps,
+                targetWidth: target?.width,
+                targetHeight: target?.height,
             });
 
-            if (pending) {
+            if (target) {
                 this.pendingResolutions.delete(mediaId);
             }
         } catch (error) {
@@ -239,7 +372,11 @@ export class VideoCache {
             }
             this.sinks.delete(mediaId);
         }
+        frameCache.clear(mediaId);
         this.initPromises.delete(mediaId);
+        this.frameChains.delete(mediaId);
+        this.requestGenerations.delete(mediaId);
+        this.pendingResolutions.delete(mediaId);
     }
 
     clearAll(): void {
@@ -250,16 +387,38 @@ export class VideoCache {
         frameCache.clear();
     }
 
-    private async startBurst(mediaId: string, sinkData: VideoSinkData, fps: number) {
-        if (!sinkData.iterator) return;
+    private startPrefetch(mediaId: string, sinkData: VideoSinkData, fps: number): void {
+        if (sinkData.prefetching || !sinkData.iterator || sinkData.nextFrame) return;
 
-        // We only want to burst if we aren't already busy with another high-priority request
-        // But since this is called from target found, we can just grab a few frames.
-        const BURST_COUNT = 5;
-        for (let i = 0; i < BURST_COUNT; i++) {
+        sinkData.prefetching = true;
+        sinkData.prefetchPromise = this.prefetchNextFrame(mediaId, sinkData, fps);
+    }
+
+    private async prefetchNextFrame(
+        mediaId: string,
+        sinkData: VideoSinkData,
+        fps: number
+    ): Promise<void> {
+        if (!sinkData.iterator) {
+            sinkData.prefetching = false;
+            sinkData.prefetchPromise = null;
+            return;
+        }
+
+        try {
             const { value: frame, done } = await sinkData.iterator.next();
-            if (done || !frame) break;
-            this.cacheFrame(mediaId, frame, fps);
+
+            if (!done && frame) {
+                sinkData.nextFrame = frame;
+                this.cacheFrame(mediaId, frame, fps);
+            }
+        } catch (error) {
+            console.warn('Prefetch failed, will restart iterator:', error);
+            sinkData.iterator = null;
+            sinkData.nextFrame = null;
+        } finally {
+            sinkData.prefetching = false;
+            sinkData.prefetchPromise = null;
         }
     }
 
@@ -267,43 +426,110 @@ export class VideoCache {
     private targetHeight = MAX_CACHE_RESOLUTION;
 
     setTargetResolution(width: number, height: number, mediaId?: string) {
+        const target = this.normalizeTargetResolution(width, height, mediaId);
+
         if (mediaId) {
             const sinkData = this.sinks.get(mediaId);
             if (sinkData) {
-                sinkData.targetWidth = width;
-                sinkData.targetHeight = height;
+                sinkData.targetWidth = target.width;
+                sinkData.targetHeight = target.height;
+                this.recreateSinkIfResolutionChanged(mediaId, sinkData, target);
             } else {
-                // Store in pending for when the sink is initialized
-                this.pendingResolutions.set(mediaId, { width, height });
+                this.pendingResolutions.set(mediaId, target);
             }
             return;
         }
-        // Fallback or global target (used for new sinks and preview)
-        this.targetWidth = Math.min(width, MAX_CACHE_RESOLUTION);
-        this.targetHeight = Math.min(height, MAX_CACHE_RESOLUTION);
+
+        this.targetWidth = target.width;
+        this.targetHeight = target.height;
     }
 
-    private async cacheFrame(mediaId: string, frame: WrappedCanvas, fps = 30) {
+    private recreateSinkIfResolutionChanged(
+        mediaId: string,
+        sinkData: VideoSinkData,
+        target: TargetResolution
+    ) {
+        const nextKey = this.getResolutionKey(target);
+        if (sinkData.sinkResolutionKey === nextKey) return;
+
+        // A CanvasSink bakes scaling into the yielded canvases. When the preview
+        // viewport moves to a new resolution bucket, restart the iterator and
+        // clear cached bitmaps so playback does not mix sizes from old buckets.
+        if (sinkData.iterator) {
+            sinkData.iterator.return();
+        }
+        sinkData.sink = this.createSink(sinkData.videoTrack, mediaId, target);
+        sinkData.sinkResolutionKey = nextKey;
+        sinkData.iterator = null;
+        sinkData.currentFrame = null;
+        sinkData.nextFrame = null;
+        sinkData.lastTime = -1;
+        frameCache.clear(mediaId);
+        this.frameChains.delete(mediaId);
+        this.requestGenerations.delete(mediaId);
+    }
+
+    private createSink(videoTrack: InputVideoTrack, mediaId: string, target?: TargetResolution) {
+        if (!target) {
+            return new CanvasSink(videoTrack, { poolSize: 5, fit: 'contain' });
+        }
+
+        // Preview sinks preserve source aspect ratio by specifying only the long
+        // edge. Export sinks use their exact canvas dimensions.
+        if (mediaId === 'preview') {
+            return new CanvasSink(videoTrack, {
+                poolSize: 5,
+                ...(target.width >= target.height ? { width: target.width } : { height: target.height }),
+            });
+        }
+
+        return new CanvasSink(videoTrack, {
+            width: target.width,
+            height: target.height,
+            fit: 'contain',
+            poolSize: 5,
+        });
+    }
+
+    private getResolutionKey(target?: TargetResolution) {
+        return target ? `${target.width}x${target.height}` : 'native';
+    }
+
+    private normalizeTargetResolution(width: number, height: number, mediaId?: string): TargetResolution {
+        const safeWidth = Math.max(1, Math.round(width));
+        const safeHeight = Math.max(1, Math.round(height));
+        const shouldCap = !mediaId || mediaId === 'preview';
+        const longEdge = Math.max(safeWidth, safeHeight);
+        const scale = shouldCap && longEdge > MAX_CACHE_RESOLUTION
+            ? MAX_CACHE_RESOLUTION / longEdge
+            : 1;
+        const scaledWidth = Math.max(1, Math.round(safeWidth * scale));
+        const scaledHeight = Math.max(1, Math.round(safeHeight * scale));
+
+        if (mediaId === 'preview' || !mediaId) {
+            return {
+                width: Math.max(1, Math.round(scaledWidth / PREVIEW_RESOLUTION_BUCKET) * PREVIEW_RESOLUTION_BUCKET),
+                height: Math.max(1, Math.round(scaledHeight / PREVIEW_RESOLUTION_BUCKET) * PREVIEW_RESOLUTION_BUCKET),
+            };
+        }
+
+        return { width: scaledWidth, height: scaledHeight };
+    }
+
+    private async cacheFrame(
+        mediaId: string,
+        frame: WrappedCanvas,
+        fps = 30,
+        frameIndex?: number
+    ) {
         try {
             const sinkData = this.sinks.get(mediaId);
             const originalWidth = frame.canvas.width;
             const originalHeight = frame.canvas.height;
 
-            // Determine target dimensions
-            // Priority 1: mediaId specific (e.g. set by export or viewport)
-            // Priority 2: global target (safely capped for generic preview)
-            // Priority 3: fallback to native
             let tw = sinkData?.targetWidth ?? this.targetWidth;
             let th = sinkData?.targetHeight ?? this.targetHeight;
 
-            // If it's a specific mediaId, we NEVER cap it with MAX_CACHE_RESOLUTION
-            // unless it's explicitly 'preview' which we treat as limited.
-            if ((!mediaId || mediaId === 'preview') && !sinkData?.targetWidth) {
-                tw = Math.min(tw, MAX_CACHE_RESOLUTION);
-                th = Math.min(th, MAX_CACHE_RESOLUTION);
-            }
-
-            // Maintain aspect ratio
             const ratio = originalWidth / originalHeight;
             if (ratio > 1) {
                 th = Math.round(tw / ratio);
@@ -311,7 +537,6 @@ export class VideoCache {
                 tw = Math.round(th * ratio);
             }
 
-            // If the target is larger than original, stick to original to avoid blur
             if (tw > originalWidth) {
                 tw = originalWidth;
                 th = originalHeight;
@@ -323,7 +548,8 @@ export class VideoCache {
                 resizeQuality: 'high'
             });
 
-            frameCache.addFrame(mediaId, frame.timestamp, bitmap, fps);
+            const cacheFrameIndex = frameIndex ?? timeToFrameIndex(frame.timestamp, fps);
+            frameCache.addFrameAtIndex(mediaId, cacheFrameIndex, bitmap, fps);
         } catch (e) {
             console.warn('Failed to cache frame to ImageBitmap:', e);
         }
@@ -331,16 +557,23 @@ export class VideoCache {
 
     getStats() {
         const frameStats = frameCache.getStats();
+        const totalRequests = this.counters.cacheHits + this.counters.cacheMisses;
 
         return {
             totalSinks: this.sinks.size,
             activeSinks: Array.from(this.sinks.values()).filter((s) => s.iterator).length,
             cachedFrames: frameStats.frameCount,
             estimatedMemoryBytes: frameStats.memoryBytes,
-            maxMemoryBytes: frameStats.maxMemoryBytes
+            maxMemoryBytes: frameStats.maxMemoryBytes,
+            cacheHits: this.counters.cacheHits,
+            cacheMisses: this.counters.cacheMisses,
+            cacheHitRate: totalRequests > 0 ? this.counters.cacheHits / totalRequests : 0,
+            seeks: this.counters.seeks,
+            sequentialReads: this.counters.sequentialReads,
+            warmupFrames: this.counters.warmupFrames,
+            cancelledWarmups: this.counters.cancelledWarmups,
         };
     }
 }
 
-// Singleton instance
 export const videoCache = new VideoCache();

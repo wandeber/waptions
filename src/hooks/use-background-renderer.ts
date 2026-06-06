@@ -1,107 +1,179 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
 import { videoCache } from '@/lib/video-cache';
 import { frameCache } from '@/lib/frame-cache';
+import { frameIndexToTime, normalizeFps, timeToFrameIndex } from '@/lib/frame-utils';
 
 interface BackgroundRendererOptions {
-    rangeForward?: number; // Seconds to look ahead
-    rangeBackward?: number; // Seconds to look behind
-    fps?: number; // Sampling rate for background rendering
+    rangeForward?: number; // Seconds to look ahead while idle.
+    rangeBackward?: number; // Seconds to look behind while idle.
+    fps?: number; // Sparse idle sampling rate after the dense near window.
+    playbackLookaheadFrames?: number;
 }
 
+interface WarmupFramePlanOptions {
+    isPlaying: boolean;
+    currentFrameIndex: number;
+    cacheFps: number;
+    rangeForward: number;
+    rangeBackward: number;
+    sparseFps: number;
+    playbackLookaheadFrames: number;
+    hasFrame: (frameIndex: number) => boolean;
+}
+
+export function buildPreviewWarmupFramePlan({
+    isPlaying,
+    currentFrameIndex,
+    cacheFps,
+    rangeForward,
+    rangeBackward,
+    sparseFps,
+    playbackLookaheadFrames,
+    hasFrame,
+}: WarmupFramePlanOptions): number[] {
+    const frames: number[] = [];
+    const seen = new Set<number>();
+    const pushMissingFrame = (frameIndex: number) => {
+        if (seen.has(frameIndex) || hasFrame(frameIndex)) return;
+        seen.add(frameIndex);
+        frames.push(frameIndex);
+    };
+
+    if (isPlaying) {
+        for (let offset = 1; offset <= playbackLookaheadFrames; offset += 1) {
+            pushMissingFrame(currentFrameIndex + offset);
+        }
+        return frames;
+    }
+
+    const denseForwardFrames = Math.round(Math.min(2, rangeForward) * cacheFps);
+    const sparseStep = Math.max(1, Math.round(cacheFps / Math.max(1, sparseFps)));
+    const farForwardFrames = Math.round(rangeForward * cacheFps);
+    const backwardFrames = Math.round(rangeBackward * cacheFps);
+
+    for (let offset = 1; offset <= denseForwardFrames; offset += 1) {
+        pushMissingFrame(currentFrameIndex + offset);
+    }
+
+    for (let offset = denseForwardFrames + sparseStep; offset <= farForwardFrames; offset += sparseStep) {
+        pushMissingFrame(currentFrameIndex + offset);
+    }
+
+    for (let offset = sparseStep; offset <= backwardFrames; offset += sparseStep) {
+        pushMissingFrame(Math.max(0, currentFrameIndex - offset));
+    }
+
+    return frames;
+}
+
+const requestIdle = (callback: () => void) => {
+    if ('requestIdleCallback' in window) {
+        (window as unknown as {
+            requestIdleCallback: (cb: () => void, options?: { timeout: number }) => void;
+        }).requestIdleCallback(callback, { timeout: 200 });
+    } else {
+        globalThis.setTimeout(callback, 16);
+    }
+};
+
 /**
- * useBackgroundRenderer detects idle time and pre-renders frames around the current playhead.
- * This fills the FrameCache, making future scrubbing or playback instantaneous.
+ * Warms preview frames around the playhead without competing with visible
+ * rendering. Idle warmup prepares a wider range, while playback warmup keeps a
+ * short full-fps runway so pressing play can consume already-decoded frames.
  */
 export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
-    const { rangeForward = 5, rangeBackward = 2, fps = 10 } = options;
+    const {
+        rangeForward = 5,
+        rangeBackward = 2,
+        fps = 10,
+        playbackLookaheadFrames = 12,
+    } = options;
 
     const { isPlaying, currentTime } = usePlaybackStore();
-    const { videoFile } = useVideoStore();
+    const { videoFile, fps: sourceFps } = useVideoStore();
+    const cacheFps = normalizeFps(sourceFps);
+    const currentFrameIndex = useMemo(
+        () => timeToFrameIndex(currentTime, cacheFps),
+        [currentTime, cacheFps]
+    );
 
+    const runIdRef = useRef(0);
     const idleTimeoutRef = useRef<number | null>(null);
-    const isRenderingRef = useRef(false);
 
     useEffect(() => {
-        if (isPlaying || !videoFile) {
-            if (idleTimeoutRef.current) {
-                clearTimeout(idleTimeoutRef.current);
-                idleTimeoutRef.current = null;
-            }
-            return;
+        runIdRef.current += 1;
+        const runId = runIdRef.current;
+
+        if (idleTimeoutRef.current) {
+            window.clearTimeout(idleTimeoutRef.current);
+            idleTimeoutRef.current = null;
         }
 
-        const startBackgroundRendering = () => {
-            if (isRenderingRef.current) return;
-            isRenderingRef.current = true;
+        if (!videoFile) return;
 
-            const framesToRender: number[] = [];
-            const step = 1 / fps;
+        const renderFrames = async (frames: number[], index = 0): Promise<void> => {
+            if (runIdRef.current !== runId || index >= frames.length) return;
 
-            // Phase 1: Near Forward (Priority 1) - Next 2 seconds
-            for (let t = currentTime + step; t <= currentTime + 2; t += step) {
-                if (!frameCache.hasFrame('preview', t)) {
-                    framesToRender.push(t);
-                }
-            }
-
-            // Phase 2: Far Forward (Priority 2) - Up to rangeForward
-            for (let t = currentTime + 2 + step; t <= currentTime + rangeForward; t += step) {
-                if (!frameCache.hasFrame('preview', t)) {
-                    framesToRender.push(t);
-                }
-            }
-
-            // Phase 3: Backward (Priority 3)
-            for (let t = currentTime - step; t >= Math.max(0, currentTime - rangeBackward); t -= step) {
-                if (!frameCache.hasFrame('preview', t)) {
-                    framesToRender.push(t);
-                }
-            }
-
-            if (framesToRender.length === 0) {
-                isRenderingRef.current = false;
-                return;
-            }
-
-            // Render frames sequentially to avoid overloading the decoder
-            const renderNext = async (index: number) => {
-                if (index >= framesToRender.length || isPlaying) {
-                    isRenderingRef.current = false;
-                    return;
-                }
-
+            const frameIndex = frames[index];
+            if (!frameCache.hasFrameAtIndex('preview', frameIndex)) {
                 try {
-                    // This will fill the cache. isPriority: false ensures we don't block the main renderer.
-                    await videoCache.getFrameAt('preview', videoFile, framesToRender[index], false);
-                } catch (e) {
-                    console.warn('Background render failed for time:', framesToRender[index], e);
-                }
-
-                // Schedule next frame in the next "idle" period or small timeout
-                if ('requestIdleCallback' in window) {
-                    (window as unknown as { requestIdleCallback: (cb: () => void, options?: { timeout: number }) => void }).requestIdleCallback(
-                        () => renderNext(index + 1),
-                        { timeout: 200 }
+                    await videoCache.getFrameAt(
+                        'preview',
+                        videoFile,
+                        frameIndexToTime(frameIndex, cacheFps),
+                        { mode: 'warmup', fps: cacheFps }
                     );
-                } else {
-                    setTimeout(() => renderNext(index + 1), 16);
+                } catch (error) {
+                    console.warn('Background frame warmup failed:', error);
                 }
-            };
+            }
 
-            renderNext(0);
+            requestIdle(() => {
+                void renderFrames(frames, index + 1);
+            });
         };
 
-        // Wait for 500ms of idle time before starting background rendering
-        idleTimeoutRef.current = window.setTimeout(startBackgroundRendering, 500);
+        const start = () => {
+            const frames = buildPreviewWarmupFramePlan({
+                isPlaying,
+                currentFrameIndex,
+                cacheFps,
+                rangeForward,
+                rangeBackward,
+                sparseFps: fps,
+                playbackLookaheadFrames,
+                hasFrame: (frameIndex) => frameCache.hasFrameAtIndex('preview', frameIndex),
+            });
+            if (frames.length > 0) {
+                void renderFrames(frames);
+            }
+        };
+
+        if (isPlaying) {
+            start();
+        } else {
+            idleTimeoutRef.current = window.setTimeout(start, 500);
+        }
 
         return () => {
+            runIdRef.current += 1;
             if (idleTimeoutRef.current) {
-                clearTimeout(idleTimeoutRef.current);
+                window.clearTimeout(idleTimeoutRef.current);
+                idleTimeoutRef.current = null;
             }
         };
-    }, [isPlaying, currentTime, videoFile, rangeForward, rangeBackward, fps]);
+    }, [
+        cacheFps,
+        currentFrameIndex,
+        fps,
+        isPlaying,
+        playbackLookaheadFrames,
+        rangeBackward,
+        rangeForward,
+        videoFile,
+    ]);
 }

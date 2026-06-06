@@ -11,8 +11,10 @@ import { Sparkles, Database, Trash2, AlertCircle, FileUp } from 'lucide-react';
 import { storageService } from '@/lib/storage/storage-service';
 import { peekProjectBundle, importProjectBundle, PROJECT_BUNDLE_VERSION } from '@/lib/project-bundle';
 import { ImportWarningDialog } from '../dialogs/ImportWarningDialog';
+import { isAuthEnabled } from '@/lib/config/feature-flags';
 
 export function ProjectDashboard() {
+    const authEnabled = isAuthEnabled();
     const { savedProjects, createProject, deleteProject } = useProjectStore();
     const [searchQuery, setSearchQuery] = useState('');
     const [isCreating, setIsCreating] = useState(false);
@@ -162,8 +164,12 @@ export function ProjectDashboard() {
                     </div>
                     <div className="flex items-center gap-6 w-full md:w-auto">
                         <SearchBar value={searchQuery} onChange={setSearchQuery} />
-                        <div className="h-8 w-[1px] bg-gray-800 hidden md:block" />
-                        <UserMenu />
+                        {authEnabled && (
+                            <>
+                                <div className="h-8 w-[1px] bg-gray-800 hidden md:block" />
+                                <UserMenu />
+                            </>
+                        )}
                     </div>
                 </header>
 

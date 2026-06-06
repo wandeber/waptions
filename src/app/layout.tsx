@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { isAuthEnabled } from "@/lib/config/feature-flags";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,12 +17,16 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const content = isAuthEnabled() ? (
+    <SessionProvider>
+      {children}
+    </SessionProvider>
+  ) : children;
+
   return (
     <html lang="en">
       <body>
-        <SessionProvider>
-          {children}
-        </SessionProvider>
+        {content}
       </body>
     </html>
   );

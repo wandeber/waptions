@@ -1,23 +1,18 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Home Page', () => {
-  test('should load the home page successfully', async ({ page }) => {
+  test('should expose the public dashboard without login', async ({ page }) => {
     await page.goto('/');
-    
-    // Verify that the main components are present
-    await expect(page.getByRole('heading', { name: /waptions/i })).toBeVisible();
-    
-    // Verify that the video editor components are present
-    await expect(page.locator('[data-testid="video-viewport"]')).toBeVisible();
-    await expect(page.locator('[data-testid="subtitle-editor"]')).toBeVisible();
+
+    await expect(page).toHaveURL('/');
+    await expect(page.getByRole('heading', { name: 'Waptions' })).toBeVisible();
+    await expect(page.getByText('Empieza algo nuevo')).toBeVisible();
   });
 
-  test('should have working video upload functionality', async ({ page }) => {
-    await page.goto('/');
-    
-    // Verify that the upload zone is present and interactive
-    const uploadZone = page.locator('[data-testid="upload-zone"]');
-    await expect(uploadZone).toBeVisible();
-    await expect(uploadZone).toBeEnabled();
+  test('should keep the login page hidden when auth is disabled', async ({ page }) => {
+    await page.goto('/login');
+
+    await expect(page).toHaveURL('/');
+    await expect(page.getByRole('heading', { name: 'Waptions' })).toBeVisible();
   });
 }); 

@@ -55,7 +55,14 @@ export default defineConfig({
 
   /* Run your local dev server before starting the tests */
   webServer: {
-    command: 'npm run dev',
+    command: 'pnpm run dev',
+    // Auth.js requires a secret even when tests only request public pages.
+    // Keep local E2E runs self-contained while preserving any caller-provided
+    // secret for environments that already define one.
+    env: {
+      ...process.env,
+      AUTH_SECRET: process.env.AUTH_SECRET ?? 'playwright-local-auth-secret',
+    },
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
   },

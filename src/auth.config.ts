@@ -1,4 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
+import { isAuthEnabled } from "@/lib/config/feature-flags";
 
 export const authConfig = {
     pages: {
@@ -7,6 +8,14 @@ export const authConfig = {
     },
     callbacks: {
         authorized({ auth, request: { nextUrl } }) {
+            if (!isAuthEnabled()) {
+                if (nextUrl.pathname.startsWith("/login")) {
+                    return Response.redirect(new URL("/", nextUrl));
+                }
+
+                return true;
+            }
+
             const isLoggedIn = !!auth?.user;
             const isLoginPage = nextUrl.pathname.startsWith("/login");
             const isApiAuth = nextUrl.pathname.startsWith("/api/auth");

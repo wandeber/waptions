@@ -1,4 +1,15 @@
+import { shouldShowPaidTranscriptionModels } from "@/lib/config/feature-flags";
+
 export type TranscriptionModelId = 'whisper-1' | 'deepgram-nova-2' | 'premium-whisper-gpt4o';
+export type OpenAICompatibleTranscriptionRequestMode = 'browser' | 'server';
+
+export interface OpenAICompatibleTranscriptionSettings {
+    enabled: boolean;
+    requestMode?: OpenAICompatibleTranscriptionRequestMode;
+    endpoint: string;
+    apiKey?: string;
+    model?: string;
+}
 
 export interface TranscriptionModel {
     id: TranscriptionModelId;
@@ -36,3 +47,7 @@ export const SUPPORTED_MODELS: TranscriptionModel[] = [
         badgeColor: 'green'
     }
 ];
+
+export function getVisibleTranscriptionModels(): TranscriptionModel[] {
+    return shouldShowPaidTranscriptionModels() ? SUPPORTED_MODELS : [];
+}

@@ -1,0 +1,15 @@
+# Keep dependency lifecycle scripts blocked by default. PNPM 11 treats any
+# dependency build script that is not listed here as unreviewed and fails the
+# install, so each entry must be an explicit review decision.
+allowBuilds:
+  esbuild: false
+  sharp: false
+  unrs-resolver: false
+  workerd: false
+
+# Security overrides stay in PNPM's project config in v11. They pin vulnerable
+# transitive packages to patched versions without forcing unrelated major
+# upgrades of the direct dependencies that currently pull them in.
+overrides:
+  postcss: 8.5.15
+  ws: 8.20.1

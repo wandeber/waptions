@@ -1,11 +1,16 @@
 import { BaseAction, ActionContext } from "./base.action";
 import { getAiProvider } from "@/lib/ai/ai-providers";
 import { Subtitle } from "@/types/timeline";
+import { shouldShowPaidTranscriptionModels } from "@/lib/config/feature-flags";
+import { assertServerTranscriptionEndpointAllowed } from "@/lib/ai/openai-compatible-transcription-server";
+import { transcribeWithOpenAICompatibleEndpoint } from "@/lib/ai/openai-compatible-transcription";
 import { ValidationError } from "@/lib/utils/errors";
+import type { OpenAICompatibleTranscriptionSettings } from "@/types/transcription";
 
 interface GenerateSubtitlesInput {
     audioFile: File;
     model: string;
+    customOpenAITranscription?: OpenAICompatibleTranscriptionSettings | null;
 }
 
 interface WhisperWord {
@@ -40,25 +45,46 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
     protected async execute(input: GenerateSubtitlesInput, ctx: ActionContext): Promise<unknown> {
         // Avoid unused var lint
         void ctx;
-        const { audioFile, model } = input;
+        const { audioFile, model, customOpenAITranscription } = input;
 
         if (!audioFile) {
             throw new ValidationError("No audio file provided");
         }
 
+        const paidModelsVisible = shouldShowPaidTranscriptionModels();
+        const usesCustomServerTranscriber = customOpenAITranscription?.enabled && customOpenAITranscription.requestMode !== 'browser';
+        if (!paidModelsVisible) {
+            if (model !== 'whisper-1') {
+                throw new ValidationError("Paid transcription models are disabled.");
+            }
+
+            if (!usesCustomServerTranscriber) {
+                throw new ValidationError("Configure a custom OpenAI-compatible transcriber.");
+            }
+        }
+
         const whisperProvider = getAiProvider('openai');
         const gpt4oProvider = getAiProvider('openai');
         const o4miniProvider = getAiProvider('openai');
+        const transcribeWhisper = (options: Record<string, unknown>) => {
+            if (customOpenAITranscription?.enabled && customOpenAITranscription.requestMode !== 'browser') {
+                assertServerTranscriptionEndpointAllowed(customOpenAITranscription.endpoint);
 
-        console.log('Iniciando proceso de transcripción...', {
-            model,
-            audioFileSize: audioFile.size
-        });
+                return transcribeWithOpenAICompatibleEndpoint({
+                    settings: customOpenAITranscription,
+                    audioFile,
+                    fallbackModel: 'whisper-1',
+                    options,
+                });
+            }
+
+            return whisperProvider.transcribe('whisper-1', audioFile, options);
+        };
 
         switch (model) {
             case 'premium-whisper-gpt4o': {
                 // STEP 1: Whisper for word-by-word timestamps
-                const whisperRes = await whisperProvider.transcribe('whisper-1', audioFile, {
+                const whisperRes = await transcribeWhisper({
                     response_format: "verbose_json",
                     timestamp_granularities: ["word"],
                     prompt: `Usa puntuación adecuada.`,
@@ -181,7 +207,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
             }
 
             case 'whisper-1': {
-                const transcription = await whisperProvider.transcribe('whisper-1', audioFile, {
+                const transcription = await transcribeWhisper({
                     response_format: "verbose_json",
                     timestamp_granularities: ["word"],
                     prompt: `Usa puntuación correcta.`,

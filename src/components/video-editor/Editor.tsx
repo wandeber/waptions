@@ -10,18 +10,48 @@ import { useRouter } from 'next/navigation';
 import { Subtitle } from '@/types/timeline';
 import { ConfirmDialog } from '@/components/design-system/ConfirmDialog';
 import { TranscriptionModal } from '@/components/video-editor/TranscriptionModal';
-import { TranscriptionModelId } from '@/types/transcription';
+import { OpenAICompatibleTranscriptionSettings, TranscriptionModelId } from '@/types/transcription';
 import { EditorHeader } from '@/components/video-editor/EditorHeader';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useVideoStore } from '@/stores/video-store';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { transcribeWithOpenAICompatibleEndpoint } from '@/lib/ai/openai-compatible-transcription';
 import { extractAudio } from '@/lib/mediabunny-utils';
 import { useProjectStore } from '@/stores/project-store';
 import { useBackgroundRenderer } from '@/hooks/use-background-renderer';
 import { storageService } from '@/lib/storage/storage-service';
 import { exportProjectBundle } from '@/lib/project-bundle';
+
+interface GenerateSubtitlesResponse {
+    subtitles?: Subtitle[];
+    raw?: Subtitle[];
+    groups?: Array<{ id: string; words: Subtitle[] }>;
+}
+
+interface BrowserWhisperWord {
+    word: string;
+    start: number;
+    end: number;
+}
+
+interface BrowserWhisperResponse {
+    words?: BrowserWhisperWord[];
+}
+
+const buildSubtitlesFromBrowserWhisper = (transcription: BrowserWhisperResponse): Subtitle[] => {
+    if (!transcription.words) {
+        return [];
+    }
+
+    return transcription.words.map(word => ({
+        id: crypto.randomUUID(),
+        startTime: word.start,
+        endTime: word.end,
+        text: word.word.trim()
+    }));
+};
 
 export function Editor() {
     const {
@@ -114,10 +144,11 @@ export function Editor() {
             }
 
             if (selectedSubtitleIds.length > 0) {
-                [...selectedSubtitleIds].forEach(id => {
-                    const track = tracks.find(t => t.subtitles.some(s => s.id === id));
-                    if (track) removeSubtitleFromTrack(track.id, id);
-                });
+                const selectedIds = new Set(selectedSubtitleIds);
+                setTracks(tracks.map(track => ({
+                    ...track,
+                    subtitles: track.subtitles.filter(subtitle => !selectedIds.has(subtitle.id))
+                })));
                 clearSelection();
             }
         },
@@ -224,7 +255,10 @@ export function Editor() {
         }
     };
 
-    const handleConfirmTranscription = async (modelId: TranscriptionModelId) => {
+    const handleConfirmTranscription = async (
+        modelId: TranscriptionModelId,
+        customOpenAITranscription?: OpenAICompatibleTranscriptionSettings | null
+    ) => {
         if (!videoFile || !audioUrl) return;
 
         try {
@@ -232,20 +266,46 @@ export function Editor() {
 
             // Extraer solo el audio para optimizar el envío (< 25MB)
             const audioBlob = await extractAudio(videoFile);
-            const formData = new FormData();
-            formData.append('audio', audioBlob, 'audio.mp4');
-            formData.append('model', modelId);
+            let data: GenerateSubtitlesResponse;
 
-            // Llamar al endpoint
-            const response = await fetch('/api/generate-subtitles', {
-                method: 'POST',
-                body: formData,
-            });
+            if (modelId === 'whisper-1' && customOpenAITranscription?.enabled && customOpenAITranscription.requestMode === 'browser') {
+                try {
+                    const transcription = await transcribeWithOpenAICompatibleEndpoint({
+                        settings: customOpenAITranscription,
+                        audioFile: audioBlob,
+                        fallbackModel: 'whisper-1',
+                        options: {
+                            response_format: "verbose_json",
+                            timestamp_granularities: ["word"],
+                            prompt: `Usa puntuación correcta.`,
+                            temperature: 0
+                        }
+                    }) as BrowserWhisperResponse;
 
-            const data = await response.json();
+                    data = { subtitles: buildSubtitlesFromBrowserWhisper(transcription) };
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'No se pudo llamar al transcriptor desde el navegador.';
+                    throw new Error(`${message} Revisa que el endpoint permite CORS desde ${window.location.origin}.`);
+                }
+            } else {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'audio.mp4');
+                formData.append('model', modelId);
+                if (customOpenAITranscription?.enabled) {
+                    formData.append('customOpenAITranscription', JSON.stringify(customOpenAITranscription));
+                }
 
-            if (!response.ok) {
-                throw new Error(data.error || 'Error al generar subtítulos');
+                // Llamar al endpoint
+                const response = await fetch('/api/generate-subtitles', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error((data as { error?: string }).error || 'Error al generar subtítulos');
+                }
             }
 
             const fps = detectedFps || 30;
@@ -260,14 +320,15 @@ export function Editor() {
 
             if (activeTrack) {
                 const timelineStore = useTimelineStore.getState();
+                timelineStore.pushHistory();
 
                 if (modelId === 'premium-whisper-gpt4o') {
                     // PREMIUM FLOW: Use pre-grouped data from API
-                    const snappedRaw = snapSubtitles(data.raw as Subtitle[]);
+                    const snappedRaw = snapSubtitles(data.raw || []);
                     const snappedGroups: { [key: string]: Subtitle[] } = {};
                     const containerIds: string[] = [];
 
-                    (data.groups as Array<{ id: string; words: Subtitle[] }>).forEach((groupObj) => {
+                    (data.groups || []).forEach((groupObj) => {
                         snappedGroups[groupObj.id] = snapSubtitles(groupObj.words);
                         containerIds.push(groupObj.id);
                     });
@@ -293,10 +354,10 @@ export function Editor() {
                     const updatedTracks = tracks.map(t =>
                         t.id === activeTrack.id ? { ...t, subtitles: initialTimelineSubtitles } : t
                     );
-                    setTracks(updatedTracks);
+                    setTracks(updatedTracks, { skipHistory: true });
                 } else {
                     // STANDARD FLOW: Use legacy word-to-subtitle logic
-                    const snappedSubtitles = snapSubtitles(data.subtitles as Subtitle[]);
+                    const snappedSubtitles = snapSubtitles(data.subtitles || []);
 
                     // 1. Raw Layer
                     // 2. Grouper Layer
@@ -308,7 +369,7 @@ export function Editor() {
                     const updatedTracks = tracks.map(t =>
                         t.id === activeTrack.id ? { ...t, subtitles: initialTimelineSubtitles } : t
                     );
-                    setTracks(updatedTracks);
+                    setTracks(updatedTracks, { skipHistory: true });
                 }
             }
             setShowTranscriptionModal(false);

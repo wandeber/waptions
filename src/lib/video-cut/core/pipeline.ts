@@ -27,10 +27,6 @@ export class CutDetectionPipeline {
         });
 
         let prevFrame: AnalysisFrame | null = null;
-        let processedCount = 0;
-        const startTime = performance.now();
-
-        console.log(`[CutDetection] Starting pipeline: ${duration}s, ${fps}fps`);
 
         for await (const currFrame of this.source.frames()) {
             if (prevFrame) {
@@ -42,23 +38,14 @@ export class CutDetectionPipeline {
                 });
             }
             prevFrame = currFrame;
-            processedCount++;
 
             if (onProgress && duration > 0) {
                 onProgress(currFrame.timeSec / duration);
             }
         }
 
-        const endTime = performance.now();
-        const elapsedSec = (endTime - startTime) / 1000;
-        const effectiveFps = processedCount / elapsedSec;
-
-        console.log(`[CutDetection] Processed ${processedCount} frames in ${elapsedSec.toFixed(2)}s (${effectiveFps.toFixed(2)} fps)`);
-
         const picker = new PeakPicker(this.config, this.detector.id);
         const cuts = picker.pick(scoredBoundaries);
-
-        console.log(`[CutDetection] Found ${cuts.length} cuts (candidates: ${scoredBoundaries.filter(b => b.score >= this.config.minScore).length})`);
 
         return cuts;
     }

@@ -135,7 +135,7 @@ function parseEnvString(content) {
  * Upload a single environment variable to Cloudflare using Wrangler
  */
 function uploadVar(key, value, env, dryRun = false) {
-    const command = `npx wrangler secret put ${key} --env ${env}`;
+    const command = `pnpm exec wrangler secret put ${key} --env ${env}`;
 
     if (dryRun) {
         console.log(`[DRY RUN] Would execute: ${command}`);

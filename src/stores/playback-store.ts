@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { frameIndexToTime, timeToFrameIndex } from '@/lib/frame-utils';
 
 interface PlaybackState {
     isPlaying: boolean;
@@ -40,6 +41,9 @@ const startTimer = (store: () => PlaybackStore) => {
     if (playbackTimer) return;
 
     let lastUpdate = performance.now();
+    let internalCurrentTime = store().currentTime;
+    let lastPublishedFrameIndex = timeToFrameIndex(internalCurrentTime, store().fps);
+    let lastObservedStoreTime = internalCurrentTime;
 
     const updateTime = () => {
         const state = store();
@@ -49,22 +53,37 @@ const startTimer = (store: () => PlaybackStore) => {
         }
 
         const now = performance.now();
+        if (Math.abs(state.currentTime - lastObservedStoreTime) > 0.000001) {
+            internalCurrentTime = state.currentTime;
+            lastPublishedFrameIndex = timeToFrameIndex(internalCurrentTime, state.fps);
+            lastObservedStoreTime = state.currentTime;
+            lastUpdate = now;
+        }
+
         const delta = (now - lastUpdate) / 1000;
         lastUpdate = now;
 
         if (delta > 0 && delta < 0.2) {
-            const newTime = state.currentTime + delta * state.speed;
+            internalCurrentTime += delta * state.speed;
 
-            if (newTime >= state.contentDuration - 0.001) {
+            if (internalCurrentTime >= state.contentDuration - 0.001) {
                 state.pause();
                 state.seek(state.contentDuration);
             } else {
-                // Use a non-quantizing internal update to prevent the "stuck" behavior
-                // but keep UI reactive
-                usePlaybackStore.setState({ currentTime: newTime });
-                window.dispatchEvent(
-                    new CustomEvent('playback-update', { detail: { time: newTime } })
-                );
+                const nextFrameIndex = timeToFrameIndex(internalCurrentTime, state.fps);
+
+                // Publish at most once per visual frame. This keeps the timeline
+                // reactive while preventing the preview renderer from doing
+                // duplicate cache lookups for RAF ticks inside the same frame.
+                if (nextFrameIndex !== lastPublishedFrameIndex) {
+                    lastPublishedFrameIndex = nextFrameIndex;
+                    const nextFrameTime = frameIndexToTime(nextFrameIndex, state.fps);
+                    lastObservedStoreTime = nextFrameTime;
+                    usePlaybackStore.setState({ currentTime: nextFrameTime });
+                    window.dispatchEvent(
+                        new CustomEvent('playback-update', { detail: { time: nextFrameTime } })
+                    );
+                }
             }
         }
 

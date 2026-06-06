@@ -37,7 +37,6 @@ export function ExportButton({
   const [includeAudio] = useState(DEFAULT_EXPORT_OPTIONS.includeAudio ?? true);
 
   const handleExport = async () => {
-    console.log('handleExport triggered', { videoFile, tracksCount: tracks.length, isExporting });
     if (!videoFile) return;
 
     try {
@@ -90,14 +89,12 @@ export function ExportButton({
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-
-        console.log('Exportación completada con éxito');
       } else if (result.error) {
-        console.error('Error de exportación:', result.error);
+        console.error('Export failed:', result.error);
         alert(`Error al exportar: ${result.error}`);
       }
     } catch (error) {
-      console.error('Error durante la exportación:', error);
+      console.error('Unexpected export error:', error);
       alert('Error inesperado durante la exportación');
     } finally {
       setIsExporting(false);
@@ -201,8 +198,7 @@ export function ExportButton({
       <Button
         variant="primary"
         onClick={() => {
-          console.log('Main Export button clicked', { videoFile: !!videoFile, totalSubtitles });
-          if (!isExporting) setShowOptions(!showOptions);
+          if (!isExporting) setShowOptions((isOpen) => !isOpen);
         }}
         disabled={!videoFile || totalSubtitles === 0}
         className="text-sm font-medium h-8 px-4"
