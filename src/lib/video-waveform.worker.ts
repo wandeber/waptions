@@ -24,6 +24,19 @@ workerScope.onmessage = async (event) => {
         const peaks = await extractAudioFileWaveformPeaks(
             event.data.file,
             event.data.duration,
+            () => false,
+            undefined,
+            {
+                onProgress: (progressPeaks) => {
+                    // Progress owns sliced buffers, not the decoder's live accumulator. Transfer
+                    // therefore avoids a main-thread copy without detaching arrays that the next
+                    // decoded sample still needs to update.
+                    workerScope.postMessage(
+                        { type: 'progress', peaks: progressPeaks },
+                        [progressPeaks.min.buffer, progressPeaks.max.buffer],
+                    );
+                },
+            },
         );
         if (!peaks) {
             throw new Error('Waveform extraction ended before producing peaks.');

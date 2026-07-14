@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Deterministic browser-editor E2E media generated entirely from synthetic filters.",
+  "generator": {
+    "ffmpeg": {
+      "package": "ffmpeg-static",
+      "version": "5.3.0",
+      "license": "GPL-3.0-or-later",
+      "source": "https://github.com/eugeneware/ffmpeg-static"
+    },
+    "ffprobe": {
+      "package": "ffprobe-static",
+      "version": "3.1.0",
+      "license": "MIT",
+      "source": "https://github.com/joshwnj/ffprobe-static.git"
+    }
+  },
+  "files": [
+    {
+      "fileName": "video-red-440hz.webm",
+      "mediaType": "video/webm",
+      "license": "CC0-1.0",
+      "content": {
+        "color": "#dc2626",
+        "sineFrequencyHz": 440,
+        "durationSeconds": 2
+      },
+      "byteLength": 21356,
+      "sha256": "d70ab4dc46bd0710395be78dfa2e3ff38bddc6a93ad7d532b4c372a4b886b475",
+      "probe": {
+        "formatName": "matroska,webm",
+        "durationSeconds": 2,
+        "streams": [
+          {
+            "index": 0,
+            "codecType": "video",
+            "codecName": "vp9",
+            "width": 320,
+            "height": 180
+          },
+          {
+            "index": 1,
+            "codecType": "audio",
+            "codecName": "opus",
+            "sampleRate": 48000,
+            "channels": 1
+          }
+        ]
+      }
+    },
+    {
+      "fileName": "video-blue-660hz.webm",
+      "mediaType": "video/webm",
+      "license": "CC0-1.0",
+      "content": {
+        "color": "#2563eb",
+        "sineFrequencyHz": 660,
+        "durationSeconds": 2
+      },
+      "byteLength": 22945,
+      "sha256": "e09c068ae6d91ccac3203782ebf84ab9000754d262ae71d59c33875ef698341f",
+      "probe": {
+        "formatName": "matroska,webm",
+        "durationSeconds": 2,
+        "streams": [
+          {
+            "index": 0,
+            "codecType": "video",
+            "codecName": "vp9",
+            "width": 320,
+            "height": 180
+          },
+          {
+            "index": 1,
+            "codecType": "audio",
+            "codecName": "opus",
+            "sampleRate": 48000,
+            "channels": 1
+          }
+        ]
+      }
+    },
+    {
+      "fileName": "standalone-880hz.wav",
+      "mediaType": "audio/wav",
+      "license": "CC0-1.0",
+      "content": {
+        "sineFrequencyHz": 880,
+        "durationSeconds": 2
+      },
+      "byteLength": 192044,
+      "sha256": "6e5e0c91b9883e600177505763237af7cc16add887b88b81f3f3f3ea3903bcd1",
+      "probe": {
+        "formatName": "wav",
+        "durationSeconds": 2,
+        "streams": [
+          {
+            "index": 0,
+            "codecType": "audio",
+            "codecName": "pcm_s16le",
+            "sampleRate": 48000,
+            "channels": 1
+          }
+        ]
+      }
+    }
+  ]
+}

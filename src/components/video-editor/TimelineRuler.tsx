@@ -2,24 +2,20 @@
 
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
-import { useState, useEffect } from 'react';
-import { frameCache } from '@/lib/frame-cache';
+import { useEffect, useMemo, useState } from 'react';
+import { videoCache } from '@/lib/video-cache';
 import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
 
 interface TimelineRulerProps {
     duration: number;
     fps: number;
-    zoomLevel?: number;
-    pixelsPerSecond?: number;
+    zoomLevel: number;
+    pixelsPerSecond: number;
     onTimeUpdate?: (time: number) => void;
 }
 
-export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSecond: propPPS, onTimeUpdate }: TimelineRulerProps) {
-    const store = useTimelineStore();
-    const zoom = propZoom ?? store.zoomLevel;
-    const pixelsPerSecond = propPPS ?? store.pixelsPerSecond;
-
-    const pps = pixelsPerSecond * zoom;
+export function TimelineRuler({ duration, fps, zoomLevel, pixelsPerSecond, onTimeUpdate }: TimelineRulerProps) {
+    const pps = pixelsPerSecond * zoomLevel;
     const frameDuration = fps > 0 ? 1 / fps : 0.1;
 
     const snapTime = (time: number) => {
@@ -178,6 +174,8 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
     return (
         <div
             className="relative h-8 bg-gray-800/50 border-b border-gray-700 select-none cursor-pointer"
+            data-testid="timeline-ruler"
+            data-duration-seconds={duration}
             style={{ width: `${duration * pps}px` }}
             onMouseDown={handleMouseDown}
         >
@@ -191,20 +189,30 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
     const [cachedSegments, setCachedSegments] = useState<{ start: number; end: number }[]>([]);
     const fps = usePlaybackStore(s => s.fps);
     const videoClips = useTimelineStore((state) => state.videoClips);
+    const videoSources = useTimelineStore((state) => state.videoSources);
+    const sourceFingerprints = useMemo(
+        () => new Map(videoSources.map((source) => [source.id, source.fingerprint])),
+        [videoSources],
+    );
     const frameDuration = fps > 0 ? 1 / fps : 0.033;
 
     useEffect(() => {
         const updateSegments = () => {
-            const timestamps = buildClipPlacements(videoClips).flatMap((placement) => (
-                frameCache.getCachedTimestamps(`preview:${placement.clip.sourceId}`)
+            const timestamps = buildClipPlacements(videoClips).flatMap((placement) => {
+                const sourceFingerprint = sourceFingerprints.get(placement.clip.sourceId);
+                if (!sourceFingerprint) return [];
+                return videoCache.getCachedPreviewTimestamps(
+                    placement.clip.sourceId,
+                    sourceFingerprint,
+                )
                     .filter((sourceTime) => (
                         sourceTime >= placement.clip.sourceStart
                         && sourceTime < placement.clip.sourceEnd
                     ))
                     .map((sourceTime) => (
                         placement.projectStart + sourceTime - placement.clip.sourceStart
-                    ))
-            )).sort((left, right) => left - right);
+                    ));
+            }).sort((left, right) => left - right);
             if (timestamps.length === 0) {
                 setCachedSegments([]);
                 return;
@@ -235,7 +243,7 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
         const interval = setInterval(updateSegments, 500);
         updateSegments();
         return () => clearInterval(interval);
-    }, [frameDuration, videoClips]);
+    }, [frameDuration, sourceFingerprints, videoClips]);
 
     if (cachedSegments.length === 0) return null;
 

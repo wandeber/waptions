@@ -10,7 +10,6 @@ import { PasteIcon } from '@/components/icons/PasteIcon';
 import { SpinnerIcon } from '@/components/icons/SpinnerIcon';
 import { HardDriveDownload, Save } from 'lucide-react';
 import { ExportButton } from './ExportButton';
-import { SubtitleTrack } from '@/types/timeline';
 
 interface EditorHeaderProps {
     projectName: string;
@@ -18,6 +17,7 @@ interface EditorHeaderProps {
     onClose: () => void;
     onUndo: () => void;
     onRedo: () => void;
+    onHistoryPointerDown: () => void;
     canUndo: boolean;
     canRedo: boolean;
     onCopy: () => void;
@@ -28,8 +28,6 @@ interface EditorHeaderProps {
     isDirty: boolean;
     isSaving: boolean;
     onExportBundle: () => void;
-    tracks: SubtitleTrack[];
-    fps: number;
 }
 
 export function EditorHeader({
@@ -38,6 +36,7 @@ export function EditorHeader({
     onClose,
     onUndo,
     onRedo,
+    onHistoryPointerDown,
     canUndo,
     canRedo,
     onCopy,
@@ -47,9 +46,7 @@ export function EditorHeader({
     onSave,
     isDirty,
     isSaving,
-    onExportBundle,
-    tracks,
-    fps
+    onExportBundle
 }: EditorHeaderProps) {
     return (
         <header className="flex-none h-12 px-3 bg-gray-800 flex justify-between items-center border-b border-gray-700 gap-3">
@@ -75,6 +72,7 @@ export function EditorHeader({
                 <div className="flex items-center gap-2">
                     <button
                         className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!canUndo ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        onPointerDownCapture={onHistoryPointerDown}
                         onClick={onUndo}
                         disabled={!canUndo}
                         title="Deshacer (Ctrl+Z)"
@@ -83,6 +81,7 @@ export function EditorHeader({
                     </button>
                     <button
                         className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!canRedo ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        onPointerDownCapture={onHistoryPointerDown}
                         onClick={onRedo}
                         disabled={!canRedo}
                         title="Rehacer (Ctrl+Shift+Z)"
@@ -140,10 +139,7 @@ export function EditorHeader({
 
                 <div className="w-px h-6 bg-gray-700 mx-1" />
 
-                <ExportButton
-                    tracks={tracks}
-                    fps={fps}
-                />
+                <ExportButton />
             </div>
         </header>
     );

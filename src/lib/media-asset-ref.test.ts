@@ -3,6 +3,7 @@ import type { AudioSourceAsset, VideoSourceAssetV3 } from '@/types/video';
 import {
     getAudioMediaCacheKey,
     getEditorMediaAssetKey,
+    getWaveformRepositoryKey,
     resolveAudioMediaAsset,
 } from './media-asset-ref';
 
@@ -40,5 +41,30 @@ describe('typed media asset keys', () => {
             [{ ...videoAsset, id: 'silent', hasAudio: false }],
             [],
         )).toBeNull();
+    });
+
+    it('keys derived waveforms by typed fingerprint, algorithm, and resolution', () => {
+        const video = { ...videoAsset, fingerprint: 'same:file|fingerprint' };
+        const audio = { ...audioAsset, fingerprint: 'same:file|fingerprint' };
+
+        expect(getWaveformRepositoryKey(
+            { kind: 'video-source-audio', asset: video },
+            2,
+            4_000,
+        )).toBe('waveform:video-source-audio:same%3Afile%7Cfingerprint:v2:r4000');
+        expect(getWaveformRepositoryKey(
+            { kind: 'audio-source', asset: audio },
+            2,
+            4_000,
+        )).toBe('waveform:audio-source:same%3Afile%7Cfingerprint:v2:r4000');
+        expect(getWaveformRepositoryKey(
+            { kind: 'audio-source', asset: { ...audio, id: 'another-project-id' } },
+            2,
+            4_000,
+        )).toBe(getWaveformRepositoryKey(
+            { kind: 'audio-source', asset: audio },
+            2,
+            4_000,
+        ));
     });
 });

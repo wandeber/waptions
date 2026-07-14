@@ -6,7 +6,7 @@ import type {
     VideoSourceDescriptorV3,
 } from '@/types/video';
 import { getEditorMediaAssetKey } from '@/lib/media-asset-ref';
-import { createVideoSourceFingerprint } from '@/lib/video-timeline';
+import { doesVideoSourceFingerprintMatch } from '@/lib/video-timeline';
 
 export const LEGACY_VIDEO_SOURCE_KEY_PREFIX = 'source:';
 export const LEGACY_SCALAR_VIDEO_KEY = 'video-file';
@@ -94,7 +94,7 @@ function validateResolvedFile(
     if (!isFileLike(value)) {
         throw new Error(`Stored asset "${storageKey}" for source "${descriptor.id}" is not a File.`);
     }
-    const fingerprint = createVideoSourceFingerprint({
+    const fingerprintMatches = doesVideoSourceFingerprintMatch(descriptor.fingerprint, {
         name: value.name,
         type: value.type,
         size: value.size,
@@ -105,7 +105,7 @@ function validateResolvedFile(
         || value.type !== descriptor.mimeType
         || value.size !== descriptor.size
         || value.lastModified !== descriptor.lastModified
-        || fingerprint !== descriptor.fingerprint
+        || !fingerprintMatches
     ) {
         throw new Error(`Stored asset "${storageKey}" does not match source descriptor "${descriptor.id}".`);
     }

@@ -1,9 +1,8 @@
 import type { AudioMixPlan } from './audio-mix-plan';
-import {
-    renderAudioMixWindow,
-    type AudioContributorDecoder,
-} from './audio-dsp';
+import { buildTimelineAudioMixSemanticKey } from './audio-runtime-projection';
+import { renderAudioMixWindow, type AudioContributorDecoder } from './audio-dsp';
 import { MediabunnyAudioDecoder } from './mediabunny-audio-decoder';
+import { runtimeDiagnostics } from './runtime-diagnostics';
 import {
     clampTimelinePlaybackRate,
     getTimelineAudioWorkletUrl,
@@ -22,7 +21,7 @@ import type {
 const SCHEDULE_BLOCK_SAMPLES = 4_096;
 const LOW_WATER_SAMPLES = 12_000;
 const HIGH_WATER_SAMPLES = 48_000;
-const MAX_CACHE_BLOCKS = 12;
+const MAX_CACHE_BLOCKS = 16;
 
 interface MessagePortLike {
     onmessage: ((event: MessageEvent<TimelineAudioWorkletEvent>) => void) | null;
@@ -48,11 +47,13 @@ interface AudioContextLike {
     audioWorklet: { addModule(url: string): Promise<void> };
     createGain(): GainNodeLike;
     resume(): Promise<void>;
+    suspend(): Promise<void>;
     close(): Promise<void>;
 }
 
 export interface TimelineAudioDecoderPort {
-    setDocument(document: TimelineAudioEngineSnapshot['document'], generation: number): void;
+    /** Reconciles source sessions by typed id and fingerprint; it does not own render generations. */
+    setDocument(document: TimelineAudioEngineSnapshot['document']): void;
     decode: AudioContributorDecoder;
     dispose(): void;
 }
@@ -62,6 +63,7 @@ export interface TimelineAudioEngineDependencies {
     createWorkletNode?: (context: AudioContextLike) => AudioWorkletNodeLike;
     createDecoder?: () => TimelineAudioDecoderPort;
     origin?: () => string;
+    now?: () => number;
 }
 
 interface CachedMixBlock {
@@ -77,11 +79,12 @@ type WorkletMessageWithoutEnvelope = TimelineAudioWorkletMessage extends infer M
     : never;
 
 /**
- * Owns the browser's single canonical timeline-audio path.
+ * Owns the browser's one canonical real-time audio path.
  *
- * No HTMLMediaElement participates in audio playback. Every durable edit, transient override, or
- * seek increments a generation, aborts old decoder work, resets the AudioWorklet to one absolute
- * 48 kHz sample, and rebuilds a bounded low/high-water queue from the immutable mix snapshot.
+ * Editor state is split into source-catalog, audible-mix, and content-boundary domains. Only an
+ * audible mix replacement or an explicit seek aborts render work and resets the worklet queue;
+ * compatible Mediabunny sessions outlive both. This separation is the central performance
+ * contract: subtitle edits, selection changes, and seeks cannot repeatedly reopen media decoders.
  */
 export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
     private readonly callbacks: TimelineAudioEngineCallbacks;
@@ -89,9 +92,11 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
     private readonly decoder: TimelineAudioDecoderPort;
     private snapshot: TimelineAudioEngineSnapshot | null = null;
     private transientOverride: TimelineAudioTransientOverride | null = null;
+    private transientMixKey: string | null = null;
     private context: AudioContextLike | null = null;
     private node: AudioWorkletNodeLike | null = null;
     private gainNode: GainNodeLike | null = null;
+    /** Generation belongs to queued render results, never to decoder session ownership. */
     private generation = 0;
     private outputSample = 0;
     private queuedUntilSample = 0;
@@ -102,8 +107,14 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
     private transportRequestGeneration = 0;
     private abortController = new AbortController();
     private scheduling: Promise<void> | null = null;
+    /** All render generations share one tail so an aborted decoder owner unwinds before the next. */
+    private renderTail: Promise<void> = Promise.resolve();
     private audioGraphSetup: Promise<void> | null = null;
+    /** Serializes suspend/resume so a late pause cannot win after a newer explicit play gesture. */
+    private contextTransitions: Promise<void> = Promise.resolve();
     private readonly cache = new Map<string, CachedMixBlock>();
+    private readonly diagnostics = runtimeDiagnostics.createBatch();
+    private clocksSinceDiagnosticsFlush = 0;
 
     constructor(
         callbacks: TimelineAudioEngineCallbacks,
@@ -115,43 +126,75 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
             createWorkletNode: dependencies.createWorkletNode ?? createBrowserWorkletNode,
             createDecoder: dependencies.createDecoder ?? (() => new MediabunnyAudioDecoder()),
             origin: dependencies.origin ?? (() => window.location.origin),
+            now: dependencies.now ?? (() => performance.now()),
         };
         this.decoder = this.dependencies.createDecoder();
     }
 
-    setSnapshot(snapshot: TimelineAudioEngineSnapshot): void {
+    applySnapshot(snapshot: TimelineAudioEngineSnapshot, playheadSample: number): void {
         this.assertAlive();
+        assertOutputSample(playheadSample);
+        const previous = this.snapshot;
+        const sourceCatalogChanged = previous?.sourceCatalogKey !== snapshot.sourceCatalogKey;
+        const audibleMixChanged = previous?.audibleMixKey !== snapshot.audibleMixKey;
+        const contentEndChanged = previous?.contentEndSample !== snapshot.contentEndSample;
         this.snapshot = snapshot;
+
+        if (audibleMixChanged) {
+            this.transientOverride = null;
+            this.transientMixKey = null;
+            // Abort the old render generation before source reconciliation can dispose an Input
+            // it still owns. The shared render tail then lets the aborted generation unwind before
+            // a render using the new source catalog starts decoding.
+            this.resetRenderQueue(Math.min(playheadSample, snapshot.contentEndSample));
+            if (sourceCatalogChanged) this.decoder.setDocument(snapshot.document);
+            return;
+        }
+
+        if (sourceCatalogChanged) this.decoder.setDocument(snapshot.document);
+
+        if (!contentEndChanged) return;
         this.outputSample = Math.min(this.outputSample, snapshot.contentEndSample);
-        this.invalidate(this.outputSample);
+        this.queuedUntilSample = Math.min(this.queuedUntilSample, snapshot.contentEndSample);
+        this.post({ type: 'set-content-end', contentEndSample: snapshot.contentEndSample });
+        if (this.playing) this.requestRefill(this.transportRequestGeneration);
     }
 
     async play(): Promise<void> {
         this.assertAlive();
-        if (!this.snapshot) throw new Error('An audio snapshot must be set before playback.');
+        if (!this.snapshot) throw new Error('An audio snapshot must be applied before playback.');
         const requestGeneration = ++this.transportRequestGeneration;
         this.playing = true;
+        const primeStartedAt = this.dependencies.now();
         try {
             await this.ensureAudioGraph();
             if (!this.isCurrentPlayRequest(requestGeneration)) return;
-            if (this.context?.state !== 'running') await this.context?.resume();
+            await this.resumeContext(requestGeneration);
             if (!this.isCurrentPlayRequest(requestGeneration)) return;
 
-            // Prime at least the low-water interval before telling the real-time thread to advance.
-            // AudioContext construction and resume happen first so this method remains in the
-            // user's gesture call chain and satisfies browser autoplay policies. A generation
-            // guard follows every await because pause may be requested while module setup, resume,
-            // or decoding is pending; stale continuations must never restart the worklet.
+            // Context construction/resume remains in the user gesture call chain for autoplay
+            // policy. Every await is guarded because pause may win during module setup or decode.
             await this.primeForPlay(requestGeneration);
-            if (this.isCurrentPlayRequest(requestGeneration)) this.post({ type: 'play' });
+            if (this.isCurrentPlayRequest(requestGeneration)) {
+                this.post({ type: 'play' });
+                // Start after the 250 ms low-water runway, then fill toward one second in the
+                // background. Waiting for the complete high-water window made every play gesture
+                // pay four times as much decode latency before the first audible sample.
+                this.requestRefill(requestGeneration);
+            }
+            this.diagnostics.observeTiming(
+                'audio',
+                'prime',
+                Math.max(0, this.dependencies.now() - primeStartedAt),
+            );
+            this.diagnostics.flush();
         } catch (error) {
-            // A failed graph setup or scheduler cannot leave the engine claiming it is playing.
-            // The store can then expose the failure while the next explicit play gesture retries.
             if (this.isCurrentPlayRequest(requestGeneration)) {
                 this.playing = false;
                 this.transportRequestGeneration += 1;
-                this.post({ type: 'pause' });
+                this.post({ type: 'pause', requestId: this.transportRequestGeneration });
             }
+            this.diagnostics.flush();
             throw error;
         }
     }
@@ -160,17 +203,16 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
         if (this.destroyed) return;
         this.transportRequestGeneration += 1;
         this.playing = false;
-        this.post({ type: 'pause' });
+        // The worklet acknowledges this message before the context is suspended. That ordering
+        // guarantees no paused clock stream while still allowing the acknowledgement to arrive.
+        this.post({ type: 'pause', requestId: this.transportRequestGeneration });
     }
 
     seek(outputSample: number): void {
         this.assertAlive();
-        if (!Number.isSafeInteger(outputSample) || outputSample < 0) {
-            throw new RangeError('Audio seek positions must be non-negative safe integers.');
-        }
+        assertOutputSample(outputSample);
         const end = this.snapshot?.contentEndSample ?? outputSample;
-        this.outputSample = Math.min(outputSample, end);
-        this.invalidate(this.outputSample);
+        this.resetRenderQueue(Math.min(outputSample, end));
     }
 
     setPlaybackRate(playbackRate: number): void {
@@ -192,7 +234,13 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
         this.assertAlive();
         if (this.transientOverride === override) return;
         this.transientOverride = override;
-        this.invalidate(this.outputSample);
+        this.transientMixKey = override && this.snapshot
+            ? buildTimelineAudioMixSemanticKey(
+                override.mixPlan as AudioMixPlan,
+                this.snapshot.audibleMixKey,
+            )
+            : null;
+        this.resetRenderQueue(this.outputSample);
     }
 
     hasAudibleContributors(): boolean {
@@ -206,12 +254,25 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
         this.transportRequestGeneration += 1;
         this.playing = false;
         this.abortController.abort();
-        this.post({ type: 'pause' });
+        this.post({ type: 'pause', requestId: this.transportRequestGeneration });
         this.decoder.dispose();
         try {
             await this.scheduling;
         } catch (error) {
             if (!isAbortError(error)) this.callbacks.onError(toError(error));
+        }
+        await this.renderTail;
+        // createAudioGraph owns a context until it publishes all graph members. Awaiting setup is
+        // what makes destroy-during-addModule deterministic instead of returning before it closes.
+        try {
+            await this.audioGraphSetup;
+        } catch {
+            // The initiating play call owns and reports setup failure; destroy only drains cleanup.
+        }
+        try {
+            await this.contextTransitions;
+        } catch {
+            // A failed transition cannot prevent final context close below.
         }
         this.node?.disconnect();
         this.gainNode?.disconnect();
@@ -220,6 +281,8 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
         if (this.context && this.context.state !== 'closed') await this.context.close();
         this.context = null;
         this.cache.clear();
+        this.diagnostics.setGauge('audio', 'queuedBlocks', 0);
+        this.diagnostics.flush();
     }
 
     private ensureAudioGraph(): Promise<void> {
@@ -254,57 +317,58 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
             this.context = context;
             this.node = node;
             this.gainNode = gainNode;
-            this.post({ type: 'reset', outputSample: this.outputSample });
+            this.post({
+                type: 'reset',
+                outputSample: this.outputSample,
+                contentEndSample: this.snapshot?.contentEndSample ?? this.outputSample,
+            });
             this.post({ type: 'set-rate', playbackRate: this.playbackRate });
+            if (!this.playing) {
+                // A pause can win while addModule owns the only awaited setup step, before a port
+                // exists to receive it. Publishing the graph must therefore re-read transport
+                // ownership and replay the current pause request. Its acknowledgement drives the
+                // normal serialized suspend path even when the browser created a running context.
+                this.post({ type: 'pause', requestId: this.transportRequestGeneration });
+            }
         } catch (error) {
-            // Until all three graph members are published above, this method owns every browser
-            // audio resource it created. Release partial nodes and the context here so a failed
-            // module download or connection cannot leak an AudioContext between explicit retries.
-            try { node?.disconnect(); } catch { /* Preserve the graph-construction error. */ }
-            try { gainNode?.disconnect(); } catch { /* Preserve the graph-construction error. */ }
+            // Until all graph members are published, this method owns every browser audio
+            // resource. Release partial construction so an explicit retry starts from a clean graph.
+            try { node?.disconnect(); } catch { /* Preserve the construction error. */ }
+            try { gainNode?.disconnect(); } catch { /* Preserve the construction error. */ }
             try {
                 if (context.state !== 'closed') await context.close();
             } catch {
-                // Cleanup failures are secondary to the setup failure that explains why playback
-                // did not start, so the original error remains the one exposed to the caller.
+                // Cleanup failure is secondary to the setup error exposed to the play caller.
             }
             throw error;
         }
     }
 
-    private invalidate(outputSample: number): void {
+    private resetRenderQueue(outputSample: number): void {
         const resumeAfterReset = this.playing;
-        const transportRequestGeneration = this.transportRequestGeneration;
+        const transportGeneration = this.transportRequestGeneration;
         this.generation += 1;
         this.abortController.abort();
         this.abortController = new AbortController();
         this.outputSample = outputSample;
         this.queuedUntilSample = outputSample;
         this.scheduling = null;
-        this.cache.clear();
-        if (this.snapshot) this.decoder.setDocument(this.snapshot.document, this.generation);
-        this.post({ type: 'reset', outputSample });
+        this.post({
+            type: 'reset',
+            outputSample,
+            contentEndSample: this.snapshot?.contentEndSample ?? outputSample,
+        });
         this.post({ type: 'set-rate', playbackRate: this.playbackRate });
-        if (resumeAfterReset) {
-            void this.primeForPlay(transportRequestGeneration).then(() => {
-                if (this.isCurrentPlayRequest(transportRequestGeneration)) {
-                    this.post({ type: 'play' });
-                }
-            }).catch((error) => {
-                this.failCurrentTransport(error, transportRequestGeneration, true);
-            });
-        }
+        this.diagnostics.increment('audio', 'queueResets');
+        this.diagnostics.setGauge('audio', 'queuedBlocks', 0);
+        this.diagnostics.flush();
+        if (resumeAfterReset) this.requestRefill(transportGeneration, true);
     }
 
-    /**
-     * Primes the current graph, retrying only when a document/seek invalidation superseded the
-     * scheduler without changing the user's transport intent. A pause changes the transport
-     * generation, so it exits immediately instead of turning an obsolete decode into late audio.
-     */
     private async primeForPlay(requestGeneration: number): Promise<void> {
         while (this.isCurrentPlayRequest(requestGeneration)) {
             try {
-                await this.schedule(HIGH_WATER_SAMPLES);
+                await this.schedule(LOW_WATER_SAMPLES);
                 return;
             } catch (error) {
                 if (!isAbortError(error) || !this.isCurrentPlayRequest(requestGeneration)) {
@@ -328,9 +392,8 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
             const snapshot = this.snapshot;
             const activePlan = this.getActivePlan();
             if (!snapshot || !activePlan) return;
-            // The editor clock may intentionally extend past the last audible contributor (for
-            // example, an absolute subtitle tail). Extend only the renderer's zero-filled domain;
-            // contributor geometry remains the immutable graph supplied by the state layer.
+            // Subtitle tails can extend beyond audio. Only the render boundary is enlarged; source
+            // contributor geometry remains the exact immutable graph shared with export.
             const plan = activePlan.totalSampleCount < snapshot.contentEndSample
                 ? { ...activePlan, totalSampleCount: snapshot.contentEndSample }
                 : activePlan;
@@ -340,40 +403,95 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
             );
             while (this.queuedUntilSample < target) {
                 if (signal.aborted || generation !== this.generation) throw createAbortError();
+                const liveContentEnd = this.snapshot?.contentEndSample ?? target;
+                if (this.queuedUntilSample >= liveContentEnd) break;
                 const startSample = this.queuedUntilSample;
-                const endSample = Math.min(target, startSample + SCHEDULE_BLOCK_SAMPLES);
-                const block = await this.renderBlock(plan, startSample, endSample, generation, signal);
-                if (signal.aborted || generation !== this.generation) throw createAbortError();
-                this.queueBlock(startSample, block.left, block.right);
-                this.queuedUntilSample = endSample;
+                const endSample = Math.min(
+                    target,
+                    liveContentEnd,
+                    startSample + SCHEDULE_BLOCK_SAMPLES,
+                );
+                const block = await this.renderBlock(plan, startSample, endSample, signal);
+                if (signal.aborted || generation !== this.generation) {
+                    this.diagnostics.increment('audio', 'staleBlocks');
+                    this.diagnostics.flush();
+                    throw createAbortError();
+                }
+                const resolvedContentEnd = this.snapshot?.contentEndSample ?? 0;
+                if (this.queuedUntilSample !== startSample) {
+                    // A shrink can move the required queue boundary behind an in-flight block.
+                    // Even if the timeline is extended again before decode resolves, accepting
+                    // that old block would leave a permanent hole between the retained prefix and
+                    // its original start. Retry from the live boundary instead.
+                    this.diagnostics.increment('audio', 'staleBlocks');
+                    continue;
+                }
+                if (startSample >= resolvedContentEnd) break;
+                const resolvedEndSample = Math.min(endSample, resolvedContentEnd);
+                const resolvedLength = resolvedEndSample - startSample;
+                // Content-only shrink does not advance render generation, so clamp the result at
+                // resolve time before its buffers cross into the worklet realm.
+                this.queueBlock(
+                    startSample,
+                    block.left.subarray(0, resolvedLength),
+                    block.right.subarray(0, resolvedLength),
+                );
+                this.queuedUntilSample = resolvedEndSample;
+                this.diagnostics.setGauge(
+                    'audio',
+                    'queuedBlocks',
+                    Math.min(
+                        MAX_CACHE_BLOCKS,
+                        Math.ceil((this.queuedUntilSample - this.outputSample) / SCHEDULE_BLOCK_SAMPLES),
+                    ),
+                );
+                this.diagnostics.flush();
             }
         };
-        this.scheduling = run().finally(() => {
-            if (generation === this.generation) this.scheduling = null;
+        const queuedRun = this.renderTail.catch(() => undefined).then(run);
+        const trackedRun = queuedRun.finally(() => {
+            if (this.scheduling === trackedRun) this.scheduling = null;
         });
-        return this.scheduling;
+        // The handled tail serializes ownership without hiding failures from the caller awaiting
+        // trackedRun. Reset may publish a newer trackedRun while the previous generation unwinds.
+        this.renderTail = trackedRun.catch(() => undefined);
+        this.scheduling = trackedRun;
+        return trackedRun;
     }
 
     private async renderBlock(
         plan: AudioMixPlan,
         startSample: number,
         endSample: number,
-        generation: number,
         signal: AbortSignal,
     ): Promise<{ left: Float32Array; right: Float32Array }> {
-        const key = `${generation}:${startSample}:${endSample}`;
+        const key = `${this.getActiveMixKey()}:${startSample}:${endSample}`;
         const cached = this.cache.get(key);
-        if (cached) return { left: cached.left.slice(), right: cached.right.slice() };
+        if (cached) {
+            // Refresh insertion order so bounded eviction behaves as a true LRU across seeks.
+            this.cache.delete(key);
+            this.cache.set(key, cached);
+            this.diagnostics.increment('audio', 'cacheHits');
+            return { left: cached.left.slice(), right: cached.right.slice() };
+        }
+        this.diagnostics.increment('audio', 'cacheMisses');
+        const startedAt = this.dependencies.now();
         const rendered = await renderAudioMixWindow(
             plan,
             (contributor, request) => this.decoder.decode(contributor, request),
             {
-            startSample,
-            endSample,
-            generation,
-            signal,
+                startSample,
+                endSample,
+                generation: this.generation,
+                signal,
             },
         );
+        this.diagnostics.observeTiming(
+            'audio',
+            'mix',
+            Math.max(0, this.dependencies.now() - startedAt),
+        );
+        this.diagnostics.increment('audio', 'decodedBlocks');
         const block = { key, left: rendered.channels[0], right: rendered.channels[1] };
         this.cache.set(key, block);
         while (this.cache.size > MAX_CACHE_BLOCKS) {
@@ -381,6 +499,8 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
             if (oldestKey === undefined) break;
             this.cache.delete(oldestKey);
         }
+        // Transfer copies while retaining the cached originals; transferred buffers detach and
+        // therefore cannot themselves serve a later seek hit.
         return { left: block.left.slice(), right: block.right.slice() };
     }
 
@@ -397,9 +517,27 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
 
     private handleWorkletEvent(event: TimelineAudioWorkletEvent): void {
         if (!event || event.version !== TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION
-            || event.generation !== this.generation || this.destroyed) return;
+            || this.destroyed) return;
+        if (event.type === 'paused') {
+            // Render generations may advance between pause and acknowledgement (for example, an
+            // immediate seek). The echoed transport request remains stable across that reset, but
+            // a newer play increments it and therefore makes this acknowledgement harmless.
+            if (!this.playing && event.requestId === this.transportRequestGeneration) {
+                this.outputSample = event.outputSample;
+                this.diagnostics.flush();
+                this.requestContextSuspend(event.requestId);
+            }
+            return;
+        }
+        if (event.generation !== this.generation) return;
         this.outputSample = event.outputSample;
         if (event.type === 'clock') {
+            this.diagnostics.increment('audio', 'clockEvents');
+            this.clocksSinceDiagnosticsFlush += 1;
+            if (this.clocksSinceDiagnosticsFlush >= 60) {
+                this.clocksSinceDiagnosticsFlush = 0;
+                this.diagnostics.flush();
+            }
             this.callbacks.onClock({
                 generation: event.generation,
                 outputSample: event.outputSample,
@@ -407,10 +545,27 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
                 playing: event.playing,
                 playbackRate: event.playbackRate,
             });
-            if (this.snapshot && event.outputSample >= this.snapshot.contentEndSample) this.pause();
+            return;
+        }
+        if (event.type === 'ended') {
+            this.diagnostics.increment('audio', 'endedEvents');
+            this.diagnostics.flush();
+            this.playing = false;
+            this.transportRequestGeneration += 1;
+            // Publish the exact terminal sample through the existing clock callback. The playback
+            // store then owns UI transport finalization and clamps to its frame-domain boundary.
+            this.callbacks.onClock({
+                generation: event.generation,
+                outputSample: event.outputSample,
+                timeSeconds: event.timeSeconds,
+                playing: true,
+                playbackRate: this.playbackRate,
+            });
+            this.requestContextSuspend(this.transportRequestGeneration);
             return;
         }
         if (event.type === 'underrun') {
+            this.diagnostics.increment('audio', 'underruns');
             this.callbacks.onUnderrun({
                 generation: event.generation,
                 outputSample: event.outputSample,
@@ -420,20 +575,47 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
         } else {
             this.queuedUntilSample = Math.min(this.queuedUntilSample, event.queuedUntilSample);
         }
-        const transportRequestGeneration = this.transportRequestGeneration;
-        void this.schedule(HIGH_WATER_SAMPLES).catch((error) => {
-            // Refill failures are transport failures too: otherwise the worklet remains marked as
-            // playing while frozen on underrun. Only the request that still owns playback may
-            // change transport state; stale generations are deliberately ignored.
-            this.failCurrentTransport(error, transportRequestGeneration, true);
+        this.diagnostics.setGauge(
+            'audio',
+            'queuedBlocks',
+            Math.max(0, Math.ceil(
+                (this.queuedUntilSample - this.outputSample) / SCHEDULE_BLOCK_SAMPLES,
+            )),
+        );
+        this.diagnostics.flush();
+        this.requestRefill(this.transportRequestGeneration);
+    }
+
+    private requestRefill(requestGeneration: number, replayAfterPrime = false): void {
+        void this.schedule(HIGH_WATER_SAMPLES).then(() => {
+            // A content-end extension can arrive while an old-boundary scheduler is in flight.
+            // One second pass observes the live snapshot and fills the newly available tail.
+            if (this.isCurrentPlayRequest(requestGeneration)
+                && this.snapshot
+                && this.queuedUntilSample < Math.min(
+                    this.snapshot.contentEndSample,
+                    this.outputSample + HIGH_WATER_SAMPLES,
+                )) {
+                return this.schedule(HIGH_WATER_SAMPLES);
+            }
+            return undefined;
+        }).then(() => {
+            if (replayAfterPrime && this.isCurrentPlayRequest(requestGeneration)) {
+                this.post({ type: 'play' });
+            }
+        }).catch((error) => {
+            this.failCurrentTransport(error, requestGeneration, true);
         });
     }
 
     private getActivePlan(): AudioMixPlan | null {
         const plan = this.transientOverride?.mixPlan ?? this.snapshot?.mixPlan;
-        // The DSP never mutates a plan. This narrows the immutable port type for the read-only
-        // renderer without copying thousands of contributor records on each low-water callback.
+        // The DSP never mutates a plan. Narrowing avoids copying contributor records for refills.
         return (plan as AudioMixPlan | undefined) ?? null;
+    }
+
+    private getActiveMixKey(): string {
+        return this.transientMixKey ?? this.snapshot?.audibleMixKey ?? 'no-mix';
     }
 
     private post(message: WorkletMessageWithoutEnvelope): void {
@@ -443,6 +625,33 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
             version: TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION,
             generation: this.generation,
         } as TimelineAudioWorkletMessage);
+    }
+
+    private resumeContext(requestGeneration: number): Promise<void> {
+        return this.runContextTransition(async () => {
+            if (!this.isCurrentPlayRequest(requestGeneration)) return;
+            if (this.context && this.context.state !== 'running') await this.context.resume();
+        });
+    }
+
+    private requestContextSuspend(requestGeneration: number): void {
+        void this.runContextTransition(async () => {
+            if (this.destroyed || this.playing
+                || requestGeneration !== this.transportRequestGeneration) return;
+            if (this.context?.state === 'running') {
+                await this.context.suspend();
+                this.diagnostics.increment('audio', 'contextSuspends');
+                this.diagnostics.flush();
+            }
+        }).catch((error) => this.reportAsyncError(error));
+    }
+
+    private runContextTransition(operation: () => Promise<void>): Promise<void> {
+        const result = this.contextTransitions.catch(() => undefined).then(operation);
+        // Store a handled tail to keep later transitions usable, while returning the original
+        // promise so the active play call still observes a resume failure.
+        this.contextTransitions = result.catch(() => undefined);
+        return result;
     }
 
     private reportAsyncError(error: unknown): void {
@@ -457,7 +666,8 @@ export class BrowserTimelineAudioEngine implements TimelineAudioEnginePort {
         if (isAbortError(error) || !this.isCurrentPlayRequest(requestGeneration)) return;
         this.playing = false;
         this.transportRequestGeneration += 1;
-        this.post({ type: 'pause' });
+        this.post({ type: 'pause', requestId: this.transportRequestGeneration });
+        this.diagnostics.flush();
         if (reportError) this.reportAsyncError(error);
     }
 
@@ -485,6 +695,12 @@ function createBrowserWorkletNode(context: AudioContextLike): AudioWorkletNodeLi
         TIMELINE_AUDIO_WORKLET_PROCESSOR,
         { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] },
     ) as unknown as AudioWorkletNodeLike;
+}
+
+function assertOutputSample(outputSample: number): void {
+    if (!Number.isSafeInteger(outputSample) || outputSample < 0) {
+        throw new RangeError('Audio positions must be non-negative safe integers.');
+    }
 }
 
 function createAbortError(): Error {

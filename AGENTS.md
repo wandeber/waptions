@@ -66,7 +66,7 @@ pnpm run test:unit
 pnpm exec tsc --noEmit
 pnpm run lint
 pnpm run build
-pnpm exec playwright test --reporter=line
+pnpm run test:e2e:verify
 pnpm audit
 pnpm run cf-deploy-production
 ```
@@ -76,7 +76,7 @@ pnpm run cf-deploy-production
 - `pnpm exec tsc --noEmit` checks TypeScript without writing build output.
 - `pnpm run lint` runs ESLint across the repository.
 - `pnpm run build` builds the Next.js app.
-- `pnpm exec playwright test --reporter=line` runs the E2E suite.
+- `pnpm run test:e2e:verify` runs the E2E suite through its isolated Next.js wrapper.
 - `pnpm audit` checks dependency advisories through PNPM.
 - `pnpm run cf-deploy-production` builds with OpenNext and deploys the production Cloudflare Worker with Wrangler.
 

@@ -4,21 +4,17 @@ import type { AudioSourceAsset, VideoSourceAsset } from '@/types/video';
 import type { AudioMediaAsset, AudioMediaReference } from './media-asset-ref';
 import {
     appendWaveformSamples,
-    createWaveformLru,
     createWaveformPeakAggregator,
     estimateWaveformPeaksBytes,
     extractAudioMediaWaveformPeaks,
     finalizeWaveformPeaks,
     getWaveformBucketCount,
-    getWaveformFromLru,
     getWaveformSampleWindow,
     getVisibleWaveformSourceIds,
     getVisibleVideoAudioReferences,
     mixWaveformChannelsToMono,
-    putWaveformInLru,
     selectRequestedAudioMedia,
     selectRequestedAudibleSources,
-    snapshotWaveformsFromLru,
 } from './video-waveform';
 
 const peaks = (value: number): WaveformPeaks => ({
@@ -144,39 +140,9 @@ describe('waveform peak aggregation', () => {
     });
 });
 
-describe('waveform byte estimates and LRU eviction', () => {
+describe('waveform byte estimates', () => {
     it('estimates the retained typed-array bytes', () => {
         expect(estimateWaveformPeaksBytes(peaks(0))).toBe(16);
-    });
-
-    it('evicts the least recently used typed media stream under the caller cap', () => {
-        const cache = createWaveformLru(32);
-        expect(putWaveformInLru(cache, videoAudioRef('a'), peaks(1))).toEqual([]);
-        expect(putWaveformInLru(cache, importedAudioRef('b'), peaks(2))).toEqual([]);
-        expect(getWaveformFromLru(cache, videoAudioRef('a'))).toBeTruthy();
-
-        expect(putWaveformInLru(cache, videoAudioRef('c'), peaks(3)))
-            .toEqual(['audio-source:b']);
-        expect(getWaveformFromLru(cache, importedAudioRef('b'))).toBeNull();
-        expect(getWaveformFromLru(cache, videoAudioRef('a'))).toBeTruthy();
-        expect(getWaveformFromLru(cache, videoAudioRef('c'))).toBeTruthy();
-        expect(cache.totalBytes).toBe(32);
-    });
-
-    it('isolates same-ID streams and snapshots only project-owned typed references', () => {
-        const cache = createWaveformLru(32);
-        const first = peaks(1);
-        putWaveformInLru(cache, videoAudioRef('shared'), first);
-        putWaveformInLru(cache, importedAudioRef('shared'), peaks(2));
-
-        expect(getWaveformFromLru(cache, videoAudioRef('shared'))).toBe(first);
-        expect(getWaveformFromLru(cache, importedAudioRef('shared'))).not.toBe(first);
-        const snapshot = snapshotWaveformsFromLru(cache, [
-            videoAudioRef('shared'),
-            importedAudioRef('other-project'),
-        ]);
-        expect(snapshot.get('video-source-audio:shared')).toBe(first);
-        expect(Array.from(snapshot.keys())).toEqual(['video-source-audio:shared']);
     });
 });
 
@@ -224,6 +190,87 @@ describe('typed waveform media and decoder ownership', () => {
         expect(result).not.toBeNull();
         expect(closeCounts).toEqual([1, 1]);
         expect(disposeCount).toBe(1);
+    });
+
+    it('publishes owned progress snapshots at a maximum 250ms cadence', async () => {
+        const media: AudioMediaAsset = { kind: 'audio-source', asset: audioSource('audio') };
+        const progress: WaveformPeaks[] = [];
+        const times = [0, 249, 250];
+        let timeIndex = 0;
+        const result = await extractAudioMediaWaveformPeaks(
+            media,
+            () => false,
+            async () => ({
+                samples: (async function* () {
+                    for (let index = 0; index < 3; index += 1) {
+                        yield {
+                            timestamp: index * 0.25,
+                            duration: 0.25,
+                            sampleRate: 4,
+                            numberOfFrames: 1,
+                            numberOfChannels: 1,
+                            copyTo(destination: Float32Array) {
+                                destination[0] = index + 1;
+                            },
+                            close: () => undefined,
+                        };
+                    }
+                })(),
+                dispose: () => undefined,
+            }),
+            {
+                intervalMs: 999,
+                now: () => times[timeIndex++],
+                onProgress: (value) => progress.push(value),
+            },
+        );
+
+        expect(progress).toHaveLength(2);
+        expect(progress[0].max.buffer.byteLength).toBeGreaterThan(0);
+        expect(progress[0].max.buffer).not.toBe(result?.max.buffer);
+        expect(progress[0].max[0]).toBe(1);
+        expect(progress[1].max[500]).toBe(3);
+    });
+
+    it('chunks a large decoded sample so progress and cancellation remain responsive', async () => {
+        const media: AudioMediaAsset = { kind: 'audio-source', asset: audioSource('large') };
+        const copiedOffsets: number[] = [];
+        const progress: WaveformPeaks[] = [];
+        let currentTime = 0;
+        const result = await extractAudioMediaWaveformPeaks(
+            media,
+            () => false,
+            async () => ({
+                samples: (async function* () {
+                    yield {
+                        timestamp: 0,
+                        duration: 1,
+                        sampleRate: 48_000,
+                        numberOfFrames: 32_769,
+                        numberOfChannels: 1,
+                        copyTo(destination: Float32Array, options: { frameOffset: number }) {
+                            copiedOffsets.push(options.frameOffset);
+                            destination.fill(0.5);
+                        },
+                        close: () => undefined,
+                    };
+                })(),
+                dispose: () => undefined,
+            }),
+            {
+                intervalMs: 250,
+                now: () => {
+                    const value = currentTime;
+                    currentTime += 250;
+                    return value;
+                },
+                onProgress: (value) => progress.push(value),
+            },
+        );
+
+        expect(result).not.toBeNull();
+        expect(copiedOffsets).toEqual([0, 16_384, 32_768]);
+        expect(progress).toHaveLength(3);
     });
 
     it('releases the current sample and decoder when copying throws', async () => {

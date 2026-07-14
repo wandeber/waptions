@@ -9,7 +9,9 @@ import type {
 } from '@/types/video';
 import type { TProject } from '@/types/project';
 import {
-    createVideoSourceFingerprint,
+    createLegacySourceUpgradeFingerprint,
+    doesVideoSourceFingerprintMatch,
+    isImmutableVideoSourceFingerprint,
     validateEditorDocument,
 } from '@/lib/video-timeline';
 import { getEditorMediaAssetKey } from '@/lib/media-asset-ref';
@@ -23,6 +25,16 @@ import {
 import { resolveEditorManifestAssets, resolveEditorVideoAsset } from './editor-asset-resolver';
 import { IndexedDBAdapter, type IndexedDBBatchOperation } from './indexeddb-adapter';
 import type { SerializedProject, StorageConfig } from './types';
+import {
+    EDITOR_HISTORY_INDEX_KEY,
+    EDITOR_RECOVERY_INDEX_KEY,
+    type EditorHistoryCheckpoint,
+    type LoadedEditorRuntimeState,
+    type PersistedRecoveryEntry,
+    type PersistedRecoveryIndex,
+    historyEntryStorageKey,
+    restoreEditorRuntimeState,
+} from './editor-history-storage';
 
 export const EDITOR_DOCUMENT_V2_KEY = 'editor-document-v2';
 export const EDITOR_DOCUMENT_V3_KEY = 'editor-document-v3';
@@ -144,6 +156,7 @@ export class StorageService {
         projectId: string,
         manifest: EditorManifestV3,
         sourceAssets: readonly EditorPersistentAsset[],
+        historyCheckpoint?: EditorHistoryCheckpoint,
     ): Promise<void> {
         const validation = validateEditorManifestV3(manifest);
         if (!validation.valid) {
@@ -152,7 +165,7 @@ export class StorageService {
         }
         const videoDescriptors = new Map(manifest.videoSourceDescriptors.map((item) => [item.id, item]));
         const audioDescriptors = new Map(manifest.audioSourceDescriptors.map((item) => [item.id, item]));
-        const operations: IndexedDBBatchOperation<EditorManifestV3 | File>[] = [
+        const operations: IndexedDBBatchOperation<unknown>[] = [
             { type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: manifest },
         ];
 
@@ -167,10 +180,88 @@ export class StorageService {
             operations.push({ type: 'put', key, value: entry.asset.file });
         });
 
+        if (historyCheckpoint) {
+            operations.push({
+                type: 'put',
+                key: EDITOR_HISTORY_INDEX_KEY,
+                value: historyCheckpoint.index,
+            });
+            historyCheckpoint.changedEntries.forEach((entry) => operations.push({
+                type: 'put',
+                key: historyEntryStorageKey(entry.id),
+                value: entry,
+            }));
+            historyCheckpoint.deletedEntryIds.forEach((entryId) => operations.push({
+                type: 'delete',
+                key: historyEntryStorageKey(entryId),
+            }));
+            if (historyCheckpoint.clearRecoveryIndex) {
+                operations.push({ type: 'delete', key: EDITOR_RECOVERY_INDEX_KEY });
+            }
+            historyCheckpoint.recoveryKeysToDelete.forEach((key) => operations.push({ type: 'delete', key }));
+        }
+
         // Manifest and only the genuinely new Files selected by the coordinator commit together.
         // If quota or cloning fails, IndexedDB aborts the whole batch and the prior v3/v2/v1
         // project remains intact and reopenable.
-        await this.getProjectDbAdapter<EditorManifestV3 | File>(projectId).batch(operations);
+        await this.getProjectDbAdapter<unknown>(projectId).batch(operations);
+    }
+
+    /** Writes one WAL step and its complete index together before the slower manifest checkpoint. */
+    async writeEditorRecovery(
+        projectId: string,
+        index: PersistedRecoveryIndex,
+        entryKey: string,
+        entry: PersistedRecoveryEntry,
+    ): Promise<void> {
+        await this.getProjectDbAdapter<unknown>(projectId).batch<unknown>([
+            { type: 'put', key: entryKey, value: entry },
+            { type: 'put', key: EDITOR_RECOVERY_INDEX_KEY, value: index },
+        ]);
+    }
+
+    /** Loads auxiliary history/WAL state without changing the EditorManifestV3 contract. */
+    async loadEditorRuntimeState(
+        projectId: string,
+        document: EditorDocumentV3,
+    ): Promise<LoadedEditorRuntimeState> {
+        const adapter = this.getProjectDbAdapter<unknown>(projectId);
+        const persistedManifest = await adapter.get(EDITOR_DOCUMENT_V3_KEY);
+        if (!isEditorManifestV3(persistedManifest)) {
+            return restoreEditorRuntimeState(
+                document,
+                createEditorManifestV3(document),
+                null,
+                new Map(),
+                null,
+                new Map(),
+            );
+        }
+        const indexes = await adapter.getMany<unknown>([
+            EDITOR_HISTORY_INDEX_KEY,
+            EDITOR_RECOVERY_INDEX_KEY,
+        ]);
+        const historyIndex = indexes.get(EDITOR_HISTORY_INDEX_KEY);
+        const recoveryIndex = indexes.get(EDITOR_RECOVERY_INDEX_KEY);
+        const historyIds = readIndexStringArray(historyIndex, 'historyEntryIds')
+            .concat(readIndexStringArray(historyIndex, 'redoEntryIds'));
+        const recoveryKeys = readIndexStringArray(recoveryIndex, 'entryKeys');
+        const historyValues = await adapter.getMany<unknown>(
+            historyIds.map((id) => historyEntryStorageKey(id)),
+        );
+        const historyEntriesById = new Map(historyIds.map((id) => [
+            id,
+            historyValues.get(historyEntryStorageKey(id)),
+        ]));
+        const recoveryEntries = await adapter.getMany<unknown>(recoveryKeys);
+        return restoreEditorRuntimeState(
+            document,
+            persistedManifest,
+            historyIndex,
+            historyEntriesById,
+            recoveryIndex,
+            recoveryEntries,
+        );
     }
 
     async loadEditorDocument(
@@ -189,7 +280,18 @@ export class StorageService {
                 throw new Error(`Project ${projectId} v3 manifest failed validation: ${details}`);
             }
             const assets = await resolveEditorManifestAssets(adapter, v3Value);
-            return hydrateEditorDocumentV3(v3Value, assets.videoSources, assets.audioSources);
+            const hydrated = hydrateEditorDocumentV3(v3Value, assets.videoSources, assets.audioSources);
+            const upgraded = upgradeLegacyMediaFingerprints(projectId, hydrated);
+            if (upgraded.changed) {
+                // Only the small manifest changes. Rewriting legacy Files under new keys would
+                // duplicate potentially multi-gigabyte blobs and can make a safe migration fail.
+                await adapter.batch([{
+                    type: 'put',
+                    key: EDITOR_DOCUMENT_V3_KEY,
+                    value: createEditorManifestV3(upgraded.document),
+                }]);
+            }
+            return upgraded.document;
         }
 
         const v2Value = await adapter.get(EDITOR_DOCUMENT_V2_KEY);
@@ -212,7 +314,8 @@ export class StorageService {
                 transcriptionByTrackId: v2Value.transcriptionByTrackId,
             };
             assertValidV2Document(projectId, legacyDocument);
-            const document = migrateEditorDocumentV2ToV3({ manifest: v2Value, loadedVideoSources });
+            const migrated = migrateEditorDocumentV2ToV3({ manifest: v2Value, loadedVideoSources });
+            const document = upgradeLegacyMediaFingerprints(projectId, migrated).document;
             await adapter.batch([{ type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: createEditorManifestV3(document) }]);
             return document;
         }
@@ -230,13 +333,14 @@ export class StorageService {
             return inspectVideoSource(file);
         });
         const inspectedSource = legacy.videoFile ? await inspectLegacyVideo(legacy.videoFile) : null;
-        const document = migrateLegacyEditorDocumentToV3({
+        const migrated = migrateLegacyEditorDocumentToV3({
             tracks: legacy.tracks ?? [],
             rawTranscription: legacy.rawTranscription,
             transcriptionGroups: legacy.transcriptionGroups,
             transcriptionContainerIds: legacy.transcriptionContainerIds,
             loadedVideoSource: inspectedSource,
         });
+        const document = upgradeLegacyMediaFingerprints(projectId, migrated).document;
         await adapter.batch([{ type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: createEditorManifestV3(document) }]);
         return document;
     }
@@ -375,6 +479,14 @@ function isEditorManifestV3(value: unknown): value is EditorManifestV3 {
         && Array.isArray(value.audioTracks);
 }
 
+function readIndexStringArray(value: unknown, key: string): string[] {
+    if (!value || typeof value !== 'object') return [];
+    const candidate = (value as Record<string, unknown>)[key];
+    return Array.isArray(candidate) && candidate.every((item) => typeof item === 'string')
+        ? candidate
+        : [];
+}
+
 function isEditorManifestV2(value: unknown): value is EditorManifestV2 {
     return typeof value === 'object'
         && value !== null
@@ -394,21 +506,21 @@ function assertAssetMatchesDescriptor(
     if (!descriptor || descriptor.fingerprint !== asset.fingerprint) {
         throw new Error(`${kind} asset "${asset.id}" does not match the manifest descriptor.`);
     }
-    const descriptorFingerprint = createVideoSourceFingerprint({
+    const descriptorFingerprintMatches = doesVideoSourceFingerprintMatch(descriptor.fingerprint, {
         name: descriptor.originalName,
         type: descriptor.mimeType,
         size: descriptor.size,
         lastModified: descriptor.lastModified,
     });
-    const fileFingerprint = createVideoSourceFingerprint({
+    const fileFingerprintMatches = doesVideoSourceFingerprintMatch(descriptor.fingerprint, {
         name: asset.file.name,
         type: asset.file.type,
         size: asset.file.size,
         lastModified: asset.file.lastModified,
     });
     if (
-        descriptorFingerprint !== descriptor.fingerprint
-        || fileFingerprint !== descriptor.fingerprint
+        !descriptorFingerprintMatches
+        || !fileFingerprintMatches
         || asset.file.name !== descriptor.originalName
         || asset.file.type !== descriptor.mimeType
         || asset.file.size !== descriptor.size
@@ -424,6 +536,55 @@ function assertValidV2Document(projectId: string, document: EditorDocumentV2): v
         const details = validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ');
         throw new Error(`Project ${projectId} v2 editor document failed validation: ${details}`);
     }
+}
+
+/**
+ * Assigns persistent v2 identities to legacy v1 sources during document hydration/migration.
+ * Source IDs are unique inside each catalog, while project ID and source kind prevent otherwise
+ * identical legacy Files in different projects or catalogs from sharing derived media caches.
+ */
+function upgradeLegacyMediaFingerprints(
+    projectId: string,
+    document: EditorDocumentV3,
+): { document: EditorDocumentV3; changed: boolean } {
+    let changed = false;
+    const videoSources = document.videoSources.map((source) => {
+        if (isImmutableVideoSourceFingerprint(source.fingerprint)) return source;
+        changed = true;
+        return {
+            ...source,
+            fingerprint: createLegacySourceUpgradeFingerprint({
+                name: source.originalName,
+                type: source.mimeType,
+                size: source.size,
+                lastModified: source.lastModified,
+            }, {
+                projectId,
+                kind: 'video-source',
+                sourceId: source.id,
+            }),
+        };
+    });
+    const audioSources = document.audioSources.map((source) => {
+        if (isImmutableVideoSourceFingerprint(source.fingerprint)) return source;
+        changed = true;
+        return {
+            ...source,
+            fingerprint: createLegacySourceUpgradeFingerprint({
+                name: source.originalName,
+                type: source.mimeType,
+                size: source.size,
+                lastModified: source.lastModified,
+            }, {
+                projectId,
+                kind: 'audio-source',
+                sourceId: source.id,
+            }),
+        };
+    });
+    return changed
+        ? { document: { ...document, videoSources, audioSources }, changed }
+        : { document, changed };
 }
 
 export const storageService = new StorageService();

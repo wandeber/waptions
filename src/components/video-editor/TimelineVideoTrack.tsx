@@ -18,6 +18,8 @@ import {
 } from '@/lib/timeline-gesture';
 import { TimelineContextMenu } from './TimelineContextMenu';
 import { TimelineWaveform } from './TimelineWaveform';
+import { useShallow } from 'zustand/react/shallow';
+import { useEditorTransactionCoordinator } from './EditorTransactionContext';
 
 interface TimelineVideoTrackProps {
     peaksByMediaKey: ReadonlyMap<AudioMediaCacheKey, WaveformPeaks>;
@@ -42,7 +44,13 @@ function areTrimDraftsEqual(left: TrimDraft, right: TrimDraft) {
 }
 
 function ClipBlock({ placement, clip, source, peaks, pixelsPerSecond, selected }: ClipBlockProps) {
-    const { projectFps, selectClip, trimVideoClip, detachVideoClipAudio } = useTimelineStore();
+    const transactionCoordinator = useEditorTransactionCoordinator();
+    const { projectFps, selectClip, trimVideoClip, detachVideoClipAudio } = useTimelineStore(useShallow((state) => ({
+        projectFps: state.projectFps,
+        selectClip: state.selectClip,
+        trimVideoClip: state.trimVideoClip,
+        detachVideoClipAudio: state.detachVideoClipAudio,
+    })));
     const clipRef = useRef<HTMLDivElement>(null);
     const [trimPreview, setTrimPreview] = useState<TrimDraft | null>(null);
     const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -66,8 +74,10 @@ function ClipBlock({ placement, clip, source, peaks, pixelsPerSecond, selected }
         const minimumDuration = 1 / projectFps;
         let gesture: TimelineGestureState<TrimDraft> = beginTimelineGesture(initial);
         let terminal = false;
+        let unregisterCancellation: () => void = () => undefined;
 
         const cleanup = () => {
+            unregisterCancellation();
             window.removeEventListener('pointermove', handleMove);
             window.removeEventListener('pointerup', handleUp);
             window.removeEventListener('pointercancel', handleCancel);
@@ -108,6 +118,8 @@ function ClipBlock({ placement, clip, source, peaks, pixelsPerSecond, selected }
             handleCancel();
             clipRef.current?.focus();
         };
+
+        unregisterCancellation = transactionCoordinator.register(handleCancel);
 
         window.addEventListener('pointermove', handleMove);
         window.addEventListener('pointerup', handleUp, { once: true });
@@ -207,7 +219,15 @@ export function TimelineVideoTrack({ peaksByMediaKey }: TimelineVideoTrackProps)
         renderProfile,
         selectedClipId,
         selectClip,
-    } = useTimelineStore();
+    } = useTimelineStore(useShallow((state) => ({
+        pixelsPerSecond: state.pixelsPerSecond,
+        zoomLevel: state.zoomLevel,
+        videoSources: state.videoSources,
+        videoClips: state.videoClips,
+        renderProfile: state.renderProfile,
+        selectedClipId: state.selectedClipId,
+        selectClip: state.selectClip,
+    })));
     const placements = useMemo(
         () => buildClipPlacements(videoClips, renderProfile.fps),
         [renderProfile.fps, videoClips],

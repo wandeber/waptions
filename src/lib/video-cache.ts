@@ -1,37 +1,19 @@
+import type { WrappedCanvas } from 'mediabunny';
 import {
-    Input,
-    ALL_FORMATS,
-    BlobSource,
-    CanvasSink,
-    type InputVideoTrack,
-    type WrappedCanvas,
-} from 'mediabunny';
-import { frameCache } from './frame-cache';
-import { frameDuration, frameIndexToTime, normalizeFps, timeToFrameIndex } from './frame-utils';
-
-type VideoFrameRequestMode = 'visible' | 'warmup' | 'export';
-
-export interface VideoFrameRequestOptions {
-    mode?: VideoFrameRequestMode;
-    fps?: number;
-}
-
-interface VideoSinkData {
-    videoTrack: InputVideoTrack;
-    sink: CanvasSink;
-    sinkResolutionKey: string;
-    iterator: AsyncGenerator<WrappedCanvas, void, unknown> | null;
-    currentFrame: WrappedCanvas | null;
-    nextFrame: WrappedCanvas | null;
-    lastTime: number;
-    fileSignature: string;
-    priorityRequests: number;
-    prefetching: boolean;
-    prefetchPromise: Promise<void> | null;
-    fps: number;
-    targetWidth?: number;
-    targetHeight?: number;
-}
+    FrameCache,
+    getAdaptiveFrameCacheBudgetBytes,
+    getBrowserDeviceMemory,
+    type ImageBitmapLease,
+} from './frame-cache';
+import { normalizeFps, timeToFrameIndex } from './frame-utils';
+import { runtimeDiagnostics } from './runtime-diagnostics';
+import { VideoFrameSession } from './video-frame-session';
+import {
+    type VideoFrameRequest,
+    type VideoFrameRequestScope,
+    type VideoFrameResult,
+    type VideoFrameTargetResolution,
+} from './video-runtime-types';
 
 interface VideoCacheCounters {
     cacheHits: number;
@@ -42,26 +24,102 @@ interface VideoCacheCounters {
     cancelledWarmups: number;
 }
 
-interface TargetResolution {
-    width: number;
-    height: number;
+interface VideoSessionLike {
+    readonly fps: number;
+    readonly generation: number;
+    readonly isIdle?: boolean;
+    request(
+        scope: VideoFrameRequestScope,
+        sourceTime: number,
+        signal?: AbortSignal,
+    ): Promise<WrappedCanvas | null>;
+    whenIdle?(): Promise<void>;
+    dispose(): Promise<void>;
 }
 
-const MAX_CACHE_RESOLUTION = 1280; // Cap preview cache to a 1280px long edge.
+interface SessionRecord {
+    generation: number;
+    controller: AbortController;
+    opening: Promise<VideoSessionLike>;
+    session: VideoSessionLike | null;
+    disposed: boolean;
+    activeWorkCount: number;
+    lastUsed: number;
+    idlePruneScheduled: boolean;
+}
+
+interface VideoCacheOptions {
+    cacheMemoryMB?: number;
+    openSession?: (options: {
+        file: File;
+        generation: number;
+        signal: AbortSignal;
+    }) => Promise<VideoSessionLike>;
+    createBitmap?: (
+        source: CanvasImageSource,
+        options?: ImageBitmapOptions,
+    ) => Promise<ImageBitmap>;
+    now?: () => number;
+    maxInactiveSessions?: number;
+}
+
+interface PreviewResolutionState {
+    target: VideoFrameTargetResolution;
+    generation: number;
+    pendingDownshift: {
+        target: VideoFrameTargetResolution;
+        sourceFingerprint: string;
+        timer: ReturnType<typeof setTimeout> | null;
+    } | null;
+}
+
+interface FrameWorkOutcome {
+    cacheId: string;
+    frameIndex: number;
+    resolutionGeneration: number;
+}
+
+interface InFlightFrameWork {
+    promise: Promise<FrameWorkOutcome | null>;
+    controller: AbortController;
+    subscribers: Set<symbol>;
+    sourceId: string;
+    sourceFingerprint: string;
+    resolutionGeneration: number;
+    retentionPriority: number;
+}
+
+const MAX_CACHE_RESOLUTION = 1280;
 const PREVIEW_RESOLUTION_BUCKET = 32;
-const getFileSignature = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
+const RESOLUTION_DOWNSHIFT_STABILITY_MS = 500;
+const RESOLUTION_DOWNSHIFT_AREA_RATIO = 0.7;
+// Keeping a small recency window makes ordinary A/B clip navigation cheap without allowing every
+// source in a large project to retain its Input, decoder state, CanvasSink, and pooled canvases.
+const DEFAULT_MAX_INACTIVE_SESSIONS = 3;
 
 /**
- * VideoCache owns the Mediabunny CanvasSink instances and the shared preview
- * ImageBitmap cache. Requests are serialized per mediaId because a CanvasSink
- * iterator cannot be safely advanced by visible rendering and warmup at once.
+ * Bounded video runtime for source-native decoding and leased preview frames.
+ *
+ * Public callers submit typed scopes and source identity. Cache/session keys are private
+ * implementation details derived from that policy, so no caller can accidentally mix domains.
  */
 export class VideoCache {
-    private sinks = new Map<string, VideoSinkData>();
-    private initPromises = new Map<string, Promise<void>>();
-    private frameChains = new Map<string, Promise<unknown>>();
-    private requestGenerations = new Map<string, number>();
-    private pendingResolutions = new Map<string, { width: number; height: number }>();
+    private readonly cache: FrameCache;
+    private readonly openSession: NonNullable<VideoCacheOptions['openSession']>;
+    private readonly createBitmap: NonNullable<VideoCacheOptions['createBitmap']>;
+    private readonly now: () => number;
+    private readonly maxInactiveSessions: number;
+    private readonly sessions = new Map<string, SessionRecord>();
+    private readonly generations = new Map<string, number>();
+    private readonly sourceFingerprints = new Map<string, string>();
+    private readonly resolutionStates = new Map<string, PreviewResolutionState>();
+    private readonly inFlightFrames = new Map<string, InFlightFrameWork>();
+    private sessionAccessSequence = 0;
+    private activeSessionGauge = 0;
+    private readonly defaultTargetResolution: VideoFrameTargetResolution = {
+        width: MAX_CACHE_RESOLUTION,
+        height: MAX_CACHE_RESOLUTION,
+    };
     private counters: VideoCacheCounters = {
         cacheHits: 0,
         cacheMisses: 0,
@@ -71,497 +129,168 @@ export class VideoCache {
         cancelledWarmups: 0,
     };
 
-    /**
-     * Get a frame at a specific media time. The requested time is normalized to
-     * a frame index before any cache lookup, so playback does not create
-     * duplicate work for multiple RAF ticks that land inside the same frame.
-     */
-    async getFrameAt(
-        mediaId: string,
-        file: File,
-        time: number,
-        options: VideoFrameRequestOptions = {}
-    ): Promise<WrappedCanvas | null> {
-        await this.ensureSink(mediaId, file);
-
-        const sinkData = this.sinks.get(mediaId);
-        if (!sinkData) return null;
-
-        const mode = options.mode ?? 'visible';
-        const isPriority = mode !== 'warmup';
-        const requestFps = normalizeFps(options.fps ?? sinkData.fps);
-        const frameIndex = timeToFrameIndex(time, requestFps);
-        const frameTime = frameIndexToTime(frameIndex, requestFps);
-
-        // Warmup is useful only while it stays out of the visible/export path.
-        // Dropping stale warmup is cheaper than making the user-facing request
-        // wait for frames that may never be seen.
-        if (!isPriority && sinkData.priorityRequests > 0) {
-            this.counters.cancelledWarmups += 1;
-            return null;
-        }
-
-        const generation = isPriority
-            ? this.bumpRequestGeneration(mediaId)
-            : this.requestGenerations.get(mediaId) ?? 0;
-
-        if (isPriority) {
-            sinkData.priorityRequests += 1;
-        }
-
-        const previous = this.frameChains.get(mediaId) ?? Promise.resolve();
-        const current = previous
-            .then(async () => {
-                if (isPriority && this.requestGenerations.get(mediaId) !== generation) {
-                    return sinkData.currentFrame ?? null;
-                }
-
-                const frame = await this.resolveFrame(
-                    mediaId,
-                    sinkData,
-                    frameIndex,
-                    frameTime,
-                    requestFps
-                );
-
-                if (frame && mode === 'warmup') {
-                    this.counters.warmupFrames += 1;
-                }
-
-                return frame;
-            })
-            .finally(() => {
-                if (isPriority) {
-                    sinkData.priorityRequests = Math.max(0, sinkData.priorityRequests - 1);
-                }
-            });
-
-        this.frameChains.set(mediaId, current.catch(() => null));
-        return current;
+    constructor(options: VideoCacheOptions = {}) {
+        const adaptiveMemoryMB = getAdaptiveFrameCacheBudgetBytes(getBrowserDeviceMemory()) / (1024 * 1024);
+        // VideoCache is the sole owner of its LRU. Tests may lower the cap, but production always
+        // derives the strict budget from the current device instead of sharing global mutable state.
+        this.cache = new FrameCache(options.cacheMemoryMB ?? adaptiveMemoryMB);
+        this.openSession = options.openSession ?? ((sessionOptions) => VideoFrameSession.open(sessionOptions));
+        this.createBitmap = options.createBitmap ?? ((source, bitmapOptions) => (
+            createImageBitmap(source, bitmapOptions)
+        ));
+        this.now = options.now ?? (() => performance.now());
+        const configuredSessionCap = options.maxInactiveSessions ?? DEFAULT_MAX_INACTIVE_SESSIONS;
+        this.maxInactiveSessions = Number.isFinite(configuredSessionCap)
+            ? Math.max(0, Math.floor(configuredSessionCap))
+            : DEFAULT_MAX_INACTIVE_SESSIONS;
     }
 
-    private bumpRequestGeneration(mediaId: string): number {
-        const nextGeneration = (this.requestGenerations.get(mediaId) ?? 0) + 1;
-        this.requestGenerations.set(mediaId, nextGeneration);
-        return nextGeneration;
-    }
+    async requestFrame(request: VideoFrameRequest): Promise<VideoFrameResult | null> {
+        if (request.signal?.aborted) return null;
+        const scope = request.scope;
+        runtimeDiagnostics.increment(
+            'video',
+            scope === 'preview' ? 'visibleRequests' : 'warmupRequests',
+        );
+        this.activateSourceIdentity(request.sourceId, request.sourceFingerprint);
+        const resolution = this.resolveResolutionState(request);
+        const retentionPriority = this.getRetentionPriority(request);
+        const sourceFps = normalizeFps(request.sourceFps);
+        const sourceFrameIndex = timeToFrameIndex(request.sourceTime, sourceFps);
+        const cacheId = this.getPreviewCacheKey(request.sourceId, request.sourceFingerprint);
+        const sessionKey = this.getSessionKey(request);
 
-    private async resolveFrame(
-        mediaId: string,
-        sinkData: VideoSinkData,
-        frameIndex: number,
-        frameTime: number,
-        fps: number
-    ): Promise<WrappedCanvas | null> {
-        const cachedBitmap = frameCache.getFrameAtIndex(mediaId, frameIndex);
-        if (cachedBitmap) {
+        const cached = this.cache.acquireFrameAtIndex(
+            cacheId,
+            sourceFrameIndex,
+            retentionPriority,
+        );
+        if (cached) {
+            this.touchSession(sessionKey);
             this.counters.cacheHits += 1;
-            return {
-                canvas: cachedBitmap as unknown as OffscreenCanvas,
-                timestamp: frameTime,
-                duration: frameDuration(fps),
-            } as WrappedCanvas;
+            runtimeDiagnostics.increment('video', 'cacheHits');
+            return this.resultFromLease(cached);
         }
-
         this.counters.cacheMisses += 1;
+        runtimeDiagnostics.increment('video', 'cacheMisses');
 
-        if (sinkData.nextFrame && sinkData.nextFrame.timestamp <= frameTime) {
-            sinkData.currentFrame = sinkData.nextFrame;
-            sinkData.nextFrame = null;
-            this.startPrefetch(mediaId, sinkData, fps);
+        const workKey = JSON.stringify([
+            cacheId,
+            sourceFrameIndex,
+            resolution.generation,
+        ]);
+        let work = this.inFlightFrames.get(workKey);
+        if (work?.controller.signal.aborted) {
+            // A newer warmup plan may request the same frame before the cancelled decoder task has
+            // unwound. Do not subscribe it to a terminal work item; the session scheduler will
+            // serialize the replacement behind the still-bounded underlying decode.
+            this.inFlightFrames.delete(workKey);
+            work = undefined;
         }
-
-        if (sinkData.currentFrame && this.isFrameValid(sinkData.currentFrame, frameTime)) {
-            if (!sinkData.nextFrame && !sinkData.prefetching) {
-                this.startPrefetch(mediaId, sinkData, fps);
-            }
-            this.cacheFrame(mediaId, sinkData.currentFrame, fps, frameIndex);
-            return sinkData.currentFrame;
+        if (work) {
+            // A visible subscriber or a newer warmup plan may join an existing decode. Promotion is
+            // monotonic and does not create another decoder task; every subscriber still acquires
+            // its own lease after the one shared publication completes.
+            work.retentionPriority = Math.max(work.retentionPriority, retentionPriority);
         }
-
-        if (
-            sinkData.iterator
-            && sinkData.currentFrame
-            && frameTime >= sinkData.lastTime
-            && frameTime < sinkData.lastTime + 2.0
-        ) {
-            const frame = await this.iterateToTime(mediaId, sinkData, frameTime, fps, frameIndex);
-            if (frame) {
-                if (!sinkData.nextFrame && !sinkData.prefetching) {
-                    this.startPrefetch(mediaId, sinkData, fps);
+        if (!work) {
+            const controller = new AbortController();
+            work = {
+                controller,
+                subscribers: new Set(),
+                sourceId: request.sourceId,
+                sourceFingerprint: request.sourceFingerprint,
+                resolutionGeneration: resolution.generation,
+                retentionPriority,
+                promise: Promise.resolve(null),
+            };
+            const ownedWork = work;
+            ownedWork.promise = this.produceFrame({
+                request,
+                sourceFps,
+                sourceFrameIndex,
+                cacheId,
+                sessionKey,
+                resolution,
+                getRetentionPriority: () => {
+                    // PreviewWarmupQueue may promote the mutable plan while decode or bitmap copy is
+                    // active. Read it at publication time and merge it with subscriber promotions.
+                    ownedWork.retentionPriority = Math.max(
+                        ownedWork.retentionPriority,
+                        this.getRetentionPriority(request),
+                    );
+                    return ownedWork.retentionPriority;
+                },
+                signal: controller.signal,
+            }).finally(() => {
+                if (this.inFlightFrames.get(workKey) === ownedWork) {
+                    this.inFlightFrames.delete(workKey);
                 }
-                return frame;
-            }
-        }
-
-        const frame = await this.seekToTime(mediaId, sinkData, frameTime, fps, frameIndex);
-        if (frame && !sinkData.nextFrame && !sinkData.prefetching) {
-            this.startPrefetch(mediaId, sinkData, fps);
-        }
-        return frame;
-    }
-
-    private isFrameValid(frame: WrappedCanvas, time: number): boolean {
-        return time >= frame.timestamp && time < frame.timestamp + frame.duration;
-    }
-
-    private async iterateToTime(
-        mediaId: string,
-        sinkData: VideoSinkData,
-        targetTime: number,
-        fps: number,
-        targetFrameIndex: number
-    ): Promise<WrappedCanvas | null> {
-        if (!sinkData.iterator) return null;
-
-        try {
-            while (true) {
-                if (sinkData.prefetching && sinkData.prefetchPromise) {
-                    await sinkData.prefetchPromise;
-                }
-
-                let frame: WrappedCanvas | null = null;
-
-                if (sinkData.nextFrame && sinkData.nextFrame.timestamp <= targetTime + 0.05) {
-                    frame = sinkData.nextFrame;
-                    sinkData.nextFrame = null;
-                } else {
-                    const next = await sinkData.iterator.next();
-                    if (next.done || !next.value) break;
-                    frame = next.value;
-                    this.counters.sequentialReads += 1;
-                }
-
-                if (!frame) break;
-
-                sinkData.currentFrame = frame;
-                sinkData.lastTime = frame.timestamp;
-
-                if (this.isFrameValid(frame, targetTime)) {
-                    this.cacheFrame(mediaId, frame, fps, targetFrameIndex);
-                    this.startPrefetch(mediaId, sinkData, fps);
-                    return frame;
-                }
-
-                this.cacheFrame(mediaId, frame, fps);
-
-                if (frame.timestamp > targetTime + 1.0) break;
-            }
-        } catch (error) {
-            console.warn('Iterator failed, will restart:', error);
-            sinkData.iterator = null;
-        }
-
-        return null;
-    }
-
-    private async seekToTime(
-        mediaId: string,
-        sinkData: VideoSinkData,
-        time: number,
-        fps: number,
-        frameIndex: number
-    ): Promise<WrappedCanvas | null> {
-        try {
-            if (sinkData.prefetching && sinkData.prefetchPromise) {
-                await sinkData.prefetchPromise;
-            }
-
-            if (sinkData.iterator) {
-                await sinkData.iterator.return();
-                sinkData.iterator = null;
-            }
-
-            sinkData.nextFrame = null;
-            sinkData.iterator = sinkData.sink.canvases(time);
-            sinkData.lastTime = time;
-            this.counters.seeks += 1;
-
-            const { value: frame } = await sinkData.iterator.next();
-
-            if (frame) {
-                sinkData.currentFrame = frame;
-                this.cacheFrame(mediaId, frame, fps, frameIndex);
-                this.startPrefetch(mediaId, sinkData, fps);
-                return frame;
-            }
-        } catch (error) {
-            console.warn('Failed to seek video:', error);
-        }
-
-        return null;
-    }
-
-    private async ensureSink(mediaId: string, file: File): Promise<void> {
-        const signature = getFileSignature(file);
-        const existing = this.sinks.get(mediaId);
-
-        if (existing) {
-            if (existing.fileSignature === signature) return;
-            this.clearVideo(mediaId);
-        }
-
-        if (this.initPromises.has(mediaId)) {
-            await this.initPromises.get(mediaId);
-            return this.ensureSink(mediaId, file);
-        }
-
-        const initPromise = this.initializeSink(mediaId, file);
-        this.initPromises.set(mediaId, initPromise);
-
-        try {
-            await initPromise;
-        } finally {
-            this.initPromises.delete(mediaId);
-        }
-    }
-
-    private async initializeSink(mediaId: string, file: File): Promise<void> {
-        try {
-            const input = new Input({
-                source: new BlobSource(file),
-                formats: ALL_FORMATS,
             });
-
-            const videoTrack = await input.getPrimaryVideoTrack();
-            if (!videoTrack) {
-                throw new Error('No video track found');
-            }
-
-            const canDecode = await videoTrack.canDecode();
-            if (!canDecode) {
-                throw new Error('Video codec not supported for decoding');
-            }
-
-            const packetStats = await videoTrack.computePacketStats(100);
-            const fps = normalizeFps(packetStats.averagePacketRate);
-            const target = this.pendingResolutions.get(mediaId)
-                ?? (mediaId === 'preview' ? { width: this.targetWidth, height: this.targetHeight } : undefined);
-
-            this.sinks.set(mediaId, {
-                videoTrack,
-                sink: this.createSink(videoTrack, mediaId, target),
-                sinkResolutionKey: this.getResolutionKey(target),
-                iterator: null,
-                currentFrame: null,
-                nextFrame: null,
-                lastTime: -1,
-                fileSignature: getFileSignature(file),
-                priorityRequests: 0,
-                prefetching: false,
-                prefetchPromise: null,
-                fps,
-                targetWidth: target?.width,
-                targetHeight: target?.height,
-            });
-
-            if (target) {
-                this.pendingResolutions.delete(mediaId);
-            }
-        } catch (error) {
-            console.error(`Failed to initialize video sink for ${mediaId}:`, error);
-            throw error;
+            this.inFlightFrames.set(workKey, ownedWork);
         }
+
+        const outcome = await this.subscribeToFrameWork(work, request.signal);
+        if (!outcome || request.signal?.aborted) return null;
+        if (!this.isCurrentSourceResolution(
+            request.sourceId,
+            request.sourceFingerprint,
+            outcome.resolutionGeneration,
+        )) return null;
+        const lease = this.cache.acquireFrameAtIndex(
+            outcome.cacheId,
+            outcome.frameIndex,
+            this.getRetentionPriority(request),
+        );
+        return lease ? this.resultFromLease(lease) : null;
     }
 
-    clearVideo(mediaId: string): void {
-        const sinkData = this.sinks.get(mediaId);
-        if (sinkData) {
-            if (sinkData.iterator) {
-                sinkData.iterator.return();
-            }
-            this.sinks.delete(mediaId);
+    hasCachedPreviewFrame(
+        sourceId: string,
+        sourceFingerprint: string,
+        sourceFrameIndex: number,
+    ): boolean {
+        return this.sourceFingerprints.get(sourceId) === sourceFingerprint
+            && this.cache.hasFrameAtIndex(
+                this.getPreviewCacheKey(sourceId, sourceFingerprint),
+                sourceFrameIndex,
+            );
+    }
+
+    getCachedPreviewTimestamps(sourceId: string, sourceFingerprint: string): number[] {
+        if (this.sourceFingerprints.get(sourceId) !== sourceFingerprint) return [];
+        return this.cache.getCachedTimestamps(this.getPreviewCacheKey(sourceId, sourceFingerprint));
+    }
+
+    clearPreviewSource(sourceId: string): void {
+        const fingerprint = this.sourceFingerprints.get(sourceId);
+        this.cancelResolutionDownshift(this.resolutionStates.get(sourceId));
+        if (fingerprint !== undefined) {
+            this.cancelInFlightSource(sourceId, fingerprint);
+            void this.disposeSession(this.getPreviewSessionKey(sourceId, fingerprint));
+            this.cache.clear(this.getPreviewCacheKey(sourceId, fingerprint));
         }
-        frameCache.clear(mediaId);
-        this.initPromises.delete(mediaId);
-        this.frameChains.delete(mediaId);
-        this.requestGenerations.delete(mediaId);
-        this.pendingResolutions.delete(mediaId);
+        this.sourceFingerprints.delete(sourceId);
+        this.resolutionStates.delete(sourceId);
     }
 
     clearAll(): void {
-        const mediaIds = Array.from(this.sinks.keys());
-        for (const mediaId of mediaIds) {
-            this.clearVideo(mediaId);
+        for (const state of Array.from(this.resolutionStates.values())) {
+            this.cancelResolutionDownshift(state);
         }
-        frameCache.clear();
-    }
-
-    private startPrefetch(mediaId: string, sinkData: VideoSinkData, fps: number): void {
-        if (sinkData.prefetching || !sinkData.iterator || sinkData.nextFrame) return;
-
-        sinkData.prefetching = true;
-        sinkData.prefetchPromise = this.prefetchNextFrame(mediaId, sinkData, fps);
-    }
-
-    private async prefetchNextFrame(
-        mediaId: string,
-        sinkData: VideoSinkData,
-        fps: number
-    ): Promise<void> {
-        if (!sinkData.iterator) {
-            sinkData.prefetching = false;
-            sinkData.prefetchPromise = null;
-            return;
-        }
-
-        try {
-            const { value: frame, done } = await sinkData.iterator.next();
-
-            if (!done && frame) {
-                sinkData.nextFrame = frame;
-                this.cacheFrame(mediaId, frame, fps);
-            }
-        } catch (error) {
-            console.warn('Prefetch failed, will restart iterator:', error);
-            sinkData.iterator = null;
-            sinkData.nextFrame = null;
-        } finally {
-            sinkData.prefetching = false;
-            sinkData.prefetchPromise = null;
-        }
-    }
-
-    private targetWidth = MAX_CACHE_RESOLUTION;
-    private targetHeight = MAX_CACHE_RESOLUTION;
-
-    setTargetResolution(width: number, height: number, mediaId?: string) {
-        const target = this.normalizeTargetResolution(width, height, mediaId);
-
-        if (mediaId) {
-            const sinkData = this.sinks.get(mediaId);
-            if (sinkData) {
-                sinkData.targetWidth = target.width;
-                sinkData.targetHeight = target.height;
-                this.recreateSinkIfResolutionChanged(mediaId, sinkData, target);
-            } else {
-                this.pendingResolutions.set(mediaId, target);
-            }
-            return;
-        }
-
-        this.targetWidth = target.width;
-        this.targetHeight = target.height;
-    }
-
-    private recreateSinkIfResolutionChanged(
-        mediaId: string,
-        sinkData: VideoSinkData,
-        target: TargetResolution
-    ) {
-        const nextKey = this.getResolutionKey(target);
-        if (sinkData.sinkResolutionKey === nextKey) return;
-
-        // A CanvasSink bakes scaling into the yielded canvases. When the preview
-        // viewport moves to a new resolution bucket, restart the iterator and
-        // clear cached bitmaps so playback does not mix sizes from old buckets.
-        if (sinkData.iterator) {
-            sinkData.iterator.return();
-        }
-        sinkData.sink = this.createSink(sinkData.videoTrack, mediaId, target);
-        sinkData.sinkResolutionKey = nextKey;
-        sinkData.iterator = null;
-        sinkData.currentFrame = null;
-        sinkData.nextFrame = null;
-        sinkData.lastTime = -1;
-        frameCache.clear(mediaId);
-        this.frameChains.delete(mediaId);
-        this.requestGenerations.delete(mediaId);
-    }
-
-    private createSink(videoTrack: InputVideoTrack, mediaId: string, target?: TargetResolution) {
-        if (!target) {
-            return new CanvasSink(videoTrack, { poolSize: 5, fit: 'contain' });
-        }
-
-        // Preview sinks preserve source aspect ratio by specifying only the long
-        // edge. Export sinks use their exact canvas dimensions.
-        if (mediaId === 'preview') {
-            return new CanvasSink(videoTrack, {
-                poolSize: 5,
-                ...(target.width >= target.height ? { width: target.width } : { height: target.height }),
-            });
-        }
-
-        return new CanvasSink(videoTrack, {
-            width: target.width,
-            height: target.height,
-            fit: 'contain',
-            poolSize: 5,
-        });
-    }
-
-    private getResolutionKey(target?: TargetResolution) {
-        return target ? `${target.width}x${target.height}` : 'native';
-    }
-
-    private normalizeTargetResolution(width: number, height: number, mediaId?: string): TargetResolution {
-        const safeWidth = Math.max(1, Math.round(width));
-        const safeHeight = Math.max(1, Math.round(height));
-        const shouldCap = !mediaId || mediaId === 'preview';
-        const longEdge = Math.max(safeWidth, safeHeight);
-        const scale = shouldCap && longEdge > MAX_CACHE_RESOLUTION
-            ? MAX_CACHE_RESOLUTION / longEdge
-            : 1;
-        const scaledWidth = Math.max(1, Math.round(safeWidth * scale));
-        const scaledHeight = Math.max(1, Math.round(safeHeight * scale));
-
-        if (mediaId === 'preview' || !mediaId) {
-            return {
-                width: Math.max(1, Math.round(scaledWidth / PREVIEW_RESOLUTION_BUCKET) * PREVIEW_RESOLUTION_BUCKET),
-                height: Math.max(1, Math.round(scaledHeight / PREVIEW_RESOLUTION_BUCKET) * PREVIEW_RESOLUTION_BUCKET),
-            };
-        }
-
-        return { width: scaledWidth, height: scaledHeight };
-    }
-
-    private async cacheFrame(
-        mediaId: string,
-        frame: WrappedCanvas,
-        fps = 30,
-        frameIndex?: number
-    ) {
-        try {
-            const sinkData = this.sinks.get(mediaId);
-            const originalWidth = frame.canvas.width;
-            const originalHeight = frame.canvas.height;
-
-            let tw = sinkData?.targetWidth ?? this.targetWidth;
-            let th = sinkData?.targetHeight ?? this.targetHeight;
-
-            const ratio = originalWidth / originalHeight;
-            if (ratio > 1) {
-                th = Math.round(tw / ratio);
-            } else {
-                tw = Math.round(th * ratio);
-            }
-
-            if (tw > originalWidth) {
-                tw = originalWidth;
-                th = originalHeight;
-            }
-
-            const bitmap = await createImageBitmap(frame.canvas, {
-                resizeWidth: tw,
-                resizeHeight: th,
-                resizeQuality: 'high'
-            });
-
-            const cacheFrameIndex = frameIndex ?? timeToFrameIndex(frame.timestamp, fps);
-            frameCache.addFrameAtIndex(mediaId, cacheFrameIndex, bitmap, fps);
-        } catch (e) {
-            console.warn('Failed to cache frame to ImageBitmap:', e);
-        }
+        for (const work of Array.from(this.inFlightFrames.values())) work.controller.abort();
+        for (const sessionKey of Array.from(this.sessions.keys())) void this.disposeSession(sessionKey);
+        this.cache.clear();
+        this.sourceFingerprints.clear();
+        this.resolutionStates.clear();
     }
 
     getStats() {
-        const frameStats = frameCache.getStats();
+        const frameStats = this.cache.getStats();
         const totalRequests = this.counters.cacheHits + this.counters.cacheMisses;
-
         return {
-            totalSinks: this.sinks.size,
-            activeSinks: Array.from(this.sinks.values()).filter((s) => s.iterator).length,
+            totalSinks: this.sessions.size,
+            activeSinks: this.activeSessionGauge,
             cachedFrames: frameStats.frameCount,
             estimatedMemoryBytes: frameStats.memoryBytes,
             maxMemoryBytes: frameStats.maxMemoryBytes,
@@ -573,6 +302,505 @@ export class VideoCache {
             warmupFrames: this.counters.warmupFrames,
             cancelledWarmups: this.counters.cancelledWarmups,
         };
+    }
+
+    private async ensureSession(sessionKey: string, file: File): Promise<SessionRecord | null> {
+        const existing = this.sessions.get(sessionKey);
+        if (existing && !existing.disposed) {
+            existing.activeWorkCount += 1;
+            this.touchSessionRecord(existing);
+            return existing;
+        }
+        if (existing) await this.disposeSession(sessionKey);
+
+        const generation = (this.generations.get(sessionKey) ?? 0) + 1;
+        this.generations.set(sessionKey, generation);
+        const controller = new AbortController();
+        const record: SessionRecord = {
+            generation,
+            controller,
+            session: null,
+            disposed: false,
+            activeWorkCount: 1,
+            lastUsed: ++this.sessionAccessSequence,
+            idlePruneScheduled: false,
+            opening: Promise.resolve(null as unknown as VideoSessionLike),
+        };
+        record.opening = this.openSession({ file, generation, signal: controller.signal })
+            .then(async (session) => {
+                if (!this.isCurrentSession(sessionKey, record, session)) {
+                    await session.dispose();
+                    runtimeDiagnostics.increment('video', 'staleFrames');
+                    return session;
+                }
+                record.session = session;
+                this.activeSessionGauge += 1;
+                runtimeDiagnostics.increment('video', 'sessionOpens');
+                runtimeDiagnostics.setGauge('video', 'activeSessions', this.activeSessionGauge);
+                return session;
+            });
+        this.sessions.set(sessionKey, record);
+        try {
+            await record.opening;
+            return this.sessions.get(sessionKey) === record && !record.disposed ? record : null;
+        } catch (error) {
+            if (this.sessions.get(sessionKey) === record) this.sessions.delete(sessionKey);
+            runtimeDiagnostics.setGauge('video', 'activeSessions', this.activeSessionGauge);
+            if (controller.signal.aborted) return null;
+            throw error;
+        }
+    }
+
+    private async disposeSession(sessionKey: string): Promise<void> {
+        const record = this.sessions.get(sessionKey);
+        if (!record || record.disposed) return;
+        record.disposed = true;
+        record.controller.abort();
+        this.sessions.delete(sessionKey);
+        const session = record.session;
+        if (session) {
+            this.activeSessionGauge = Math.max(0, this.activeSessionGauge - 1);
+            runtimeDiagnostics.setGauge('video', 'activeSessions', this.activeSessionGauge);
+            await session.dispose();
+            runtimeDiagnostics.increment('video', 'sessionDisposals');
+            return;
+        }
+        runtimeDiagnostics.setGauge('video', 'activeSessions', this.activeSessionGauge);
+    }
+
+    private isCurrentSession(
+        sessionKey: string,
+        record: SessionRecord,
+        session: VideoSessionLike,
+    ): boolean {
+        return !record.disposed
+            && this.sessions.get(sessionKey) === record
+            && record.generation === session.generation
+            && this.generations.get(sessionKey) === record.generation;
+    }
+
+    private async createPreviewBitmap(
+        canvas: HTMLCanvasElement | OffscreenCanvas,
+        target: VideoFrameTargetResolution,
+    ): Promise<ImageBitmap> {
+        const sourceWidth = Math.max(1, canvas.width);
+        const sourceHeight = Math.max(1, canvas.height);
+        const scale = Math.min(
+            1,
+            target.width / sourceWidth,
+            target.height / sourceHeight,
+        );
+        return this.createBitmap(canvas, {
+            resizeWidth: Math.max(1, Math.round(sourceWidth * scale)),
+            resizeHeight: Math.max(1, Math.round(sourceHeight * scale)),
+            resizeQuality: 'high',
+        });
+    }
+
+    private resultFromLease(lease: ImageBitmapLease): VideoFrameResult {
+        return {
+            canvas: lease.bitmap,
+            timestamp: lease.timestamp,
+            duration: lease.duration,
+            frameIndex: lease.frameIndex,
+            release: lease.release,
+        };
+    }
+
+    private async produceFrame({
+        request,
+        sourceFps,
+        sourceFrameIndex,
+        cacheId,
+        sessionKey,
+        resolution,
+        getRetentionPriority,
+        signal,
+    }: {
+        request: VideoFrameRequest;
+        sourceFps: number;
+        sourceFrameIndex: number;
+        cacheId: string;
+        sessionKey: string;
+        resolution: PreviewResolutionState;
+        getRetentionPriority: () => number;
+        signal: AbortSignal;
+    }): Promise<FrameWorkOutcome | null> {
+        const decodeStartedAt = this.now();
+        const record = await this.ensureSession(sessionKey, request.file);
+        if (!record) {
+            runtimeDiagnostics.increment('video', 'staleFrames');
+            return null;
+        }
+        try {
+            const session = record.session ?? await record.opening;
+            if (signal.aborted || !this.isCurrentSession(sessionKey, record, session)) {
+                runtimeDiagnostics.increment('video', 'staleFrames');
+                return null;
+            }
+
+            let frame: WrappedCanvas | null;
+            try {
+                frame = await session.request(request.scope, request.sourceTime, signal);
+            } catch (error) {
+                if (signal.aborted || !this.isCurrentSession(sessionKey, record, session)) {
+                    runtimeDiagnostics.increment('video', 'staleFrames');
+                    return null;
+                }
+                throw error;
+            }
+            runtimeDiagnostics.observeTiming('video', 'decode', Math.max(0, this.now() - decodeStartedAt));
+            if (!frame || signal.aborted) {
+                if (request.scope === 'warmup') this.counters.cancelledWarmups += 1;
+                return null;
+            }
+            runtimeDiagnostics.increment('video', 'decodedFrames');
+            if (!this.isCurrentFrameWork(request, sessionKey, record, session, resolution.generation)) {
+                runtimeDiagnostics.increment('video', 'staleFrames');
+                return null;
+            }
+
+            const renderStartedAt = this.now();
+            let bitmap: ImageBitmap;
+            try {
+                bitmap = await this.createPreviewBitmap(frame.canvas, resolution.target);
+            } catch (error) {
+                if (!signal.aborted
+                    && this.isCurrentFrameWork(request, sessionKey, record, session, resolution.generation)) {
+                    console.warn('Failed to create a stable preview bitmap:', error);
+                }
+                return null;
+            }
+            runtimeDiagnostics.observeTiming('video', 'render', Math.max(0, this.now() - renderStartedAt));
+
+            // Neither decoder cancellation nor createImageBitmap cancellation is universally
+            // available. Publication therefore checks source, session, resolution, and subscriber
+            // generations together; a late owned bitmap is closed exactly once on any mismatch.
+            if (signal.aborted
+                || !this.isCurrentFrameWork(request, sessionKey, record, session, resolution.generation)) {
+                bitmap.close();
+                runtimeDiagnostics.increment('video', 'staleFrames');
+                return null;
+            }
+
+            const added = this.cache.addFrameAtIndex(cacheId, sourceFrameIndex, bitmap, sourceFps, {
+                timestamp: frame.timestamp,
+                duration: frame.duration,
+                retentionPriority: getRetentionPriority(),
+            });
+            if (!added) return null;
+            if (request.scope === 'warmup') this.counters.warmupFrames += 1;
+            return {
+                cacheId,
+                frameIndex: sourceFrameIndex,
+                resolutionGeneration: resolution.generation,
+            };
+        } finally {
+            // The internal work lease spans decoding and the stable bitmap copy. Releasing it any
+            // earlier could dispose the session while createImageBitmap still reads a pooled
+            // decoder canvas; every return and error path must therefore pass through this block.
+            this.releaseSessionWork(sessionKey, record);
+        }
+    }
+
+    private touchSession(sessionKey: string): void {
+        const record = this.sessions.get(sessionKey);
+        if (!record || record.disposed) return;
+        this.touchSessionRecord(record);
+        this.pruneInactiveSessions();
+    }
+
+    private touchSessionRecord(record: SessionRecord): void {
+        record.lastUsed = ++this.sessionAccessSequence;
+    }
+
+    private releaseSessionWork(sessionKey: string, record: SessionRecord): void {
+        if (record.disposed) return;
+        record.activeWorkCount = Math.max(0, record.activeWorkCount - 1);
+        this.touchSessionRecord(record);
+        if (record.activeWorkCount > 0) return;
+
+        const session = record.session;
+        if (session?.isIdle === false) {
+            // Scheduler cancellation settles the caller immediately, but the underlying codec call
+            // may still be unwinding. Wait for physical decoder idleness before making this record
+            // an eviction candidate; one waiter per record keeps cancellation storms bounded.
+            if (!session.whenIdle || record.idlePruneScheduled) return;
+            record.idlePruneScheduled = true;
+            void session.whenIdle().then(() => {
+                record.idlePruneScheduled = false;
+                if (this.sessions.get(sessionKey) !== record
+                    || record.disposed
+                    || record.activeWorkCount > 0) return;
+                this.pruneInactiveSessions();
+            }, () => {
+                record.idlePruneScheduled = false;
+            });
+            return;
+        }
+        this.pruneInactiveSessions();
+    }
+
+    private pruneInactiveSessions(): void {
+        const inactive = Array.from(this.sessions.entries())
+            .filter(([, record]) => (
+                !record.disposed
+                && record.activeWorkCount === 0
+                && record.session !== null
+                && record.session.isIdle !== false
+            ))
+            .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
+        const excess = inactive.length - this.maxInactiveSessions;
+        if (excess <= 0) return;
+
+        for (const [sessionKey] of inactive.slice(0, excess)) {
+            // disposeSession removes the record synchronously before awaiting owned backend cleanup,
+            // so concurrent prune passes cannot select or dispose the same session twice.
+            void this.disposeSession(sessionKey);
+        }
+    }
+
+    private isCurrentFrameWork(
+        request: VideoFrameRequest,
+        sessionKey: string,
+        record: SessionRecord,
+        session: VideoSessionLike,
+        resolutionGeneration: number,
+    ): boolean {
+        return this.isCurrentSession(sessionKey, record, session)
+            && this.isCurrentSourceResolution(
+                request.sourceId,
+                request.sourceFingerprint,
+                resolutionGeneration,
+            );
+    }
+
+    private getRetentionPriority(request: VideoFrameRequest): number {
+        // Demand-rendered frames always outrank speculative work. A visible cache hit is promoted
+        // through acquireFrameAtIndex, so subsequent warmup cannot displace a frame the user saw.
+        if (request.scope === 'preview') return Number.POSITIVE_INFINITY;
+        const plan = request.warmupPlan;
+        if (!plan) return 0;
+        // Every newer plan outranks every older plan, while the reciprocal component preserves the
+        // usefulness-first request order inside one plan. This separates decode order from LRU
+        // survival even when the long-lived queue deliberately reuses its AbortSignal.
+        return plan.generation + (1 / (plan.order + 1));
+    }
+
+    private subscribeToFrameWork(
+        work: InFlightFrameWork,
+        signal?: AbortSignal,
+    ): Promise<FrameWorkOutcome | null> {
+        if (signal?.aborted) {
+            if (work.subscribers.size === 0) work.controller.abort();
+            return Promise.resolve(null);
+        }
+        const subscriber = Symbol('video-frame-subscriber');
+        work.subscribers.add(subscriber);
+
+        return new Promise<FrameWorkOutcome | null>((resolve, reject) => {
+            let settled = false;
+            const finish = (outcome: FrameWorkOutcome | null) => {
+                if (settled) return;
+                settled = true;
+                signal?.removeEventListener('abort', handleAbort);
+                work.subscribers.delete(subscriber);
+                resolve(outcome);
+            };
+            const handleAbort = () => {
+                finish(null);
+                if (work.subscribers.size === 0) work.controller.abort();
+            };
+            signal?.addEventListener('abort', handleAbort, { once: true });
+            work.promise.then(finish, (error) => {
+                if (settled) return;
+                settled = true;
+                signal?.removeEventListener('abort', handleAbort);
+                work.subscribers.delete(subscriber);
+                reject(error);
+            });
+        });
+    }
+
+    private resolveResolutionState(request: VideoFrameRequest): PreviewResolutionState {
+        const current = this.resolutionStates.get(request.sourceId);
+        const requested = request.targetResolution
+            ? this.normalizeTargetResolution(
+                request.targetResolution.width,
+                request.targetResolution.height,
+            )
+            : null;
+
+        if (!current) {
+            const state = {
+                // Warmup has no viewport measurement. Starting at the bounded long-edge ceiling
+                // makes its frames directly reusable by the first visible request instead of
+                // clearing useful work as soon as the viewport reports a smaller target.
+                target: requested ?? this.defaultTargetResolution,
+                generation: 1,
+                pendingDownshift: null,
+            };
+            this.resolutionStates.set(request.sourceId, state);
+            return state;
+        }
+        if (!requested) return current;
+        if (requested.width > current.target.width || requested.height > current.target.height) {
+            return this.commitResolutionChange(
+                request.sourceId,
+                request.sourceFingerprint,
+                current,
+                {
+                    width: Math.max(current.target.width, requested.width),
+                    height: Math.max(current.target.height, requested.height),
+                },
+            );
+        }
+
+        const currentArea = current.target.width * current.target.height;
+        const requestedArea = requested.width * requested.height;
+        if (requestedArea > currentArea * RESOLUTION_DOWNSHIFT_AREA_RATIO) {
+            // Small layout oscillations keep the current allocation. They also cancel a pending
+            // large downshift, so a transient collapsed panel cannot fire after the viewport has
+            // already returned to its previous size.
+            this.cancelResolutionDownshift(current);
+            return current;
+        }
+
+        const pending = current.pendingDownshift;
+        if (pending
+            && pending.sourceFingerprint === request.sourceFingerprint
+            && this.sameResolution(pending.target, requested)) {
+            return current;
+        }
+        this.cancelResolutionDownshift(current);
+        const candidate: NonNullable<PreviewResolutionState['pendingDownshift']> = {
+            target: requested,
+            sourceFingerprint: request.sourceFingerprint,
+            timer: null,
+        };
+        candidate.timer = globalThis.setTimeout(() => {
+            // The callback owns no bitmap or decoder resource. It commits only while the exact
+            // source/state/candidate is still current; grow, replacement, clear, and superseding
+            // shrink paths cancel the timer and make this identity check fail safely.
+            if (this.resolutionStates.get(request.sourceId) !== current
+                || current.pendingDownshift !== candidate
+                || this.sourceFingerprints.get(request.sourceId) !== request.sourceFingerprint) return;
+            this.commitResolutionChange(
+                request.sourceId,
+                request.sourceFingerprint,
+                current,
+                candidate.target,
+            );
+        }, RESOLUTION_DOWNSHIFT_STABILITY_MS);
+        current.pendingDownshift = candidate;
+        return current;
+    }
+
+    private commitResolutionChange(
+        sourceId: string,
+        sourceFingerprint: string,
+        current: PreviewResolutionState,
+        target: VideoFrameTargetResolution,
+    ): PreviewResolutionState {
+        this.cancelResolutionDownshift(current);
+        const next = {
+            target,
+            generation: current.generation + 1,
+            pendingDownshift: null,
+        };
+        this.resolutionStates.set(sourceId, next);
+        this.cancelInFlightSource(
+            sourceId,
+            sourceFingerprint,
+            current.generation,
+        );
+        this.cache.clear(this.getPreviewCacheKey(sourceId, sourceFingerprint));
+        return next;
+    }
+
+    private cancelResolutionDownshift(state?: PreviewResolutionState): void {
+        const pending = state?.pendingDownshift;
+        if (!pending) return;
+        if (pending.timer !== null) globalThis.clearTimeout(pending.timer);
+        state.pendingDownshift = null;
+    }
+
+    private sameResolution(
+        left: VideoFrameTargetResolution,
+        right: VideoFrameTargetResolution,
+    ): boolean {
+        return left.width === right.width && left.height === right.height;
+    }
+
+    private normalizeTargetResolution(
+        width: number,
+        height: number,
+    ): VideoFrameTargetResolution {
+        const safeWidth = Math.max(1, Math.round(width));
+        const safeHeight = Math.max(1, Math.round(height));
+        const longEdge = Math.max(safeWidth, safeHeight);
+        const scale = longEdge > MAX_CACHE_RESOLUTION
+            ? MAX_CACHE_RESOLUTION / longEdge
+            : 1;
+        const scaledWidth = Math.max(1, Math.round(safeWidth * scale));
+        const scaledHeight = Math.max(1, Math.round(safeHeight * scale));
+        return {
+            width: Math.max(1, Math.round(scaledWidth / PREVIEW_RESOLUTION_BUCKET) * PREVIEW_RESOLUTION_BUCKET),
+            height: Math.max(1, Math.round(scaledHeight / PREVIEW_RESOLUTION_BUCKET) * PREVIEW_RESOLUTION_BUCKET),
+        };
+    }
+
+    private getSessionKey(request: VideoFrameRequest): string {
+        return this.getPreviewSessionKey(request.sourceId, request.sourceFingerprint);
+    }
+
+    private getPreviewSessionKey(sourceId: string, sourceFingerprint: string): string {
+        return JSON.stringify(['preview-session', sourceId, sourceFingerprint]);
+    }
+
+    private getPreviewCacheKey(sourceId: string, sourceFingerprint: string): string {
+        return JSON.stringify(['preview-cache', sourceId, sourceFingerprint]);
+    }
+
+    private activateSourceIdentity(sourceId: string, sourceFingerprint: string): void {
+        const previousFingerprint = this.sourceFingerprints.get(sourceId);
+        if (previousFingerprint === sourceFingerprint) return;
+
+        if (previousFingerprint !== undefined) {
+            // A project may replace a File while retaining its logical source ID. Abort the old
+            // generation before any lookup so neither cached nor late decoded pixels can cross the
+            // immutable V3 fingerprint boundary. Leased bitmaps close when their owner releases.
+            this.cancelInFlightSource(sourceId, previousFingerprint);
+            void this.disposeSession(this.getPreviewSessionKey(sourceId, previousFingerprint));
+            this.cache.clear(this.getPreviewCacheKey(sourceId, previousFingerprint));
+            this.cancelResolutionDownshift(this.resolutionStates.get(sourceId));
+            this.resolutionStates.delete(sourceId);
+        }
+        this.sourceFingerprints.set(sourceId, sourceFingerprint);
+    }
+
+    private isCurrentSourceResolution(
+        sourceId: string,
+        sourceFingerprint: string,
+        resolutionGeneration: number,
+    ): boolean {
+        return this.sourceFingerprints.get(sourceId) === sourceFingerprint
+            && this.resolutionStates.get(sourceId)?.generation === resolutionGeneration;
+    }
+
+    private cancelInFlightSource(
+        sourceId: string,
+        sourceFingerprint: string,
+        resolutionGeneration?: number,
+    ): void {
+        // Replacement, explicit clear, and infrequent viewport growth are cold paths. Scanning the
+        // small in-flight set here avoids any session-wide scan in the per-frame hot path.
+        for (const work of Array.from(this.inFlightFrames.values())) {
+            if (work.sourceId !== sourceId || work.sourceFingerprint !== sourceFingerprint) continue;
+            if (resolutionGeneration !== undefined
+                && work.resolutionGeneration !== resolutionGeneration) continue;
+            work.controller.abort();
+        }
     }
 }
 

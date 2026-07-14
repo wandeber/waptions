@@ -43,9 +43,19 @@ describe('playback clock arbitration', () => {
 
         usePlaybackStore.getState().play();
 
-        expect(driver.seek).toHaveBeenLastCalledWith(0);
+        expect(driver.seek).not.toHaveBeenCalled();
         expect(driver.play).toHaveBeenCalledOnce();
         expect(requestAnimationFrame).not.toHaveBeenCalled();
+    });
+
+    it('does not issue a duplicate seek while registering an atomically positioned driver', () => {
+        const driver = createDriver(true);
+
+        usePlaybackStore.getState().setClockDriver(driver);
+
+        expect(driver.seek).not.toHaveBeenCalled();
+        expect(driver.setPlaybackRate).toHaveBeenCalledWith(1);
+        expect(driver.setMasterGain).toHaveBeenCalledWith(1);
     });
 
     it('uses RAF when the installed graph has no audible contributors', () => {

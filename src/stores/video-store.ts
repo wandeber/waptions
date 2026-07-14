@@ -47,7 +47,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         if (!handle) return state;
         const ownedObjectUrls = { ...(state.ownedObjectUrls ?? {}) };
         if (ownedObjectUrls[sourceId]) URL.revokeObjectURL(handle.objectUrl);
-        videoCache.clearVideo(`preview:${sourceId}`);
+        videoCache.clearPreviewSource(sourceId);
         const sourceHandles = { ...state.sourceHandles };
         delete sourceHandles[sourceId];
         delete ownedObjectUrls[sourceId];
@@ -62,7 +62,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         Object.entries(sourceHandles).forEach(([sourceId, handle]) => {
             if (!retainedIds.has(sourceId)) {
                 if (ownedObjectUrls[sourceId]) URL.revokeObjectURL(handle.objectUrl);
-                videoCache.clearVideo(`preview:${sourceId}`);
+                videoCache.clearPreviewSource(sourceId);
                 delete sourceHandles[sourceId];
                 delete ownedObjectUrls[sourceId];
             }
@@ -93,7 +93,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     clearSourceHandles: () => set((state) => {
         Object.values(state.sourceHandles).forEach((handle) => {
             if (state.ownedObjectUrls?.[handle.sourceId]) URL.revokeObjectURL(handle.objectUrl);
-            videoCache.clearVideo(`preview:${handle.sourceId}`);
+            videoCache.clearPreviewSource(handle.sourceId);
         });
         return { sourceHandles: {}, ownedObjectUrls: {} };
     }),

@@ -1,17 +1,48 @@
 import { create } from 'zustand';
 import { TProject } from '@/types/project';
 import { storageService } from '@/lib/storage/storage-service';
-import { setTimelinePersistenceBinding, useTimelineStore } from './timeline-store';
+import {
+    createTimelinePersistencePayload,
+    setTimelinePersistenceBinding,
+    useTimelineStore,
+} from './timeline-store';
 import { usePlaybackStore } from './playback-store';
 import type { EditorDocumentV3, TrackTranscriptionState } from '@/types/video';
 import { inspectVideoSource } from '@/lib/video-source';
-import { migrateLegacyEditorDocumentToV3 } from '@/lib/editor-document-migration';
+import {
+    createEditorManifestV3,
+    migrateLegacyEditorDocumentToV3,
+} from '@/lib/editor-document-migration';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
-import { getTimelineDurations } from '@/lib/video-timeline';
+import {
+    selectPersistentEditorAssets,
+    selectTimelineContentDuration,
+} from './timeline-store-selectors';
 import {
     editorPersistenceRegistry,
     type EditorPersistenceStatus,
 } from '@/lib/storage/editor-persistence';
+import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
+import { projectEditorDocumentHistory } from '@/lib/storage/editor-history-storage';
+
+export type PersistenceRetryKind = 'editor-document' | 'project-save' | 'recovery-load';
+export type ProjectLoadErrorKind = 'not-found' | 'unreadable';
+
+export interface ProjectLoadError {
+    projectId: string;
+    kind: ProjectLoadErrorKind;
+    cause: unknown;
+}
+
+export interface ProjectOperationContext {
+    projectId: string;
+    generation: number;
+}
+
+interface ProjectSaveIdentity extends ProjectOperationContext {
+    projectName: string;
+    timelineRevision: number;
+}
 
 interface ProjectStore {
     activeProject: TProject | null;
@@ -21,52 +52,148 @@ interface ProjectStore {
     isSaving: boolean;
     isInitialized: boolean;
     isDirty: boolean;
-    lastSavedState: string;
+    lastSavedIdentity: ProjectSaveIdentity | null;
     persistenceGeneration: number;
     persistenceStatus: EditorPersistenceStatus | null;
     persistenceError: unknown | null;
+    persistenceRetryKind: PersistenceRetryKind | null;
+    projectRouteIntentId: string | null;
+    projectRouteIntentToken: number;
+    loadingProjectId: string | null;
+    projectLoadError: ProjectLoadError | null;
+    recoveryDocumentRevision: number | null;
 
     // Actions
     createProject: (name: string) => Promise<string>;
+    beginProjectRouteIntent: (id: string) => number;
+    clearProjectRouteIntent: (id: string, token: number) => void;
     loadProject: (id: string) => Promise<void>;
+    retryProjectLoad: () => Promise<void>;
     saveCurrentProject: () => Promise<void>;
+    retryPersistence: () => Promise<void>;
     loadAllProjects: () => Promise<void>;
     deleteProject: (id: string) => Promise<void>;
     closeProject: () => void;
     updateProjectName: (name: string) => Promise<void>;
-    updateThumbnail: (thumbnail: string) => Promise<void>;
-    updateProjectDuration: (duration: number) => Promise<void>;
+    updateThumbnail: (context: ProjectOperationContext, thumbnail: string) => Promise<void>;
+    updateProjectDuration: (context: ProjectOperationContext, duration: number) => Promise<void>;
     setIsDirty: (isDirty: boolean) => void;
-    checkDirty: () => void;
+    checkDirty: (timelineRevision?: number) => void;
     updateLastSavedState: () => void;
 }
+
+let latestProjectLoadRequest = 0;
+let latestProjectRouteIntent = 0;
+
+class ProjectNotFoundError extends Error {
+    constructor(projectId: string) {
+        super(`Project ${projectId} not found`);
+        this.name = 'ProjectNotFoundError';
+    }
+}
+
+const invalidateProjectLoadRequests = (): void => {
+    latestProjectLoadRequest += 1;
+};
 
 const attachProjectPersistence = (projectId: string) => {
     const attachment = editorPersistenceRegistry.attach(projectId);
     setTimelinePersistenceBinding({
         projectId,
         generation: attachment.generation,
-        enqueue: (manifest, sourceAssets) => editorPersistenceRegistry.enqueue(
+        enqueue: (manifest, sourceAssets, history) => editorPersistenceRegistry.enqueue(
             projectId,
             attachment.generation,
             manifest,
             sourceAssets,
+            history,
         ),
     });
     return attachment;
 };
 
-const getPersistentAssets = (timeline: ReturnType<typeof useTimelineStore.getState>): EditorPersistentAsset[] => [
-    ...timeline.videoSources.map((asset): EditorPersistentAsset => ({ kind: 'video-source', asset })),
-    ...timeline.audioSources.map((asset): EditorPersistentAsset => ({ kind: 'audio-source', asset })),
-];
+const getPersistentAssets = (timeline: ReturnType<typeof useTimelineStore.getState>): EditorPersistentAsset[] => (
+    selectPersistentEditorAssets(timeline)
+);
 
-const serializeDirtyState = (project: TProject): string => {
-    const timeline = useTimelineStore.getState();
-    return JSON.stringify({
-        name: project.name,
-        editorManifest: timeline.buildEditorManifest(),
+const createProjectSaveIdentity = (
+    project: TProject,
+    generation: number,
+    timelineRevision: number,
+): ProjectSaveIdentity => ({
+    projectId: project.id,
+    generation,
+    projectName: project.name,
+    timelineRevision,
+});
+
+const projectSaveIdentitiesEqual = (
+    left: ProjectSaveIdentity | null,
+    right: ProjectSaveIdentity,
+): boolean => Boolean(left
+    && left.projectId === right.projectId
+    && left.generation === right.generation
+    && left.projectName === right.projectName
+    && left.timelineRevision === right.timelineRevision);
+
+const isProjectContextActive = (
+    state: Pick<ProjectStore, 'activeProject' | 'persistenceGeneration'>,
+    context: ProjectOperationContext,
+): boolean => state.activeProject?.id === context.projectId
+    && state.persistenceGeneration === context.generation;
+
+interface ProjectMetadataWriteQueue {
+    tail: Promise<void>;
+    latestProject: TProject | null;
+}
+
+const projectMetadataWriteQueues = new Map<string, ProjectMetadataWriteQueue>();
+
+const projectMetadataQueueKey = (context: ProjectOperationContext): string => (
+    `${context.projectId}\u0000${context.generation}`
+);
+
+/**
+ * Serializes whole-record project-index writes within one persistence generation.
+ *
+ * IndexedDB stores project metadata as one object. Without this queue, a duration write and a
+ * thumbnail/name write that start from the same snapshot can finish out of order and erase each
+ * other's fields. Publishing the completed record inside the queue also guarantees the next
+ * operation observes every field committed by its predecessor.
+ */
+const enqueueProjectMetadataWrite = (
+    context: ProjectOperationContext,
+    fallbackProject: TProject,
+    update: (project: TProject) => TProject,
+): Promise<TProject> => {
+    const key = projectMetadataQueueKey(context);
+    const queue = projectMetadataWriteQueues.get(key) ?? {
+        tail: Promise.resolve(),
+        latestProject: null,
+    };
+    projectMetadataWriteQueues.set(key, queue);
+
+    const write = queue.tail.catch(() => undefined).then(async () => {
+        const state = useProjectStore.getState();
+        const baseProject = isProjectContextActive(state, context) && state.activeProject
+            ? state.activeProject
+            : queue.latestProject ?? fallbackProject;
+        const updatedProject = update(baseProject);
+        await storageService.saveProject(updatedProject);
+        queue.latestProject = updatedProject;
+        if (isProjectContextActive(useProjectStore.getState(), context)) {
+            useProjectStore.setState({ activeProject: updatedProject });
+        }
+        return updatedProject;
     });
+    const settledTail = write.then(() => undefined, () => undefined);
+    queue.tail = settledTail;
+    void settledTail.finally(() => {
+        if (projectMetadataWriteQueues.get(key)?.tail === settledTail) {
+            projectMetadataWriteQueues.delete(key);
+        }
+    });
+    return write;
 };
 
 const buildLegacyEditorDocument = async (
@@ -104,10 +231,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     isSaving: false,
     isInitialized: false,
     isDirty: false,
-    lastSavedState: '',
+    lastSavedIdentity: null,
     persistenceGeneration: 0,
     persistenceStatus: null,
     persistenceError: null,
+    persistenceRetryKind: null,
+    projectRouteIntentId: null,
+    projectRouteIntentToken: 0,
+    loadingProjectId: null,
+    projectLoadError: null,
+    recoveryDocumentRevision: null,
 
     setIsDirty: (isDirty) => {
         // Deprecated manual setter, but kept for compatibility. 
@@ -117,24 +250,37 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         set({ isDirty });
     },
 
-    checkDirty: () => {
-        const { activeProject, lastSavedState } = get();
+    checkDirty: (timelineRevision = useTimelineStore.getState().revision) => {
+        const { activeProject, lastSavedIdentity, persistenceGeneration } = get();
         if (!activeProject) {
             set({ isDirty: false });
             return;
         }
 
-        set({ isDirty: serializeDirtyState(activeProject) !== lastSavedState });
+        const currentIdentity = createProjectSaveIdentity(
+            activeProject,
+            persistenceGeneration,
+            timelineRevision,
+        );
+        set({ isDirty: !projectSaveIdentitiesEqual(lastSavedIdentity, currentIdentity) });
     },
 
     updateLastSavedState: () => {
-        const { activeProject } = get();
+        const { activeProject, persistenceGeneration } = get();
         if (!activeProject) return;
 
-        set({ lastSavedState: serializeDirtyState(activeProject), isDirty: false });
+        set({
+            lastSavedIdentity: createProjectSaveIdentity(
+                activeProject,
+                persistenceGeneration,
+                useTimelineStore.getState().revision,
+            ),
+            isDirty: false,
+        });
     },
 
     createProject: async (name: string) => {
+        invalidateProjectLoadRequests();
         const newProject: TProject = {
             id: crypto.randomUUID(),
             name,
@@ -148,6 +294,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             persistenceGeneration: attachment.generation,
             persistenceStatus: null,
             persistenceError: null,
+            persistenceRetryKind: null,
+            projectRouteIntentId: null,
+            projectRouteIntentToken: 0,
+            isSaving: false,
+            isProjectLoading: false,
+            loadingProjectId: null,
+            projectLoadError: null,
+            recoveryDocumentRevision: null,
         });
 
         const timelineStore = useTimelineStore.getState();
@@ -161,11 +315,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         try {
             await storageService.saveProject(newProject);
+            const initialPayload = createTimelinePersistencePayload(
+                timelineStore,
+                getPersistentAssets(timelineStore),
+            );
             editorPersistenceRegistry.enqueue(
                 newProject.id,
                 attachment.generation,
-                timelineStore.buildEditorManifest(),
-                getPersistentAssets(timelineStore),
+                initialPayload.manifest,
+                initialPayload.sourceAssets,
+                initialPayload.history,
             );
             await editorPersistenceRegistry.flush(newProject.id);
             await get().loadAllProjects();
@@ -179,147 +338,480 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             await storageService.deleteProjectIndex(newProject.id).catch(() => undefined);
             timelineStore.resetEditorDocument();
             usePlaybackStore.getState().reset();
-            set({ activeProject: null, persistenceGeneration: 0, persistenceError: error });
+            set({
+                activeProject: null,
+                persistenceGeneration: 0,
+                persistenceError: error,
+                persistenceRetryKind: null,
+                lastSavedIdentity: null,
+                projectRouteIntentId: null,
+                projectRouteIntentToken: 0,
+                recoveryDocumentRevision: null,
+            });
             console.error('Failed to create project:', error);
             throw error;
         }
     },
 
-    loadProject: async (id: string) => {
-        set({ isProjectLoading: true });
-        let persistenceGeneration = 0;
-        let recoveredPersistenceFailure: unknown | null = null;
-        try {
-            recoveredPersistenceFailure = await editorPersistenceRegistry.settleBeforeOpen(id);
-            const project = await storageService.loadProject(id);
-            if (!project) throw new Error(`Project ${id} not found`);
-            const previous = get();
-            if (previous.activeProject) {
-                editorPersistenceRegistry.close(previous.activeProject.id, previous.persistenceGeneration);
-                setTimelinePersistenceBinding(null);
-            }
-            set({ activeProject: null });
+    beginProjectRouteIntent: (id: string) => {
+        const current = get();
+        const token = ++latestProjectRouteIntent;
 
-            const attachment = editorPersistenceRegistry.attach(id);
-            persistenceGeneration = attachment.generation;
+        // Route intent is authoritative even when the requested project is already active. A
+        // slow load for another route must lose ownership immediately when browser navigation
+        // returns to the active editor, without clearing or rehydrating that editor first.
+        invalidateProjectLoadRequests();
+        set({
+            projectRouteIntentId: id,
+            projectRouteIntentToken: token,
+            isProjectLoading: false,
+            loadingProjectId: null,
+            projectLoadError: current.projectLoadError?.projectId === id
+                ? current.projectLoadError
+                : null,
+        });
+        return token;
+    },
+
+    clearProjectRouteIntent: (id: string, token: number) => {
+        const current = get();
+        if (
+            current.projectRouteIntentId !== id
+            || current.projectRouteIntentToken !== token
+        ) return;
+
+        // Effect cleanup can arrive after a newer mount has already claimed the same route ID.
+        // The per-mount token prevents that stale cleanup from cancelling the newer load.
+        invalidateProjectLoadRequests();
+        set({
+            projectRouteIntentId: null,
+            projectRouteIntentToken: 0,
+            isProjectLoading: false,
+            loadingProjectId: null,
+            projectLoadError: current.projectLoadError?.projectId === id
+                ? null
+                : current.projectLoadError,
+        });
+    },
+
+    loadProject: async (id: string) => {
+        if (get().projectRouteIntentId !== id) get().beginProjectRouteIntent(id);
+        const routeIntentToken = get().projectRouteIntentToken;
+        const request = ++latestProjectLoadRequest;
+        const isLatestRequest = () => request === latestProjectLoadRequest
+            && get().projectRouteIntentId === id
+            && get().projectRouteIntentToken === routeIntentToken;
+        set({
+            isProjectLoading: true,
+            loadingProjectId: id,
+            projectLoadError: null,
+        });
+
+        try {
+            const recoveredPersistenceFailure = await editorPersistenceRegistry.settleBeforeOpen(id);
+            if (!isLatestRequest()) return;
+
+            const project = await storageService.loadProject(id);
+            if (!isLatestRequest()) return;
+            if (!project) throw new ProjectNotFoundError(id);
+
             let document = await storageService.loadEditorDocument(id);
+            if (!isLatestRequest()) return;
             const legacy = document ? null : await storageService.loadLegacyProjectPayload(id);
-            const timelineStore = useTimelineStore.getState();
+            if (!isLatestRequest()) return;
             let migratedLegacy = false;
 
-            if (document) {
-                timelineStore.hydrateEditorDocument(document);
-                editorPersistenceRegistry.markManifestDurable(id, timelineStore.buildEditorManifest());
-            } else {
+            if (!document) {
                 document = await buildLegacyEditorDocument(legacy!);
-                timelineStore.hydrateEditorDocument(document);
+                if (!isLatestRequest()) return;
                 migratedLegacy = true;
             }
+            const validation = validateEditorDocumentV3(document);
+            if (!validation.valid) {
+                throw new Error(validation.issues
+                    .map((issue) => `${issue.path}: ${issue.message}`)
+                    .join('; '));
+            }
 
+            // No active project, timeline graph, or persistence binding is changed until every
+            // asynchronous read has completed and this request is still the newest route intent.
+            // The remaining commit is synchronous, so an older request cannot publish between
+            // the final token check and the new generation becoming active.
+            const durableDocument = document;
+            const runtimeState = migratedLegacy
+                ? null
+                : await storageService.loadEditorRuntimeState(id, document);
+            if (!isLatestRequest()) return;
+            if (runtimeState) document = runtimeState.document;
+
+            const previous = get();
+            const attachment = attachProjectPersistence(id);
+            if (previous.activeProject) {
+                editorPersistenceRegistry.close(previous.activeProject.id, previous.persistenceGeneration);
+            }
+            const timelineStore = useTimelineStore.getState();
+            timelineStore.hydrateEditorDocument(document, runtimeState?.history);
+            if (!migratedLegacy) {
+                editorPersistenceRegistry.markManifestDurable(
+                    id,
+                    createEditorManifestV3(durableDocument),
+                    {
+                        // WAL history entries are not durable until the recovery checkpoint writes
+                        // their editor-history payloads. Mark only the materialized checkpoint as
+                        // durable so the immediate recovery enqueue upserts every recovered entry
+                        // before atomically clearing the WAL.
+                        history: runtimeState?.durableHistory.history ?? [],
+                        redoStack: runtimeState?.durableHistory.redoStack ?? [],
+                        projection: projectEditorDocumentHistory(durableDocument),
+                    },
+                    runtimeState?.recoveryEntryKeys ?? [],
+                );
+                if (runtimeState?.recovered) {
+                    // Zustand replaces the state object during hydration. Re-read it here: the
+                    // pre-hydration snapshot above still contains the default revision/history and
+                    // would checkpoint an empty document while clearing a valid recovery WAL.
+                    const recoveredPayload = createTimelinePersistencePayload(
+                        useTimelineStore.getState(),
+                    );
+                    editorPersistenceRegistry.enqueue(
+                        id,
+                        attachment.generation,
+                        recoveredPayload.manifest,
+                        recoveredPayload.sourceAssets,
+                        recoveredPayload.history,
+                    );
+                }
+            }
+
+            const visiblePersistenceFailure = recoveredPersistenceFailure
+                ?? attachment.coordinator.observeFailure();
             set({
                 activeProject: project,
-                persistenceGeneration,
+                persistenceGeneration: attachment.generation,
                 persistenceStatus: null,
-                persistenceError: recoveredPersistenceFailure ?? attachment.coordinator.observeFailure(),
+                persistenceError: visiblePersistenceFailure,
+                persistenceRetryKind: visiblePersistenceFailure ? 'editor-document' : null,
+                isSaving: false,
+                projectLoadError: null,
+                recoveryDocumentRevision: null,
             });
-
-            setTimelinePersistenceBinding({
-                projectId: id,
-                generation: attachment.generation,
-                enqueue: (manifest, sourceAssets) => editorPersistenceRegistry.enqueue(
-                    id,
-                    attachment.generation,
-                    manifest,
-                    sourceAssets,
-                ),
-            });
+            get().updateLastSavedState();
 
             if (migratedLegacy) {
                 // The manifest and its File are committed in one IndexedDB transaction. Legacy
                 // records remain as a harmless fallback until the V3 transaction is durable.
                 const migratedTimeline = useTimelineStore.getState();
+                const migratedPayload = createTimelinePersistencePayload(
+                    migratedTimeline,
+                    getPersistentAssets(migratedTimeline),
+                );
                 editorPersistenceRegistry.enqueue(
                     id,
                     attachment.generation,
-                    migratedTimeline.buildEditorManifest(),
-                    getPersistentAssets(migratedTimeline),
+                    migratedPayload.manifest,
+                    migratedPayload.sourceAssets,
+                    migratedPayload.history,
                 );
-                await editorPersistenceRegistry.flush(id);
-                // A successful migration must not erase a failure recovered from a previous
-                // session before the user has had a chance to see it.
-                set({ persistenceError: recoveredPersistenceFailure });
+                try {
+                    await editorPersistenceRegistry.flush(id);
+                } catch {
+                    // The editor is already usable. The coordinator owns the exact failed
+                    // migration manifest and exposes it through the normal persistence retry.
+                }
+                if (!isLatestRequest()) return;
+                if (isProjectContextActive(get(), {
+                    projectId: id,
+                    generation: attachment.generation,
+                })) {
+                    // A successful migration must not erase a failure recovered from a previous
+                    // session before the user has had a chance to see it.
+                    set({
+                        persistenceError: recoveredPersistenceFailure
+                            ?? attachment.coordinator.observeFailure(),
+                        persistenceRetryKind: recoveredPersistenceFailure
+                            || attachment.coordinator.observeFailure()
+                            ? 'editor-document'
+                            : null,
+                    });
+                }
             }
 
+            if (!isLatestRequest()) return;
             const hydratedTimeline = useTimelineStore.getState();
-            const contentDuration = getTimelineDurations(
-                hydratedTimeline.videoClips,
-                hydratedTimeline.tracks,
-                {
-                    audioTracks: hydratedTimeline.audioTracks,
-                    videoSources: hydratedTimeline.videoSources,
-                    audioSources: hydratedTimeline.audioSources,
-                    renderProfile: hydratedTimeline.renderProfile,
-                },
-            ).contentDuration;
+            const contentDuration = selectTimelineContentDuration(hydratedTimeline);
             const primarySource = document.videoSources[0];
+            const context = { projectId: id, generation: attachment.generation };
             if (project.duration !== contentDuration) {
                 // Dashboard duration reflects the complete edit, including audio tails and a
                 // still-editable audio-only graph after every video clip has been removed.
-                set((state) => state.activeProject
+                set((state) => isProjectContextActive(state, context) && state.activeProject
                     ? { activeProject: { ...state.activeProject, duration: contentDuration } }
                     : state);
-                void get().updateProjectDuration(contentDuration);
+                void get().updateProjectDuration(context, contentDuration);
             }
             if (primarySource && !project.thumbnail) {
-                const { generateThumbnail } = await import('@/lib/mediabunny-utils');
-                void generateThumbnail(primarySource.file, 0)
-                    .then((thumbnail) => get().updateThumbnail(thumbnail))
+                void import('@/lib/mediabunny-utils')
+                    .then(({ generateThumbnail }) => generateThumbnail(primarySource.file, 0))
+                    .then((thumbnail) => get().updateThumbnail(context, thumbnail))
                     .catch((error) => console.error('Failed to generate missing thumbnail', error));
             }
-            get().updateLastSavedState();
         } catch (error) {
-            if (persistenceGeneration) editorPersistenceRegistry.close(id, persistenceGeneration);
-            setTimelinePersistenceBinding(null);
-            set({ persistenceError: recoveredPersistenceFailure ?? error });
+            if (!isLatestRequest()) return;
+            set({
+                projectLoadError: {
+                    projectId: id,
+                    kind: error instanceof ProjectNotFoundError ? 'not-found' : 'unreadable',
+                    cause: error,
+                },
+            });
             console.error('Failed to load project:', error);
             throw error;
         } finally {
-            set({ isProjectLoading: false });
+            if (isLatestRequest()) {
+                set({ isProjectLoading: false, loadingProjectId: null });
+            }
         }
+    },
+
+    retryProjectLoad: async () => {
+        const { projectLoadError, projectRouteIntentId } = get();
+        if (!projectLoadError || projectLoadError.projectId !== projectRouteIntentId) return;
+        await get().loadProject(projectLoadError.projectId);
     },
 
     saveCurrentProject: async () => {
         const { activeProject, persistenceGeneration } = get();
         if (!activeProject) return;
+        if (!persistenceGeneration) {
+            const error = new Error(`Project ${activeProject.id} has no active persistence generation.`);
+            set({
+                persistenceStatus: 'error',
+                persistenceError: error,
+                persistenceRetryKind: null,
+            });
+            return;
+        }
 
         set({ isSaving: true });
         const timelineStore = useTimelineStore.getState();
-
-        const updatedProject = {
-            ...activeProject,
-            updatedAt: new Date(),
-        };
+        const context = { projectId: activeProject.id, generation: persistenceGeneration };
+        const persistencePayload = createTimelinePersistencePayload(
+            timelineStore,
+            getPersistentAssets(timelineStore),
+        );
+        const { manifest, sourceAssets } = persistencePayload;
+        const isStillActive = () => isProjectContextActive(get(), context);
 
         try {
-            await storageService.saveProject(updatedProject);
-            if (!persistenceGeneration) {
-                throw new Error(`Project ${updatedProject.id} has no active persistence generation.`);
-            }
+            await enqueueProjectMetadataWrite(context, activeProject, (project) => ({
+                ...project,
+                updatedAt: new Date(),
+            }));
             editorPersistenceRegistry.enqueue(
-                updatedProject.id,
+                context.projectId,
                 persistenceGeneration,
-                timelineStore.buildEditorManifest(),
-                getPersistentAssets(timelineStore),
+                manifest,
+                sourceAssets,
+                persistencePayload.history,
             );
-            await editorPersistenceRegistry.flush(updatedProject.id);
-            set({ activeProject: updatedProject });
-            get().updateLastSavedState();
+            await editorPersistenceRegistry.flush(context.projectId);
+            if (isStillActive()) {
+                const currentProject = get().activeProject!;
+                const savedIdentity = createProjectSaveIdentity(
+                    currentProject,
+                    persistenceGeneration,
+                    manifest.revision,
+                );
+                const currentTimelineRevision = useTimelineStore.getState().revision;
+                set({
+                    lastSavedIdentity: savedIdentity,
+                    isDirty: !projectSaveIdentitiesEqual(
+                        savedIdentity,
+                        createProjectSaveIdentity(
+                            currentProject,
+                            persistenceGeneration,
+                            currentTimelineRevision,
+                        ),
+                    ),
+                    persistenceStatus: 'saved',
+                    persistenceError: null,
+                    persistenceRetryKind: null,
+                });
+            }
             await get().loadAllProjects();
         } catch (error) {
-            set({ persistenceError: error });
+            if (isStillActive()) {
+                const coordinatorFailure = editorPersistenceRegistry.observeFailure(context.projectId);
+                set({
+                    persistenceStatus: 'error',
+                    persistenceError: coordinatorFailure ?? error,
+                    persistenceRetryKind: coordinatorFailure ? 'editor-document' : 'project-save',
+                });
+            }
             console.error('Failed to save project:', error);
         } finally {
-            set({ isSaving: false });
+            if (isStillActive()) set({ isSaving: false });
+        }
+    },
+
+    retryPersistence: async () => {
+        const { activeProject, persistenceGeneration, persistenceRetryKind } = get();
+        if (!activeProject || !persistenceGeneration || !persistenceRetryKind) return;
+        if (persistenceRetryKind === 'project-save') {
+            // Metadata failures happen before the coordinator retains a document request. Running
+            // the normal save path again captures the latest project and manifest for this exact
+            // still-active generation instead of presenting a Retry button with no recovery work.
+            await get().saveCurrentProject();
+            return;
+        }
+
+        set({ isSaving: true });
+        const projectId = activeProject.id;
+        const isStillActive = () => {
+            const current = get();
+            return current.activeProject?.id === projectId
+                && current.persistenceGeneration === persistenceGeneration;
+        };
+
+        if (persistenceRetryKind === 'recovery-load') {
+            const recoveryRevision = get().recoveryDocumentRevision;
+            const ownsRecoveryLoadAttempt = () => {
+                const current = get();
+                return isStillActive()
+                    && current.persistenceRetryKind === 'recovery-load'
+                    && current.recoveryDocumentRevision === recoveryRevision;
+            };
+            try {
+                if (!recoveryRevision) throw new Error('Recovered document revision is unavailable.');
+                const recoveredDocument = await storageService.loadEditorDocument(projectId);
+                if (!recoveredDocument || recoveredDocument.revision !== recoveryRevision) {
+                    throw new Error(`Recovered revision ${recoveryRevision} could not be loaded.`);
+                }
+                const recoveredRuntime = await storageService.loadEditorRuntimeState(
+                    projectId,
+                    recoveredDocument,
+                );
+                if (recoveredRuntime.document.revision !== recoveryRevision) {
+                    throw new Error(`Recovered runtime revision ${recoveryRevision} could not be loaded.`);
+                }
+                const liveRevision = useTimelineStore.getState().revision;
+                if (
+                    ownsRecoveryLoadAttempt()
+                    && liveRevision === recoveryRevision
+                ) {
+                    useTimelineStore.getState().hydrateEditorDocument(
+                        recoveredRuntime.document,
+                        recoveredRuntime.history,
+                    );
+                    get().updateLastSavedState();
+                }
+                if (ownsRecoveryLoadAttempt()) {
+                    set({
+                        // A newer live revision can already be pending behind this recovered read.
+                        // Preserve that coordinator status instead of briefly claiming it is saved.
+                        ...(liveRevision === recoveryRevision
+                            ? { persistenceStatus: 'saved' as const }
+                            : {}),
+                        persistenceError: null,
+                        persistenceRetryKind: null,
+                        recoveryDocumentRevision: null,
+                    });
+                }
+            } catch (error) {
+                if (ownsRecoveryLoadAttempt()) {
+                    set({
+                        persistenceStatus: 'error',
+                        persistenceError: error,
+                        persistenceRetryKind: 'recovery-load',
+                    });
+                }
+            } finally {
+                if (isStillActive()) set({ isSaving: false });
+            }
+            return;
+        }
+
+        let recoveryReadRevision: number | null = null;
+        try {
+            const failedManifest = editorPersistenceRegistry.getFailedManifest(projectId);
+            const liveRevisionBeforeRetry = useTimelineStore.getState().revision;
+            const shouldHydrateRecoveredManifest = Boolean(
+                failedManifest && liveRevisionBeforeRetry < failedManifest.revision,
+            );
+            if (failedManifest) {
+                // A failure can outlive the editor instance that created it. Reserve its revision
+                // before retrying so edits made while the write is in flight are necessarily newer
+                // and cannot be dropped by the coordinator's monotonic revision filter.
+                useTimelineStore.getState().ensureRevisionAtLeast(failedManifest.revision);
+            }
+            const retried = await editorPersistenceRegistry.retry(projectId, persistenceGeneration);
+            if (!retried && isStillActive()) {
+                // False means this generation no longer owns a failed request. Treat it as an
+                // already-recovered terminal state instead of leaving an error with no action.
+                set({
+                    persistenceStatus: 'saved',
+                    persistenceError: null,
+                    persistenceRetryKind: null,
+                    recoveryDocumentRevision: null,
+                });
+            } else if (
+                // retry() drains edits queued behind the retained manifest. If the live revision
+                // advanced, that newer document is already durable and supersedes recovery of N.
+                retried
+                && failedManifest
+                && shouldHydrateRecoveredManifest
+                && isStillActive()
+                && useTimelineStore.getState().revision === failedManifest.revision
+            ) {
+                recoveryReadRevision = failedManifest.revision;
+                set({ recoveryDocumentRevision: recoveryReadRevision });
+                const recoveredDocument = await storageService.loadEditorDocument(projectId);
+                const ownsRecoveryRead = () => isStillActive()
+                    && get().recoveryDocumentRevision === recoveryReadRevision;
+                if (!ownsRecoveryRead()) return;
+                if (!recoveredDocument || recoveredDocument.revision !== recoveryReadRevision) {
+                    throw new Error(`Recovered revision ${recoveryReadRevision} could not be loaded.`);
+                }
+                const recoveredRuntime = await storageService.loadEditorRuntimeState(
+                    projectId,
+                    recoveredDocument,
+                );
+                if (recoveredRuntime.document.revision !== recoveryReadRevision) {
+                    throw new Error(`Recovered runtime revision ${recoveryReadRevision} could not be loaded.`);
+                }
+                const currentTimeline = useTimelineStore.getState();
+                if (
+                    ownsRecoveryRead()
+                    && currentTimeline.revision === recoveryReadRevision
+                ) {
+                    // No live edit raced the retry, so the exact recovered document can safely
+                    // become the visible graph. A newer live revision always wins and is already
+                    // queued behind the retained failure by the coordinator.
+                    currentTimeline.hydrateEditorDocument(
+                        recoveredRuntime.document,
+                        recoveredRuntime.history,
+                    );
+                    get().updateLastSavedState();
+                }
+                if (ownsRecoveryRead()) set({ recoveryDocumentRevision: null });
+            }
+        } catch (error) {
+            // A retained write failure remains coordinator-retryable. If that write already
+            // succeeded but reading it back failed, preserve a distinct hydration retry instead.
+            if (isStillActive()) {
+                if (
+                    recoveryReadRevision !== null
+                    && get().recoveryDocumentRevision !== recoveryReadRevision
+                ) return;
+                set({
+                    persistenceError: error,
+                    persistenceRetryKind: recoveryReadRevision !== null
+                        ? 'recovery-load'
+                        : 'editor-document',
+                });
+            }
+        } finally {
+            if (isStillActive()) set({ isSaving: false });
         }
     },
 
@@ -348,13 +840,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 get().closeProject();
             }
         } catch (error) {
-            set({ persistenceError: error });
+            set({ persistenceError: error, persistenceRetryKind: null });
             console.error('Failed to delete project:', error);
             throw error;
         }
     },
 
     closeProject: () => {
+        invalidateProjectLoadRequests();
         const { activeProject, persistenceGeneration } = get();
         if (activeProject) editorPersistenceRegistry.close(activeProject.id, persistenceGeneration);
         setTimelinePersistenceBinding(null);
@@ -363,6 +856,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             persistenceGeneration: 0,
             persistenceStatus: null,
             persistenceError: null,
+            persistenceRetryKind: null,
+            isSaving: false,
+            isProjectLoading: false,
+            projectRouteIntentId: null,
+            projectRouteIntentToken: 0,
+            loadingProjectId: null,
+            projectLoadError: null,
+            lastSavedIdentity: null,
+            isDirty: false,
+            recoveryDocumentRevision: null,
         });
         const timelineStore = useTimelineStore.getState();
         timelineStore.resetEditorDocument();
@@ -370,57 +873,60 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     },
 
     updateProjectName: async (name: string) => {
-        const { activeProject } = get();
+        const { activeProject, persistenceGeneration } = get();
         if (!activeProject) return;
-
-        const updatedProject = {
-            ...activeProject,
-            name,
-            updatedAt: new Date(),
-        };
+        const context = { projectId: activeProject.id, generation: persistenceGeneration };
 
         try {
-            await storageService.saveProject(updatedProject);
-            set({ activeProject: updatedProject });
-            get().checkDirty(); // Check dirty instead of blindly setting true
+            const updatedProject = await enqueueProjectMetadataWrite(
+                context,
+                activeProject,
+                (project) => ({ ...project, name, updatedAt: new Date() }),
+            );
+            if (!isProjectContextActive(get(), context)) return;
+            if (get().activeProject?.name !== updatedProject.name) return;
+            set((state) => ({
+                lastSavedIdentity: state.lastSavedIdentity
+                    && state.lastSavedIdentity.projectId === context.projectId
+                    && state.lastSavedIdentity.generation === context.generation
+                    ? { ...state.lastSavedIdentity, projectName: updatedProject.name }
+                    : state.lastSavedIdentity,
+            }));
+            get().checkDirty();
             await get().loadAllProjects();
         } catch (error) {
             console.error('Failed to update project name:', error);
         }
     },
 
-    updateThumbnail: async (thumbnail: string) => {
+    updateThumbnail: async (context, thumbnail) => {
         const { activeProject } = get();
-        if (!activeProject) return;
-
-        const updatedProject = {
-            ...activeProject,
-            thumbnail,
-            updatedAt: new Date(),
-        };
+        if (!activeProject || !isProjectContextActive(get(), context)) return;
 
         try {
-            await storageService.saveProject(updatedProject);
-            set({ activeProject: updatedProject });
+            await enqueueProjectMetadataWrite(
+                context,
+                activeProject,
+                (project) => ({ ...project, thumbnail, updatedAt: new Date() }),
+            );
+            if (!isProjectContextActive(get(), context)) return;
             await get().loadAllProjects();
         } catch (error) {
             console.error('Failed to update thumbnail:', error);
         }
     },
 
-    updateProjectDuration: async (duration: number) => {
+    updateProjectDuration: async (context, duration) => {
         const { activeProject } = get();
-        if (!activeProject) return;
-
-        const updatedProject = {
-            ...activeProject,
-            duration,
-            updatedAt: new Date(),
-        };
+        if (!activeProject || !isProjectContextActive(get(), context)) return;
 
         try {
-            await storageService.saveProject(updatedProject);
-            set({ activeProject: updatedProject });
+            await enqueueProjectMetadataWrite(
+                context,
+                activeProject,
+                (project) => ({ ...project, duration, updatedAt: new Date() }),
+            );
+            if (!isProjectContextActive(get(), context)) return;
             await get().loadAllProjects();
         } catch (error) {
             console.error('Failed to update project duration:', error);
@@ -429,8 +935,30 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 }));
 
 editorPersistenceRegistry.setActiveStatusListener((event) => {
-    useProjectStore.setState({
-        persistenceStatus: event.status,
-        persistenceError: event.status === 'error' ? event.error ?? new Error('Persistence failed.') : null,
+    useProjectStore.setState((state) => {
+        if (event.status === 'error') {
+            return {
+                persistenceStatus: event.status,
+                persistenceError: event.error ?? new Error('Persistence failed.'),
+                // A pending project-save retry subsumes an editor-document failure: rerunning the
+                // full save first commits metadata and then lets the coordinator retry its graph.
+                persistenceRetryKind: state.persistenceRetryKind === 'project-save'
+                    ? 'project-save'
+                    : 'editor-document',
+                // A coordinator result belongs to a newer durable mutation than any in-flight
+                // recovery read. Invalidate that read so its later completion cannot erase this
+                // actionable failure or misclassify a subsequent retry.
+                recoveryDocumentRevision: null,
+            };
+        }
+        if (event.status === 'saved' && state.persistenceRetryKind !== 'project-save') {
+            return {
+                persistenceStatus: event.status,
+                persistenceError: null,
+                persistenceRetryKind: null,
+                recoveryDocumentRevision: null,
+            };
+        }
+        return { persistenceStatus: event.status };
     });
 });

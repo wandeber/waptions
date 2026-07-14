@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VideoSourceAsset } from '@/types/video';
+import { videoCache } from '@/lib/video-cache';
 import { useVideoStore } from './video-store';
 
 const source = (id: string): VideoSourceAsset => ({
@@ -26,6 +27,7 @@ describe('video source runtime handles', () => {
 
     it('revokes replaced and explicitly removed object URLs', () => {
         const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        const clearPreviewSource = vi.spyOn(videoCache, 'clearPreviewSource');
 
         useVideoStore.getState().setSourceHandle('source_a', 'blob:first', true);
         useVideoStore.getState().setSourceHandle('source_a', 'blob:second', true);
@@ -33,11 +35,13 @@ describe('video source runtime handles', () => {
 
         useVideoStore.getState().removeSourceHandle('source_a');
         expect(revoke).toHaveBeenCalledWith('blob:second');
+        expect(clearPreviewSource).toHaveBeenCalledWith('source_a');
         expect(useVideoStore.getState().sourceHandles).toEqual({});
     });
 
     it('revokes handles removed by catalog synchronization and catalog clear', () => {
         const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        const clearPreviewSource = vi.spyOn(videoCache, 'clearPreviewSource');
         useVideoStore.setState({
             sourceHandles: {
                 source_a: { sourceId: 'source_a', objectUrl: 'blob:a' },
@@ -48,12 +52,14 @@ describe('video source runtime handles', () => {
 
         useVideoStore.getState().syncSourceCatalog([source('source_a')]);
         expect(revoke).toHaveBeenCalledWith('blob:b');
+        expect(clearPreviewSource).toHaveBeenCalledWith('source_b');
         expect(useVideoStore.getState().sourceHandles).toEqual({
             source_a: { sourceId: 'source_a', objectUrl: 'blob:a' },
         });
 
         useVideoStore.getState().clearSourceHandles();
         expect(revoke).toHaveBeenCalledWith('blob:a');
+        expect(clearPreviewSource).toHaveBeenCalledWith('source_a');
         expect(useVideoStore.getState().sourceHandles).toEqual({});
     });
 

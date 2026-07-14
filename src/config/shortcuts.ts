@@ -31,6 +31,13 @@ export const SHORTCUTS: Record<string, ShortcutConfig> = {
         description: 'Rehacer',
         category: 'edit'
     },
+    REDO_Y: {
+        id: 'REDO_Y',
+        key: 'y',
+        ctrlOrMeta: true,
+        description: 'Redo',
+        category: 'edit'
+    },
     COPY: {
         id: 'COPY',
         key: 'c',

@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  beginContinuousEdit,
+  getContinuousEditKeyboardTerminal,
+  previewContinuousEdit,
+  terminateContinuousEdit,
+  type ContinuousEditSession,
+} from '@/lib/continuous-edit-session';
+import { useEditorTransactionCoordinator } from '@/components/video-editor/EditorTransactionContext';
+import { parseNumericDraft } from './numeric-input-draft';
 import { ResetIcon } from '../icons/ResetIcon';
 
 interface DraggableNumberInputProps {
   value: number;
-  onChange: (value: number) => void;
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => void;
+  onCancel: (value: number) => void;
   min?: number;
   max?: number;
   step?: number;
@@ -11,26 +22,21 @@ interface DraggableNumberInputProps {
   unit?: string;
   className?: string;
   defaultValue?: number;
-  /** Layout del componente. 'stacked' muestra el label arriba, 'horizontal' lo muestra a la izquierda */
   layout?: 'stacked' | 'horizontal';
-  /** Ancho del label cuando el layout es horizontal. Por defecto se ajusta al contenido */
   labelWidth?: number;
 }
 
 /**
- * A numeric input component that can be changed by dragging horizontally.
- * Inspired by Blender's UI.
- * 
- * Features:
- * - Click and drag horizontally to change value (from input or label)
- * - Hold Shift for fine control (0.1x sensitivity)
- * - Double click on label to reset to default value
- * - Click reset button to restore default value
- * - Supports stacked (default) and horizontal layouts
+ * Blender-style numeric field with one atomic command per pointer or focus session.
+ *
+ * Dragging, local typing, and arrow keys only preview values. Pointer release, Enter, or blur
+ * commits once; pointer cancellation, Escape, and invalid text restore the durable baseline.
  */
 export function DraggableNumberInput({
   value,
-  onChange,
+  onPreview,
+  onCommit,
+  onCancel,
   min = -Infinity,
   max = Infinity,
   step = 1,
@@ -39,238 +45,275 @@ export function DraggableNumberInput({
   className = '',
   defaultValue = 0,
   layout = 'stacked',
-  labelWidth
+  labelWidth,
 }: DraggableNumberInputProps) {
-  const [isDragging, setIsDragging] = useState(false);
-  const [startX, setStartX] = useState(0);
-  const [startValue, setStartValue] = useState(0);
+  const transactionCoordinator = useEditorTransactionCoordinator();
   const [inputValue, setInputValue] = useState(value.toString());
-  const inputRef = useRef<HTMLInputElement>(null);
-  const dragOverlayRef = useRef<HTMLDivElement>(null);
   const [isFocused, setIsFocused] = useState(false);
-  const [hasMoved, setHasMoved] = useState(false);
-  const [clickCount, setClickCount] = useState(0);
-  const clickTimer = useRef<NodeJS.Timeout | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const sessionRef = useRef<ContinuousEditSession<number> | null>(null);
+  const pointerRef = useRef<{
+    id: number;
+    startX: number;
+    startValue: number;
+    moved: boolean;
+    target: HTMLElement;
+  } | null>(null);
 
-  // Update input value when prop changes
+  const clamp = useCallback((next: number) => Math.min(max, Math.max(min, next)), [max, min]);
+
   useEffect(() => {
+    // Undo/redo and other durable store changes update an idle field immediately. An active edit
+    // owns its draft until commit/cancel so parent renders cannot overwrite a gesture mid-flight.
+    if (sessionRef.current?.terminal === null) return;
+    sessionRef.current = null;
     setInputValue(value.toString());
   }, [value]);
 
-  const resetToDefault = useCallback(() => {
-    const clampedDefault = Math.min(max, Math.max(min, defaultValue));
-    onChange(clampedDefault);
-    setInputValue(clampedDefault.toString());
-  }, [defaultValue, max, min, onChange]);
+  const begin = useCallback(() => {
+    sessionRef.current = beginContinuousEdit(value);
+  }, [value]);
 
-  const handleDragStart = useCallback((e: React.MouseEvent<HTMLElement>) => {
-    if (e.button !== 0) return; // Solo botón izquierdo
+  const preview = useCallback((next: number, syncDraft = true) => {
+    const currentSession = sessionRef.current ?? beginContinuousEdit(value);
+    // Enter followed by blur, or pointerup followed by lostpointercapture, can deliver work after
+    // the session already ended. Do not let that late preview reopen the parent style transaction.
+    if (currentSession.terminal !== null) return currentSession.latest;
 
-    const isLabel = e.currentTarget.tagName.toLowerCase() === 'label';
-    
-    // Solo comprobar el foco si NO es el label
-    if (!isLabel && isFocused) return;
+    const clamped = clamp(next);
+    sessionRef.current = previewContinuousEdit(
+      currentSession,
+      clamped,
+    );
+    // Pointer and keyboard increments own the displayed value. Typed edits keep their exact raw
+    // draft so intermediate text such as `6.` is not normalized to `6` before `5` is entered.
+    if (syncDraft) setInputValue(clamped.toString());
+    onPreview(clamped);
+    return clamped;
+  }, [clamp, onPreview, value]);
 
-    // Si es el label, gestionar el doble clic
-    if (isLabel) {
-      setClickCount(prev => prev + 1);
-      
-      // Limpiar el timer anterior si existe
-      if (clickTimer.current) {
-        clearTimeout(clickTimer.current);
-      }
-      
-      // Configurar nuevo timer
-      clickTimer.current = setTimeout(() => {
-        setClickCount(0);
-      }, 300);
+  const finish = useCallback((terminal: 'commit' | 'cancel') => {
+    const session = sessionRef.current;
+    if (!session || session.terminal !== null) return;
+    const result = terminateContinuousEdit(session, terminal);
+    sessionRef.current = result.session;
+    setInputValue(result.value.toString());
+    if (result.shouldCommit) onCommit(result.value);
+    else if (terminal === 'cancel') onCancel(result.value);
+  }, [onCancel, onCommit]);
 
-      // Si es doble clic, no iniciar el arrastre
-      if (clickCount === 1) {
-        setClickCount(0);
-        resetToDefault();
-        return;
-      }
-    }
-
-    setIsDragging(true);
-    setHasMoved(false);
-    setStartX(e.clientX);
-    setStartValue(value);
-    document.body.style.cursor = 'ew-resize';
-    window.getSelection()?.removeAllRanges();
-    
-    // Activar el overlay de arrastre
-    if (dragOverlayRef.current) {
-      dragOverlayRef.current.style.display = 'block';
-    }
-    
-    e.preventDefault();
-  }, [value, isFocused, clickCount, resetToDefault]);
-
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging) return;
-
-    const dx = e.clientX - startX;
-    // Si hay movimiento real (más de un par de píxeles para evitar pequeños temblores)
-    if (Math.abs(dx) > 2) {
-      setHasMoved(true);
-    }
-    
-    const sensitivity = e.shiftKey ? 0.1 : 1; // Shift for fine control
-    const newValue = startValue + (dx * step * sensitivity);
-    const clampedValue = Math.min(max, Math.max(min, newValue));
-    
-    onChange(clampedValue);
-    setInputValue(clampedValue.toString());
-    
-    e.preventDefault();
-  }, [isDragging, startX, startValue, step, min, max, onChange]);
-
-  const handleMouseUp = useCallback(() => {
-    if (!isDragging) return;
-    
+  const finishPointer = useCallback((pointerId: number, terminal: 'commit' | 'cancel') => {
+    const pointer = pointerRef.current;
+    if (!pointer || pointer.id !== pointerId) return;
+    pointerRef.current = null;
     setIsDragging(false);
     document.body.style.cursor = '';
-    
-    // Desactivar el overlay de arrastre
-    if (dragOverlayRef.current) {
-      dragOverlayRef.current.style.display = 'none';
-    }
+    finish(terminal);
+    if (terminal === 'commit' && !pointer.moved) inputRef.current?.focus();
+  }, [finish]);
 
-    // Si no hubo movimiento, dar foco al input
-    if (!hasMoved) {
-      inputRef.current?.focus();
+  const cancelForHistory = useCallback(() => {
+    const session = sessionRef.current;
+    if (!session || session.terminal !== null) return;
+    const pointer = pointerRef.current;
+    pointerRef.current = null;
+    setIsDragging(false);
+    document.body.style.cursor = '';
+    finish('cancel');
+    if (pointer?.target.hasPointerCapture(pointer.id)) {
+      pointer.target.releasePointerCapture(pointer.id);
     }
-  }, [isDragging, hasMoved]);
+  }, [finish]);
 
-  // Add/remove event listeners
+  useEffect(
+    () => transactionCoordinator.register(cancelForHistory),
+    [cancelForHistory, transactionCoordinator],
+  );
+
   useEffect(() => {
-    if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    }
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, handleMouseMove, handleMouseUp]);
-
-  // Cleanup click timer
-  useEffect(() => {
-    return () => {
-      if (clickTimer.current) {
-        clearTimeout(clickTimer.current);
+    if (!isDragging) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !pointerRef.current) return;
+      event.preventDefault();
+      const pointer = pointerRef.current;
+      finishPointer(pointer.id, 'cancel');
+      if (pointer.target.hasPointerCapture(pointer.id)) {
+        pointer.target.releasePointerCapture(pointer.id);
       }
     };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [finishPointer, isDragging]);
+
+  useEffect(() => () => {
+    document.body.style.cursor = '';
   }, []);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInputValue(e.target.value);
-    const newValue = parseFloat(e.target.value);
-    if (!isNaN(newValue)) {
-      const clampedValue = Math.min(max, Math.max(min, newValue));
-      onChange(clampedValue);
-    }
+  const handlePointerDown = (event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || isFocused) return;
+    begin();
+    pointerRef.current = {
+      id: event.pointerId,
+      startX: event.clientX,
+      startValue: value,
+      moved: false,
+      target: event.currentTarget,
+    };
+    setIsDragging(true);
+    document.body.style.cursor = 'ew-resize';
+    window.getSelection()?.removeAllRanges();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
   };
 
-  const handleFocus = () => {
-    setIsFocused(true);
+  const handlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    const pointer = pointerRef.current;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    const delta = event.clientX - pointer.startX;
+    if (Math.abs(delta) > 2) pointer.moved = true;
+    const sensitivity = event.shiftKey ? 0.1 : 1;
+    preview(pointer.startValue + delta * step * sensitivity);
+    event.preventDefault();
   };
 
-  const handleBlur = () => {
-    setIsFocused(false);
-    // Reset to current value if input is invalid
-    if (isNaN(parseFloat(inputValue))) {
-      setInputValue(value.toString());
-    }
+  const pointerHandlers = {
+    onPointerDown: handlePointerDown,
+    onPointerMove: handlePointerMove,
+    onPointerUp: (event: React.PointerEvent<HTMLElement>) => {
+      finishPointer(event.pointerId, 'commit');
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    onPointerCancel: (event: React.PointerEvent<HTMLElement>) => finishPointer(event.pointerId, 'cancel'),
+    onLostPointerCapture: (event: React.PointerEvent<HTMLElement>) => finishPointer(event.pointerId, 'commit'),
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      inputRef.current?.blur();
-    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      const sensitivity = e.shiftKey ? 0.1 : 1;
-      const direction = e.key === 'ArrowUp' ? 1 : -1;
-      const newValue = value + (direction * step * sensitivity);
-      const clampedValue = Math.min(max, Math.max(min, newValue));
-      onChange(clampedValue);
-      setInputValue(clampedValue.toString());
-    }
+  const commitReset = () => {
+    // A reset inside an active focus session must keep that session's original durable baseline.
+    // Starting again from the latest preview would make Undo restore the draft instead of the
+    // value that existed before the user focused the field.
+    if (!sessionRef.current || sessionRef.current.terminal !== null) begin();
+    preview(defaultValue);
+    finish('commit');
+    // Reset is an explicit terminal action. Pointer-down deliberately prevented the button from
+    // blurring first, so close focus now that the reset is durable; the next typed edit can then
+    // begin a fresh session from the reset value instead of reusing this terminal session.
+    inputRef.current?.blur();
   };
+
+  const finishTypedValue = (terminal: 'commit' | 'cancel') => {
+    if (terminal === 'cancel') {
+      finish('cancel');
+      return;
+    }
+    const parsed = parseNumericDraft(inputValue);
+    if (parsed === null) {
+      finish('cancel');
+      return;
+    }
+    preview(parsed);
+    finish('commit');
+  };
+
+  const parsedProgressDraft = parseNumericDraft(inputValue);
+  const progressValue = parsedProgressDraft === null ? value : clamp(parsedProgressDraft);
 
   return (
-    <div className={`
-      ${layout === 'stacked' ? 'flex flex-col gap-2' : 'flex items-center gap-3'}
-      ${className}
-    `}>
+    <div className={`${layout === 'stacked' ? 'flex flex-col gap-2' : 'flex items-center gap-3'} ${className}`}>
       {label && (
-        <label 
-          className={`
-            text-sm text-gray-300 cursor-ew-resize select-none
-            ${layout === 'horizontal' ? 'truncate' : ''}
-          `}
+        <label
+          className={`text-sm text-gray-300 cursor-ew-resize select-none ${layout === 'horizontal' ? 'truncate' : ''}`}
           style={layout === 'horizontal' && labelWidth ? { width: labelWidth } : undefined}
-          onMouseDown={handleDragStart}
-          title={layout === 'horizontal' ? label : "Arrastra para cambiar valor. Doble clic para restablecer valor por defecto"}
+          {...pointerHandlers}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            commitReset();
+          }}
+          title={layout === 'horizontal' ? label : 'Drag to change the value. Double-click to reset.'}
         >
           {label}
         </label>
       )}
-      <div className={`
-        relative flex items-center
-        ${layout === 'horizontal' ? 'min-w-[120px] flex-1' : ''}
-      `}>
-        {/* Overlay de arrastre - solo visible durante el arrastre */}
-        <div
-          ref={dragOverlayRef}
-          className="fixed inset-0 z-50 cursor-ew-resize"
-          style={{ display: 'none' }}
-        />
+      <div className={`relative flex items-center ${layout === 'horizontal' ? 'min-w-[120px] flex-1' : ''}`}>
         <div className="relative flex-1">
-          {/* Fondo base */}
           <div className="absolute inset-0 bg-gray-700 rounded-l" />
-          {/* Barra de progreso - solo visible cuando hay min y max definidos */}
           {min !== -Infinity && max !== Infinity && (
-            <div 
+            <div
               className="absolute inset-0 bg-gray-800 rounded-l pointer-events-none"
-              style={{ 
-                width: `${((value - min) / (max - min)) * 100}%`,
-                opacity: 0.5
+              style={{
+                width: `${((progressValue - min) / (max - min)) * 100}%`,
+                opacity: 0.5,
               }}
             />
           )}
           <input
             ref={inputRef}
             type="text"
+            aria-label={label}
             value={inputValue}
-            onChange={handleInputChange}
-            onFocus={handleFocus}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            className={`relative w-full h-8 bg-transparent text-white rounded-l px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500
-              ${isFocused ? 'cursor-text' : 'cursor-ew-resize'}`}
+            onChange={(event) => {
+              const rawDraft = event.target.value;
+              setInputValue(rawDraft);
+              const parsed = parseNumericDraft(rawDraft);
+              if (parsed !== null) preview(parsed, false);
+            }}
+            onFocus={() => {
+              setIsFocused(true);
+              begin();
+            }}
+            onBlur={() => {
+              setIsFocused(false);
+              finishTypedValue('commit');
+            }}
+            onKeyDown={(event) => {
+              const terminal = getContinuousEditKeyboardTerminal(
+                event.key,
+                event.nativeEvent.isComposing,
+              );
+              if (terminal === 'cancel') {
+                event.preventDefault();
+                finishTypedValue('cancel');
+                event.currentTarget.blur();
+                return;
+              }
+              if (terminal === 'commit') {
+                event.preventDefault();
+                finishTypedValue('commit');
+                event.currentTarget.blur();
+                return;
+              }
+              if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                event.preventDefault();
+                const current = parseNumericDraft(inputValue);
+                const baseline = current ?? sessionRef.current?.latest ?? value;
+                const direction = event.key === 'ArrowUp' ? 1 : -1;
+                preview(baseline + direction * step * (event.shiftKey ? 0.1 : 1));
+              }
+            }}
+            className={`relative w-full h-8 bg-transparent text-white rounded-l px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isFocused ? 'cursor-text' : 'cursor-ew-resize'}`}
           />
-          {/* Área de arrastre - solo visible cuando no tiene foco */}
-          {!isFocused && (
-            <div
-              className="absolute inset-0 cursor-ew-resize"
-              onMouseDown={handleDragStart}
-            />
-          )}
+          {!isFocused && <div className="absolute inset-0 cursor-ew-resize" {...pointerHandlers} />}
           {unit && (
             <span className="absolute right-2 text-sm text-gray-400 top-1/2 -translate-y-1/2">{unit}</span>
           )}
         </div>
         <button
-          onClick={resetToDefault}
+          type="button"
+          aria-label={`Reset ${label ?? 'value'} to default`}
+          onPointerDown={(event) => {
+            // Keep an active typed draft from blurring into its own command immediately before
+            // reset replaces it. The reset terminal below owns the whole focus session instead.
+            event.preventDefault();
+          }}
+          onClick={commitReset}
           className="h-8 w-8 flex items-center justify-center bg-gray-700 text-gray-400 hover:text-white rounded-r border-l border-gray-600"
-          title="Restablecer valor por defecto"
+          title="Reset to default"
         >
           <ResetIcon />
         </button>
       </div>
     </div>
   );
-} 
+}

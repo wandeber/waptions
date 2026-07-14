@@ -1,7 +1,15 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Subtitle } from '@/types/timeline';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Subtitle } from '@/types/timeline';
+import {
+  beginContinuousEdit,
+  previewContinuousEdit,
+  terminateContinuousEdit,
+  type ContinuousEditSession,
+} from '@/lib/continuous-edit-session';
+import { useEditorTransactionCoordinator } from '@/components/video-editor/EditorTransactionContext';
+import { useTimelineStore } from '@/stores/timeline-store';
 import { Tabs } from '../../design-system/Tabs';
 import { Accordion } from '../../design-system/Accordion';
 import { TextStyleSection } from './TextStyleSection';
@@ -10,18 +18,29 @@ import { AnimationSection } from './AnimationSection';
 import { PositionSection } from './PositionSection';
 import { SubtitleList } from './SubtitleList';
 import { StylePresetSelector } from './StylePresetSelector';
-import type { SubtitleEditorProps, SubtitleAnimationStyle } from './types';
+import { getSubtitleHistoryShortcut } from './subtitle-edit-session';
+import type { SubtitleEditorProps, SubtitleAnimationStyle, SubtitleStyleEditHandlers } from './types';
 import { defaultAnimationStyle } from './types';
-import { useTimelineStore } from '@/stores/timeline-store';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function debounce<T extends (...args: any[]) => void>(func: T, wait: number) {
-  let timeout: ReturnType<typeof setTimeout>;
-  return (...args: Parameters<T>) => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => func(...args), wait);
-  };
+type StyleValue = SubtitleAnimationStyle[keyof SubtitleAnimationStyle];
+
+interface SubtitleTextSession {
+  subtitleId: string;
+  session: ContinuousEditSession<string>;
 }
+
+const styleValueEquals = (left: StyleValue, right: StyleValue): boolean => {
+  if (typeof left === 'object' && typeof right === 'object') {
+    return left.x === right.x && left.y === right.y;
+  }
+  return Object.is(left, right);
+};
+
+const textMapsEqual = (left: Record<string, string>, right: Record<string, string>): boolean => {
+  const leftIds = Object.keys(left);
+  const rightIds = Object.keys(right);
+  return leftIds.length === rightIds.length && leftIds.every((id) => left[id] === right[id]);
+};
 
 export function SubtitleEditor({
   subtitles,
@@ -35,409 +54,422 @@ export function SubtitleEditor({
   isGeneratingSubtitles,
   onAnimationStyleChange,
   animationStyle = defaultAnimationStyle,
-  fps = 30
+  onUndo,
+  onRedo,
+  fps = 30,
 }: SubtitleEditorProps & { fps?: number }) {
-  const { selectedSubtitleIds } = useTimelineStore();
+  const transactionCoordinator = useEditorTransactionCoordinator();
+  const selectedSubtitleIds = useTimelineStore((state) => state.selectedSubtitleIds);
   const frameDuration = fps > 0 ? 1 / fps : 0.01;
-  const snapTime = (t: number) => Math.round(t / frameDuration) * frameDuration;
+  const snapTime = (time: number) => Math.round(time / frameDuration) * frameDuration;
+  const canonicalStyle = { ...defaultAnimationStyle, ...animationStyle };
 
-  const [editingText, setEditingText] = useState<{ [key: string]: string }>({});
+  const [editingText, setEditingText] = useState<Record<string, string>>({});
+  const editingTextRef = useRef<Record<string, string>>({});
+  const textSessionRef = useRef<SubtitleTextSession | null>(null);
+  const textDraftOwnerRef = useRef(Symbol('subtitle-text-draft'));
+  const composingSubtitleIdRef = useRef<string | null>(null);
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style'>('subtitles');
   const [expandedStyleSection, setExpandedStyleSection] = useState<string | null>(null);
-  const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>({
-    ...defaultAnimationStyle,
-    ...animationStyle
-  });
-
-  const isTypingRef = useRef(false);
-  const finishTyping = useCallback(() => {
-    isTypingRef.current = false;
-  }, []);
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const debouncedFinishTyping = useCallback(debounce(finishTyping, 300), [finishTyping]);
-
-  // Efecto para sincronizar los estilos locales con los props
-  useEffect(() => {
-    const newStyle = {
-      ...defaultAnimationStyle,
-      ...animationStyle
-    };
-    // Solo actualizar si realmente hay cambios
-    if (JSON.stringify(newStyle) !== JSON.stringify(localAnimationStyle)) {
-      setLocalAnimationStyle(newStyle);
-    }
-  }, [animationStyle, localAnimationStyle]);
-
-  // Sincronizar el texto de edición con los subtítulos (incluyendo fusiones externas)
-  useEffect(() => {
-    // Construir el objeto de texto esperado basado en los subtítulos actuales
-    const expectedText: { [key: string]: string } = {};
-    subtitles.forEach(s => {
-      expectedText[s.id] = s.text;
-    });
-
-    // Detectar si necesitamos actualizar la memoria interna
-    // 1. ¿Falta algún ID?
-    // 2. ¿Sobra algún ID (limpieza)?
-    // 3. ¿El texto de algún ID existente ha cambiado externamente (fusión)?
-    const currentIds = Object.keys(editingText);
-    const expectedIds = Object.keys(expectedText);
-
-    const hasIdMismatch = currentIds.length !== expectedIds.length ||
-      expectedIds.some(id => !editingText.hasOwnProperty(id));
-
-    const hasTextMismatch = expectedIds.some(id =>
-      editingText.hasOwnProperty(id) && editingText[id] !== expectedText[id] && !isTypingRef.current
+  const [localAnimationStyle, setLocalAnimationStyle] = useState<SubtitleAnimationStyle>(canonicalStyle);
+  const localStyleRef = useRef(localAnimationStyle);
+  const canonicalStyleRef = useRef(canonicalStyle);
+  const styleSessionsRef = useRef(new Map<keyof SubtitleAnimationStyle, ContinuousEditSession<StyleValue>>());
+  const publishTextDraftState = useCallback((session: ContinuousEditSession<string> | null) => {
+    transactionCoordinator.setPendingUndoableDraft(
+      textDraftOwnerRef.current,
+      session?.terminal === null && session.latest !== session.baseline,
     );
+  }, [transactionCoordinator]);
 
-    if (hasIdMismatch || hasTextMismatch) {
-      setEditingText(expectedText);
-    }
-  }, [subtitles, editingText]);
-
-  const handleTextChange = (subtitle: Subtitle, newText: string) => {
-    setEditingText(prev => ({ ...prev, [subtitle.id]: newText }));
-
-    if (onSubtitleUpdate) {
-      if (!isTypingRef.current) {
-        // Al empezar a escribir, guardamos un punto en la historia (estado previo)
-        onSubtitleUpdate(subtitle.id, { text: newText }, { skipHistory: false });
-        isTypingRef.current = true;
+  useEffect(() => {
+    const nextCanonical = { ...defaultAnimationStyle, ...animationStyle };
+    canonicalStyleRef.current = nextCanonical;
+    const nextLocal = { ...nextCanonical };
+    styleSessionsRef.current.forEach((session, key) => {
+      if (session.terminal === null) {
+        Object.assign(nextLocal, { [key]: session.latest });
       } else {
-        // Mientras escribimos, actualizamos sin guardar en historia
-        onSubtitleUpdate(subtitle.id, { text: newText }, { skipHistory: true });
+        styleSessionsRef.current.delete(key);
       }
-      debouncedFinishTyping();
-    } else if (onSubtitlesChange) {
-      const updatedSubtitles = subtitles.map(s =>
-        s.id === subtitle.id ? { ...s, text: newText } : s
-      );
-      onSubtitlesChange(updatedSubtitles);
+    });
+    localStyleRef.current = nextLocal;
+    setLocalAnimationStyle((current) => (
+      JSON.stringify(current) === JSON.stringify(nextLocal) ? current : nextLocal
+    ));
+  }, [animationStyle]);
+
+  useEffect(() => {
+    const expectedText = Object.fromEntries(subtitles.map((subtitle) => [subtitle.id, subtitle.text]));
+    const currentSession = textSessionRef.current;
+    if (currentSession?.session.terminal === null
+      && Object.prototype.hasOwnProperty.call(expectedText, currentSession.subtitleId)) {
+      // A focused textarea owns its draft. Store updates for every other subtitle still flow into
+      // the controlled map, so selection changes and unrelated undo operations do not stale it.
+      expectedText[currentSession.subtitleId] = currentSession.session.latest;
     }
+    editingTextRef.current = expectedText;
+    setEditingText((current) => textMapsEqual(current, expectedText) ? current : expectedText);
+
+    if (currentSession && (
+      currentSession.session.terminal !== null
+      || !Object.prototype.hasOwnProperty.call(expectedText, currentSession.subtitleId)
+    )) {
+      // Do not turn an intermediate committed render into a fresh active session or retain a draft
+      // for a removed subtitle. Focused history can commit and undo in one task; keeping that
+      // intermediate value active would preserve the wrong draft on the restored store render.
+      textSessionRef.current = null;
+      publishTextDraftState(null);
+    }
+  }, [publishTextDraftState, subtitles]);
+
+  useEffect(() => () => {
+    transactionCoordinator.setPendingUndoableDraft(textDraftOwnerRef.current, false);
+  }, [transactionCoordinator]);
+
+  const setTextDraft = (subtitle: Subtitle, nextText: string) => {
+    const current = textSessionRef.current;
+    const session = current?.subtitleId === subtitle.id && current.session.terminal === null
+      ? current.session
+      : beginContinuousEdit(subtitle.text);
+    const nextSession = previewContinuousEdit(session, nextText);
+    textSessionRef.current = { subtitleId: subtitle.id, session: nextSession };
+    publishTextDraftState(nextSession);
+    const nextEditingText = { ...editingTextRef.current, [subtitle.id]: nextText };
+    editingTextRef.current = nextEditingText;
+    setEditingText(nextEditingText);
   };
 
-  const handleStyleChange = (
-    key: keyof SubtitleAnimationStyle,
-    value: SubtitleAnimationStyle[keyof SubtitleAnimationStyle]
+  const finishTextSession = (
+    subtitle: Subtitle,
+    terminal: 'commit' | 'cancel',
+    persist = true,
   ) => {
-    const newStyle = { ...localAnimationStyle, [key]: value };
-    setLocalAnimationStyle(newStyle);
-    onAnimationStyleChange?.(newStyle);
+    const current = textSessionRef.current;
+    const session = current?.subtitleId === subtitle.id
+      ? current.session
+      : beginContinuousEdit(subtitle.text);
+    const result = terminateContinuousEdit(session, terminal);
+    textSessionRef.current = { subtitleId: subtitle.id, session: result.session };
+    publishTextDraftState(result.session);
+    const nextEditingText = { ...editingTextRef.current, [subtitle.id]: result.value };
+    editingTextRef.current = nextEditingText;
+    setEditingText(nextEditingText);
+
+    if (persist && result.shouldCommit) {
+      if (onSubtitleUpdate) onSubtitleUpdate(subtitle.id, { text: result.value });
+      else onSubtitlesChange?.(subtitles.map((entry) => (
+        entry.id === subtitle.id ? { ...entry, text: result.value } : entry
+      )));
+    }
+    return result;
   };
 
-  const handleSubtitleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => {
-    if (e.key === 'Escape') {
-      e.currentTarget.blur();
+  const consumeTextDraft = (subtitle: Subtitle): string => {
+    const latest = editingTextRef.current[subtitle.id] ?? subtitle.text;
+    const current = textSessionRef.current;
+    const session = current?.subtitleId === subtitle.id && current.session.terminal === null
+      ? current.session
+      : previewContinuousEdit(beginContinuousEdit(subtitle.text), latest);
+    const terminatedSession = terminateContinuousEdit(session, 'commit').session;
+    textSessionRef.current = {
+      subtitleId: subtitle.id,
+      session: terminatedSession,
+    };
+    publishTextDraftState(terminatedSession);
+    return latest;
+  };
+
+  const handleSubtitleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => {
+    const isComposing = event.nativeEvent.isComposing || composingSubtitleIdRef.current === subtitle.id;
+    const historyShortcut = getSubtitleHistoryShortcut({
+      key: event.key,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      isComposing,
+    });
+    if (historyShortcut) {
+      event.preventDefault();
+      event.stopPropagation();
+      const textarea = event.currentTarget;
+      // The draft becomes one normal durable command immediately before app history runs. Undo
+      // therefore restores its baseline atomically instead of entering the browser's native text
+      // history, and redo restores the same full editor snapshot.
+      finishTextSession(subtitle, 'commit');
+      const action = historyShortcut === 'undo' ? onUndo : onRedo;
+      void Promise.resolve().then(() => action?.()).finally(() => {
+        requestAnimationFrame(() => {
+          if (textarea.isConnected) textarea.focus();
+        });
+      });
+      return;
+    }
+    if (isComposing) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      finishTextSession(subtitle, 'cancel');
+      event.currentTarget.blur();
       return;
     }
 
-    if (e.key === 'Enter') {
-      if (e.ctrlKey) {
-        // Permitir el comportamiento por defecto para insertar salto de línea
-        const textarea = e.currentTarget;
+    if (event.key === 'Enter') {
+      if (event.ctrlKey) {
+        event.preventDefault();
+        const textarea = event.currentTarget;
         const cursorPosition = textarea.selectionStart;
-        const currentText = editingText[subtitle.id] || '';
-        const newText = currentText.slice(0, cursorPosition) + '\n' + currentText.slice(cursorPosition);
-        handleTextChange(subtitle, newText);
-
-        // Mover el cursor después del salto de línea
-        requestAnimationFrame(() => {
-          textarea.setSelectionRange(cursorPosition + 1, cursorPosition + 1);
-        });
+        const currentText = editingTextRef.current[subtitle.id] ?? '';
+        const nextText = `${currentText.slice(0, cursorPosition)}\n${currentText.slice(cursorPosition)}`;
+        setTextDraft(subtitle, nextText);
+        requestAnimationFrame(() => textarea.setSelectionRange(cursorPosition + 1, cursorPosition + 1));
         return;
       }
 
-      e.preventDefault();
-
-      const textarea = e.currentTarget;
+      event.preventDefault();
+      const textarea = event.currentTarget;
       const cursorPosition = textarea.selectionStart;
-      const currentText = editingText[subtitle.id] || '';
+      const currentText = editingTextRef.current[subtitle.id] ?? '';
+      if (!currentText.trim()) return;
 
-      // No crear nuevo subtítulo si el texto está vacío
-      if (!currentText.trim()) {
-        return;
-      }
-
-      // Dividir el texto en dos partes según la posición del cursor y limpiar espacios en la zona del split
+      // Consume the local draft before replacing the graph. The following blur observes a terminal
+      // session and cannot create a second text-only history entry.
+      consumeTextDraft(subtitle);
       const firstPart = currentText.slice(0, cursorPosition).replace(/\s+$/, '');
       const secondPart = currentText.slice(cursorPosition).replace(/^\s+/, '');
-
-      // Calcular los tiempos para los dos nuevos subtítulos
-      const originalDuration = subtitle.endTime - subtitle.startTime;
-      const splitRatio = cursorPosition / currentText.length;
-
-      // Si estamos al final del texto, asegurar una duración mínima de 1 segundo para el nuevo subtítulo
       const isAtEnd = cursorPosition >= currentText.length;
-      const minDuration = 1; // 1 segundo
-
-      let splitTime: number;
-      let newSubtitle: Subtitle;
-
-      if (isAtEnd) {
-        splitTime = snapTime(subtitle.endTime);
-        // Ajustar el tiempo final del nuevo subtítulo para asegurar la duración mínima
-        const newEndTime = snapTime(splitTime + minDuration);
-
-        // Actualizar el subtítulo original (sin cambios en su duración)
-        const updatedOriginal: Subtitle = {
-          ...subtitle,
-          text: firstPart
-        };
-
-        // Crear el nuevo subtítulo con la duración mínima
-        newSubtitle = {
-          id: Date.now().toString(),
-          startTime: splitTime,
-          endTime: newEndTime,
-          text: secondPart
-        };
-
-        // Actualizar el estado local de edición
-        setEditingText(prev => ({
-          ...prev,
-          [updatedOriginal.id]: firstPart,
-          [newSubtitle.id]: secondPart
-        }));
-
-        // Guardar ambos subtítulos
-        onSubtitlesChange?.([...subtitles.map(s =>
-          s.id === subtitle.id ? { ...s, text: firstPart, endTime: splitTime } : s
-        ), newSubtitle]);
-        onSubtitleClick?.(newSubtitle);
-
-        // Mover el foco al nuevo textarea
-        requestAnimationFrame(() => {
-          const newTextarea = document.getElementById(`subtitle-${newSubtitle.id}`) as HTMLTextAreaElement;
-          if (newTextarea) {
-            newTextarea.focus();
-            newTextarea.setSelectionRange(0, 0);
-          }
-        });
-      } else {
-        // Comportamiento normal para división en medio del texto
-        splitTime = snapTime(subtitle.startTime + (originalDuration * splitRatio));
-
-        // Actualizar el subtítulo original con la primera parte
-        const updatedOriginal: Subtitle = {
-          ...subtitle,
-          text: firstPart,
-          endTime: splitTime
-        };
-
-        // Crear el nuevo subtítulo con la segunda parte
-        newSubtitle = {
-          id: Date.now().toString(),
-          startTime: splitTime,
-          endTime: snapTime(subtitle.endTime),
-          text: secondPart
-        };
-
-        // Actualizar el estado local de edición
-        setEditingText(prev => ({
-          ...prev,
-          [updatedOriginal.id]: firstPart,
-          [newSubtitle.id]: secondPart
-        }));
-
-        // Guardar ambos subtítulos
-        onSubtitlesChange?.([...subtitles.map(s =>
-          s.id === subtitle.id ? { ...s, text: firstPart, endTime: splitTime } : s
-        ), newSubtitle]);
-        onSubtitleClick?.(newSubtitle);
-
-        // Mover el foco al nuevo textarea
-        requestAnimationFrame(() => {
-          const newTextarea = document.getElementById(`subtitle-${newSubtitle.id}`) as HTMLTextAreaElement;
-          if (newTextarea) {
-            newTextarea.focus();
-            newTextarea.setSelectionRange(0, 0);
-          }
-        });
-      }
-    } else if (e.key === 'Backspace') {
-      const textarea = e.currentTarget;
-      const currentText = editingText[subtitle.id] || '';
-
-      // Si el texto no está vacío y no estamos al inicio, permitir el comportamiento normal
-      if (currentText.length > 0 && textarea.selectionStart !== 0) {
-        return;
-      }
-
-      // Encontrar el subtítulo anterior
-      const sortedSubtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
-      const currentIndex = sortedSubtitles.findIndex(s => s.id === subtitle.id);
-      if (currentIndex <= 0) {
-        return; // No hay subtítulo anterior
-      }
-
-      e.preventDefault();
-      const previousSubtitle = sortedSubtitles[currentIndex - 1];
-      const previousText = editingText[previousSubtitle.id] || '';
-
-      // Si el texto actual está vacío, simplemente borrar el subtítulo
-      if (!currentText) {
-        // Actualizar el subtítulo anterior para que llegue hasta el final del actual
-        const updatedPrevious: Subtitle = {
-          ...previousSubtitle,
-          endTime: snapTime(subtitle.endTime)
-        };
-
-        // Actualizar el estado local de edición
-        setEditingText(prev => {
-          const newState = { ...prev };
-          delete newState[subtitle.id];
-          return newState;
-        });
-
-        // Actualizar los subtítulos y eliminar el actual
-        const updatedSubtitles = subtitles
-          .filter(s => s.id !== subtitle.id)
-          .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
-
-        onSubtitlesChange?.(updatedSubtitles);
-        onSubtitleClick?.(updatedPrevious);
-
-        // Mover el foco al textarea anterior y posicionar el cursor al final
-        requestAnimationFrame(() => {
-          const previousTextarea = document.getElementById(`subtitle-${previousSubtitle.id}`) as HTMLTextAreaElement;
-          if (previousTextarea) {
-            previousTextarea.focus();
-            previousTextarea.setSelectionRange(previousText.length, previousText.length);
-          }
-        });
-        return;
-      }
-
-      // Si hay texto, unir con el anterior
-      // Unir los textos con un espacio, eliminando espacios extra
-      const combinedText = `${previousText.trim()} ${currentText.trim()}`.trim();
-
-      // Actualizar el subtítulo anterior con el texto combinado y la nueva duración
-      const updatedPrevious: Subtitle = {
-        ...previousSubtitle,
-        text: combinedText,
-        endTime: subtitle.endTime
+      const splitRatio = cursorPosition / currentText.length;
+      const splitTime = isAtEnd
+        ? snapTime(subtitle.endTime)
+        : snapTime(subtitle.startTime + (subtitle.endTime - subtitle.startTime) * splitRatio);
+      const newSubtitle: Subtitle = {
+        id: Date.now().toString(),
+        startTime: splitTime,
+        endTime: isAtEnd ? snapTime(splitTime + 1) : snapTime(subtitle.endTime),
+        text: secondPart,
       };
-
-      // Actualizar el estado local de edición
-      setEditingText(prev => {
-        const newState = { ...prev };
-        delete newState[subtitle.id];
-        return {
-          ...newState,
-          [previousSubtitle.id]: combinedText
-        };
-      });
-
-      // Actualizar los subtítulos y eliminar el actual
-      const updatedSubtitles = subtitles
-        .filter(s => s.id !== subtitle.id)
-        .map(s => s.id === previousSubtitle.id ? updatedPrevious : s);
-
-      onSubtitlesChange?.(updatedSubtitles);
-      onSubtitleClick?.(updatedPrevious);
-
-      // Calcular la posición del cursor donde ocurre el join
-      const joinPosition = previousText.length;
-
-      // Mover el foco al textarea anterior y posicionar el cursor en el punto de unión
+      const nextSubtitles = [
+        ...subtitles.map((entry) => entry.id === subtitle.id
+          ? { ...entry, text: firstPart, endTime: splitTime }
+          : entry),
+        newSubtitle,
+      ];
+      const nextEditingText = {
+        ...editingTextRef.current,
+        [subtitle.id]: firstPart,
+        [newSubtitle.id]: secondPart,
+      };
+      editingTextRef.current = nextEditingText;
+      setEditingText(nextEditingText);
+      onSubtitlesChange?.(nextSubtitles);
+      onSubtitleClick?.(newSubtitle);
       requestAnimationFrame(() => {
-        const previousTextarea = document.getElementById(`subtitle-${previousSubtitle.id}`) as HTMLTextAreaElement;
-        if (previousTextarea) {
-          previousTextarea.focus();
-          previousTextarea.setSelectionRange(joinPosition, joinPosition);
-        }
+        const nextTextarea = document.getElementById(`subtitle-${newSubtitle.id}`) as HTMLTextAreaElement | null;
+        nextTextarea?.focus();
+        nextTextarea?.setSelectionRange(0, 0);
       });
+      return;
     }
+
+    if (event.key !== 'Backspace') return;
+    const textarea = event.currentTarget;
+    const currentText = editingTextRef.current[subtitle.id] ?? '';
+    if (currentText.length > 0 && textarea.selectionStart !== 0) return;
+
+    const sortedSubtitles = [...subtitles].sort((left, right) => left.startTime - right.startTime);
+    const currentIndex = sortedSubtitles.findIndex((entry) => entry.id === subtitle.id);
+    if (currentIndex <= 0) return;
+    event.preventDefault();
+    consumeTextDraft(subtitle);
+
+    const previousSubtitle = sortedSubtitles[currentIndex - 1];
+    const previousText = editingTextRef.current[previousSubtitle.id] ?? previousSubtitle.text;
+    const combinedText = currentText
+      ? `${previousText.trim()} ${currentText.trim()}`.trim()
+      : previousText;
+    const updatedPrevious: Subtitle = {
+      ...previousSubtitle,
+      text: combinedText,
+      endTime: snapTime(subtitle.endTime),
+    };
+    const nextSubtitles = subtitles
+      .filter((entry) => entry.id !== subtitle.id)
+      .map((entry) => entry.id === previousSubtitle.id ? updatedPrevious : entry);
+    const nextEditingText = { ...editingTextRef.current, [previousSubtitle.id]: combinedText };
+    delete nextEditingText[subtitle.id];
+    editingTextRef.current = nextEditingText;
+    setEditingText(nextEditingText);
+    onSubtitlesChange?.(nextSubtitles);
+    onSubtitleClick?.(updatedPrevious);
+    const joinPosition = previousText.length;
+    requestAnimationFrame(() => {
+      const previousTextarea = document.getElementById(`subtitle-${previousSubtitle.id}`) as HTMLTextAreaElement | null;
+      previousTextarea?.focus();
+      previousTextarea?.setSelectionRange(joinPosition, joinPosition);
+    });
   };
 
-  // Efecto para manejar atajos de teclado
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Si no hay subtítulos seleccionados, no hacemos nada
-      if (selectedSubtitleIds.length === 0) return;
-
-      // Borrar subtítulos seleccionados con tecla Supr/Delete
-      if (e.key === 'Delete') {
-        selectedSubtitleIds.forEach(id => {
-          onDelete?.(id);
-        });
-      }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (selectedSubtitleIds.length === 0 || event.key !== 'Delete' || event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"], [role="textbox"]')) return;
+      selectedSubtitleIds.forEach((id) => onDelete?.(id));
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedSubtitleIds, onDelete]);
 
+  const setLocalStyleValue = <Key extends keyof SubtitleAnimationStyle>(
+    key: Key,
+    value: SubtitleAnimationStyle[Key],
+  ): SubtitleAnimationStyle => {
+    const next = { ...localStyleRef.current, [key]: value };
+    localStyleRef.current = next;
+    setLocalAnimationStyle(next);
+    return next;
+  };
+
+  const getStyleSession = <Key extends keyof SubtitleAnimationStyle>(key: Key, restartTerminal: boolean) => {
+    const current = styleSessionsRef.current.get(key) as ContinuousEditSession<SubtitleAnimationStyle[Key]> | undefined;
+    if (current && (current.terminal === null || !restartTerminal)) return current;
+    return beginContinuousEdit(canonicalStyleRef.current[key]);
+  };
+
+  const handleStylePreview: SubtitleStyleEditHandlers['onStylePreview'] = (key, value) => {
+    const session = previewContinuousEdit(getStyleSession(key, true), value);
+    styleSessionsRef.current.set(key, session as ContinuousEditSession<StyleValue>);
+    setLocalStyleValue(key, value);
+  };
+
+  const handleStyleCommit: SubtitleStyleEditHandlers['onStyleCommit'] = (key, value) => {
+    const session = previewContinuousEdit(getStyleSession(key, false), value);
+    const result = terminateContinuousEdit(session, 'commit', styleValueEquals);
+    styleSessionsRef.current.set(key, result.session as ContinuousEditSession<StyleValue>);
+    const nextStyle = setLocalStyleValue(key, result.value);
+    if (result.shouldCommit) onAnimationStyleChange?.(nextStyle);
+  };
+
+  const handleStyleCancel: SubtitleStyleEditHandlers['onStyleCancel'] = (key) => {
+    const session = getStyleSession(key, false);
+    const result = terminateContinuousEdit(session, 'cancel', styleValueEquals);
+    styleSessionsRef.current.set(key, result.session as ContinuousEditSession<StyleValue>);
+    setLocalStyleValue(key, result.value);
+  };
+
+  const handleStyleChange: SubtitleStyleEditHandlers['onStyleChange'] = (key, value) => {
+    styleSessionsRef.current.delete(key);
+    const nextStyle = setLocalStyleValue(key, value);
+    onAnimationStyleChange?.(nextStyle);
+  };
+
+  const cancelStyleSessionsForHistory = useCallback(() => {
+    let nextStyle = localStyleRef.current;
+    let changed = false;
+    styleSessionsRef.current.forEach((session, key) => {
+      if (session.terminal !== null) return;
+      const result = terminateContinuousEdit(session, 'cancel', styleValueEquals);
+      styleSessionsRef.current.set(key, result.session as ContinuousEditSession<StyleValue>);
+      nextStyle = { ...nextStyle, [key]: result.value };
+      changed = true;
+    });
+    if (!changed) return;
+    localStyleRef.current = nextStyle;
+    setLocalAnimationStyle(nextStyle);
+  }, []);
+
+  const cancelContinuousEditsForHistory = useCallback(() => {
+    cancelStyleSessionsForHistory();
+    const current = textSessionRef.current;
+    if (!current || current.session.terminal !== null) return;
+    const result = terminateContinuousEdit(current.session, 'cancel');
+    textSessionRef.current = { subtitleId: current.subtitleId, session: result.session };
+    publishTextDraftState(result.session);
+    const nextEditingText = {
+      ...editingTextRef.current,
+      [current.subtitleId]: result.value,
+    };
+    editingTextRef.current = nextEditingText;
+    setEditingText(nextEditingText);
+  }, [cancelStyleSessionsForHistory, publishTextDraftState]);
+
+  const prepareContinuousEditsForHistory = useCallback(() => {
+    cancelStyleSessionsForHistory();
+    const current = textSessionRef.current;
+    if (!current || current.session.terminal !== null) return;
+    const result = terminateContinuousEdit(current.session, 'commit');
+    textSessionRef.current = { subtitleId: current.subtitleId, session: result.session };
+    publishTextDraftState(result.session);
+    const nextEditingText = {
+      ...editingTextRef.current,
+      [current.subtitleId]: result.value,
+    };
+    editingTextRef.current = nextEditingText;
+    setEditingText(nextEditingText);
+    if (!result.shouldCommit) return;
+
+    // History initiated outside the focused textarea must match Ctrl/Cmd+Z semantics: the draft
+    // first becomes one durable command, then Undo targets precisely that command.
+    if (onSubtitleUpdate) onSubtitleUpdate(current.subtitleId, { text: result.value });
+    else onSubtitlesChange?.(subtitles.map((entry) => entry.id === current.subtitleId
+      ? { ...entry, text: result.value }
+      : entry));
+  }, [cancelStyleSessionsForHistory, onSubtitleUpdate, onSubtitlesChange, publishTextDraftState, subtitles]);
+
+  useEffect(
+    () => transactionCoordinator.register(
+      cancelContinuousEditsForHistory,
+      prepareContinuousEditsForHistory,
+    ),
+    [cancelContinuousEditsForHistory, prepareContinuousEditsForHistory, transactionCoordinator],
+  );
+
   const handlePresetStyleChange = useCallback((newStyle: SubtitleAnimationStyle) => {
+    styleSessionsRef.current.clear();
+    localStyleRef.current = newStyle;
     setLocalAnimationStyle(newStyle);
     onAnimationStyleChange?.(newStyle);
   }, [onAnimationStyleChange]);
 
+  const styleHandlers: SubtitleStyleEditHandlers = {
+    onStylePreview: handleStylePreview,
+    onStyleCommit: handleStyleCommit,
+    onStyleCancel: handleStyleCancel,
+    onStyleChange: handleStyleChange,
+  };
+
   const styleContent = (
     <div className="flex flex-col gap-6">
       <div className="px-4 pt-4">
-        <StylePresetSelector
-          currentStyle={localAnimationStyle}
-          onStyleChange={handlePresetStyleChange}
-        />
+        <StylePresetSelector currentStyle={localAnimationStyle} onStyleChange={handlePresetStyleChange} />
       </div>
-
       <Accordion
         sections={[
           {
             id: 'textStyle',
             title: 'Estilo del texto',
-            content: (
-              <TextStyleSection
-                style={localAnimationStyle}
-                onStyleChange={handleStyleChange}
-              />
-            )
+            content: <TextStyleSection style={localAnimationStyle} {...styleHandlers} />,
           },
           {
             id: 'position',
             title: 'Posición',
-            content: (
-              <PositionSection
-                style={localAnimationStyle}
-                onStyleChange={handleStyleChange}
-              />
-            )
+            content: <PositionSection style={localAnimationStyle} {...styleHandlers} />,
           },
           {
             id: 'background',
             title: 'Fondo',
-            content: (
-              <BackgroundSection
-                style={localAnimationStyle}
-                onStyleChange={handleStyleChange}
-              />
-            )
+            content: <BackgroundSection style={localAnimationStyle} {...styleHandlers} />,
           },
           {
             id: 'entryAnimation',
             title: 'Animación de entrada',
-            content: (
-              <AnimationSection
-                style={localAnimationStyle}
-                onStyleChange={handleStyleChange}
-                type="entry"
-              />
-            )
+            content: <AnimationSection style={localAnimationStyle} {...styleHandlers} type="entry" />,
           },
           {
             id: 'exitAnimation',
             title: 'Animación de salida',
-            content: (
-              <AnimationSection
-                style={localAnimationStyle}
-                onStyleChange={handleStyleChange}
-                type="exit"
-              />
-            )
-          }
+            content: <AnimationSection style={localAnimationStyle} {...styleHandlers} type="exit" />,
+          },
         ]}
         expandedSection={expandedStyleSection}
         onSectionChange={setExpandedStyleSection}
@@ -460,23 +492,24 @@ export function SubtitleEditor({
           onAddSubtitle={onAddSubtitle}
           onGenerateSubtitles={onGenerateSubtitles}
           isGeneratingSubtitles={isGeneratingSubtitles}
-          onTextChange={handleTextChange}
+          onTextChange={setTextDraft}
+          onTextFocus={(subtitle) => {
+            textSessionRef.current = { subtitleId: subtitle.id, session: beginContinuousEdit(subtitle.text) };
+          }}
+          onTextBlur={(subtitle) => finishTextSession(subtitle, 'commit')}
+          onCompositionStart={(subtitle) => { composingSubtitleIdRef.current = subtitle.id; }}
+          onCompositionEnd={(subtitle) => {
+            if (composingSubtitleIdRef.current === subtitle.id) composingSubtitleIdRef.current = null;
+          }}
           onKeyDown={handleSubtitleKeyDown}
         />
-      )
+      ),
     },
-    {
-      id: 'style',
-      label: 'Estilo',
-      content: styleContent
-    }
+    { id: 'style', label: 'Estilo', content: styleContent },
   ];
 
   return (
-    <div
-      className="flex-1 flex flex-col overflow-hidden select-none"
-      data-testid="subtitle-editor"
-    >
+    <div className="flex-1 flex flex-col overflow-hidden select-none" data-testid="subtitle-editor">
       <Tabs
         tabs={tabs}
         activeTab={activeTab}
@@ -484,4 +517,4 @@ export function SubtitleEditor({
       />
     </div>
   );
-} 
+}

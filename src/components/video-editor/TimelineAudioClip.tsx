@@ -15,6 +15,8 @@ import {
     type TimelineGestureState,
 } from '@/lib/timeline-gesture';
 import { TimelineWaveform } from './TimelineWaveform';
+import { useShallow } from 'zustand/react/shallow';
+import { useEditorTransactionCoordinator } from './EditorTransactionContext';
 
 export interface AudioClipDraft {
     trackId: string;
@@ -58,7 +60,12 @@ export function TimelineAudioClip({
     selected,
     validatePlacement,
 }: TimelineAudioClipProps) {
-    const { selectAudioClip, moveAudioClip, trimAudioClip } = useTimelineStore();
+    const transactionCoordinator = useEditorTransactionCoordinator();
+    const { selectAudioClip, moveAudioClip, trimAudioClip } = useTimelineStore(useShallow((state) => ({
+        selectAudioClip: state.selectAudioClip,
+        moveAudioClip: state.moveAudioClip,
+        trimAudioClip: state.trimAudioClip,
+    })));
     const clipRef = useRef<HTMLDivElement>(null);
     const [draft, setDraft] = useState<AudioClipDraft | null>(null);
     const fps = frameRate.numerator / frameRate.denominator;
@@ -91,8 +98,10 @@ export function TimelineAudioClip({
         };
         let gesture: TimelineGestureState<AudioClipDraft> = beginTimelineGesture(initial);
         let terminal = false;
+        let unregisterCancellation: () => void = () => undefined;
 
         const cleanup = () => {
+            unregisterCancellation();
             window.removeEventListener('pointermove', handleMove);
             window.removeEventListener('pointerup', handleUp);
             window.removeEventListener('pointercancel', handleCancel);
@@ -168,6 +177,8 @@ export function TimelineAudioClip({
             handleCancel();
             clipRef.current?.focus();
         };
+
+        unregisterCancellation = transactionCoordinator.register(handleCancel);
 
         window.addEventListener('pointermove', handleMove);
         window.addEventListener('pointerup', handleUp, { once: true });

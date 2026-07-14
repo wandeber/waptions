@@ -90,6 +90,30 @@ function flatten(chunks: readonly Float32Array[]): Float32Array {
 }
 
 describe('TimelineAudioRenderer', () => {
+    it('releases the decoder and external abort listener when plan construction fails', async () => {
+        const decoder = makeDecoder(new Float32Array(0));
+        const source = makeCollectingSource();
+        const controller = new AbortController();
+        const addListener = vi.spyOn(controller.signal, 'addEventListener');
+        const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+        const renderer = new TimelineAudioRenderer(makeDocument(), source.source, {
+            createDecoder: () => decoder,
+            buildPlan: () => { throw new Error('invalid audio graph'); },
+        });
+
+        await expect(renderer.render({
+            outputEndSample: 1,
+            signal: controller.signal,
+        })).rejects.toThrow('invalid audio graph');
+
+        expect(addListener).toHaveBeenCalledWith('abort', expect.any(Function), { once: true });
+        expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+        expect(decoder.setDocument).not.toHaveBeenCalled();
+        expect(decoder.dispose).toHaveBeenCalledTimes(1);
+        controller.abort();
+        expect(decoder.dispose).toHaveBeenCalledTimes(1);
+    });
+
     it('matches the runtime DSP sample-for-sample and emits an exact final partial window', async () => {
         const document = makeDocument();
         const values = Float32Array.from({ length: 10 }, (_, index) => (index + 1) / 20);

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     createMediaSourceFingerprint,
     createVideoSourceAsset,
+    doesMediaSourceFingerprintMatch,
     getVideoSourceMetadataFromInspection,
 } from './video-source';
 import { createVideoSourceFingerprint } from './video-timeline';
@@ -34,8 +35,36 @@ describe('video source construction', () => {
             hasAudio: true,
         });
         expect(asset).not.toHaveProperty('nativeSampleRate');
-        expect(asset.fingerprint).toBe(createVideoSourceFingerprint(file));
-        expect(createMediaSourceFingerprint(file)).toBe(createVideoSourceFingerprint(file));
+        expect(asset.fingerprint).toMatch(/^v2_/);
+        expect(doesMediaSourceFingerprintMatch(asset.fingerprint, file)).toBe(true);
+        expect(doesMediaSourceFingerprintMatch(createVideoSourceFingerprint(file), file)).toBe(true);
+        expect(createMediaSourceFingerprint(file, 'another-import')).not.toBe(asset.fingerprint);
+    });
+
+    it('assigns distinct persisted identities to byte-distinct imports with identical metadata', () => {
+        const firstFile = new File(['aaaa'], 'same.mp4', {
+            type: 'video/mp4',
+            lastModified: 10,
+        });
+        const secondFile = new File(['bbbb'], 'same.mp4', {
+            type: 'video/mp4',
+            lastModified: 10,
+        });
+        const metadata = {
+            duration: 1,
+            width: 16,
+            height: 16,
+            fps: 30,
+            bitrate: 32,
+            hasAudio: true,
+        };
+        const first = createVideoSourceAsset(firstFile, metadata, { sourceId: 'same_source' });
+        const replacement = createVideoSourceAsset(secondFile, metadata, { sourceId: 'same_source' });
+
+        expect(firstFile.size).toBe(secondFile.size);
+        expect(first.fingerprint).not.toBe(replacement.fingerprint);
+        expect(doesMediaSourceFingerprintMatch(first.fingerprint, firstFile)).toBe(true);
+        expect(doesMediaSourceFingerprintMatch(replacement.fingerprint, secondFile)).toBe(true);
     });
 
     it('rejects inspection metadata without primary video', () => {

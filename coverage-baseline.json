@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 2,
+  "profiles": {
+    "wider": {
+      "summaryPath": "coverage/wider/coverage-summary.json",
+      "observed": {
+        "lines": {
+          "total": 6351,
+          "covered": 4312,
+          "pct": 67.89
+        },
+        "statements": {
+          "total": 7160,
+          "covered": 4694,
+          "pct": 65.55
+        },
+        "functions": {
+          "total": 1571,
+          "covered": 1063,
+          "pct": 67.66
+        },
+        "branches": {
+          "total": 4399,
+          "covered": 2617,
+          "pct": 59.49
+        }
+      },
+      "enforcement": "recorded-ratio"
+    },
+    "critical-runtime": {
+      "summaryPath": "coverage/critical-runtime/coverage-summary.json",
+      "observed": {
+        "lines": {
+          "total": 503,
+          "covered": 478,
+          "pct": 95.02
+        },
+        "statements": {
+          "total": 578,
+          "covered": 534,
+          "pct": 92.38
+        },
+        "functions": {
+          "total": 148,
+          "covered": 139,
+          "pct": 93.91
+        },
+        "branches": {
+          "total": 288,
+          "covered": 240,
+          "pct": 83.33
+        }
+      },
+      "minimumPercent": {
+        "lines": 85,
+        "statements": 85,
+        "functions": 85,
+        "branches": 80
+      }
+    }
+  }
+}

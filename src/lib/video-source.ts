@@ -1,7 +1,8 @@
 import type { VideoClip, VideoSourceAsset } from '@/types/video';
 import { getVideoInfo, type MediaTrackInspection } from '@/lib/mediabunny-utils';
 import {
-    createVideoSourceFingerprint,
+    createImmutableVideoSourceFingerprint,
+    doesVideoSourceFingerprintMatch,
     getImportedSourceEnd,
     isSafeVideoId,
     type VideoFingerprintInput,
@@ -15,11 +16,11 @@ export interface InspectVideoSourceOptions {
 export type MediaSourceFingerprintInput = VideoFingerprintInput;
 
 /**
- * Backward-compatible generic name for the metadata fingerprint historically exported as
- * createVideoSourceFingerprint. Both video and audio descriptors must use the exact same
- * algorithm so persisted source identity remains stable across the editor v3 migration.
+ * Shared video/audio import fingerprint. New imports receive a persisted nonce while validators
+ * continue accepting deterministic v1 fingerprints from older project formats.
  */
-export const createMediaSourceFingerprint = createVideoSourceFingerprint;
+export const createMediaSourceFingerprint = createImmutableVideoSourceFingerprint;
+export const doesMediaSourceFingerprintMatch = doesVideoSourceFingerprintMatch;
 
 export interface VideoSourceInspectionMetadata {
     duration: number;

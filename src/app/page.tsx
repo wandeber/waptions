@@ -5,7 +5,7 @@ import { useProjectStore } from '@/stores/project-store';
 import { ProjectDashboard } from '@/components/dashboard/ProjectDashboard';
 
 export default function Home() {
-  const { loadAllProjects } = useProjectStore();
+  const loadAllProjects = useProjectStore((state) => state.loadAllProjects);
 
   useEffect(() => {
     // Load projects on startup

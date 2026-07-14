@@ -12,11 +12,11 @@ import {
 
 describe('timeline AudioWorklet deployment contract', () => {
     it('uses a versioned same-origin public asset and stable processor name', () => {
-        expect(TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION).toBe(2);
-        expect(TIMELINE_AUDIO_WORKLET_PATH).toBe('/worklets/timeline-audio-worklet.js?v=2');
+        expect(TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION).toBe(3);
+        expect(TIMELINE_AUDIO_WORKLET_PATH).toBe('/worklets/timeline-audio-worklet.js?v=3');
         expect(TIMELINE_AUDIO_WORKLET_PROCESSOR).toBe('timeline-audio-processor');
         expect(getTimelineAudioWorkletUrl('https://waptions.example/editor/project').href)
-            .toBe('https://waptions.example/worklets/timeline-audio-worklet.js?v=2');
+            .toBe('https://waptions.example/worklets/timeline-audio-worklet.js?v=3');
     });
 
     it('maps 0.1x, 1x, and 2x playback into a device-rate-independent cursor increment', () => {

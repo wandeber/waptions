@@ -25,6 +25,7 @@ export interface TimelineAudioDecoder {
 
 export interface TimelineAudioRendererDependencies {
     createDecoder?: () => TimelineAudioDecoder;
+    buildPlan?: typeof buildAudioMixPlan;
     renderWindow?: typeof renderAudioMixWindow;
     createSample?: (init: ConstructorParameters<typeof AudioSample>[0]) => AudioSample;
 }
@@ -49,6 +50,7 @@ export interface TimelineAudioRenderOptions {
  */
 export class TimelineAudioRenderer {
     private readonly decoder: TimelineAudioDecoder;
+    private readonly buildPlan: typeof buildAudioMixPlan;
     private readonly renderWindow: typeof renderAudioMixWindow;
     private readonly createSample: NonNullable<TimelineAudioRendererDependencies['createSample']>;
     private readonly abortController = new AbortController();
@@ -60,6 +62,7 @@ export class TimelineAudioRenderer {
         dependencies: TimelineAudioRendererDependencies = {},
     ) {
         this.decoder = dependencies.createDecoder?.() ?? new MediabunnyAudioDecoder();
+        this.buildPlan = dependencies.buildPlan ?? buildAudioMixPlan;
         this.renderWindow = dependencies.renderWindow ?? renderAudioMixWindow;
         this.createSample = dependencies.createSample ?? ((init) => new AudioSample(init));
     }
@@ -73,15 +76,18 @@ export class TimelineAudioRenderer {
         const generation = options.generation ?? 1;
         const externalAbort = (): void => this.cancel();
         options.signal?.addEventListener('abort', externalAbort, { once: true });
-        const plan = buildAudioMixPlan(this.document);
-        // Subtitle tails and the covering frame of a partial audio tail can extend beyond the mix
-        // graph's own duration. Extending only the plan boundary lets the shared DSP emit exact
-        // zero-filled remainder samples without inventing a synthetic contributor.
-        const renderPlan = plan.totalSampleCount < options.outputEndSample
-            ? { ...plan, totalSampleCount: options.outputEndSample }
-            : plan;
 
         try {
+            // Plan construction validates and projects the complete audio graph and can fail. It
+            // belongs inside the same ownership boundary as decoding so the external listener and
+            // decoder are released even when no render window was ever started.
+            const plan = this.buildPlan(this.document);
+            // Subtitle tails and the covering frame of a partial audio tail can extend beyond the
+            // mix graph's own duration. Extending only the plan boundary lets the shared DSP emit
+            // exact zero-filled remainder samples without inventing a synthetic contributor.
+            const renderPlan = plan.totalSampleCount < options.outputEndSample
+                ? { ...plan, totalSampleCount: options.outputEndSample }
+                : plan;
             this.throwIfCancelled(options);
             this.decoder.setDocument(this.document, generation);
             for (let startSample = 0; startSample < options.outputEndSample; startSample += windowSampleCount) {

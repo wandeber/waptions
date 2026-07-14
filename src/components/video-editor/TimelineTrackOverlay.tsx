@@ -6,6 +6,8 @@ import { usePlaybackStore } from '@/stores/playback-store';
 import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
 import { getClampedSubtitleTrackShift } from '@/lib/editor-layout';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
+import { useShallow } from 'zustand/react/shallow';
+import { useEditorTransactionCoordinator } from './EditorTransactionContext';
 
 interface TimelineTrackOverlayProps {
     duration: number;
@@ -26,7 +28,10 @@ export const TimelineTrackOverlay = memo(function TimelineTrackOverlay({
     onTimeUpdate,
     onSubtitleClick
 }: TimelineTrackOverlayProps) {
-    const { updateSubtitleInTrack, pushHistory, selectedSubtitleIds } = useTimelineStore();
+    const { updateSubtitleInTrack, selectedSubtitleIds } = useTimelineStore(useShallow((state) => ({
+        updateSubtitleInTrack: state.updateSubtitleInTrack,
+        selectedSubtitleIds: state.selectedSubtitleIds,
+    })));
     const pps = pixelsPerSecond * zoomLevel;
 
     // Helper to calculate time from click
@@ -60,7 +65,6 @@ export const TimelineTrackOverlay = memo(function TimelineTrackOverlay({
                     isSelected={selectedSubtitleIds.includes(subtitle.id)}
                     onClick={() => onSubtitleClick?.(subtitle)}
                     onUpdate={(updates, options) => updateSubtitleInTrack(track.id, subtitle.id, updates, options)}
-                    onPushHistory={pushHistory}
                     duration={duration}
                 />
             ))}
@@ -76,12 +80,15 @@ interface SubtitleBlockProps {
     isSelected: boolean;
     onClick: () => void;
     onUpdate: (updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
-    onPushHistory: () => void;
     duration: number;
 }
 
-const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate, onPushHistory }: SubtitleBlockProps) {
-    const { pixelsPerSecond, zoomLevel } = useTimelineStore();
+const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate }: SubtitleBlockProps) {
+    const transactionCoordinator = useEditorTransactionCoordinator();
+    const { pixelsPerSecond, zoomLevel } = useTimelineStore(useShallow((state) => ({
+        pixelsPerSecond: state.pixelsPerSecond,
+        zoomLevel: state.zoomLevel,
+    })));
     const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
 
@@ -98,7 +105,10 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             setIsDragging
         } = useTimelineStore.getState();
 
-        setIsDragging(true);
+        setIsDragging(true, {
+            label: type === 'move' ? 'Move subtitles' : 'Resize subtitle',
+            mergeKey: `subtitle-drag:${subtitle.id}:${type}`,
+        });
 
         // Handle selection toggle/multiselect
         const isMulti = e.metaKey;
@@ -123,9 +133,6 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         const currentSelectedIds = useTimelineStore.getState().selectedSubtitleIds;
         const targetIds = currentSelectedIds.includes(subtitle.id) ? currentSelectedIds : [subtitle.id];
 
-        // Push history before starting the drag operation
-        onPushHistory();
-
         const startX = e.clientX;
         // Note: we can also get it from refs, but tracksContentRef isn't easily accessible here.
         // Actually, we can just use the DOM since we are in a browser event.
@@ -149,6 +156,8 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
 
         const frameDuration = fps > 0 ? 1 / fps : 0.01;
         let lastShift = 0;
+        let terminal = false;
+        let unregisterCancellation: () => void = () => undefined;
 
         // Group boundaries for snapping
         const groupMinStart = Math.min(...Array.from(initialStates.values()).map(s => s.startTime));
@@ -239,6 +248,13 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         };
 
         const handleMouseMove = (moveEvent: MouseEvent) => {
+            if (!useTimelineStore.getState().isDragging) {
+                // Undo and Redo cancel the store-owned preview before the browser necessarily
+                // delivers mouseup. Treat that cancellation as the gesture validity token so a
+                // retained window listener cannot recreate pointer-only state afterwards.
+                handleCancel();
+                return;
+            }
             const currentScroll = tracksEl?.scrollLeft || 0;
             const scrollDelta = currentScroll - startScroll;
             const deltaX = moveEvent.clientX - startX;
@@ -328,17 +344,46 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             }
         };
 
-        const handleMouseUp = () => {
+        const cleanup = () => {
+            unregisterCancellation();
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+
+        const clearRuntimePreview = () => {
             useTimelineStore.getState().setActiveSnapTime(null);
-            useTimelineStore.getState().setIsDragging(false);
             setActiveHandle(null);
             usePlaybackStore.getState().setPreviewTime(null);
         };
 
+        const handleMouseUp = () => {
+            if (terminal) return;
+            terminal = true;
+            cleanup();
+            clearRuntimePreview();
+            useTimelineStore.getState().setIsDragging(false);
+        };
+
+        const handleCancel = () => {
+            if (terminal) return;
+            terminal = true;
+            cleanup();
+            clearRuntimePreview();
+            useTimelineStore.getState().cancelSubtitleDrag();
+        };
+
+        const handleKeyDown = (keyEvent: KeyboardEvent) => {
+            if (keyEvent.key !== 'Escape') return;
+            keyEvent.preventDefault();
+            handleCancel();
+        };
+
+        unregisterCancellation = transactionCoordinator.register(handleCancel);
+
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
+        window.addEventListener('keydown', handleKeyDown);
     };
 
     const left = subtitle.startTime * pps;
@@ -346,6 +391,8 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
 
     return (
         <div
+            data-testid="timeline-subtitle-clip"
+            data-subtitle-id={subtitle.id}
             className={`absolute top-2 bottom-2 rounded-md border text-[10px] flex items-center justify-center cursor-move select-none transition-shadow ${isSelected
                 ? 'bg-yellow-500/30 border-yellow-500 z-20 shadow-[0_0_10px_rgba(234,179,8,0.3)]'
                 : 'bg-blue-600/20 border-blue-500/50 hover:border-blue-400 z-10'

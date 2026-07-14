@@ -1,74 +1,28 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { videoCache } from '@/lib/video-cache';
-import { frameCache } from '@/lib/frame-cache';
-import { frameIndexToTime, normalizeFps, timeToFrameIndex } from '@/lib/frame-utils';
-import { buildClipPlacements, projectTimeToSourceTime, resolveClipAtProjectTime } from '@/lib/video-timeline';
+import { buildClipPlacements } from '@/lib/video-timeline';
+import { secondsToFrames } from '@/lib/render-profile';
+import { buildPreviewWarmupFramePlan } from '@/lib/video-frame-plan';
+import { PreviewWarmupQueue } from '@/lib/preview-warmup-queue';
+import { usePreviewTargetResolution } from '@/lib/preview-target-resolution';
+import type { VideoSourceAssetV3 } from '@/types/video';
+import type {
+    PreviewWarmupFrame,
+    PreviewWarmupPlanIdentity,
+    VideoFrameRequest,
+    VideoFrameTargetResolution,
+} from '@/lib/video-runtime-types';
 
 interface BackgroundRendererOptions {
-    rangeForward?: number; // Seconds to look ahead while idle.
-    rangeBackward?: number; // Seconds to look behind while idle.
-    fps?: number; // Sparse idle sampling rate after the dense near window.
+    rangeForward?: number;
+    rangeBackward?: number;
+    fps?: number;
     playbackLookaheadFrames?: number;
-}
-
-interface WarmupFramePlanOptions {
-    isPlaying: boolean;
-    currentFrameIndex: number;
-    cacheFps: number;
-    rangeForward: number;
-    rangeBackward: number;
-    sparseFps: number;
-    playbackLookaheadFrames: number;
-    hasFrame: (frameIndex: number) => boolean;
-}
-
-export function buildPreviewWarmupFramePlan({
-    isPlaying,
-    currentFrameIndex,
-    cacheFps,
-    rangeForward,
-    rangeBackward,
-    sparseFps,
-    playbackLookaheadFrames,
-    hasFrame,
-}: WarmupFramePlanOptions): number[] {
-    const frames: number[] = [];
-    const seen = new Set<number>();
-    const pushMissingFrame = (frameIndex: number) => {
-        if (seen.has(frameIndex) || hasFrame(frameIndex)) return;
-        seen.add(frameIndex);
-        frames.push(frameIndex);
-    };
-
-    if (isPlaying) {
-        for (let offset = 1; offset <= playbackLookaheadFrames; offset += 1) {
-            pushMissingFrame(currentFrameIndex + offset);
-        }
-        return frames;
-    }
-
-    const denseForwardFrames = Math.round(Math.min(2, rangeForward) * cacheFps);
-    const sparseStep = Math.max(1, Math.round(cacheFps / Math.max(1, sparseFps)));
-    const farForwardFrames = Math.round(rangeForward * cacheFps);
-    const backwardFrames = Math.round(rangeBackward * cacheFps);
-
-    for (let offset = 1; offset <= denseForwardFrames; offset += 1) {
-        pushMissingFrame(currentFrameIndex + offset);
-    }
-
-    for (let offset = denseForwardFrames + sparseStep; offset <= farForwardFrames; offset += sparseStep) {
-        pushMissingFrame(currentFrameIndex + offset);
-    }
-
-    for (let offset = sparseStep; offset <= backwardFrames; offset += sparseStep) {
-        pushMissingFrame(Math.max(0, currentFrameIndex - offset));
-    }
-
-    return frames;
 }
 
 const requestIdle = (callback: () => void) => {
@@ -81,11 +35,27 @@ const requestIdle = (callback: () => void) => {
     }
 };
 
-/**
- * Warms preview frames around the playhead without competing with visible
- * rendering. Idle warmup prepares a wider range, while playback warmup keeps a
- * short full-fps runway so pressing play can consume already-decoded frames.
- */
+export function buildPreviewWarmupRequest(
+    source: VideoSourceAssetV3,
+    planned: PreviewWarmupFrame,
+    targetResolution: VideoFrameTargetResolution,
+    signal: AbortSignal,
+    warmupPlan: PreviewWarmupPlanIdentity,
+): VideoFrameRequest {
+    return {
+        scope: 'warmup',
+        sourceId: source.id,
+        sourceFingerprint: source.fingerprint,
+        file: source.file,
+        sourceTime: planned.sourceTime,
+        sourceFps: source.fps,
+        targetResolution,
+        signal,
+        warmupPlan,
+    };
+}
+
+/** Warms a bounded project-frame runway without competing with visible frame requests. */
 export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
     const {
         rangeForward = 5,
@@ -93,105 +63,149 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
         fps = 10,
         playbackLookaheadFrames = 12,
     } = options;
-
-    const { isPlaying, currentTime } = usePlaybackStore();
-    const { videoSources, videoClips } = useTimelineStore();
-    const placements = useMemo(() => buildClipPlacements(videoClips), [videoClips]);
-    const placement = useMemo(
-        () => resolveClipAtProjectTime(placements, currentTime),
-        [currentTime, placements],
+    const { videoSources, videoClips, projectFrameRate } = useTimelineStore(useShallow((state) => ({
+        videoSources: state.videoSources,
+        videoClips: state.videoClips,
+        projectFrameRate: state.renderProfile.fps,
+    })));
+    const targetResolution = usePreviewTargetResolution();
+    const placements = useMemo(
+        () => buildClipPlacements(videoClips, projectFrameRate),
+        [projectFrameRate, videoClips],
     );
-    const source = useMemo(() => (
-        placement
-            ? videoSources.find((candidate) => candidate.id === placement.clip.sourceId) ?? null
-            : null
-    ), [placement, videoSources]);
-    const sourceTime = placement ? projectTimeToSourceTime(placement, currentTime) : 0;
-    const cacheFps = normalizeFps(source?.fps);
-    const currentFrameIndex = useMemo(
-        () => timeToFrameIndex(sourceTime, cacheFps),
-        [sourceTime, cacheFps]
+    const sourcesById = useMemo(
+        () => new Map(videoSources.map((source) => [source.id, source])),
+        [videoSources],
     );
-
-    const runIdRef = useRef(0);
-    const idleTimeoutRef = useRef<number | null>(null);
 
     useEffect(() => {
-        runIdRef.current += 1;
-        const runId = runIdRef.current;
-
-        if (idleTimeoutRef.current) {
-            window.clearTimeout(idleTimeoutRef.current);
-            idleTimeoutRef.current = null;
-        }
-
-        if (!source || !placement) return;
-        const mediaId = `preview:${source.id}`;
-
-        const renderFrames = async (frames: number[], index = 0): Promise<void> => {
-            if (runIdRef.current !== runId || index >= frames.length) return;
-
-            const frameIndex = frames[index];
-            const frameTime = frameIndexToTime(frameIndex, cacheFps);
-            // A source cache may serve several trimmed/reused clip instances, but warmup must
-            // stay inside the active source interval instead of decoding unrelated frames.
-            if (frameTime >= placement.clip.sourceStart && frameTime < placement.clip.sourceEnd
-                && !frameCache.hasFrameAtIndex(mediaId, frameIndex)) {
-                try {
-                    await videoCache.getFrameAt(
-                        mediaId,
-                        source.file,
-                        frameTime,
-                        { mode: 'warmup', fps: cacheFps }
-                    );
-                } catch (error) {
-                    console.warn('Background frame warmup failed:', error);
-                }
-            }
-
-            requestIdle(() => {
-                void renderFrames(frames, index + 1);
-            });
+        if (!targetResolution || videoSources.length === 0 || placements.length === 0) return;
+        let pausedStartTimer: number | null = null;
+        const hasFrame = (frame: PreviewWarmupFrame) => {
+            const source = sourcesById.get(frame.sourceId);
+            return source ? videoCache.hasCachedPreviewFrame(
+                source.id,
+                source.fingerprint,
+                frame.sourceFrameIndex,
+            ) : false;
         };
+        const queue = new PreviewWarmupQueue({
+            hasFrame,
+            schedule: requestIdle,
+            request: async (planned, signal, warmupPlan) => {
+                const source = sourcesById.get(planned.sourceId);
+                if (!source) return;
+                const result = await videoCache.requestFrame(buildPreviewWarmupRequest(
+                    source,
+                    planned,
+                    targetResolution,
+                    signal,
+                    warmupPlan,
+                ));
+                // Warmup needs cache residency, not a render lease. Releasing immediately keeps
+                // later viewport clears and LRU eviction able to close the bitmap promptly.
+                result?.release();
+            },
+            onError: (error) => console.warn('Background frame warmup failed:', error),
+        });
 
-        const start = () => {
+        const clearPausedStart = () => {
+            if (pausedStartTimer === null) return;
+            window.clearTimeout(pausedStartTimer);
+            pausedStartTimer = null;
+        };
+        const enqueuePlan = (playback: ReturnType<typeof usePlaybackStore.getState>) => {
+            const currentProjectFrameIndex = secondsToFrames(
+                Math.max(0, playback.currentTime),
+                projectFrameRate,
+                'floor',
+            );
             const frames = buildPreviewWarmupFramePlan({
-                isPlaying,
-                currentFrameIndex,
-                cacheFps,
+                isPlaying: playback.isPlaying,
+                currentProjectFrameIndex,
+                projectFrameRate,
+                placements,
+                sources: videoSources,
                 rangeForward,
                 rangeBackward,
                 sparseFps: fps,
                 playbackLookaheadFrames,
-                hasFrame: (frameIndex) => frameCache.hasFrameAtIndex(mediaId, frameIndex),
+                hasFrame: (sourceId, sourceFrameIndex) => {
+                    const source = sourcesById.get(sourceId);
+                    return source ? videoCache.hasCachedPreviewFrame(
+                        sourceId,
+                        source.fingerprint,
+                        sourceFrameIndex,
+                    ) : false;
+                },
             });
-            if (frames.length > 0) {
-                void renderFrames(frames);
+            queue.enqueue(
+                frames,
+                playback.isPlaying ? currentProjectFrameIndex : undefined,
+            );
+        };
+        const scheduleForState = (playback: ReturnType<typeof usePlaybackStore.getState>) => {
+            clearPausedStart();
+            if (playback.isPlaying) {
+                enqueuePlan(playback);
+                return;
             }
+            // Finish the one in-flight frame but discard the old active-playback runway. Paused
+            // broad warmup begins after the same quiet period used by the previous implementation.
+            queue.enqueue([], Number.MAX_SAFE_INTEGER);
+            pausedStartTimer = window.setTimeout(() => enqueuePlan(usePlaybackStore.getState()), 500);
         };
 
-        if (isPlaying) {
-            start();
-        } else {
-            idleTimeoutRef.current = window.setTimeout(start, 500);
-        }
+        let previousFrameIndex = secondsToFrames(
+            Math.max(0, usePlaybackStore.getState().currentTime),
+            projectFrameRate,
+            'floor',
+        );
+        scheduleForState(usePlaybackStore.getState());
+        const unsubscribePlayback = usePlaybackStore.subscribe((playback, previous) => {
+            const nextFrameIndex = secondsToFrames(
+                Math.max(0, playback.currentTime),
+                projectFrameRate,
+                'floor',
+            );
+            if (playback.isPlaying !== previous.isPlaying) {
+                previousFrameIndex = nextFrameIndex;
+                scheduleForState(playback);
+                return;
+            }
+            if (playback.isPlaying && nextFrameIndex !== previousFrameIndex) {
+                previousFrameIndex = nextFrameIndex;
+                enqueuePlan(playback);
+            }
+        });
+        const handleSeek = () => {
+            // Unlike normal clock ticks, a seek changes the desired runway discontinuously. Abort
+            // the old decode generation before planning from the exact new transport position.
+            queue.reset();
+            previousFrameIndex = secondsToFrames(
+                Math.max(0, usePlaybackStore.getState().currentTime),
+                projectFrameRate,
+                'floor',
+            );
+            scheduleForState(usePlaybackStore.getState());
+        };
+        window.addEventListener('playback-seek', handleSeek);
 
         return () => {
-            runIdRef.current += 1;
-            if (idleTimeoutRef.current) {
-                window.clearTimeout(idleTimeoutRef.current);
-                idleTimeoutRef.current = null;
-            }
+            clearPausedStart();
+            unsubscribePlayback();
+            window.removeEventListener('playback-seek', handleSeek);
+            queue.dispose();
         };
     }, [
-        cacheFps,
-        currentFrameIndex,
         fps,
-        isPlaying,
+        placements,
         playbackLookaheadFrames,
+        projectFrameRate,
         rangeBackward,
         rangeForward,
-        placement,
-        source,
+        sourcesById,
+        targetResolution,
+        videoSources,
     ]);
 }

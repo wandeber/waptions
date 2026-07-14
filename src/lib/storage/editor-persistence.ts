@@ -1,11 +1,33 @@
 import type { EditorManifestV3 } from '@/types/video';
 import { storageService, type EditorPersistentAsset } from './storage-service';
+import {
+    createHistoryIndex,
+    getManifestSourceSignature,
+    recoveryEntryStorageKey,
+    type EditorHistoryCheckpoint,
+    type PersistedRecoveryEntry,
+    type PersistedRecoveryIndex,
+} from './editor-history-storage';
+import type {
+    TimelineHistoryEntry,
+    TimelineHistoryProjection,
+    TimelineHistoryRuntimeState,
+} from '@/stores/timeline-store-types';
+import { createSerializablePatches } from '@/lib/serializable-patch';
+import { TIMELINE_HISTORY_ROOTS } from '@/stores/timeline-history-projection';
 
 export interface EditorPersistenceWriter {
     saveEditorDocument: (
         projectId: string,
         manifest: EditorManifestV3,
         sourceAssets: readonly EditorPersistentAsset[],
+        historyCheckpoint: EditorHistoryCheckpoint,
+    ) => Promise<void>;
+    writeEditorRecovery: (
+        projectId: string,
+        index: PersistedRecoveryIndex,
+        entryKey: string,
+        entry: PersistedRecoveryEntry,
     ) => Promise<void>;
 }
 
@@ -45,6 +67,17 @@ export interface EditorPersistenceSnapshot {
 interface SaveRequest {
     manifest: EditorManifestV3;
     generation: number;
+    historyRuntime: TimelineHistoryRuntimeState;
+    historyCheckpoint: EditorHistoryCheckpoint;
+    recoveryWrite: RecoveryWrite | null;
+    sourceBarrier: boolean;
+}
+
+interface RecoveryWrite {
+    index: PersistedRecoveryIndex;
+    entryKey: string;
+    entry: PersistedRecoveryEntry;
+    attempt: Promise<void>;
 }
 
 const assetIdentity = (asset: EditorPersistentAsset) => `${asset.kind}:${asset.asset.id}`;
@@ -64,6 +97,19 @@ export class EditorPersistenceCoordinator {
     private lastFailure: unknown | null = null;
     private deletionPending = false;
     private disposed = false;
+    private durableProjection: TimelineHistoryProjection | null = null;
+    private durableSourceSignature: string | null = null;
+    private lastEnqueuedProjection: TimelineHistoryProjection | null = null;
+    private lastEnqueuedRevision = 0;
+    private lastEnqueuedSourceSignature: string | null = null;
+    private lastEnqueuedAudioGraphRevision = 0;
+    private recoveryEntryKeys: string[] = [];
+    private recoveryGarbageKeys = new Set<string>();
+    private recoverySerial: Promise<void> = Promise.resolve();
+    private recoveryWriteGeneration = 0;
+    private recoveryChainInvalid = false;
+    private durableHistorySignatures = new Map<string, string>();
+    private durableAudioGraphRevision = 0;
 
     constructor(
         projectId: string,
@@ -85,6 +131,7 @@ export class EditorPersistenceCoordinator {
         manifest: EditorManifestV3,
         sourceAssets: readonly EditorPersistentAsset[],
         generation: number,
+        historyRuntime: TimelineHistoryRuntimeState,
     ): void {
         this.assertCanOpen();
         if (manifest.revision <= this.lastSavedRevision) {
@@ -103,14 +150,91 @@ export class EditorPersistenceCoordinator {
             }
         });
 
-        if (!this.latestQueued || manifest.revision > this.latestQueued.manifest.revision) {
-            this.latestQueued = { manifest, generation };
+        const sourceSignature = getManifestSourceSignature(manifest);
+        if (this.recoveryChainInvalid) {
+            // A later enqueue after a settled WAL failure must not extend the missing entry. Reset
+            // its in-memory predecessor to the durable checkpoint before constructing this write.
+            this.recoveryEntryKeys.forEach((key) => this.recoveryGarbageKeys.add(key));
+            this.recoveryEntryKeys = [];
+            this.lastEnqueuedProjection = this.durableProjection;
+            this.lastEnqueuedRevision = this.lastSavedRevision;
+            this.lastEnqueuedSourceSignature = this.durableSourceSignature;
+            this.lastEnqueuedAudioGraphRevision = this.durableAudioGraphRevision;
+            this.recoveryChainInvalid = false;
         }
+        const historyDelta = this.createHistoryDelta(historyRuntime);
+        const historyIndex = createHistoryIndex(manifest, historyRuntime);
+        const sourceBarrier = sourceAssets.length > 0
+            || (this.lastEnqueuedSourceSignature !== null
+                && this.lastEnqueuedSourceSignature !== sourceSignature);
+        let recoveryWrite: RecoveryWrite | null = null;
+        if (
+            !sourceBarrier
+            && this.durableProjection
+            && this.durableSourceSignature === sourceSignature
+            && this.lastEnqueuedProjection
+            && this.lastEnqueuedSourceSignature === sourceSignature
+            && manifest.revision > this.lastEnqueuedRevision
+        ) {
+            const pair = createSerializablePatches(
+                this.lastEnqueuedProjection,
+                historyRuntime.projection,
+                TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+            );
+            if (pair.patches.length > 0) {
+                const entryKey = recoveryEntryStorageKey(manifest.revision);
+                const entry: PersistedRecoveryEntry = {
+                    version: 1,
+                    fromRevision: this.lastEnqueuedRevision,
+                    toRevision: manifest.revision,
+                    fromAudioGraphRevision: this.lastEnqueuedAudioGraphRevision,
+                    toAudioGraphRevision: manifest.audioGraphRevision,
+                    patches: pair.patches,
+                    historyIndex,
+                    historyEntries: historyDelta.changedEntries,
+                };
+                const entryKeys = [...this.recoveryEntryKeys, entryKey];
+                const index: PersistedRecoveryIndex = {
+                    version: 1,
+                    documentRevision: this.lastSavedRevision,
+                    sourceSignature,
+                    entryKeys,
+                };
+                this.recoveryEntryKeys = entryKeys;
+                recoveryWrite = this.scheduleRecoveryWrite({ index, entryKey, entry });
+            }
+        }
+
+        const historyCheckpoint: EditorHistoryCheckpoint = {
+            index: historyIndex,
+            changedEntries: historyDelta.changedEntries,
+            deletedEntryIds: historyDelta.deletedEntryIds,
+            recoveryKeysToDelete: this.getRecoveryKeysToDelete(),
+            clearRecoveryIndex: true,
+        };
+        if (!this.latestQueued || manifest.revision > this.latestQueued.manifest.revision) {
+            this.latestQueued = {
+                manifest,
+                generation,
+                historyRuntime,
+                historyCheckpoint,
+                recoveryWrite,
+                sourceBarrier,
+            };
+        }
+        this.lastEnqueuedProjection = historyRuntime.projection;
+        this.lastEnqueuedRevision = manifest.revision;
+        this.lastEnqueuedSourceSignature = sourceSignature;
+        this.lastEnqueuedAudioGraphRevision = manifest.audioGraphRevision;
         this.startProcessing(false);
     }
 
     /** Marks a manifest loaded from IndexedDB as authoritative without clearing failed newer work. */
-    markManifestDurable(manifest: EditorManifestV3): void {
+    markManifestDurable(
+        manifest: EditorManifestV3,
+        historyRuntime?: TimelineHistoryRuntimeState,
+        recoveryEntryKeys: readonly string[] = [],
+    ): void {
         this.lastSavedRevision = Math.max(this.lastSavedRevision, manifest.revision);
         getManifestDescriptors(manifest).forEach((descriptor, identity) => {
             // A v2/v1 File resolved under a legacy key is still durable. Marking it here avoids
@@ -122,10 +246,37 @@ export class EditorPersistenceCoordinator {
             this.failedRequest = null;
             this.lastFailure = null;
         }
+        const sourceSignature = getManifestSourceSignature(manifest);
+        this.durableSourceSignature = sourceSignature;
+        this.lastEnqueuedSourceSignature = sourceSignature;
+        this.lastEnqueuedRevision = manifest.revision;
+        this.lastEnqueuedAudioGraphRevision = manifest.audioGraphRevision;
+        this.durableAudioGraphRevision = manifest.audioGraphRevision;
+        this.durableHistorySignatures.clear();
+        // Recovery keys discovered during startup remain garbage even when their chain was
+        // rejected. The next successful checkpoint deletes them with its manifest transaction.
+        recoveryEntryKeys.forEach((key) => this.recoveryGarbageKeys.add(key));
+        if (historyRuntime) {
+            this.durableProjection = historyRuntime.projection;
+            this.lastEnqueuedProjection = historyRuntime.projection;
+            [...historyRuntime.history, ...historyRuntime.redoStack].forEach((entry) => {
+                this.durableHistorySignatures.set(entry.id, historyEntrySignature(entry));
+            });
+        } else {
+            // Without an auxiliary checkpoint we know neither a safe projection baseline nor which
+            // entry payloads exist. Force the next save through the ordinary checkpoint path.
+            this.durableProjection = null;
+            this.lastEnqueuedProjection = null;
+        }
     }
 
     observeFailure(): unknown | null {
         return this.lastFailure;
+    }
+
+    /** Returns the exact retained manifest so a reopened editor can align its live revision. */
+    getFailedManifest(): EditorManifestV3 | null {
+        return this.failedRequest?.manifest ?? null;
     }
 
     getSnapshot(): EditorPersistenceSnapshot {
@@ -179,6 +330,37 @@ export class EditorPersistenceCoordinator {
             await this.processing;
         }
         return this.lastFailure;
+    }
+
+    /**
+     * Retries the newest nondurable document exactly once.
+     *
+     * Failed requests retain their referenced Files in pendingAssets, so retrying here never
+     * rebuilds a manifest from possibly newer UI state and never falls back to an older durable
+     * document. A concurrent enqueue is drained first because it is already the newest command.
+     */
+    async retryLatestFailure(generation: number): Promise<boolean> {
+        await this.settleCurrentWork();
+        if (!this.failedRequest) return false;
+
+        // A failure can survive close/reopen. Rebinding only its notification generation keeps the
+        // exact manifest/assets while allowing the newly attached project store to observe success.
+        const failedRequest = this.failedRequest;
+        if (failedRequest.recoveryWrite) this.recoveryChainInvalid = false;
+        this.failedRequest = {
+            ...failedRequest,
+            generation,
+            // The WAL write is part of the exact retained request, but its Promise represents only
+            // one IndexedDB attempt. Retry the same immutable payload instead of awaiting a
+            // permanently rejected Promise from the original transaction.
+            recoveryWrite: failedRequest.recoveryWrite
+                ? this.scheduleRecoveryWrite(failedRequest.recoveryWrite)
+                : null,
+        };
+        this.startProcessing(true);
+        if (this.processing) await this.processing;
+        if (this.lastFailure) throw this.lastFailure;
+        return true;
     }
 
     markDeletionPending(generation: number): void {
@@ -265,7 +447,13 @@ export class EditorPersistenceCoordinator {
             });
 
             try {
-                await this.writer.saveEditorDocument(this.projectId, request.manifest, transactionAssets);
+                if (request.recoveryWrite) await request.recoveryWrite.attempt;
+                await this.writer.saveEditorDocument(
+                    this.projectId,
+                    request.manifest,
+                    transactionAssets,
+                    request.historyCheckpoint,
+                );
                 transactionAssets.forEach((asset) => {
                     const identity = assetIdentity(asset);
                     const pair = assetPairKey(identity, asset.asset.fingerprint);
@@ -276,6 +464,18 @@ export class EditorPersistenceCoordinator {
                 });
                 this.pruneUnreferencedPendingAssets();
                 this.lastSavedRevision = request.manifest.revision;
+                this.durableProjection = request.historyRuntime.projection;
+                this.durableSourceSignature = getManifestSourceSignature(request.manifest);
+                this.durableAudioGraphRevision = request.manifest.audioGraphRevision;
+                request.historyCheckpoint.deletedEntryIds.forEach((entryId) => {
+                    this.durableHistorySignatures.delete(entryId);
+                });
+                request.historyCheckpoint.changedEntries.forEach((entry) => {
+                    this.durableHistorySignatures.set(entry.id, historyEntrySignature(entry));
+                });
+                const deletedRecoveryKeys = new Set(request.historyCheckpoint.recoveryKeysToDelete);
+                this.recoveryEntryKeys = this.recoveryEntryKeys.filter((key) => !deletedRecoveryKeys.has(key));
+                deletedRecoveryKeys.forEach((key) => this.recoveryGarbageKeys.delete(key));
                 this.lastFailure = null;
                 this.failedRequest = null;
                 this.notify({
@@ -284,11 +484,16 @@ export class EditorPersistenceCoordinator {
                     status: 'saved',
                     revision: request.manifest.revision,
                 });
+                this.rebaseQueuedRequestFromDurable();
             } catch (error) {
                 this.recordFailure(request, error);
                 // A newer coalesced document gets one immediate attempt and carries every still
                 // pending referenced source. Without a successor we stop to avoid retry loops.
                 if (!this.latestQueued || this.latestQueued.manifest.revision <= request.manifest.revision) return;
+                // The failed request's WAL may not exist, while the successor's prebuilt index may
+                // still reference it. Rebase the successor directly from the durable checkpoint
+                // so a crash can never expose an index containing a missing predecessor key.
+                this.rebaseQueuedRequestFromDurable();
             }
         }
     }
@@ -332,6 +537,131 @@ export class EditorPersistenceCoordinator {
             revision: request.manifest.revision,
             error,
         });
+    }
+
+    /** Rebuilds the queued WAL as one complete step from the current durable checkpoint. */
+    private rebaseQueuedRequestFromDurable(): void {
+        const queued = this.latestQueued;
+        if (!queued) return;
+        // An old WAL attempt can still be in flight when its checkpoint makes this rebase
+        // necessary. Give the replacement an independent generation so a late old failure cannot
+        // invalidate the newly scheduled write and allow its checkpoint to run without a WAL.
+        this.recoveryWriteGeneration += 1;
+        // Coalescing may have already written intermediate WAL entries. They are no longer part of
+        // the live chain, but must remain scheduled for deletion by the next atomic checkpoint.
+        this.recoveryEntryKeys.forEach((key) => this.recoveryGarbageKeys.add(key));
+        this.recoveryEntryKeys = [];
+        this.recoveryChainInvalid = false;
+        const historyDelta = this.createHistoryDelta(queued.historyRuntime);
+        const rebasedCheckpoint: EditorHistoryCheckpoint = {
+            ...queued.historyCheckpoint,
+            changedEntries: historyDelta.changedEntries,
+            deletedEntryIds: historyDelta.deletedEntryIds,
+            recoveryKeysToDelete: this.getRecoveryKeysToDelete(),
+        };
+        if (queued.sourceBarrier) {
+            this.latestQueued = { ...queued, recoveryWrite: null, historyCheckpoint: rebasedCheckpoint };
+            return;
+        }
+        const sourceSignature = getManifestSourceSignature(queued.manifest);
+        if (sourceSignature !== this.durableSourceSignature || !this.durableProjection) {
+            this.latestQueued = { ...queued, recoveryWrite: null, historyCheckpoint: rebasedCheckpoint };
+            return;
+        }
+        const pair = createSerializablePatches(
+            this.durableProjection,
+            queued.historyRuntime.projection,
+            TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+        );
+        if (pair.patches.length === 0) {
+            this.latestQueued = { ...queued, recoveryWrite: null, historyCheckpoint: rebasedCheckpoint };
+            return;
+        }
+
+        const entryKey = recoveryEntryStorageKey(queued.manifest.revision);
+        const entry: PersistedRecoveryEntry = {
+            version: 1,
+            fromRevision: this.lastSavedRevision,
+            toRevision: queued.manifest.revision,
+            fromAudioGraphRevision: this.durableAudioGraphRevision,
+            toAudioGraphRevision: queued.manifest.audioGraphRevision,
+            patches: pair.patches,
+            historyIndex: rebasedCheckpoint.index,
+            historyEntries: rebasedCheckpoint.changedEntries,
+        };
+        const index: PersistedRecoveryIndex = {
+            version: 1,
+            documentRevision: this.lastSavedRevision,
+            sourceSignature,
+            entryKeys: [entryKey],
+        };
+        this.recoveryEntryKeys = [entryKey];
+        const recoveryWrite = this.scheduleRecoveryWrite({ index, entryKey, entry });
+        this.latestQueued = {
+            ...queued,
+            recoveryWrite,
+            historyCheckpoint: {
+                ...rebasedCheckpoint,
+                recoveryKeysToDelete: this.getRecoveryKeysToDelete(),
+                clearRecoveryIndex: true,
+            },
+        };
+    }
+
+    private getRecoveryKeysToDelete(): string[] {
+        return Array.from(new Set([
+            ...Array.from(this.recoveryGarbageKeys),
+            ...this.recoveryEntryKeys,
+        ]));
+    }
+
+    private createHistoryDelta(historyRuntime: TimelineHistoryRuntimeState): Pick<
+        EditorHistoryCheckpoint,
+        'changedEntries' | 'deletedEntryIds'
+    > {
+        const allEntries = [...historyRuntime.history, ...historyRuntime.redoStack];
+        const retainedIds = new Set(allEntries.map((entry) => entry.id));
+        return {
+            changedEntries: allEntries.filter((entry) => (
+                this.durableHistorySignatures.get(entry.id) !== historyEntrySignature(entry)
+            )),
+            // History bounds remove commands from the logical index. Persist the complementary
+            // delete delta so their potentially large patch payloads do not remain orphaned in
+            // IndexedDB after the manifest and new index commit.
+            deletedEntryIds: Array.from(this.durableHistorySignatures.keys())
+                .filter((entryId) => !retainedIds.has(entryId)),
+        };
+    }
+
+    private scheduleRecoveryWrite(
+        payload: Pick<RecoveryWrite, 'index' | 'entryKey' | 'entry'>,
+    ): RecoveryWrite {
+        // A failed WAL attempt must not poison the serialization chain. Each SaveRequest retains
+        // its exact payload, while the next attempt starts after the previous one has settled.
+        const generation = this.recoveryWriteGeneration;
+        this.recoverySerial = this.recoverySerial
+            .catch(() => undefined)
+            .then(async () => {
+                // A failed predecessor invalidates successor indexes that referenced it. Those
+                // already-scheduled writes become no-ops; processQueue rebases the newest request
+                // from the durable checkpoint and schedules it in the next generation.
+                if (generation !== this.recoveryWriteGeneration) return;
+                try {
+                    await this.writer.writeEditorRecovery(
+                        this.projectId,
+                        payload.index,
+                        payload.entryKey,
+                        payload.entry,
+                    );
+                } catch (error) {
+                    if (generation === this.recoveryWriteGeneration) {
+                        this.recoveryWriteGeneration += 1;
+                        this.recoveryChainInvalid = true;
+                    }
+                    throw error;
+                }
+            });
+        return { ...payload, attempt: this.recoverySerial };
     }
 }
 
@@ -390,8 +720,9 @@ export class EditorPersistenceRegistry {
         generation: number,
         manifest: EditorManifestV3,
         sourceAssets: readonly EditorPersistentAsset[],
+        historyRuntime: TimelineHistoryRuntimeState,
     ): void {
-        this.getOrCreate(projectId).enqueue(manifest, sourceAssets, generation);
+        this.getOrCreate(projectId).enqueue(manifest, sourceAssets, generation, historyRuntime);
     }
 
     async flush(projectId: string): Promise<void> {
@@ -410,8 +741,28 @@ export class EditorPersistenceRegistry {
         return this.coordinators.get(projectId)?.observeFailure() ?? null;
     }
 
-    markManifestDurable(projectId: string, manifest: EditorManifestV3): void {
-        this.getOrCreate(projectId).markManifestDurable(manifest);
+    getFailedManifest(projectId: string): EditorManifestV3 | null {
+        return this.coordinators.get(projectId)?.getFailedManifest() ?? null;
+    }
+
+    async retry(projectId: string, generation: number): Promise<boolean> {
+        const coordinator = this.coordinators.get(projectId);
+        if (!coordinator) return false;
+        coordinator.assertCanOpen();
+        return coordinator.retryLatestFailure(generation);
+    }
+
+    markManifestDurable(
+        projectId: string,
+        manifest: EditorManifestV3,
+        historyRuntime?: TimelineHistoryRuntimeState,
+        recoveryEntryKeys: readonly string[] = [],
+    ): void {
+        this.getOrCreate(projectId).markManifestDurable(
+            manifest,
+            historyRuntime,
+            recoveryEntryKeys,
+        );
     }
 
     async deleteProject(projectId: string): Promise<void> {
@@ -474,8 +825,11 @@ export class EditorPersistenceRegistry {
 
 export const editorPersistenceRegistry = new EditorPersistenceRegistry(
     {
-        saveEditorDocument: (projectId, manifest, sourceAssets) => (
-            storageService.saveEditorDocument(projectId, manifest, sourceAssets)
+        saveEditorDocument: (projectId, manifest, sourceAssets, historyCheckpoint) => (
+            storageService.saveEditorDocument(projectId, manifest, sourceAssets, historyCheckpoint)
+        ),
+        writeEditorRecovery: (projectId, index, entryKey, entry) => (
+            storageService.writeEditorRecovery(projectId, index, entryKey, entry)
         ),
     },
     (projectId, onBlocked) => storageService.deleteProjectDatabase(projectId, onBlocked),
@@ -494,3 +848,17 @@ function getManifestDescriptors(manifest: EditorManifestV3): Map<string, { finge
     ];
     return new Map(entries);
 }
+
+const historyEntrySignature = (entry: TimelineHistoryEntry): string => JSON.stringify({
+    id: entry.id,
+    sequence: entry.sequence,
+    label: entry.label,
+    mergeKey: entry.mergeKey,
+    timestamp: entry.timestamp,
+    patches: entry.patches,
+    inversePatches: entry.inversePatches,
+    audioGraphMutationImpact: entry.audioGraphMutationImpact,
+    recalculatesContentBoundary: entry.recalculatesContentBoundary,
+    byteSize: entry.byteSize,
+    oversized: entry.oversized,
+});

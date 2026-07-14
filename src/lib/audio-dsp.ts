@@ -69,9 +69,31 @@ export function resampleLinearSpan(
  * are folded at -3 dB and LFE at -6 dB; a linked limiter is applied after contributors are summed.
  */
 export function downmixFrameToStereo(samples: readonly number[]): [number, number] {
-    if (samples.length === 0) return [0, 0];
-    if (samples.length === 1) return [samples[0], samples[0]];
-    if (samples.length === 2) return [samples[0], samples[1]];
+    const output: [number, number] = [0, 0];
+    downmixFrameToStereoInto(samples, output);
+    return output;
+}
+
+/** Writes the declared downmix into a reusable pair for allocation-sensitive decoder loops. */
+export function downmixFrameToStereoInto(
+    samples: readonly number[],
+    output: [number, number],
+): void {
+    if (samples.length === 0) {
+        output[0] = 0;
+        output[1] = 0;
+        return;
+    }
+    if (samples.length === 1) {
+        output[0] = samples[0];
+        output[1] = samples[0];
+        return;
+    }
+    if (samples.length === 2) {
+        output[0] = samples[0];
+        output[1] = samples[1];
+        return;
+    }
 
     const minus3Db = Math.SQRT1_2;
     const frontLeft = samples[0] ?? 0;
@@ -93,10 +115,8 @@ export function downmixFrameToStereo(samples: readonly number[]): [number, numbe
         surroundLeft = (samples[4] ?? 0) + (samples[6] ?? 0);
         surroundRight = (samples[5] ?? 0) + (samples[7] ?? 0);
     }
-    return [
-        frontLeft + center * minus3Db + lfe * 0.5 + surroundLeft * minus3Db,
-        frontRight + center * minus3Db + lfe * 0.5 + surroundRight * minus3Db,
-    ];
+    output[0] = frontLeft + center * minus3Db + lfe * 0.5 + surroundLeft * minus3Db;
+    output[1] = frontRight + center * minus3Db + lfe * 0.5 + surroundRight * minus3Db;
 }
 
 /** A hard linked peak limiter preserves stereo balance by applying one gain to both channels. */
@@ -105,9 +125,7 @@ export function limitLinkedStereoFrame(
     right: number,
     threshold = AUDIO_LIMITER_THRESHOLD,
 ): [number, number] {
-    if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1) {
-        throw new RangeError('Limiter threshold must be in the interval (0, 1].');
-    }
+    assertLimiterThreshold(threshold);
     const peak = Math.max(Math.abs(left), Math.abs(right));
     if (peak <= threshold) return [left, right];
     const gain = threshold / peak;
@@ -135,6 +153,8 @@ export async function renderAudioMixPlan(
     if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
         throw new RangeError('Audio mix chunkSize must be a positive safe integer.');
     }
+    const limiterThreshold = options.limiterThreshold ?? AUDIO_LIMITER_THRESHOLD;
+    assertLimiterThreshold(limiterThreshold);
 
     const outputLeft = new Float32Array(endSample - startSample);
     const outputRight = new Float32Array(endSample - startSample);
@@ -143,13 +163,11 @@ export async function renderAudioMixPlan(
         const chunkEnd = Math.min(endSample, chunkStart + chunkSize);
         const mixedLeft = new Float64Array(chunkEnd - chunkStart);
         const mixedRight = new Float64Array(chunkEnd - chunkStart);
-        const active = plan.contributors.filter((contributor) => (
-            contributor.outputEndSample > chunkStart && contributor.outputStartSample < chunkEnd
-        ));
-
         // Sequential bounded decoding prevents several compressed streams from retaining large
         // WebCodecs sample queues at once. Each adapter closes its samples before resolving.
-        for (const contributor of active) {
+        for (const contributor of plan.contributors) {
+            if (contributor.outputEndSample <= chunkStart
+                || contributor.outputStartSample >= chunkEnd) continue;
             throwIfAborted(options.signal);
             const intersectionStart = Math.max(chunkStart, contributor.outputStartSample);
             const intersectionEnd = Math.min(chunkEnd, contributor.outputEndSample);
@@ -172,14 +190,13 @@ export async function renderAudioMixPlan(
         }
 
         for (let index = 0; index < mixedLeft.length; index += 1) {
-            const [left, right] = limitLinkedStereoFrame(
-                mixedLeft[index],
-                mixedRight[index],
-                options.limiterThreshold,
-            );
+            const left = mixedLeft[index];
+            const right = mixedRight[index];
+            const peak = Math.max(Math.abs(left), Math.abs(right));
+            const limiterGain = peak > limiterThreshold ? limiterThreshold / peak : 1;
             const outputIndex = chunkStart - startSample + index;
-            outputLeft[outputIndex] = left;
-            outputRight[outputIndex] = right;
+            outputLeft[outputIndex] = left * limiterGain;
+            outputRight[outputIndex] = right * limiterGain;
         }
     }
     return {
@@ -205,6 +222,7 @@ function mixContributorRange(
     const contributorOutputCount = contributor.outputEndSample - contributor.outputStartSample;
     const [sourceStart, sourceEnd] = resolveDecodedSourceSpan(contributor, audio.sampleRate);
     const channelValues = new Array<number>(audio.channels.length);
+    const stereoFrame: [number, number] = [0, 0];
     for (let outputSample = outputStart; outputSample < outputEnd; outputSample += 1) {
         const contributorIndex = outputSample - contributor.outputStartSample;
         const sourcePosition = getSourceCentrePosition(
@@ -213,14 +231,15 @@ function mixContributorRange(
             contributorOutputCount,
             contributorIndex,
         );
-        audio.channels.forEach((channel, channelIndex) => {
+        for (let channelIndex = 0; channelIndex < audio.channels.length; channelIndex += 1) {
+            const channel = audio.channels[channelIndex];
             channelValues[channelIndex] = interpolateAbsoluteSample(
                 channel,
                 audio.startSample,
                 sourcePosition,
             );
-        });
-        const [left, right] = downmixFrameToStereo(channelValues);
+        }
+        downmixFrameToStereoInto(channelValues, stereoFrame);
         const fade = Math.min(
             fadeInGain(contributorIndex + 0.5, contributor.fadeInSamples),
             fadeOutGain(
@@ -230,8 +249,8 @@ function mixContributorRange(
         );
         const gain = contributor.gainLinear * fade;
         const chunkIndex = outputSample - chunkStart;
-        mixedLeft[chunkIndex] += left * gain;
-        mixedRight[chunkIndex] += right * gain;
+        mixedLeft[chunkIndex] += stereoFrame[0] * gain;
+        mixedRight[chunkIndex] += stereoFrame[1] * gain;
     }
 }
 
@@ -323,6 +342,12 @@ function validateRenderRange(startSample: number, endSample: number, totalSample
 function assertOutputSampleCount(value: number): void {
     if (!Number.isSafeInteger(value) || value < 0) {
         throw new RangeError('outputSampleCount must be a non-negative safe integer.');
+    }
+}
+
+function assertLimiterThreshold(threshold: number): void {
+    if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1) {
+        throw new RangeError('Limiter threshold must be in the interval (0, 1].');
     }
 }
 

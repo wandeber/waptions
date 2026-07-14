@@ -1,8 +1,8 @@
-export const TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION = 2 as const;
+export const TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION = 3 as const;
 export const TIMELINE_AUDIO_WORKLET_PROCESSOR = 'timeline-audio-processor';
-export const TIMELINE_AUDIO_WORKLET_PATH = '/worklets/timeline-audio-worklet.js?v=2';
+export const TIMELINE_AUDIO_WORKLET_PATH = '/worklets/timeline-audio-worklet.js?v=3';
 export const TIMELINE_AUDIO_LOW_WATER_SAMPLES = 12_000;
-export const TIMELINE_AUDIO_MAX_QUEUED_BLOCKS = 32;
+export const TIMELINE_AUDIO_MAX_QUEUED_BLOCKS = 16;
 
 interface WorkletMessageBase {
     version: typeof TIMELINE_AUDIO_WORKLET_PROTOCOL_VERSION;
@@ -10,7 +10,12 @@ interface WorkletMessageBase {
 }
 
 export type TimelineAudioWorkletMessage =
-    | (WorkletMessageBase & { type: 'reset'; outputSample: number })
+    | (WorkletMessageBase & {
+        type: 'reset';
+        outputSample: number;
+        contentEndSample: number;
+    })
+    | (WorkletMessageBase & { type: 'set-content-end'; contentEndSample: number })
     | (WorkletMessageBase & {
         type: 'queue';
         startSample: number;
@@ -18,7 +23,7 @@ export type TimelineAudioWorkletMessage =
         right: Float32Array;
     })
     | (WorkletMessageBase & { type: 'play' })
-    | (WorkletMessageBase & { type: 'pause' })
+    | (WorkletMessageBase & { type: 'pause'; requestId: number })
     | (WorkletMessageBase & { type: 'set-rate'; playbackRate: number });
 
 export interface TimelineAudioWorkletClockEvent extends WorkletMessageBase {
@@ -42,10 +47,24 @@ export interface TimelineAudioWorkletLowWaterEvent extends WorkletMessageBase {
     queuedUntilSample: number;
 }
 
+export interface TimelineAudioWorkletPausedEvent extends WorkletMessageBase {
+    type: 'paused';
+    outputSample: number;
+    requestId: number;
+}
+
+export interface TimelineAudioWorkletEndedEvent extends WorkletMessageBase {
+    type: 'ended';
+    outputSample: number;
+    timeSeconds: number;
+}
+
 export type TimelineAudioWorkletEvent =
     | TimelineAudioWorkletClockEvent
     | TimelineAudioWorkletUnderrunEvent
-    | TimelineAudioWorkletLowWaterEvent;
+    | TimelineAudioWorkletLowWaterEvent
+    | TimelineAudioWorkletPausedEvent
+    | TimelineAudioWorkletEndedEvent;
 
 /** Same-origin public assets are copied unchanged by Next.js and OpenNext. */
 export function getTimelineAudioWorkletUrl(origin: string): URL {
@@ -114,9 +133,14 @@ export class TimelineAudioQueueModel {
             first[1] * (1 - fraction) + second[1] * fraction,
         ];
         this.cursor += increment;
-        this.blocks = this.blocks.filter((block) => (
-            block.startSample + block.left.length > Math.floor(this.cursor)
-        ));
+        const consumedSampleIndex = Math.floor(this.cursor);
+        let consumedCount = 0;
+        while (consumedCount < this.blocks.length
+            && this.blocks[consumedCount].startSample + this.blocks[consumedCount].left.length
+              <= consumedSampleIndex) {
+            consumedCount += 1;
+        }
+        if (consumedCount > 0) this.blocks.splice(0, consumedCount);
         return frame;
     }
 

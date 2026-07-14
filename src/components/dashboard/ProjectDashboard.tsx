@@ -12,10 +12,15 @@ import { storageService } from '@/lib/storage/storage-service';
 import { peekProjectBundle, importProjectBundle, PROJECT_BUNDLE_VERSION } from '@/lib/project-bundle';
 import { ImportWarningDialog } from '../dialogs/ImportWarningDialog';
 import { isAuthEnabled } from '@/lib/config/feature-flags';
+import { useShallow } from 'zustand/react/shallow';
 
 export function ProjectDashboard() {
     const authEnabled = isAuthEnabled();
-    const { savedProjects, createProject, deleteProject } = useProjectStore();
+    const { savedProjects, createProject, deleteProject } = useProjectStore(useShallow((state) => ({
+        savedProjects: state.savedProjects,
+        createProject: state.createProject,
+        deleteProject: state.deleteProject,
+    })));
     const [searchQuery, setSearchQuery] = useState('');
     const [isCreating, setIsCreating] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');

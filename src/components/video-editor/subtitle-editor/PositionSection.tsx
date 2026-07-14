@@ -1,16 +1,17 @@
 import { DraggableNumberInput } from '../../design-system/DraggableNumberInput';
-import type { SubtitleAnimationStyle } from './types';
+import type { SubtitleAnimationStyle, SubtitleStyleEditHandlers } from './types';
 import { defaultAnimationStyle } from './types';
 
-interface PositionSectionProps {
+interface PositionSectionProps extends SubtitleStyleEditHandlers {
   style: SubtitleAnimationStyle;
-  onStyleChange: (key: keyof SubtitleAnimationStyle, value: SubtitleAnimationStyle[keyof SubtitleAnimationStyle]) => void;
 }
 
-export function PositionSection({ style, onStyleChange }: PositionSectionProps) {
-  const handlePositionChange = (axis: 'x' | 'y', value: number) => {
-    onStyleChange('position', { ...style.position, [axis]: value });
-  };
+export function PositionSection({
+  style,
+  onStylePreview,
+  onStyleCommit,
+  onStyleCancel,
+}: PositionSectionProps) {
 
   return (
     <div className="flex flex-col gap-6">
@@ -18,7 +19,9 @@ export function PositionSection({ style, onStyleChange }: PositionSectionProps) 
         <DraggableNumberInput
           label="Posición X"
           value={style.position.x}
-          onChange={(value) => handlePositionChange('x', value)}
+          onPreview={(value) => onStylePreview('position', { ...style.position, x: value })}
+          onCommit={(value) => onStyleCommit('position', { ...style.position, x: value })}
+          onCancel={() => onStyleCancel('position')}
           min={0}
           max={100}
           step={1}
@@ -33,7 +36,9 @@ export function PositionSection({ style, onStyleChange }: PositionSectionProps) 
         <DraggableNumberInput
           label="Posición Y"
           value={style.position.y}
-          onChange={(value) => handlePositionChange('y', value)}
+          onPreview={(value) => onStylePreview('position', { ...style.position, y: value })}
+          onCommit={(value) => onStyleCommit('position', { ...style.position, y: value })}
+          onCancel={() => onStyleCancel('position')}
           min={0}
           max={100}
           step={1}
@@ -45,4 +50,4 @@ export function PositionSection({ style, onStyleChange }: PositionSectionProps) 
       </div>
     </div>
   );
-} 
+}

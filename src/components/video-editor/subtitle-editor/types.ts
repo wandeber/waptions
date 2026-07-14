@@ -12,6 +12,8 @@ export interface SubtitleEditorProps {
   isGeneratingSubtitles?: boolean;
   onAnimationStyleChange?: (style: SubtitleAnimationStyle) => void;
   animationStyle?: SubtitleAnimationStyle;
+  onUndo?: () => Promise<void> | void;
+  onRedo?: () => Promise<void> | void;
 }
 
 export interface SubtitleAnimationStyle {
@@ -49,6 +51,23 @@ export interface SubtitleAnimationStyle {
   backgroundBorderRadius: number;
   backgroundOffsetX: number;
   backgroundOffsetY: number;
+}
+
+export interface SubtitleStyleEditHandlers {
+  onStylePreview: <Key extends keyof SubtitleAnimationStyle>(
+    key: Key,
+    value: SubtitleAnimationStyle[Key],
+  ) => void;
+  onStyleCommit: <Key extends keyof SubtitleAnimationStyle>(
+    key: Key,
+    value: SubtitleAnimationStyle[Key],
+  ) => void;
+  onStyleCancel: (key: keyof SubtitleAnimationStyle) => void;
+  /** Selects, checkboxes, buttons, and presets remain immediate one-command edits. */
+  onStyleChange: <Key extends keyof SubtitleAnimationStyle>(
+    key: Key,
+    value: SubtitleAnimationStyle[Key],
+  ) => void;
 }
 
 export const defaultAnimationStyle: SubtitleAnimationStyle = {

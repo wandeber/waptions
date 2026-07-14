@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { Button } from '../design-system/Button';
 import { Select } from '../design-system/Select';
@@ -10,44 +10,66 @@ import {
   getExportMimeType,
   getExportFileExtension,
   DEFAULT_EXPORT_OPTIONS,
+  createExportDocumentSnapshot,
+  estimateExportOutputBytes,
 } from '@/lib/export';
-import { SubtitleTrack } from '@/types/timeline';
+import { acquireExportDestination } from '@/lib/export-destination';
 import { useProjectStore } from '@/stores/project-store';
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { ExportFormat, ExportQuality } from '@/types/export';
 
-interface ExportButtonProps {
-  tracks: SubtitleTrack[];
-  fps: number;
-}
-
-export function ExportButton(props: ExportButtonProps) {
-  // EditorHeader keeps these transitional props until its wider toolbar contract is migrated.
-  // Export itself always reads one atomic V3 document so independent audio cannot be omitted.
-  void props;
-  const { activeProject } = useProjectStore();
-  const { videoClips } = useTimelineStore();
+export function ExportButton() {
+  const activeProject = useProjectStore((state) => state.activeProject);
+  const videoClips = useTimelineStore((state) => state.videoClips);
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState<string>('');
   const [showOptions, setShowOptions] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Export options
   const [format, setFormat] = useState<ExportFormat>(DEFAULT_EXPORT_OPTIONS.format);
   const [quality, setQuality] = useState<ExportQuality>(DEFAULT_EXPORT_OPTIONS.quality);
-  const [includeAudio] = useState(DEFAULT_EXPORT_OPTIONS.includeAudio ?? true);
+  const [includeAudio, setIncludeAudio] = useState(DEFAULT_EXPORT_OPTIONS.includeAudio ?? true);
 
   const handleExport = async () => {
     if (videoClips.length === 0) return;
+
+    // Capture the graph before opening the asynchronous save picker. The export worker clones it
+    // defensively again at its API boundary, but this first freeze fixes user-visible job identity
+    // to the exact click even if the timeline changes while the destination prompt is open.
+    const documentSnapshot = createExportDocumentSnapshot(
+      useTimelineStore.getState().buildEditorDocument(),
+    );
+    const projectName = activeProject?.name || 'video';
+    const safeName = projectName
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '_')
+      .replace(/_+/g, '_');
+    const extension = getExportFileExtension(format);
+    const estimatedBytes = estimateExportOutputBytes(documentSnapshot, { quality, includeAudio });
+
+    // Invocation, rather than the later await, must stay directly in the click call stack. The
+    // browser's save picker consumes transient user activation synchronously; React state updates
+    // or unrelated asynchronous setup before this line can make the permission prompt fail.
+    const destinationPromise = acquireExportDestination({
+      format,
+      suggestedName: `${safeName}${extension}`,
+      estimatedBytes,
+    });
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       setIsExporting(true);
       setProgress(0);
       setCurrentStep('Preparando exportación...');
       setShowOptions(false);
+      const destination = await destinationPromise;
 
       const result = await exportProject({
-        document: useTimelineStore.getState().buildEditorDocument(),
+        document: documentSnapshot,
+        destination,
         options: {
           format,
           quality,
@@ -62,40 +84,34 @@ export function ExportButton(props: ExportButtonProps) {
               setCurrentStep('Finalizando...');
             }
           },
-          onCancel: () => false,
+          signal: abortController.signal,
         },
       });
 
-      if (result.success && result.buffer) {
-        // Download the file
+      if (result.success && result.delivery === 'memory') {
+        // Browsers without the File System Access API receive the explicitly bounded memory
+        // fallback and still use the conventional object-URL download flow.
         const mimeType = getExportMimeType(format);
-        const extension = getExportFileExtension(format);
         const blob = new Blob([result.buffer], { type: mimeType });
         const url = URL.createObjectURL(blob);
 
         const a = document.createElement('a');
         a.href = url;
-
-        // Use project name or fallback
-        const projectName = activeProject?.name || 'video';
-        const safeName = projectName
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '_')
-          .replace(/_+/g, '_');
-
         a.download = `${safeName}${extension}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-      } else if (result.error) {
+      } else if (!result.success && !result.cancelled) {
         console.error('Export failed:', result.error);
         alert(`Error al exportar: ${result.error}`);
       }
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
       console.error('Unexpected export error:', error);
-      alert('Error inesperado durante la exportación');
+      alert(error instanceof Error ? error.message : 'Unexpected export error');
     } finally {
+      if (abortControllerRef.current === abortController) abortControllerRef.current = null;
       setIsExporting(false);
       setProgress(0);
       setCurrentStep('');
@@ -118,6 +134,14 @@ export function ExportButton(props: ExportButtonProps) {
             <div className="text-xs text-gray-400">{currentStep}</div>
           </div>
           <span className="text-sm text-gray-300">{Math.round(progress)}%</span>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => abortControllerRef.current?.abort()}
+            className="h-7 px-2 text-xs"
+          >
+            Cancel
+          </Button>
         </div>
       )}
 
@@ -166,7 +190,7 @@ export function ExportButton(props: ExportButtonProps) {
             </Select>
           </div>
 
-          {/* Include audio 
+          {/* Include audio */}
           <div className="mb-4">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -175,10 +199,9 @@ export function ExportButton(props: ExportButtonProps) {
                 onChange={(e) => setIncludeAudio(e.target.checked)}
                 className="rounded bg-gray-700 border-gray-600"
               />
-              <span className="text-xs text-gray-300">Incluir audio</span>
+              <span className="text-xs text-gray-300">Include timeline audio</span>
             </label>
           </div>
-          */}
 
           {/* Export button */}
           <Button

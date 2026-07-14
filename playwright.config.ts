@@ -1,5 +1,26 @@
 import { defineConfig, devices } from '@playwright/test';
 
+function requireIsolationVariable(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(
+      `Playwright requires ${name}. Run tests through \`pnpm run test:e2e\` so compiler and artifact paths are isolated.`,
+    );
+  }
+  return value;
+}
+
+const parsedE2ePort = Number.parseInt(requireIsolationVariable('WAPTIONS_E2E_PORT'), 10);
+if (!Number.isSafeInteger(parsedE2ePort) || parsedE2ePort <= 0 || parsedE2ePort > 65_535) {
+  throw new Error('WAPTIONS_E2E_PORT must be a valid TCP port.');
+}
+const e2eBaseUrl = `http://localhost:${parsedE2ePort}`;
+const e2eOutputDir = requireIsolationVariable('WAPTIONS_E2E_OUTPUT_DIR');
+const e2eReportDir = requireIsolationVariable('WAPTIONS_E2E_REPORT_DIR');
+requireIsolationVariable('WAPTIONS_NEXT_DIST_DIR');
+requireIsolationVariable('WAPTIONS_TSCONFIG_PATH');
+requireIsolationVariable('WAPTIONS_E2E_RUN_ID');
+
 /**
  * Read environment variables from file.
  * https://github.com/motdotla/dotenv
@@ -11,6 +32,9 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
+  // Every invocation owns its artifact tree. Playwright clears outputDir at startup, so sharing
+  // the default `test-results` directory can delete traces from another active test process.
+  outputDir: e2eOutputDir,
   /* Maximum time one test can run for. */
   timeout: 30 * 1000,
   expect: {
@@ -24,25 +48,21 @@ export default defineConfig({
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
-  /* Retry on CI only */
-  retries: process.env.CI ? 2 : 0,
+  /* Deterministic media failures must remain visible in every environment. */
+  retries: 0,
   /* Opt out of parallel tests on CI. */
   workers: process.env.CI ? 1 : undefined,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-  reporter: 'html',
+  reporter: [['html', { outputFolder: e2eReportDir, open: 'never' }]],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: 'http://localhost:59940',
+    baseURL: e2eBaseUrl,
 
-    /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    trace: 'on',
-    
-    /* Capture screenshot after each test */
-    screenshot: 'on',
-    
-    /* Record video for all tests */
-    video: 'on',
+    /* Keep diagnostic artifacts only for failures; successful media runs should remain cheap. */
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
   },
 
   /* Configure projects for major browsers */
@@ -52,18 +72,4 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     }
   ],
-
-  /* Run your local dev server before starting the tests */
-  webServer: {
-    command: 'pnpm run dev',
-    // Auth.js requires a secret even when tests only request public pages.
-    // Keep local E2E runs self-contained while preserving any caller-provided
-    // secret for environments that already define one.
-    env: {
-      ...process.env,
-      AUTH_SECRET: process.env.AUTH_SECRET ?? 'playwright-local-auth-secret',
-    },
-    url: 'http://localhost:59940',
-    reuseExistingServer: !process.env.CI,
-  },
 }); 

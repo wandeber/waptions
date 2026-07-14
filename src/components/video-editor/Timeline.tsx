@@ -1,12 +1,14 @@
 'use client';
 
 import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { Subtitle, SubtitleTrack } from '@/types/timeline';
 import type { AudioTrack } from '@/types/video';
 import { ChevronLeft, ChevronRight, Headphones, Pause, Play, Plus, RotateCcw, Scissors, Trash2, ZoomIn, ZoomOut, Magnet } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useProjectStore } from '@/stores/project-store';
+import { usePlaybackStore } from '@/stores/playback-store';
 import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
 import { TimelinePlayhead } from './TimelinePlayhead';
@@ -32,16 +34,13 @@ import {
   DEFAULT_TIMELINE_ROW_HEIGHT,
   clampTimelineRowHeight,
 } from '@/lib/editor-layout';
+import {
+  selectTimelinePlaybackStatus,
+  selectTimelinePlaybackStructure,
+} from './playback-selectors';
 
 interface TimelineProps {
-  duration: number;
-  contentDuration: number;
-  currentTime?: number;
-  onTimeUpdate?: (time: number) => void;
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
-  isPlaying?: boolean;
-  onPlayPause?: () => void;
-  fps: number;
   showThirdsGuide?: boolean;
   onThirdsGuideToggle?: () => void;
   showDevinGuide?: boolean;
@@ -63,14 +62,7 @@ interface TimelineRowHeightState {
 }
 
 export function Timeline({
-  duration,
-  contentDuration,
-  currentTime = 0,
-  onTimeUpdate,
   onSubtitleClick,
-  isPlaying = false,
-  onPlayPause,
-  fps,
   showThirdsGuide = false,
   onThirdsGuideToggle,
   showDevinGuide = false,
@@ -79,13 +71,39 @@ export function Timeline({
   onMetaInfoToggle,
 }: TimelineProps) {
   const projectId = useProjectStore((state) => state.activeProject?.id ?? null);
+  const { duration, fps, onTimeUpdate, onPlayPause } = usePlaybackStore(
+    useShallow(selectTimelinePlaybackStructure),
+  );
   const {
     zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond,
     activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled,
-    activeSnapTime, cuts, isDragging, videoSources, videoClips, selectedClipId,
+    cuts, isDragging, videoSources, videoClips, selectedClipId,
     audioSources, audioTracks, renderProfile, transientSelection,
     splitSelectedMediaAtFrame, deleteSelectedMedia, reorderVideoClips, addAudioTrack,
-  } = useTimelineStore();
+  } = useTimelineStore(useShallow((state) => ({
+    zoomLevel: state.zoomLevel,
+    setZoom: state.setZoom,
+    tracks: state.tracks,
+    addTrack: state.addTrack,
+    pixelsPerSecond: state.pixelsPerSecond,
+    activeTrackId: state.activeTrackId,
+    setActiveTrackId: state.setActiveTrackId,
+    snapEnabled: state.snapEnabled,
+    setSnapEnabled: state.setSnapEnabled,
+    cuts: state.cuts,
+    isDragging: state.isDragging,
+    videoSources: state.videoSources,
+    videoClips: state.videoClips,
+    selectedClipId: state.selectedClipId,
+    audioSources: state.audioSources,
+    audioTracks: state.audioTracks,
+    renderProfile: state.renderProfile,
+    transientSelection: state.transientSelection,
+    splitSelectedMediaAtFrame: state.splitSelectedMediaAtFrame,
+    deleteSelectedMedia: state.deleteSelectedMedia,
+    reorderVideoClips: state.reorderVideoClips,
+    addAudioTrack: state.addAudioTrack,
+  })));
   const clipPlacements = useMemo(
     () => buildClipPlacements(videoClips, renderProfile.fps),
     [renderProfile.fps, videoClips],
@@ -274,12 +292,14 @@ export function Timeline({
   const timelineWidth = Math.max(1, duration * pixelsPerSecond * zoomLevel);
 
   // Sync refs for wheel handler to avoid effect re-runs
-  const currentTimeRef = useRef(currentTime);
+  const currentTimeRef = useRef(usePlaybackStore.getState().currentTime);
   const ppsRef = useRef(pixelsPerSecond);
   useEffect(() => {
-    currentTimeRef.current = currentTime;
     ppsRef.current = pixelsPerSecond;
-  }, [currentTime, pixelsPerSecond]);
+  }, [pixelsPerSecond]);
+  useEffect(() => usePlaybackStore.subscribe((state, previous) => {
+    if (state.currentTime !== previous.currentTime) currentTimeRef.current = state.currentTime;
+  }), []);
 
   // Apply pending scroll after zoom render
   useLayoutEffect(() => {
@@ -495,7 +515,7 @@ export function Timeline({
 
       if (e.key === ' ') {
         e.preventDefault();
-        onPlayPause?.();
+        onPlayPause();
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
         const multiplier = e.shiftKey ? 5 : 1;
@@ -506,7 +526,7 @@ export function Timeline({
         // Cuantizar el tiempo al frame más cercano para evitar derivas
         const snappedTime = Math.round(newTime / frameDuration) * frameDuration;
 
-        onTimeUpdate?.(snappedTime);
+        onTimeUpdate(snappedTime);
         scrollToTime(snappedTime);
 
         // Prevenir scroll lateral del navegador con las flechas si fuera necesario
@@ -525,7 +545,7 @@ export function Timeline({
           const next = sortedPoints.find(p => p > current + EPSILON);
           if (next !== undefined) {
             const snappedNext = Math.round(next / frameDuration) * frameDuration;
-            onTimeUpdate?.(snappedNext);
+            onTimeUpdate(snappedNext);
             scrollToTime(snappedNext);
           }
         } else {
@@ -534,7 +554,7 @@ export function Timeline({
           if (prevIndex !== -1) {
             const prev = sortedPoints[prevIndex];
             const snappedPrev = Math.round(prev / frameDuration) * frameDuration;
-            onTimeUpdate?.(snappedPrev);
+            onTimeUpdate(snappedPrev);
             scrollToTime(snappedPrev);
           }
         }
@@ -545,7 +565,7 @@ export function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fps, duration, onTimeUpdate, tracks, onPlayPause, memoizedKeyPoints, scrollToTime]);
+  }, [fps, duration, onTimeUpdate, onPlayPause, memoizedKeyPoints, scrollToTime]);
 
   return (
     <div
@@ -554,23 +574,7 @@ export function Timeline({
     >
       {/* Toolbar */}
       <div className="h-11 flex-none flex items-center gap-2 px-2 bg-gray-800/50 border-b border-gray-800 relative z-30 overflow-x-auto">
-        <div className="flex items-center gap-2">
-          <Button
-            variant={isPlaying ? 'primary' : 'secondary'}
-            onClick={onPlayPause}
-          >
-            {isPlaying ? <Pause className="w-[18px] h-[18px]" /> : <Play className="w-[18px] h-[18px]" />}
-          </Button>
-        </div>
-
-        <div className="flex items-center gap-4 text-xs font-mono text-gray-400">
-          <div>
-            <span className="text-blue-400">{formatTime(currentTime)}</span>
-            <span className="mx-1 text-gray-600">/</span>
-            <span>{formatTime(contentDuration)}</span>
-          </div>
-
-        </div>
+        <TimelinePlaybackStatus formatTime={formatTime} />
 
         <div className="flex gap-1 ml-auto">
           <div className="flex items-center gap-1">
@@ -599,7 +603,11 @@ export function Timeline({
           <Button
             variant="secondary"
             data-testid="split-selected-media"
-            onClick={() => splitSelectedMediaAtFrame(secondsToFrames(currentTime, renderProfile.fps, 'nearest'))}
+            onClick={() => splitSelectedMediaAtFrame(secondsToFrames(
+              usePlaybackStore.getState().currentTime,
+              renderProfile.fps,
+              'nearest',
+            ))}
             disabled={!hasSelectedMedia}
             title="Split selected media at playhead"
           >
@@ -725,7 +733,6 @@ export function Timeline({
               style={{ width: timelineWidth }}
             >
               <MemoizedTimelinePlayhead
-                currentTime={currentTime}
                 duration={duration}
                 fps={fps}
                 zoomLevel={zoomLevel}
@@ -768,15 +775,7 @@ export function Timeline({
               }}
             >
               {/* Snapping Indicator (inside relative container to scroll) */}
-              {activeSnapTime !== null && (
-                <div
-                  className="absolute top-0 bottom-0 w-px bg-cyan-400/50 z-30 pointer-events-none"
-                  style={{
-                    left: `${Math.round(activeSnapTime * pixelsPerSecond * zoomLevel)}px`,
-                    boxShadow: '0 0 10px 2px rgba(34, 211, 238, 0.3)'
-                  }}
-                />
-              )}
+              <TimelineSnapIndicator pixelsPerSecond={pixelsPerSecond * zoomLevel} />
               {/* Visual Cuts */}
               <div className="absolute inset-0 pointer-events-none z-0">
                 {cuts.map((cut, idx) => (
@@ -830,5 +829,55 @@ export function Timeline({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Keeps frame-clock updates inside the small toolbar fragment instead of repainting all rows. */
+function TimelinePlaybackStatus({ formatTime }: { formatTime: (seconds: number) => string }) {
+  const { currentTime, contentDuration, isPlaying, toggle } = usePlaybackStore(
+    useShallow(selectTimelinePlaybackStatus),
+  );
+
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <Button
+          variant={isPlaying ? 'primary' : 'secondary'}
+          onClick={toggle}
+          aria-label={isPlaying ? 'Pause timeline' : 'Play timeline'}
+          data-testid="timeline-playback-toggle"
+        >
+          {isPlaying ? <Pause className="w-[18px] h-[18px]" /> : <Play className="w-[18px] h-[18px]" />}
+        </Button>
+      </div>
+      <div className="flex items-center gap-4 text-xs font-mono text-gray-400">
+        <div>
+          <span
+            className="text-blue-400"
+            data-testid="timeline-current-time"
+            data-time-seconds={currentTime.toFixed(6)}
+          >
+            {formatTime(currentTime)}
+          </span>
+          <span className="mx-1 text-gray-600">/</span>
+          <span>{formatTime(contentDuration)}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** Drag-time snap updates stay local instead of rebuilding every timeline row. */
+function TimelineSnapIndicator({ pixelsPerSecond }: { pixelsPerSecond: number }) {
+  const activeSnapTime = useTimelineStore((state) => state.activeSnapTime);
+  if (activeSnapTime === null) return null;
+  return (
+    <div
+      className="absolute top-0 bottom-0 w-px bg-cyan-400/50 z-30 pointer-events-none"
+      style={{
+        left: `${Math.round(activeSnapTime * pixelsPerSecond)}px`,
+        boxShadow: '0 0 10px 2px rgba(34, 211, 238, 0.3)',
+      }}
+    />
   );
 }

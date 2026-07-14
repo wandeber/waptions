@@ -13,6 +13,8 @@ import {
     applyMediaEditToTimeline,
     buildClipPlacements,
     cleanSubtitleSelection,
+    createImmutableVideoSourceFingerprint,
+    createLegacySourceUpgradeFingerprint,
     createVideoSourceFingerprint,
     deleteVideoClip,
     getImportedSourceEnd,
@@ -99,6 +101,40 @@ const documentWith = (overrides: Partial<EditorDocumentV2> = {}): EditorDocument
 describe('video document validation', () => {
     it('accepts a complete source, clip, and track graph', () => {
         expect(validateEditorDocument(documentWith())).toEqual({ valid: true, issues: [] });
+    });
+
+    it('accepts nonce-bearing import fingerprints while retaining v1 compatibility', () => {
+        const file = makeFile();
+        const immutableSource = source({
+            file,
+            fingerprint: createImmutableVideoSourceFingerprint(file, 'import-a'),
+        });
+
+        expect(validateEditorDocument(documentWith({
+            videoSources: [immutableSource],
+            videoClips: [clip('clip_a', immutableSource.id, 0, 2)],
+        }))).toEqual({ valid: true, issues: [] });
+    });
+
+    it('upgrades a legacy source to a stable project-scoped identity without metadata collisions', () => {
+        const file = makeFile();
+        const scope = { projectId: 'project_a', kind: 'video-source' as const, sourceId: 'source_a' };
+        const upgraded = createLegacySourceUpgradeFingerprint(file, scope);
+
+        expect(createLegacySourceUpgradeFingerprint(file, scope)).toBe(upgraded);
+        expect(createLegacySourceUpgradeFingerprint(file, {
+            ...scope,
+            projectId: 'project_b',
+        })).not.toBe(upgraded);
+        expect(createLegacySourceUpgradeFingerprint(file, {
+            ...scope,
+            sourceId: 'source_b',
+        })).not.toBe(upgraded);
+        expect(createLegacySourceUpgradeFingerprint(file, {
+            ...scope,
+            kind: 'audio-source',
+        })).not.toBe(upgraded);
+        expect(upgraded).toMatch(/^v2_[0-9a-f]{16}_legacy_[0-9a-f]+$/);
     });
 
     it('allows two distinct source identities to share one durable file fingerprint', () => {

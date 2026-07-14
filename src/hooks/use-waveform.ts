@@ -4,23 +4,19 @@ import { useEffect, useMemo, useState } from 'react';
 import type { AudioSourceAsset, VideoSourceAsset, VideoSourceAssetV3 } from '@/types/video';
 import {
     getAudioMediaCacheKey,
-    getAudioMediaDuration,
+    type AudioMediaAsset,
     type AudioMediaCacheKey,
     type AudioMediaReference,
 } from '@/lib/media-asset-ref';
 import {
-    createWaveformLru,
-    getWaveformFromLru,
-    putWaveformInLru,
     selectRequestedAudioMedia,
-    snapshotWaveformsFromLru,
     type WaveformPeaks,
 } from '@/lib/video-waveform';
-import { extractWaveformPeaksInWorker } from '@/lib/video-waveform-client';
+import {
+    sharedWaveformRepository,
+    type WaveformRepository,
+} from '@/lib/waveform-repository';
 
-// Peaks are compact (at most 100k min/max buckets per stream), but the cap prevents projects
-// with hundreds of orphaned imports from retaining every decoded waveform indefinitely.
-const waveformCache = createWaveformLru(32 * 1024 * 1024);
 // The compatibility adapter must preserve this reference across renders because useAudioWaveforms
 // treats source catalog identity as an effect boundary. A fresh empty array would restart and abort
 // its worker batch after every state publication from the effect itself.
@@ -30,6 +26,83 @@ const EMPTY_AUDIO_SOURCES: readonly AudioSourceAsset[] = [];
 // projects with many tracks even though aggregation itself is no longer on React's main thread.
 const MAXIMUM_CONCURRENT_WAVEFORM_EXTRACTIONS = 2;
 
+export type WaveformRepositoryReader = Pick<WaveformRepository, 'peek' | 'request'>;
+
+export interface LoadRequestedWaveformsOptions {
+    repository: WaveformRepositoryReader;
+    projectMedia: readonly AudioMediaAsset[];
+    requestedMedia: readonly AudioMediaAsset[];
+    signal: AbortSignal;
+    onSnapshot: (snapshot: ReadonlyMap<AudioMediaCacheKey, WaveformPeaks>) => void;
+    onError: (media: AudioMediaAsset, error: unknown) => void;
+    maximumConcurrency?: number;
+}
+
+/**
+ * Coordinates one hook generation while the repository owns caches and shared workers.
+ *
+ * The signal belongs to the current project/viewport render. Every progress and completion path
+ * checks it immediately before publication, so a late worker message cannot put peaks from a
+ * previous project into the newly mounted timeline.
+ */
+export async function loadRequestedWaveforms(
+    options: LoadRequestedWaveformsOptions,
+): Promise<void> {
+    const progressive = new Map<AudioMediaCacheKey, WaveformPeaks>();
+    const projectKeys = new Set(options.projectMedia.map(getAudioMediaCacheKey));
+    const publish = () => {
+        if (options.signal.aborted) return;
+        const snapshot = new Map<AudioMediaCacheKey, WaveformPeaks>();
+        options.projectMedia.forEach((media) => {
+            // Snapshotting the complete project catalog should not mark every cached source as
+            // recently visible; only actual repository requests participate in LRU recency.
+            const peaks = options.repository.peek(media, false);
+            if (peaks) snapshot.set(getAudioMediaCacheKey(media), peaks);
+        });
+        progressive.forEach((peaks, key) => {
+            if (projectKeys.has(key)) snapshot.set(key, peaks);
+        });
+        options.onSnapshot(snapshot);
+    };
+
+    publish();
+    let nextMediaIndex = 0;
+    const loadNext = async (): Promise<void> => {
+        while (!options.signal.aborted) {
+            const media = options.requestedMedia[nextMediaIndex];
+            nextMediaIndex += 1;
+            if (!media) return;
+            const mediaKey = getAudioMediaCacheKey(media);
+            try {
+                const peaks = await options.repository.request(media, {
+                    signal: options.signal,
+                    onProgress: (partialPeaks) => {
+                        if (options.signal.aborted) return;
+                        progressive.set(mediaKey, partialPeaks);
+                        publish();
+                    },
+                });
+                if (options.signal.aborted) return;
+                progressive.delete(mediaKey);
+                if (peaks) publish();
+            } catch (error) {
+                if (options.signal.aborted) return;
+                progressive.delete(mediaKey);
+                options.onError(media, error);
+                publish();
+            }
+        }
+    };
+    const requestedConcurrency = Number.isSafeInteger(options.maximumConcurrency)
+        ? options.maximumConcurrency as number
+        : MAXIMUM_CONCURRENT_WAVEFORM_EXTRACTIONS;
+    const workerCount = Math.min(
+        Math.max(1, requestedConcurrency),
+        options.requestedMedia.length,
+    );
+    await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+}
+
 /**
  * Loads typed audio media references requested by the visible timeline viewport. Consumers use
  * cache keys rather than bare IDs so embedded video audio and imported audio cannot collide.
@@ -38,6 +111,7 @@ export function useAudioWaveforms(
     videoSources: readonly VideoSourceAssetV3[],
     audioSources: readonly AudioSourceAsset[],
     requestedReferences: readonly AudioMediaReference[],
+    repository: WaveformRepositoryReader = sharedWaveformRepository,
 ) {
     const [peaksByMediaKey, setPeaksByMediaKey] = useState<ReadonlyMap<AudioMediaCacheKey, WaveformPeaks>>(
         new Map(),
@@ -46,7 +120,6 @@ export function useAudioWaveforms(
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        let cancelled = false;
         const abortController = new AbortController();
         const projectReferences: AudioMediaReference[] = [
             ...videoSources
@@ -60,84 +133,51 @@ export function useAudioWaveforms(
                 audioSourceId: source.id,
             })),
         ];
+        const projectMedia = selectRequestedAudioMedia(videoSources, audioSources, projectReferences);
         const requestedMedia = selectRequestedAudioMedia(
             videoSources,
             audioSources,
             requestedReferences,
         );
-        const publishCacheSnapshot = () => {
-            if (!cancelled) {
-                // React retains only references still owned by the bounded LRU. Replacing the map
-                // after insertion drops arrays whose stream was evicted by that insertion.
-                setPeaksByMediaKey(snapshotWaveformsFromLru(waveformCache, projectReferences));
-            }
-        };
-
-        publishCacheSnapshot();
         setError(null);
         if (requestedMedia.length === 0) {
+            const snapshot = new Map<AudioMediaCacheKey, WaveformPeaks>();
+            projectMedia.forEach((media) => {
+                const peaks = repository.peek(media, false);
+                if (peaks) snapshot.set(getAudioMediaCacheKey(media), peaks);
+            });
+            setPeaksByMediaKey(snapshot);
             setIsLoading(false);
-            return () => {
-                cancelled = true;
-            };
+            return () => abortController.abort();
         }
 
         const load = async () => {
             setIsLoading(true);
             try {
-                let nextMediaIndex = 0;
-                const loadNextMedia = async (): Promise<void> => {
-                    while (!cancelled && !abortController.signal.aborted) {
-                        const media = requestedMedia[nextMediaIndex];
-                        nextMediaIndex += 1;
-                        if (!media) return;
-                        const reference: AudioMediaReference = media.kind === 'video-source-audio'
-                            ? { kind: 'video-source-audio', videoSourceId: media.asset.id }
-                            : { kind: 'audio-source', audioSourceId: media.asset.id };
-                        try {
-                            let peaks = getWaveformFromLru(waveformCache, reference);
-                            if (!peaks) {
-                                peaks = await extractWaveformPeaksInWorker(
-                                    media.asset.file,
-                                    getAudioMediaDuration(media),
-                                    abortController.signal,
-                                );
-                                // A scroll, zoom, resize, or project switch can supersede this
-                                // request while decoding. Stale work must never populate the cache.
-                                if (!peaks || cancelled) return;
-                                putWaveformInLru(waveformCache, reference, peaks);
-                            }
-                            publishCacheSnapshot();
-                        } catch (caught) {
-                            if (cancelled || abortController.signal.aborted) return;
-                            // Decoder support is source-specific. Keep the other bounded worker and
-                            // this chain alive so one corrupt file cannot suppress unrelated lanes.
-                            const message = caught instanceof Error
-                                ? caught.message
-                                : 'Unknown waveform error';
-                            console.error(
-                                `Failed to build waveform peaks for ${getAudioMediaCacheKey(reference)}:`,
-                                caught,
-                            );
-                            setError(message);
-                        }
-                    }
-                };
-                const workerCount = Math.min(
-                    MAXIMUM_CONCURRENT_WAVEFORM_EXTRACTIONS,
-                    requestedMedia.length,
-                );
-                await Promise.all(Array.from({ length: workerCount }, () => loadNextMedia()));
+                await loadRequestedWaveforms({
+                    repository,
+                    projectMedia,
+                    requestedMedia,
+                    signal: abortController.signal,
+                    onSnapshot: setPeaksByMediaKey,
+                    onError: (media, caught) => {
+                        const message = caught instanceof Error
+                            ? caught.message
+                            : 'Unknown waveform error';
+                        console.error(
+                            `Failed to build waveform peaks for ${getAudioMediaCacheKey(media)}:`,
+                            caught,
+                        );
+                        setError(message);
+                    },
+                });
             } finally {
-                if (!cancelled) setIsLoading(false);
+                if (!abortController.signal.aborted) setIsLoading(false);
             }
         };
         void load();
-        return () => {
-            cancelled = true;
-            abortController.abort();
-        };
-    }, [audioSources, requestedReferences, videoSources]);
+        return () => abortController.abort();
+    }, [audioSources, repository, requestedReferences, videoSources]);
 
     return { peaksByMediaKey, isLoading, error };
 }
@@ -149,6 +189,7 @@ export function useAudioWaveforms(
 export function useWaveforms(
     videoSources: readonly VideoSourceAsset[],
     requestedSourceIds: readonly string[],
+    repository: WaveformRepositoryReader = sharedWaveformRepository,
 ) {
     const requestedReferences = useMemo<AudioMediaReference[]>(
         () => requestedSourceIds.map((videoSourceId) => ({
@@ -157,7 +198,12 @@ export function useWaveforms(
         })),
         [requestedSourceIds],
     );
-    const result = useAudioWaveforms(videoSources, EMPTY_AUDIO_SOURCES, requestedReferences);
+    const result = useAudioWaveforms(
+        videoSources,
+        EMPTY_AUDIO_SOURCES,
+        requestedReferences,
+        repository,
+    );
     const peaksBySourceId = useMemo(() => {
         const compatibilityMap = new Map<string, WaveformPeaks>();
         requestedReferences.forEach((reference) => {

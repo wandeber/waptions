@@ -4,7 +4,7 @@ import {
     createFullLengthImportedAudioClip,
     getAudioSourceMetadataFromInspection,
 } from './audio-source';
-import { createMediaSourceFingerprint } from './video-source';
+import { doesMediaSourceFingerprintMatch } from './video-source';
 
 const file = {
     name: 'music.wav',
@@ -36,7 +36,8 @@ describe('audio source construction', () => {
             codec: 'pcm-s16',
             bitrate: 1_536_000,
         });
-        expect(asset.fingerprint).toBe(createMediaSourceFingerprint(file));
+        expect(asset.fingerprint).toMatch(/^v2_/);
+        expect(doesMediaSourceFingerprintMatch(asset.fingerprint, file)).toBe(true);
     });
 
     it('keeps the native sample domain non-empty for a zero-duration source', () => {

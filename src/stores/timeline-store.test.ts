@@ -11,8 +11,13 @@ import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
 import { createDefaultRenderProfile } from '@/lib/render-profile';
 import { createVideoSourceFingerprint } from '@/lib/video-timeline';
 import { validateEditorManifestV3 } from '@/lib/editor-document-v3';
-import { setTimelinePersistenceBinding, useTimelineStore } from './timeline-store';
+import {
+    createTimelinePersistencePayload,
+    setTimelinePersistenceBinding,
+    useTimelineStore,
+} from './timeline-store';
 import { useVideoStore } from './video-store';
+import { useProjectStore } from './project-store';
 
 const style = {} as AnimationStyle;
 
@@ -306,6 +311,64 @@ describe('canonical V3 timeline state', () => {
         expect(state.revision).toBe(before.revision + 1);
     });
 
+    it('derives exact runtime FPS from the canonical imported profile across undo and redo', async () => {
+        const video = { ...videoSource(), fps: 24_000 / 1_001 };
+
+        useTimelineStore.getState().appendMixedMediaCandidate({
+            videoSources: [video],
+            videoClips: [{ id: 'video_clip', sourceId: video.id, sourceStart: 0, sourceEnd: 4 }],
+        });
+        expect(useTimelineStore.getState()).toMatchObject({
+            projectFps: 24_000 / 1_001,
+            renderProfile: { fps: { numerator: 24_000, denominator: 1_001 } },
+        });
+
+        await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState()).toMatchObject({
+            projectFps: 30,
+            renderProfile: { fps: { numerator: 30, denominator: 1 } },
+        });
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState()).toMatchObject({
+            projectFps: 24_000 / 1_001,
+            renderProfile: { fps: { numerator: 24_000, denominator: 1_001 } },
+        });
+    });
+
+    it('caps patch history at five hundred commands and shares that budget with redo', async () => {
+        useTimelineStore.getState().setTracks([subtitleTrack()], { resetHistory: true, skipSave: true });
+        for (let index = 1; index <= 510; index += 1) {
+            useTimelineStore.getState().addSubtitleToTrack('captions', {
+                startTime: index,
+                endTime: index + 0.5,
+                text: `${index}`,
+            });
+        }
+
+        expect(useTimelineStore.getState().history).toHaveLength(500);
+        expect(useTimelineStore.getState().history[0].label).toBe('Add subtitle');
+        for (let index = 0; index < 40; index += 1) await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState().history).toHaveLength(460);
+        expect(useTimelineStore.getState().redoStack).toHaveLength(40);
+        expect(useTimelineStore.getState().history.length + useTimelineStore.getState().redoStack.length)
+            .toBe(500);
+    });
+
+    it('preserves redo through no-op previews and invalidates it only on a changed commit', async () => {
+        useTimelineStore.getState().setTracks([subtitleTrack()], { resetHistory: true, skipSave: true });
+        useTimelineStore.getState().updateTrackName('captions', 'Changed');
+        await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState().redoStack).toHaveLength(1);
+
+        useTimelineStore.getState().updateTrackName('captions', 'Captions');
+        useTimelineStore.getState().setIsDragging(true, { label: 'Move subtitles' });
+        useTimelineStore.getState().setIsDragging(false);
+        expect(useTimelineStore.getState().redoStack).toHaveLength(1);
+
+        useTimelineStore.getState().updateTrackName('captions', 'Committed branch');
+        expect(useTimelineStore.getState().redoStack).toEqual([]);
+    });
+
     it('keeps video and audio source IDs in independent typed namespaces', () => {
         const sharedId = 'shared_source';
         const video = videoSource(sharedId);
@@ -484,10 +547,441 @@ describe('canonical V3 timeline state', () => {
         before.trimAudioClip('locked_clip', 'right', 15);
         before.deleteAudioClip('locked_clip');
         before.renameAudioTrack('locked_track', 'Changed');
+        before.setTracks(structuredClone(before.tracks));
 
         expect(useTimelineStore.getState().revision).toBe(before.revision);
         expect(useTimelineStore.getState().history).toHaveLength(before.history.length);
         expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('finalizes representative durable commands exactly once and transient commands zero times', async () => {
+        const video = videoSource();
+        const audio = audioSource();
+        useTimelineStore.getState().appendMixedMediaCandidate({
+            videoSources: [video],
+            videoClips: [{ id: 'video_clip', sourceId: video.id, sourceStart: 0, sourceEnd: 4 }],
+            audioSources: [audio],
+            audioTracks: [audioTrack('imported_track', [independentClip('imported_clip', audio.id)])],
+        });
+        useTimelineStore.setState({
+            tracks: [{
+                ...subtitleTrack(),
+                subtitles: [{ id: 'subtitle', startTime: 0, endTime: 1, text: 'Before' }],
+            }],
+            activeTrackId: 'captions',
+            history: [],
+            redoStack: [],
+        });
+        useTimelineStore.getState().addAudioTrack('Target', 'target_track');
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+
+        const expectSingleDurableStep = (command: () => void) => {
+            const before = useTimelineStore.getState();
+            const beforeHistory = before.history.length;
+            enqueue.mockClear();
+            command();
+            expect(useTimelineStore.getState().revision).toBe(before.revision + 1);
+            expect(useTimelineStore.getState().history).toHaveLength(beforeHistory + 1);
+            expect(enqueue).toHaveBeenCalledTimes(1);
+        };
+
+        expectSingleDurableStep(() => useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { text: 'After' },
+        ));
+        // Continuous style widgets send only their terminal value to the store. One such terminal
+        // must therefore map to one history entry, one revision, and one persistence enqueue.
+        expectSingleDurableStep(() => useTimelineStore.getState().updateTrackStyle(
+            'captions', { strokeWidth: 6.5 },
+        ));
+        expectSingleDurableStep(() => useTimelineStore.getState().updateTrackStyle(
+            'captions', { textColor: '#123456' },
+        ));
+        expectSingleDurableStep(() => useTimelineStore.getState().trimVideoClip('video_clip', 0.5, 4));
+        expectSingleDurableStep(() => useTimelineStore.getState().detachVideoClipAudio(
+            'video_clip', { trackId: 'detached_track', clipId: 'detached_clip' },
+        ));
+        expectSingleDurableStep(() => useTimelineStore.getState().moveAudioClip(
+            'imported_clip', 'target_track', 30,
+        ));
+
+        enqueue.mockClear();
+        const beforeSelection = useTimelineStore.getState();
+        beforeSelection.selectAudioClip('target_track', 'imported_clip');
+        beforeSelection.setIsDragging(true, { label: 'Move subtitles' });
+        expect(useTimelineStore.getState().revision).toBe(beforeSelection.revision);
+        expect(enqueue).not.toHaveBeenCalled();
+        useTimelineStore.getState().setIsDragging(false);
+
+        enqueue.mockClear();
+        const beforeUndoRevision = useTimelineStore.getState().revision;
+        await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState().revision).toBe(beforeUndoRevision + 1);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+
+        enqueue.mockClear();
+        const beforeRedoRevision = useTimelineStore.getState().revision;
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState().revision).toBe(beforeRedoRevision + 1);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('folds subtitle drag previews into one terminal durable mutation', () => {
+        useTimelineStore.setState({
+            tracks: [{
+                ...subtitleTrack(),
+                subtitles: [{ id: 'subtitle', startTime: 0, endTime: 1, text: 'Drag me' }],
+            }],
+            activeTrackId: 'captions',
+            history: [],
+            redoStack: [],
+        });
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        const before = useTimelineStore.getState();
+
+        before.setIsDragging(true, { label: 'Move subtitles' });
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 1, endTime: 2 }, { skipHistory: true },
+        );
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 2, endTime: 3 }, { skipHistory: true },
+        );
+
+        expect(useTimelineStore.getState()).toMatchObject({
+            revision: before.revision,
+            history: [],
+        });
+        expect(enqueue).not.toHaveBeenCalled();
+
+        useTimelineStore.getState().setIsDragging(false);
+        expect(useTimelineStore.getState()).toMatchObject({
+            revision: before.revision + 1,
+            tracks: [{ subtitles: [{ startTime: 2, endTime: 3 }] }],
+        });
+        expect(useTimelineStore.getState().history).toHaveLength(1);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('rebases a subtitle drag over interleaved durable edits with chronological undo history', async () => {
+        useTimelineStore.setState({
+            tracks: [{
+                ...subtitleTrack(),
+                subtitles: [{ id: 'subtitle', startTime: 0, endTime: 1, text: 'Before' }],
+            }],
+            activeTrackId: 'captions',
+            history: [],
+            redoStack: [],
+        });
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        const initialRevision = useTimelineStore.getState().revision;
+
+        useTimelineStore.getState().setIsDragging(true, { label: 'Move subtitles' });
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 2, endTime: 3 }, { skipHistory: true },
+        );
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { text: 'Concurrent' },
+        );
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 3, endTime: 4 }, { skipHistory: true },
+        );
+        useTimelineStore.getState().setIsDragging(false);
+
+        expect(useTimelineStore.getState()).toMatchObject({
+            revision: initialRevision + 2,
+            tracks: [{ subtitles: [{ startTime: 3, endTime: 4, text: 'Concurrent' }] }],
+        });
+        expect(useTimelineStore.getState().history).toHaveLength(2);
+        expect(enqueue).toHaveBeenCalledTimes(2);
+
+        await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState().tracks[0].subtitles[0]).toMatchObject({
+            startTime: 0,
+            endTime: 1,
+            text: 'Concurrent',
+        });
+        await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState().tracks[0].subtitles[0]).toMatchObject({
+            startTime: 0,
+            endTime: 1,
+            text: 'Before',
+        });
+    });
+
+    it('discards timing previews before undo and redo and ignores late pointer moves and releases', async () => {
+        useTimelineStore.setState({
+            tracks: [
+                {
+                    ...subtitleTrack(),
+                    subtitles: [{ id: 'subtitle', startTime: 0, endTime: 1, text: 'Timed' }],
+                },
+                subtitleTrack('secondary'),
+            ],
+            activeTrackId: 'captions',
+            history: [],
+            redoStack: [],
+            isDragging: false,
+        });
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        const initialRevision = useTimelineStore.getState().revision;
+
+        useTimelineStore.getState().updateTrackName('captions', 'Renamed');
+        expect(useTimelineStore.getState().revision).toBe(initialRevision + 1);
+        expect(useTimelineStore.getState().history).toHaveLength(1);
+        expect(useTimelineStore.getState().history[0].label).toBe('Rename subtitle track');
+        expect(useTimelineStore.getState().redoStack).toEqual([]);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+
+        useTimelineStore.getState().setIsDragging(true, { label: 'Move subtitles' });
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 2, endTime: 3 }, { skipHistory: true },
+        );
+        expect(useTimelineStore.getState().tracks[0].subtitles[0]).toMatchObject({ startTime: 2, endTime: 3 });
+
+        await useTimelineStore.getState().undo();
+        expect(useTimelineStore.getState().revision).toBe(initialRevision + 2);
+        expect(useTimelineStore.getState().isDragging).toBe(false);
+        expect(useTimelineStore.getState().tracks[0]).toMatchObject({
+            name: 'Captions',
+            subtitles: [{ startTime: 0, endTime: 1 }],
+        });
+        expect(useTimelineStore.getState().tracks[1].subtitles).toEqual([]);
+        expect(useTimelineStore.getState().history).toEqual([]);
+        expect(useTimelineStore.getState().redoStack).toHaveLength(1);
+        expect(useTimelineStore.getState().redoStack[0].label).toBe('Rename subtitle track');
+        expect(enqueue).toHaveBeenCalledTimes(2);
+        const afterUndo = useTimelineStore.getState();
+
+        // The overlay's window listener may still deliver one final mousemove after the history
+        // command. Both horizontal timing and vertical lane updates must remain preview-only and
+        // therefore reject that stale delivery without even replacing the Zustand state object.
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 8, endTime: 9 }, { skipHistory: true },
+        );
+        useTimelineStore.getState().moveSubtitlesToTrack(['subtitle'], 1, { skipHistory: true });
+        expect(useTimelineStore.getState()).toBe(afterUndo);
+        expect(enqueue).toHaveBeenCalledTimes(2);
+
+        useTimelineStore.getState().setIsDragging(false);
+        expect(useTimelineStore.getState()).toBe(afterUndo);
+        expect(enqueue).toHaveBeenCalledTimes(2);
+
+        useTimelineStore.getState().setIsDragging(true, { label: 'Move subtitles' });
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 4, endTime: 5 }, { skipHistory: true },
+        );
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState().revision).toBe(initialRevision + 3);
+        expect(useTimelineStore.getState().isDragging).toBe(false);
+        expect(useTimelineStore.getState().tracks[0]).toMatchObject({
+            name: 'Renamed',
+            subtitles: [{ startTime: 0, endTime: 1 }],
+        });
+        expect(useTimelineStore.getState().tracks[1].subtitles).toEqual([]);
+        expect(useTimelineStore.getState().history).toHaveLength(1);
+        expect(useTimelineStore.getState().history[0].label).toBe('Rename subtitle track');
+        expect(useTimelineStore.getState().redoStack).toEqual([]);
+        expect(enqueue).toHaveBeenCalledTimes(3);
+        const afterRedo = useTimelineStore.getState();
+
+        useTimelineStore.getState().updateSubtitleInTrack(
+            'captions', 'subtitle', { startTime: 10, endTime: 11 }, { skipHistory: true },
+        );
+        useTimelineStore.getState().moveSubtitlesToTrack(['subtitle'], 1, { skipHistory: true });
+        expect(useTimelineStore.getState()).toBe(afterRedo);
+        expect(enqueue).toHaveBeenCalledTimes(3);
+
+        useTimelineStore.getState().setIsDragging(false);
+        expect(useTimelineStore.getState()).toBe(afterRedo);
+        expect(enqueue).toHaveBeenCalledTimes(3);
+    });
+
+    it('restores the subtitle range anchor together with selection history', async () => {
+        useTimelineStore.setState({
+            tracks: [{
+                ...subtitleTrack(),
+                subtitles: [
+                    { id: 'a', startTime: 0, endTime: 1, text: 'A' },
+                    { id: 'b', startTime: 1, endTime: 2, text: 'B' },
+                    { id: 'c', startTime: 2, endTime: 3, text: 'C' },
+                ],
+            }],
+            activeTrackId: 'captions',
+            selectedSubtitleIds: [],
+            lastSelectedId: null,
+            transientSelection: { kind: 'none' },
+            history: [],
+            redoStack: [],
+        });
+
+        useTimelineStore.getState().toggleSubtitleSelection('b');
+        useTimelineStore.getState().updateTrackName('captions', 'Edited');
+        useTimelineStore.getState().toggleSubtitleSelection('c');
+        await useTimelineStore.getState().undo();
+
+        expect(useTimelineStore.getState()).toMatchObject({
+            selectedSubtitleIds: ['b'],
+            lastSelectedId: 'b',
+            transientSelection: { kind: 'subtitles', subtitleIds: ['b'] },
+        });
+        useTimelineStore.getState().toggleSubtitleSelection('a', false, true);
+        expect(useTimelineStore.getState()).toMatchObject({
+            selectedSubtitleIds: ['a', 'b'],
+            lastSelectedId: 'a',
+        });
+    });
+
+    it('restores pasted and add-on-Enter selection as part of the same command', async () => {
+        useTimelineStore.setState({
+            tracks: [{
+                ...subtitleTrack(),
+                subtitles: [{ id: 'source', startTime: 0, endTime: 1, text: 'Source' }],
+            }],
+            activeTrackId: 'captions',
+            selectedSubtitleIds: ['source'],
+            lastSelectedId: 'source',
+            transientSelection: { kind: 'subtitles', trackId: 'captions', subtitleIds: ['source'] },
+            history: [],
+            redoStack: [],
+        });
+        useTimelineStore.getState().copySelection();
+        useTimelineStore.getState().pasteSelection(3);
+        const pastedId = useTimelineStore.getState().selectedSubtitleIds[0];
+        expect(pastedId).not.toBe('source');
+
+        await useTimelineStore.getState().undo();
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState()).toMatchObject({
+            selectedSubtitleIds: [pastedId],
+            lastSelectedId: pastedId,
+            transientSelection: { kind: 'subtitles', subtitleIds: [pastedId] },
+        });
+
+        useTimelineStore.setState({ history: [], redoStack: [] });
+        useTimelineStore.getState().requestEditSubtitleAtTime(6);
+        const addedId = useTimelineStore.getState().selectedSubtitleIds[0];
+        await useTimelineStore.getState().undo();
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState()).toMatchObject({
+            selectedSubtitleIds: [addedId],
+            lastSelectedId: addedId,
+            transientSelection: { kind: 'subtitles', subtitleIds: [addedId] },
+        });
+    });
+
+    it('derives legacy transcription mirrors from the active track restored by Undo', async () => {
+        useTimelineStore.setState({
+            tracks: [subtitleTrack('track-a'), subtitleTrack('track-b')],
+            activeTrackId: 'track-a',
+        });
+        useTimelineStore.getState().setTrackTranscriptionState('track-a', {
+            raw: [{ id: 'word-a', startTime: 0, endTime: 1, text: 'A' }],
+            groups: { 'group-a': [{ id: 'word-a', startTime: 0, endTime: 1, text: 'A' }] },
+            containerIds: ['group-a'],
+        });
+        useTimelineStore.getState().setTrackTranscriptionState('track-b', {
+            raw: [{ id: 'word-b', startTime: 0, endTime: 1, text: 'B' }],
+            groups: { 'group-b': [{ id: 'word-b', startTime: 0, endTime: 1, text: 'B' }] },
+            containerIds: ['group-b'],
+        });
+        useTimelineStore.setState({ history: [], redoStack: [], historySequence: 0, historyBytes: 0 });
+
+        useTimelineStore.getState().updateTrackName('track-a', 'Edited');
+        useTimelineStore.getState().setActiveTrackId('track-b');
+        expect(useTimelineStore.getState().rawTranscription?.[0].text).toBe('B');
+        await useTimelineStore.getState().undo();
+
+        expect(useTimelineStore.getState()).toMatchObject({
+            activeTrackId: 'track-a',
+            rawTranscription: [{ text: 'A' }],
+            transcriptionContainerIds: ['group-a'],
+        });
+    });
+
+    it('jumps backward and forward across multiple retained commands atomically', async () => {
+        useTimelineStore.setState({
+            tracks: [subtitleTrack()],
+            activeTrackId: 'captions',
+            history: [],
+            redoStack: [],
+            historySequence: 0,
+            historyBytes: 0,
+        });
+        const subtitleId = useTimelineStore.getState().addSubtitleToTrack('captions', {
+            startTime: 0,
+            endTime: 1,
+            text: '',
+        });
+        useTimelineStore.getState().updateSubtitleInTrack('captions', subtitleId, { text: 'Restored' });
+        const latestId = useTimelineStore.getState().history.at(-1)!.id;
+        const beforeJumpRevision = useTimelineStore.getState().revision;
+
+        await useTimelineStore.getState().jumpToHistoryEntry(null);
+        expect(useTimelineStore.getState().tracks[0].subtitles).toEqual([]);
+        expect(useTimelineStore.getState().revision).toBe(beforeJumpRevision + 1);
+        expect(useTimelineStore.getState().redoStack).toHaveLength(2);
+
+        await useTimelineStore.getState().jumpToHistoryEntry(latestId);
+        expect(useTimelineStore.getState().tracks[0].subtitles).toEqual([
+            expect.objectContaining({ id: subtitleId, text: 'Restored' }),
+        ]);
+        expect(useTimelineStore.getState().revision).toBe(beforeJumpRevision + 2);
+        expect(useTimelineStore.getState().history).toHaveLength(2);
+        expect(useTimelineStore.getState().redoStack).toEqual([]);
+    });
+
+    it('drops the drag history entry when the pointer produces no durable change', () => {
+        useTimelineStore.setState({
+            tracks: [{
+                ...subtitleTrack(),
+                subtitles: [{ id: 'subtitle', startTime: 0, endTime: 1, text: 'No move' }],
+            }],
+            activeTrackId: 'captions',
+            history: [],
+            redoStack: [],
+        });
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        const beforeRevision = useTimelineStore.getState().revision;
+
+        useTimelineStore.getState().setIsDragging(true, { label: 'Move subtitles' });
+        useTimelineStore.getState().setIsDragging(false);
+
+        expect(useTimelineStore.getState().revision).toBe(beforeRevision);
+        expect(useTimelineStore.getState().history).toEqual([]);
+        expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('builds one persistence manifest for one durable snapshot payload', () => {
+        const state = useTimelineStore.getState();
+        const manifest = state.buildEditorManifest();
+        const buildManifest = vi.fn(() => manifest);
+
+        const payload = createTimelinePersistencePayload(state, [], buildManifest);
+
+        expect(buildManifest).toHaveBeenCalledTimes(1);
+        expect(payload.manifest).toBe(manifest);
+    });
+
+    it('leaves derived project duration for the explicit metadata synchronizer to persist', () => {
+        useProjectStore.setState({
+            activeProject: {
+                id: 'duration_project',
+                name: 'Duration project',
+                duration: 1,
+                createdAt: new Date('2026-01-01T00:00:00.000Z'),
+                updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+            },
+            persistenceGeneration: 1,
+        });
+
+        appendVideo();
+
+        expect(useProjectStore.getState().activeProject?.duration).toBe(1);
+        useProjectStore.setState({ activeProject: null, persistenceGeneration: 0 });
     });
 
     it('keeps the default render profile unlocked until the first video import', () => {

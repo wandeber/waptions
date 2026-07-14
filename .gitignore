@@ -15,6 +15,9 @@
 
 # next.js
 /.next/
+/.waptions-next/
+/.waptions-*.tsconfig.json
+/.waptions-*.next-env.d.ts
 /out/
 
 # production

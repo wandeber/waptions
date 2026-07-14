@@ -1,5 +1,6 @@
 import { FontSelector } from '../FontSelector';
 import { DraggableNumberInput } from '../../design-system/DraggableNumberInput';
+import { TransactionalHexInput } from '../../design-system/TransactionalHexInput';
 import { Select } from '../../design-system/Select';
 import { AlignLeftIcon } from '../../icons/AlignLeftIcon';
 import { AlignCenterIcon } from '../../icons/AlignCenterIcon';
@@ -7,14 +8,19 @@ import { AlignRightIcon } from '../../icons/AlignRightIcon';
 import { TextNormalIcon } from '../../icons/TextNormalIcon';
 import { TextUppercaseIcon } from '../../icons/TextUppercaseIcon';
 import { TextLowercaseIcon } from '../../icons/TextLowercaseIcon';
-import type { SubtitleAnimationStyle } from './types';
+import type { SubtitleAnimationStyle, SubtitleStyleEditHandlers } from './types';
 
-interface TextStyleSectionProps {
+interface TextStyleSectionProps extends SubtitleStyleEditHandlers {
   style: SubtitleAnimationStyle;
-  onStyleChange: (key: keyof SubtitleAnimationStyle, value: number | boolean | string) => void;
 }
 
-export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps) {
+export function TextStyleSection({
+  style,
+  onStyleChange,
+  onStylePreview,
+  onStyleCommit,
+  onStyleCancel,
+}: TextStyleSectionProps) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
@@ -29,7 +35,9 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
         <DraggableNumberInput
           label="Tamaño"
           value={style.fontSize}
-          onChange={(value) => onStyleChange('fontSize', value)}
+          onPreview={(value) => onStylePreview('fontSize', value)}
+          onCommit={(value) => onStyleCommit('fontSize', value)}
+          onCancel={() => onStyleCancel('fontSize')}
           min={24}
           max={96}
           step={1}
@@ -62,13 +70,21 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
           <input
             type="color"
             value={style.textColor}
-            onChange={(e) => onStyleChange('textColor', e.target.value)}
+            onInput={(event) => onStylePreview('textColor', event.currentTarget.value)}
+            onChange={(event) => onStyleCommit('textColor', event.currentTarget.value)}
+            onBlur={() => onStyleCommit('textColor', style.textColor)}
+            onPointerCancel={() => onStyleCancel('textColor')}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') onStyleCancel('textColor');
+            }}
             className="w-8 h-8 rounded cursor-pointer"
           />
-          <input
-            type="text"
+          <TransactionalHexInput
+            ariaLabel="Text color hex"
             value={style.textColor}
-            onChange={(e) => onStyleChange('textColor', e.target.value)}
+            onPreview={(value) => onStylePreview('textColor', value)}
+            onCommit={(value) => onStyleCommit('textColor', value)}
+            onCancel={() => onStyleCancel('textColor')}
             className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
           />
         </div>
@@ -78,7 +94,9 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
         <DraggableNumberInput
           label="Grosor del borde"
           value={style.strokeWidth}
-          onChange={(value) => onStyleChange('strokeWidth', value)}
+          onPreview={(value) => onStylePreview('strokeWidth', value)}
+          onCommit={(value) => onStyleCommit('strokeWidth', value)}
+          onCancel={() => onStyleCancel('strokeWidth')}
           min={0}
           max={8}
           step={0.5}
@@ -94,13 +112,21 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
           <input
             type="color"
             value={style.strokeColor}
-            onChange={(e) => onStyleChange('strokeColor', e.target.value)}
+            onInput={(event) => onStylePreview('strokeColor', event.currentTarget.value)}
+            onChange={(event) => onStyleCommit('strokeColor', event.currentTarget.value)}
+            onBlur={() => onStyleCommit('strokeColor', style.strokeColor)}
+            onPointerCancel={() => onStyleCancel('strokeColor')}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') onStyleCancel('strokeColor');
+            }}
             className="w-8 h-8 rounded cursor-pointer"
           />
-          <input
-            type="text"
+          <TransactionalHexInput
+            ariaLabel="Stroke color hex"
             value={style.strokeColor}
-            onChange={(e) => onStyleChange('strokeColor', e.target.value)}
+            onPreview={(value) => onStylePreview('strokeColor', value)}
+            onCommit={(value) => onStyleCommit('strokeColor', value)}
+            onCancel={() => onStyleCancel('strokeColor')}
             className="flex-1 bg-gray-700 rounded px-2 py-1 text-sm text-white"
           />
         </div>
@@ -110,7 +136,9 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
         <DraggableNumberInput
           label="Número de líneas"
           value={style.numberOfLines}
-          onChange={(value) => onStyleChange('numberOfLines', value)}
+          onPreview={(value) => onStylePreview('numberOfLines', value)}
+          onCommit={(value) => onStyleCommit('numberOfLines', value)}
+          onCancel={() => onStyleCancel('numberOfLines')}
           min={1}
           max={3}
           step={1}
@@ -213,7 +241,15 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
             <input
               type="text"
               value={style.punctuationChars}
-              onChange={(e) => onStyleChange('punctuationChars', e.target.value)}
+              onChange={(event) => onStylePreview('punctuationChars', event.target.value)}
+              onBlur={() => onStyleCommit('punctuationChars', style.punctuationChars)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  onStyleCancel('punctuationChars');
+                }
+              }}
               className="bg-gray-700 rounded px-2 py-1 text-sm text-white"
               placeholder="Caracteres a ocultar..."
             />

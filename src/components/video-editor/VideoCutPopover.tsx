@@ -11,6 +11,7 @@ import {
     WebCodecsFrameSource
 } from '@/lib/video-cut';
 import { buildClipPlacements } from '@/lib/video-timeline';
+import { useShallow } from 'zustand/react/shallow';
 
 export function VideoCutPopover() {
     const [isOpen, setIsOpen] = useState(false);
@@ -28,7 +29,19 @@ export function VideoCutPopover() {
         videoClips,
         selectedClipId,
         projectFps,
-    } = useTimelineStore();
+    } = useTimelineStore(useShallow((state) => ({
+        cuts: state.cuts,
+        setCuts: state.setCuts,
+        clearCuts: state.clearCuts,
+        isDetecting: state.isDetecting,
+        setIsDetecting: state.setIsDetecting,
+        detectionProgress: state.detectionProgress,
+        setDetectionProgress: state.setDetectionProgress,
+        videoSources: state.videoSources,
+        videoClips: state.videoClips,
+        selectedClipId: state.selectedClipId,
+        projectFps: state.projectFps,
+    })));
     const selectedPlacement = buildClipPlacements(videoClips)
         .find((placement) => placement.clip.id === selectedClipId);
     const selectedSource = selectedPlacement

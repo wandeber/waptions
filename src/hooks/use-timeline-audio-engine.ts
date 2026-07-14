@@ -1,11 +1,14 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { buildAudioMixPlan } from '@/lib/audio-mix-plan';
+import {
+    createTimelineAudioRuntimeInputsSelector,
+    synchronizeTimelineAudioRuntime,
+    type TimelineAudioRuntimeInputs,
+} from './timeline-audio-runtime-sync';
 import { frameToOutputSample } from '@/lib/audio-timebase';
 import { createTimelineAudioEngine } from '@/lib/timeline-audio-engine';
 import { secondsToFrames } from '@/lib/render-profile';
-import { getTimelineContentEndFrame } from '@/lib/video-timeline';
 import { usePlaybackStore, type PlaybackClockDriver } from '@/stores/playback-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useTimelineStore } from '@/stores/timeline-store';
@@ -58,11 +61,17 @@ export function createTimelineAudioEngineCallbacks(
  */
 export function useTimelineAudioEngine(): void {
     const projectId = useProjectStore((state) => state.activeProject?.id ?? null);
-    const revision = useTimelineStore((state) => state.revision);
-    const audioGraphRevision = useTimelineStore((state) => state.audioGraphRevision);
+    const runtimeSelectorRef = useRef<ReturnType<
+        typeof createTimelineAudioRuntimeInputsSelector
+    > | null>(null);
+    if (!runtimeSelectorRef.current) {
+        runtimeSelectorRef.current = createTimelineAudioRuntimeInputsSelector();
+    }
+    const runtimeSelector = runtimeSelectorRef.current;
+    const runtimeInputs = useTimelineStore(runtimeSelector);
     const engineRef = useRef<TimelineAudioEnginePort | null>(null);
     const frameRateRef = useRef<RationalFrameRate>({ numerator: 30, denominator: 1 });
-    const appliedSnapshotKeyRef = useRef<string | null>(null);
+    const appliedInputsRef = useRef<TimelineAudioRuntimeInputs | null>(null);
 
     useEffect(() => {
         if (!projectId) return;
@@ -84,72 +93,46 @@ export function useTimelineAudioEngine(): void {
             setMasterGain: (gainLinear) => engine.setMasterGain(gainLinear),
         };
 
-        const timeline = useTimelineStore.getState();
-        const document = timeline.buildEditorDocument();
-        const contentEndFrame = getTimelineContentEndFrame(
-            document.videoClips,
-            document.subtitleTracks,
-            {
-                audioTracks: document.audioTracks,
-                videoSources: document.videoSources,
-                audioSources: document.audioSources,
-                renderProfile: document.renderProfile,
-            },
+        // Read once at ownership creation instead of capturing the render-time selector result.
+        // The second effect receives the same semantic inputs and exits before projection, while
+        // keeping this effect scoped strictly to project lifetime.
+        const initialRuntimeInputs = runtimeSelector(useTimelineStore.getState());
+        const playback = usePlaybackStore.getState();
+        const synchronized = synchronizeTimelineAudioRuntime(
+            engine,
+            null,
+            initialRuntimeInputs,
+            playback.currentTime,
         );
-        frameRateRef.current = document.renderProfile.fps;
-        engine.setSnapshot({
-            documentRevision: document.revision,
-            audioGraphRevision: document.audioGraphRevision,
-            document,
-            mixPlan: buildAudioMixPlan(document),
-            contentEndSample: frameToOutputSample(contentEndFrame, document.renderProfile.fps),
-        });
-        appliedSnapshotKeyRef.current = `${projectId}:${document.revision}:${document.audioGraphRevision}`;
+        if (synchronized) frameRateRef.current = synchronized.frameRate;
+        appliedInputsRef.current = initialRuntimeInputs;
         usePlaybackStore.getState().setClockDriver(driver);
 
         return () => {
             active = false;
             if (engineRef.current === engine) engineRef.current = null;
-            appliedSnapshotKeyRef.current = null;
+            appliedInputsRef.current = null;
             usePlaybackStore.getState().setClockDriver(null);
             void engine.destroy().catch((error) => {
                 console.error('Failed to release the timeline audio engine:', error);
             });
         };
-    }, [projectId]);
+    }, [projectId, runtimeSelector]);
 
     useEffect(() => {
         const engine = engineRef.current;
         if (!engine || !projectId) return;
-        const timeline = useTimelineStore.getState();
-        const document = timeline.buildEditorDocument();
-        const snapshotKey = `${projectId}:${document.revision}:${document.audioGraphRevision}`;
-        if (snapshotKey === appliedSnapshotKeyRef.current) return;
-
-        const contentEndFrame = getTimelineContentEndFrame(
-            document.videoClips,
-            document.subtitleTracks,
-            {
-                audioTracks: document.audioTracks,
-                videoSources: document.videoSources,
-                audioSources: document.audioSources,
-                renderProfile: document.renderProfile,
-            },
-        );
-        frameRateRef.current = document.renderProfile.fps;
-        engine.setSnapshot({
-            documentRevision: document.revision,
-            audioGraphRevision: document.audioGraphRevision,
-            document,
-            mixPlan: buildAudioMixPlan(document),
-            contentEndSample: frameToOutputSample(contentEndFrame, document.renderProfile.fps),
-        });
+        const liveRuntimeInputs = runtimeSelector(useTimelineStore.getState());
         const playback = usePlaybackStore.getState();
-        engine.seek(frameToOutputSample(
-            secondsToFrames(playback.currentTime, document.renderProfile.fps, 'nearest'),
-            document.renderProfile.fps,
-        ));
-        appliedSnapshotKeyRef.current = snapshotKey;
+        const synchronized = synchronizeTimelineAudioRuntime(
+            engine,
+            appliedInputsRef.current,
+            liveRuntimeInputs,
+            playback.currentTime,
+        );
+        if (!synchronized) return;
+        frameRateRef.current = synchronized.frameRate;
+        appliedInputsRef.current = liveRuntimeInputs;
         playback.refreshClockDriver();
-    }, [audioGraphRevision, projectId, revision]);
+    }, [projectId, runtimeInputs, runtimeSelector]);
 }

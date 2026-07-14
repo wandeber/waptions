@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioSourceDescriptor, VideoSourceDescriptorV3 } from '@/types/video';
-import { createVideoSourceFingerprint } from '@/lib/video-timeline';
+import {
+    createImmutableVideoSourceFingerprint,
+    createVideoSourceFingerprint,
+} from '@/lib/video-timeline';
 import {
     resolveEditorAudioAsset,
     resolveEditorVideoAsset,
@@ -44,6 +47,20 @@ describe('editor asset resolver', () => {
         const legacy = await resolveEditorVideoAsset(reader({ 'source:shared': sourceFile }), sourceDescriptor, 1);
         expect(legacy).toMatchObject({ storageKey: 'source:shared', usesTypedKey: false });
         expect(legacy.asset.file).toBe(sourceFile);
+    });
+
+    it('resolves nonce-bearing v2 descriptors without weakening metadata checks', async () => {
+        const sourceFile = file('video.mp4', 'video/mp4');
+        const sourceDescriptor = {
+            ...descriptor('immutable', sourceFile),
+            fingerprint: createImmutableVideoSourceFingerprint(sourceFile, 'import-a'),
+        };
+
+        await expect(resolveEditorVideoAsset(reader({
+            'video-source:immutable': sourceFile,
+        }), sourceDescriptor, 1)).resolves.toMatchObject({
+            asset: { fingerprint: sourceDescriptor.fingerprint, file: sourceFile },
+        });
     });
 
     it('uses scalar video only for a manifest with exactly one video source', async () => {

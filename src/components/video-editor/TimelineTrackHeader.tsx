@@ -7,6 +7,7 @@ import { ConfirmDialog } from '../design-system/ConfirmDialog';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useState } from 'react';
 import { InlineEditor } from '../design-system/InlineEditor';
+import { useShallow } from 'zustand/react/shallow';
 
 interface TimelineTrackHeaderProps {
     track: SubtitleTrack;
@@ -16,10 +17,14 @@ interface TimelineTrackHeaderProps {
 }
 
 export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onClick }: TimelineTrackHeaderProps) {
-    const { removeTrack, tracks, updateTrackName } = useTimelineStore();
+    const { removeTrack, trackCount, updateTrackName } = useTimelineStore(useShallow((state) => ({
+        removeTrack: state.removeTrack,
+        trackCount: state.tracks.length,
+        updateTrackName: state.updateTrackName,
+    })));
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-    const isOnlyTrack = tracks.length <= 1;
+    const isOnlyTrack = trackCount <= 1;
 
     const handleDeleteClick = (e: React.MouseEvent) => {
         e.stopPropagation();

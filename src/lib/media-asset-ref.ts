@@ -23,6 +23,7 @@ export type AudioMediaAsset =
 
 export type EditorMediaAssetKey = `video-source:${string}` | `audio-source:${string}`;
 export type AudioMediaCacheKey = `video-source-audio:${string}` | `audio-source:${string}`;
+export type WaveformRepositoryKey = `waveform:${'video-source-audio' | 'audio-source'}:${string}:v${number}:r${number}`;
 
 /**
  * Builds a durable editor-catalog key from a discriminated reference or asset wrapper.
@@ -57,6 +58,30 @@ export function getAudioMediaCacheKey(
     return value.kind === 'video-source-audio'
         ? `video-source-audio:${value.videoSourceId}`
         : `audio-source:${value.audioSourceId}`;
+}
+
+/**
+ * Builds the identity of derived waveform peaks independently from a project's source IDs.
+ *
+ * Source IDs are intentionally omitted: importing the same immutable file into another project
+ * should reuse its derived peaks. The typed source kind still separates an embedded video stream
+ * from a standalone audio file, while the algorithm version and resolution make invalidation an
+ * explicit schema decision instead of relying on a destructive database migration. The optional
+ * fingerprint override lets the repository session-scope unsafe legacy metadata fingerprints.
+ */
+export function getWaveformRepositoryKey(
+    media: AudioMediaAsset,
+    algorithmVersion: number,
+    resolution: number,
+    fingerprint = media.asset.fingerprint,
+): WaveformRepositoryKey {
+    if (!Number.isSafeInteger(algorithmVersion) || algorithmVersion <= 0) {
+        throw new Error('Waveform algorithm version must be a positive safe integer.');
+    }
+    if (!Number.isSafeInteger(resolution) || resolution <= 0) {
+        throw new Error('Waveform resolution must be a positive safe integer.');
+    }
+    return `waveform:${media.kind}:${encodeURIComponent(fingerprint)}:v${algorithmVersion}:r${resolution}`;
 }
 
 export function getAudioMediaDuration(media: AudioMediaAsset): number {

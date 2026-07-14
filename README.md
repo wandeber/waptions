@@ -54,12 +54,21 @@ Useful checks:
 
 ```bash
 pnpm run test:unit
+pnpm run test:coverage
+pnpm run test:coverage:critical
+pnpm run fixtures:media:verify
 pnpm exec tsc --noEmit
 pnpm run lint
 pnpm run build
-pnpm exec playwright test --reporter=line
+pnpm run test:e2e
 pnpm audit
 ```
+
+`pnpm run test:verify` runs the complete CI-safe verification sequence: committed-fixture
+validation, unit tests, both coverage gates, TypeScript, lint, production build, and Chromium E2E.
+Its build and browser stages use per-invocation compiler and artifact directories, so the gate can
+run alongside the normal development server and other verification processes. See
+[`docs/testing.md`](docs/testing.md) for the exact test matrix and optional stress suite.
 
 ## Transcription
 
@@ -137,7 +146,10 @@ When authentication is enabled, store `AUTHORIZED_EMAILS` as a Cloudflare secret
 - MP4 uses AAC audio and WebM uses Opus audio when the browser exposes the required encoders.
 - Constant-frame-rate sources use frame-accurate source sampling. Variable-frame-rate sources use their inspected average packet rate as a best-effort seek grid.
 
-The V3 document, timing domains, typed asset keys, migration rules, and audio resource lifecycle are documented in [`docs/editor-document-v3.md`](docs/editor-document-v3.md).
+The V3 document, timing domains, typed asset keys, and migration rules are documented in
+[`docs/editor-document-v3.md`](docs/editor-document-v3.md). Media runtime ownership, semantic
+invalidation, cache budgets, export destinations, and persistence recovery are documented in
+[`docs/media-runtime-architecture.md`](docs/media-runtime-architecture.md).
 
 ## Deployment
 
@@ -154,7 +166,11 @@ The command builds the Next.js app for Cloudflare Workers and deploys the produc
 - Next.js App Router routes live under `src/app`.
 - The dashboard is `/`; the editor is `/editor/[id]`.
 - Timeline, playback, project, and video state live under `src/stores`.
-- Frame-aware preview caching lives in `src/lib/video-cache.ts`, `src/lib/frame-cache.ts`, and `src/lib/frame-utils.ts`.
+- Frame-aware preview caching uses strict adaptive budgets and explicit bitmap leases in
+  `src/lib/video-cache.ts` and `src/lib/frame-cache.ts`.
+- Waveforms are versioned derived data stored outside project manifests and bundles.
+- Export owns isolated decode sessions and streams directly to disk when the browser exposes the
+  File System Access API; the download fallback is preflighted against a device-aware memory cap.
 - Custom transcription helpers live under `src/lib/ai`.
 - Agent instructions live in `AGENTS.md`.
 

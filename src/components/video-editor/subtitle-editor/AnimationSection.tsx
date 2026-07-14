@@ -1,13 +1,19 @@
 import { DraggableNumberInput } from '../../design-system/DraggableNumberInput';
-import type { SubtitleAnimationStyle } from './types';
+import type { SubtitleAnimationStyle, SubtitleStyleEditHandlers } from './types';
 
-interface AnimationSectionProps {
+interface AnimationSectionProps extends SubtitleStyleEditHandlers {
   style: SubtitleAnimationStyle;
-  onStyleChange: (key: keyof SubtitleAnimationStyle, value: number | boolean | string) => void;
   type: 'entry' | 'exit';
 }
 
-export function AnimationSection({ style, onStyleChange, type }: AnimationSectionProps) {
+export function AnimationSection({
+  style,
+  onStyleChange,
+  onStylePreview,
+  onStyleCommit,
+  onStyleCancel,
+  type,
+}: AnimationSectionProps) {
   if (type === 'entry') {
     return (
       <div className="flex flex-col gap-6">
@@ -15,7 +21,9 @@ export function AnimationSection({ style, onStyleChange, type }: AnimationSectio
           <DraggableNumberInput
             label="Duración"
             value={style.fadeInDuration * 1000}
-            onChange={(value) => onStyleChange('fadeInDuration', value / 1000)}
+            onPreview={(value) => onStylePreview('fadeInDuration', value / 1000)}
+            onCommit={(value) => onStyleCommit('fadeInDuration', value / 1000)}
+            onCancel={() => onStyleCancel('fadeInDuration')}
             min={0}
             max={500}
             step={50}
@@ -29,7 +37,9 @@ export function AnimationSection({ style, onStyleChange, type }: AnimationSectio
           <DraggableNumberInput
             label="Escala inicial"
             value={style.initialScale * 100}
-            onChange={(value) => onStyleChange('initialScale', value / 100)}
+            onPreview={(value) => onStylePreview('initialScale', value / 100)}
+            onCommit={(value) => onStyleCommit('initialScale', value / 100)}
+            onCancel={() => onStyleCancel('initialScale')}
             min={100}
             max={200}
             step={10}
@@ -43,7 +53,9 @@ export function AnimationSection({ style, onStyleChange, type }: AnimationSectio
           <DraggableNumberInput
             label="Rebote"
             value={style.bounceStrength * 100}
-            onChange={(value) => onStyleChange('bounceStrength', value / 100)}
+            onPreview={(value) => onStylePreview('bounceStrength', value / 100)}
+            onCommit={(value) => onStyleCommit('bounceStrength', value / 100)}
+            onCancel={() => onStyleCancel('bounceStrength')}
             min={0}
             max={300}
             step={10}
@@ -72,7 +84,9 @@ export function AnimationSection({ style, onStyleChange, type }: AnimationSectio
         <DraggableNumberInput
           label="Duración"
           value={style.fadeOutDuration * 1000}
-          onChange={(value) => onStyleChange('fadeOutDuration', value / 1000)}
+          onPreview={(value) => onStylePreview('fadeOutDuration', value / 1000)}
+          onCommit={(value) => onStyleCommit('fadeOutDuration', value / 1000)}
+          onCancel={() => onStyleCancel('fadeOutDuration')}
           min={0}
           max={500}
           step={50}
@@ -83,4 +97,4 @@ export function AnimationSection({ style, onStyleChange, type }: AnimationSectio
       </div>
     </div>
   );
-} 
+}

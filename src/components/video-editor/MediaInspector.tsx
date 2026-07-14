@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+
 import { Headphones, Lock, Unlock, Volume2, VolumeX } from 'lucide-react';
+import { CommittedRangeInput } from '@/components/design-system/CommittedRangeInput';
 import { secondsToFrames } from '@/lib/render-profile';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useShallow } from 'zustand/react/shallow';
 
 interface CommittedRangeProps {
     label: string;
@@ -16,7 +19,7 @@ interface CommittedRangeProps {
     onCommit: (value: number) => void;
 }
 
-/** Range input whose high-frequency pointer input stays local until its terminal event. */
+/** Inspector wrapper that pairs the shared committed slider with its visible value. */
 function CommittedRange({
     label,
     value,
@@ -28,26 +31,8 @@ function CommittedRange({
     onCommit,
 }: CommittedRangeProps) {
     const [draft, setDraft] = useState(value);
-    const draftRef = useRef(value);
-    const pointerActiveRef = useRef(false);
-    const lastCommitRef = useRef(value);
 
-    useEffect(() => {
-        setDraft(value);
-        draftRef.current = value;
-        lastCommitRef.current = value;
-    }, [value]);
-
-    const commit = (next: number) => {
-        if (next === lastCommitRef.current) return;
-        lastCommitRef.current = next;
-        onCommit(next);
-    };
-    const cancel = () => {
-        pointerActiveRef.current = false;
-        draftRef.current = value;
-        setDraft(value);
-    };
+    useEffect(() => setDraft(value), [value]);
 
     return (
         <label className="grid gap-1 text-[11px] text-gray-400">
@@ -55,36 +40,20 @@ function CommittedRange({
                 {label}
                 <output className="font-mono text-gray-200">{draft}{suffix}</output>
             </span>
-            <input
-                type="range"
-                min={minimum}
-                max={Math.max(minimum, maximum)}
+            <CommittedRangeInput
+                minimum={minimum}
+                maximum={maximum}
                 step={step}
-                value={draft}
+                value={value}
                 disabled={disabled}
                 className="w-full accent-blue-500 disabled:opacity-40"
-                aria-label={label}
-                onPointerDown={() => { pointerActiveRef.current = true; }}
-                onPointerUp={() => {
-                    pointerActiveRef.current = false;
-                    commit(draftRef.current);
-                }}
-                onPointerCancel={cancel}
-                onChange={(event) => {
-                    const next = Number(event.target.value);
-                    draftRef.current = next;
+                ariaLabel={label}
+                onPreview={setDraft}
+                onCommit={(next) => {
                     setDraft(next);
-                    // Keyboard range changes are terminal commands; each key produces one action.
-                    if (!pointerActiveRef.current) commit(next);
+                    onCommit(next);
                 }}
-                onKeyDown={(event) => {
-                    if (event.key !== 'Escape') return;
-                    event.preventDefault();
-                    cancel();
-                }}
-                onBlur={() => {
-                    if (!pointerActiveRef.current) commit(draftRef.current);
-                }}
+                onCancel={setDraft}
             />
         </label>
     );
@@ -129,7 +98,18 @@ export function MediaInspector() {
         updateAudioClipMix,
         updateAudioTrackMix,
         setAudioTrackLocked,
-    } = useTimelineStore();
+    } = useTimelineStore(useShallow((state) => ({
+        transientSelection: state.transientSelection,
+        videoClips: state.videoClips,
+        videoSources: state.videoSources,
+        audioTracks: state.audioTracks,
+        audioSources: state.audioSources,
+        renderProfile: state.renderProfile,
+        updateVideoClipAudio: state.updateVideoClipAudio,
+        updateAudioClipMix: state.updateAudioClipMix,
+        updateAudioTrackMix: state.updateAudioTrackMix,
+        setAudioTrackLocked: state.setAudioTrackLocked,
+    })));
 
     const videoClip = transientSelection.kind === 'video-clip'
         ? videoClips.find((clip) => clip.id === transientSelection.clipId)

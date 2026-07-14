@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { SubtitleTrack, AnimationStyle, Subtitle } from '@/types/timeline';
+import { AnimationStyle, Subtitle, type SubtitleTrack } from '@/types/timeline';
 import { useProjectStore } from './project-store';
 import { useVideoStore } from './video-store';
 import {
@@ -7,484 +7,136 @@ import {
     generateDefaultGrouperState,
     generateTimelineSubtitles
 } from '@/lib/timeline-utils';
-import { Cut } from '@/lib/video-cut/core/types';
 import type {
     AudioClip,
-    AudioClipMixSettings,
-    AudioSourceAsset,
     AudioTrack,
-    EditorDocumentV3,
-    EditorManifestV3,
     RenderProfile,
-    SubtitleTrackV3,
-    TrackTranscriptionProvenanceV3,
-    TrackTranscriptionState,
-    TranscriptionJobGuard,
-    TransientMediaSelection,
     VideoClipAudioSettings,
     VideoClip,
     VideoClipV3,
     VideoSourceAsset,
 } from '@/types/video';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
-import { createEditorManifestV3 } from '@/lib/editor-document-migration';
 import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
 import {
     createTranscriptionJobGuard,
-    finalizeAudioGraphMutation,
     getEditorAudioGraphSignature,
     isTranscriptionJobGuardCurrent,
     type AudioGraphMutationImpact,
 } from '@/lib/audio-graph-signature';
-import { createDefaultRenderProfile, framesToSeconds, normalizeFrameRate, secondsToFrames } from '@/lib/render-profile';
+import {
+    createDefaultRenderProfile,
+    frameRateToNumber,
+    framesToSeconds,
+    normalizeFrameRate,
+    secondsToFrames,
+} from '@/lib/render-profile';
 import {
     cloneAudioTracks,
     findAudioClip,
-    moveAudioClipInTracks,
-    splitAudioClipInTracks,
-    trimAudioClipInTracks,
     clampFrameFades,
     clampSampleFades,
 } from '@/lib/audio-timeline';
 import {
     appendVideoClips as appendClipsToTimeline,
-    applyMediaEditToTimeline,
     buildClipPlacements,
     cleanSubtitleSelection,
     deleteVideoClip as deleteClipFromTimeline,
     getTimelineDurations,
     isSafeVideoId,
     reorderVideoClips as reorderClipsInTimeline,
-    splitVideoClip as splitClipInTimeline,
     trimVideoClip as trimClipInTimeline,
 } from '@/lib/video-timeline';
+import {
+    applyVideoEditToSubtitleDomains,
+    clampVideoClipAudioFades,
+    deleteAudioClipCommand,
+    getCanonicalVideoClipDurationFrames,
+    haveEqualClipPlacements,
+    moveAudioClipCommand,
+    splitAudioClipCommand,
+    splitVideoClipCommand,
+    trimAudioClipCommand,
+    updateSubtitleCommand,
+} from '@/lib/editor-commands';
+import type {
+    TimelinePersistenceBinding,
+    TimelineStore,
+    TimelineVideoClip,
+} from './timeline-store-types';
+import {
+    DEFAULT_VIDEO_CLIP_AUDIO,
+    buildEditorDocumentFromState,
+    buildEditorManifestFromState,
+    cloneContainerIds,
+    cloneRenderProfile,
+    cloneSubtitleTracks as cloneTracks,
+    cloneSubtitles,
+    cloneTranscriptionByTrackId,
+    cloneTranscriptionGroups,
+    cloneVideoClips,
+    cloneTransientSelection,
+    finalizeDurableTimelinePatch as finalizeDurablePatch,
+} from './timeline-store-snapshot';
+import {
+    getLegacyTranscriptionForTrack,
+    getTrackTimingDomain,
+    selectAudioTimelineSources as getAudioTimelineSources,
+    selectTransientSubtitleSelection as transientSubtitleSelection,
+} from './timeline-store-selectors';
+import { prepareDurableTimelineMutation } from './timeline-store-mutation';
+import { applySerializablePatches } from '@/lib/serializable-patch';
+import { boundTimelineHistory } from './timeline-history';
+import {
+    projectTimelineHistory,
+    restoreTimelineHistoryProjection,
+    selectTimelineHistoryProjection,
+    TIMELINE_HISTORY_ROOTS,
+} from './timeline-history-projection';
+import type { TimelineHistoryEntry, TimelineHistoryMetadata } from './timeline-store-types';
 
-export interface TimelinePersistenceBinding {
-    projectId: string;
-    generation: number;
-    enqueue: (manifest: EditorManifestV3, sourceAssets: readonly EditorPersistentAsset[]) => void;
-}
+export type {
+    AudioClipEditableSettings,
+    MixedMediaCandidate,
+    TimelinePersistenceBinding,
+    TimelineStore,
+    TimelineVideoClip,
+} from './timeline-store-types';
 
 let timelinePersistenceBinding: TimelinePersistenceBinding | null = null;
+
+export const createTimelinePersistencePayload = (
+    timeline: TimelineStore,
+    sourceAssets: readonly EditorPersistentAsset[] = [],
+    buildManifest: (state: TimelineStore) => ReturnType<typeof buildEditorManifestFromState>
+        = buildEditorManifestFromState,
+) => {
+    const manifest = buildManifest(timeline);
+    return {
+        manifest,
+        sourceAssets,
+        history: {
+            history: timeline.history,
+            redoStack: timeline.redoStack,
+            projection: projectTimelineHistory(timeline),
+        },
+    };
+};
 
 export function setTimelinePersistenceBinding(binding: TimelinePersistenceBinding | null): void {
     timelinePersistenceBinding = binding;
 }
 
-export type TimelineVideoClip = VideoClipV3;
-
-interface HistorySnapshot {
-    tracks: SubtitleTrack[];
-    videoClips: TimelineVideoClip[];
-    renderProfile: RenderProfile;
-    audioTracks: AudioTrack[];
-    transientSelection: TransientMediaSelection;
-    activeTrackId: string | null;
-    selectedSubtitleIds: string[];
-    selectedClipId: string | null;
-    transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
-    rawTranscription: Subtitle[] | null;
-    transcriptionGroups: { [key: string]: Subtitle[] } | null;
-    transcriptionContainerIds: string[] | null;
-    /** The terminal mutation recorded after this snapshot determines undo/redo invalidation. */
-    audioGraphMutationImpact: AudioGraphMutationImpact;
-}
-
-interface SetTracksOptions {
-    skipHistory?: boolean;
-    resetHistory?: boolean;
-    skipSave?: boolean;
-}
-
-export interface MixedMediaCandidate {
-    videoSources?: VideoSourceAsset[];
-    videoClips?: (VideoClip | VideoClipV3)[];
-    audioSources?: AudioSourceAsset[];
-    audioTracks?: AudioTrack[];
-    insertionFrame?: number;
-}
-
-export type AudioClipEditableSettings = Partial<AudioClipMixSettings> & {
-    fadeInSamples?: number;
-    fadeOutSamples?: number;
-    fadeInFrames?: number;
-    fadeOutFrames?: number;
-};
-
-export interface TimelineStore {
-    zoomLevel: number;
-    scrollLeft: number;
-    tracks: SubtitleTrack[];
-    pixelsPerSecond: number;
-    activeTrackId: string | null;
-    selectedSubtitleIds: string[];
-    selectedClipId: string | null;
-    revision: number;
-    audioGraphRevision: number;
-    projectFps: number;
-    renderProfile: RenderProfile;
-    videoSources: VideoSourceAsset[];
-    videoClips: TimelineVideoClip[];
-    audioSources: AudioSourceAsset[];
-    audioTracks: AudioTrack[];
-    transientSelection: TransientMediaSelection;
-    transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
-    lastSelectedId: string | null;
-    snapEnabled: boolean;
-    activeSnapTime: number | null;
-    clipboard: { subtitle: Subtitle, relativeTrackIndex: number }[] | null;
-    requestEditSubtitleId: string | null;
-    isVideoSelected: boolean;
-    isDragging: boolean;
-
-    // History
-    history: HistorySnapshot[];
-    redoStack: HistorySnapshot[];
-
-    // Video Cuts
-    cuts: Cut[];
-    detectionProgress: number;
-    isDetecting: boolean;
-
-    // Actions
-    setZoom: (zoom: number) => void;
-    setScrollLeft: (scroll: number) => void;
-
-    addTrack: (name?: string, style?: AnimationStyle, options?: { skipHistory?: boolean }) => string;
-    removeTrack: (id: string) => void;
-    updateTrackStyle: (id: string, style: Partial<AnimationStyle>) => void;
-    updateTrackName: (id: string, name: string) => void;
-
-    addSubtitleToTrack: (trackId: string, subtitle: Omit<Subtitle, 'id'>) => string;
-    updateSubtitleInTrack: (trackId: string, subtitleId: string, updates: Partial<Subtitle>, options?: { skipHistory?: boolean }) => void;
-    moveSubtitleToTrack: (subtitleId: string, sourceTrackId: string, targetTrackId: string) => void;
-    moveSubtitlesToTrack: (subtitleIds: string[], deltaTrackIndex: number, options?: { skipHistory?: boolean }) => void;
-    removeSubtitleFromTrack: (trackId: string, subtitleId: string) => void;
-
-    setTracks: (tracks: SubtitleTrack[], options?: SetTracksOptions) => void;
-    hydrateEditorDocument: (document: EditorDocumentV3) => void;
-    resetEditorDocument: () => void;
-    appendVideoSourcesAndClips: (sources: VideoSourceAsset[], clips: VideoClip[]) => void;
-    appendAudioSourcesAndTracks: (sources: AudioSourceAsset[], tracks: AudioTrack[]) => void;
-    appendMixedMediaCandidate: (candidate: MixedMediaCandidate, insertionFrame?: number) => void;
-    detachVideoClipAudio: (
-        clipId: string,
-        idsOrTrackId?: { trackId?: string; clipId?: string } | string,
-        detachedClipId?: string,
-    ) => void;
-    splitVideoClip: (clipId: string, projectTime: number, rightClipId: string) => void;
-    trimVideoClip: (clipId: string, sourceStart: number, sourceEnd: number) => void;
-    deleteVideoClip: (clipId: string) => void;
-    reorderVideoClips: (orderedClipIds: string[]) => void;
-    selectClip: (clipId: string | null) => void;
-    selectAudioClip: (trackId: string, clipId: string) => void;
-    moveAudioClip: (clipId: string, targetTrackId: string, timelineStartFrame: number) => void;
-    trimAudioClip: (clipId: string, side: 'left' | 'right', timelineFrame: number) => void;
-    splitAudioClip: (clipId: string, timelineFrame: number, rightClipId: string) => void;
-    deleteAudioClip: (clipId: string) => void;
-    addAudioTrack: (name?: string, id?: string) => string;
-    removeAudioTrack: (trackId: string) => void;
-    renameAudioTrack: (trackId: string, name: string) => void;
-    updateAudioClipMix: (clipId: string, updates: AudioClipEditableSettings) => void;
-    updateAudioTrackMix: (trackId: string, updates: Partial<Pick<AudioTrack, 'muted' | 'solo' | 'gainDb'>>) => void;
-    setAudioTrackLocked: (trackId: string, locked: boolean) => void;
-    updateVideoClipAudio: (clipId: string, updates: Partial<VideoClipAudioSettings>) => void;
-    setSubtitleTrackTimingDomain: (trackId: string, timingDomain: 'video-ripple' | 'absolute') => void;
-    setTrackTranscriptionState: (trackId: string, provenance: TrackTranscriptionState | TrackTranscriptionProvenanceV3 | null) => void;
-    createTranscriptionGuard: (trackId: string) => TranscriptionJobGuard | null;
-    replaceTrackWithTranscription: (
-        trackId: string,
-        subtitles: Subtitle[],
-        provenance: TrackTranscriptionState,
-        expectedRevision: number | TranscriptionJobGuard,
-    ) => boolean;
-    getTrackTranscriptionState: (trackId: string) => TrackTranscriptionProvenanceV3 | null;
-    buildEditorDocument: () => EditorDocumentV3;
-    buildEditorManifest: () => EditorManifestV3;
-    splitSelectedMediaAtFrame: (timelineFrame: number, rightClipId?: string) => void;
-    deleteSelectedMedia: () => void;
-    bumpRevision: () => number;
-    setActiveTrackId: (id: string | null) => void;
-    toggleSubtitleSelection: (id: string, isMulti?: boolean, isRange?: boolean) => void;
-    clearSelection: () => void;
-    copySelection: () => void;
-    pasteSelection: (startTime: number) => void;
-    trimSubtitleAtTime: (time: number, side: 'start' | 'end') => void;
-    selectSubtitleAtTime: (time: number) => string | null;
-    requestEditSubtitleAtTime: (time: number) => void;
-    clearEditRequest: () => void;
-
-    // Video Cuts Actions
-    setCuts: (cuts: Cut[]) => void;
-    clearCuts: () => void;
-    setDetectionProgress: (progress: number) => void;
-    setIsDetecting: (isDetecting: boolean) => void;
-
-    // History Actions
-    undo: () => Promise<void>;
-    redo: () => Promise<void>;
-    pushHistory: (impact?: AudioGraphMutationImpact) => void;
-    setSnapEnabled: (enabled: boolean) => void;
-    setActiveSnapTime: (time: number | null) => void;
-    setVideoSelected: (selected: boolean) => void;
-    setIsDragging: (dragging: boolean) => void;
-
-    // Transcription Persistence
-    rawTranscription: Subtitle[] | null;
-    transcriptionGroups: { [key: string]: Subtitle[] } | null;
-    transcriptionContainerIds: string[] | null;
-    setTranscriptionState: (
-        groups: { [key: string]: Subtitle[] } | null,
-        containerIds: string[] | null,
-        raw?: Subtitle[] | null
-    ) => void;
-    // Layer generation helpers
-    generateDefaultGrouperState: (words: Subtitle[], wordsPerLine?: number) => { groups: { [key: string]: Subtitle[] }, containerIds: string[] };
-    generateTimelineSubtitles: (words: Subtitle[], wordsPerLine?: number) => Subtitle[];
-}
-
-const cloneTracks = (tracks: SubtitleTrack[]) => JSON.parse(JSON.stringify(tracks)) as SubtitleTrack[];
-const cloneSubtitles = (subtitles: Subtitle[] | null) =>
-    subtitles ? JSON.parse(JSON.stringify(subtitles)) as Subtitle[] : null;
-const cloneTranscriptionGroups = (groups: { [key: string]: Subtitle[] } | null) =>
-    groups ? JSON.parse(JSON.stringify(groups)) as { [key: string]: Subtitle[] } : null;
-const cloneContainerIds = (ids: string[] | null) => ids ? [...ids] : null;
-const cloneVideoClips = (clips: readonly (VideoClip | VideoClipV3)[]): TimelineVideoClip[] => clips.map((clip) => {
-    const extended = clip as VideoClip & { audio?: VideoClipAudioSettings | null };
-    return {
-        ...extended,
-        audio: extended.audio === null ? null : { ...(extended.audio ?? DEFAULT_VIDEO_CLIP_AUDIO) },
-    };
-});
-const cloneRenderProfile = (profile: RenderProfile): RenderProfile => ({
-    ...profile,
-    fps: { ...profile.fps },
-});
-const cloneTransientSelection = (selection: TransientMediaSelection): TransientMediaSelection => (
-    selection.kind === 'subtitles'
-        ? { ...selection, subtitleIds: [...selection.subtitleIds] }
-        : { ...selection }
-);
-const DEFAULT_VIDEO_CLIP_AUDIO: VideoClipAudioSettings = {
-    linkState: 'linked',
-    muted: false,
-    gainDb: 0,
-    fadeInFrames: 0,
-    fadeOutFrames: 0,
-};
-
-/**
- * Clamps an embedded-video envelope to a canonical output-frame duration.
- *
- * Both linked and detached video clips retain these settings in the v3 document. Keeping the
- * clamp here, at the store boundary, prevents a shorter media edit from producing a document
- * that the v3 validator cannot persist. Proportional scaling preserves the user's fade balance;
- * assigning the rounding remainder to fade-out makes the result deterministic.
- */
-const clampVideoClipAudioFades = (
-    audio: VideoClipAudioSettings,
-    durationFrames: number,
-): VideoClipAudioSettings => {
-    const safeDurationFrames = Math.max(1, Math.floor(durationFrames));
-    // Do not clamp each side to the duration before calculating the ratio: doing so would turn
-    // any pair of individually oversized fades into an unintended 50/50 envelope.
-    let fadeInFrames = Math.min(
-        Number.MAX_SAFE_INTEGER,
-        Math.max(0, Math.round(audio.fadeInFrames)),
-    );
-    let fadeOutFrames = Math.min(
-        Number.MAX_SAFE_INTEGER,
-        Math.max(0, Math.round(audio.fadeOutFrames)),
-    );
-    const combinedFrames = fadeInFrames + fadeOutFrames;
-    if (combinedFrames > safeDurationFrames) {
-        const ratio = safeDurationFrames / combinedFrames;
-        fadeInFrames = Math.floor(fadeInFrames * ratio);
-        fadeOutFrames = safeDurationFrames - fadeInFrames;
-    }
-    return { ...audio, fadeInFrames, fadeOutFrames };
-};
-
-const getCanonicalVideoClipDurationFrames = (
-    clip: Pick<VideoClip, 'sourceStart' | 'sourceEnd'>,
-    renderProfile: RenderProfile,
-): number => Math.max(1, secondsToFrames(
-    clip.sourceEnd - clip.sourceStart,
-    renderProfile.fps,
-    'nearest',
-));
-const cloneTranscriptionByTrackId = (
-    provenance: Record<string, TrackTranscriptionProvenanceV3>,
-): Record<string, TrackTranscriptionProvenanceV3> => JSON.parse(JSON.stringify(provenance)) as Record<string, TrackTranscriptionProvenanceV3>;
-
-const buildEditorDocumentFromState = (state: TimelineStore): EditorDocumentV3 => ({
-    version: 3,
-    revision: state.revision,
-    audioGraphRevision: state.audioGraphRevision,
-    renderProfile: cloneRenderProfile(state.renderProfile),
-    subtitleTracks: cloneTracks(state.tracks).map((track): SubtitleTrackV3 => ({
-        ...track,
-        timingDomain: getTrackTimingDomain(track),
-    })),
-    videoSources: state.videoSources.map((source) => ({ ...source })),
-    videoClips: cloneVideoClips(state.videoClips),
-    audioSources: state.audioSources.map((source) => ({ ...source })),
-    audioTracks: cloneAudioTracks(state.audioTracks),
-    activeSubtitleTrackId: state.activeTrackId,
-    transientSelection: cloneTransientSelection(state.transientSelection),
-    transcriptionByTrackId: cloneTranscriptionByTrackId(state.transcriptionByTrackId),
-});
-
-const buildEditorManifestFromState = (state: TimelineStore): EditorManifestV3 => (
-    createEditorManifestV3(buildEditorDocumentFromState(state))
-);
-
-const enqueueEditorDocument = (sourceAssets: readonly EditorPersistentAsset[] = []) => {
-    if (!timelinePersistenceBinding) return;
-    timelinePersistenceBinding.enqueue(
-        buildEditorManifestFromState(useTimelineStore.getState()),
-        sourceAssets,
-    );
-};
-
-const persistEditorMutation = (sourceAssets: readonly EditorPersistentAsset[] = []) => {
+const persistEditorMutation = (
+    sourceAssets: readonly EditorPersistentAsset[] = [],
+    timeline = useTimelineStore.getState(),
+) => {
     // Mutations enqueue one canonical v3 document after Zustand has committed the complete state.
-    // The coordinator coalesces rapid drag updates while preserving revision ordering.
-    const timeline = useTimelineStore.getState();
-    const duration = getTimelineDurations(timeline.videoClips, timeline.tracks, {
-        audioTracks: timeline.audioTracks,
-        videoSources: timeline.videoSources,
-        audioSources: timeline.audioSources,
-        renderProfile: timeline.renderProfile,
-    }).contentDuration;
-    useProjectStore.setState((projectState) => projectState.activeProject
-        ? { activeProject: { ...projectState.activeProject, duration } }
-        : projectState);
-    useProjectStore.getState().checkDirty();
-    enqueueEditorDocument(sourceAssets);
-};
-
-const haveEqualClipPlacements = (
-    currentClips: readonly VideoClip[],
-    resultingClips: readonly VideoClip[],
-): boolean => currentClips.length === resultingClips.length && currentClips.every((clip, index) => {
-    const resultingClip = resultingClips[index];
-    return resultingClip !== undefined
-        && clip.id === resultingClip.id
-        && clip.sourceId === resultingClip.sourceId
-        && clip.sourceStart === resultingClip.sourceStart
-        && clip.sourceEnd === resultingClip.sourceEnd;
-});
-
-const getAudioTimelineSources = (state: Pick<TimelineStore, 'videoSources' | 'audioSources'>) => ({
-    videoSources: state.videoSources,
-    audioSources: state.audioSources,
-});
-
-const getLegacyTranscriptionForTrack = (
-    provenance: Record<string, TrackTranscriptionProvenanceV3>,
-    trackId: string | null,
-) => trackId ? provenance[trackId] ?? null : null;
-
-const createHistorySnapshot = (
-    state: TimelineStore,
-    audioGraphMutationImpact: AudioGraphMutationImpact = 'preserve-transcription',
-): HistorySnapshot => ({
-    // History must be detached from live state. Timeline updates are immutable
-    // today, but cloning keeps undo safe if a future drag/edit path mutates an
-    // object before replacing its parent array.
-    tracks: cloneTracks(state.tracks),
-    videoClips: cloneVideoClips(state.videoClips),
-    renderProfile: cloneRenderProfile(state.renderProfile),
-    audioTracks: cloneAudioTracks(state.audioTracks),
-    transientSelection: cloneTransientSelection(state.transientSelection),
-    activeTrackId: state.activeTrackId,
-    selectedSubtitleIds: [...state.selectedSubtitleIds],
-    selectedClipId: state.selectedClipId,
-    transcriptionByTrackId: cloneTranscriptionByTrackId(state.transcriptionByTrackId),
-    rawTranscription: cloneSubtitles(state.rawTranscription),
-    transcriptionGroups: cloneTranscriptionGroups(state.transcriptionGroups),
-    transcriptionContainerIds: cloneContainerIds(state.transcriptionContainerIds),
-    audioGraphMutationImpact,
-});
-
-const restoreSnapshotState = (snapshot: HistorySnapshot) => ({
-    tracks: cloneTracks(snapshot.tracks),
-    videoClips: cloneVideoClips(snapshot.videoClips),
-    renderProfile: cloneRenderProfile(snapshot.renderProfile),
-    audioTracks: cloneAudioTracks(snapshot.audioTracks),
-    transientSelection: cloneTransientSelection(snapshot.transientSelection),
-    activeTrackId: snapshot.activeTrackId,
-    selectedSubtitleIds: [...snapshot.selectedSubtitleIds],
-    selectedClipId: snapshot.selectedClipId,
-    transcriptionByTrackId: cloneTranscriptionByTrackId(snapshot.transcriptionByTrackId),
-    rawTranscription: cloneSubtitles(snapshot.rawTranscription),
-    transcriptionGroups: cloneTranscriptionGroups(snapshot.transcriptionGroups),
-    transcriptionContainerIds: cloneContainerIds(snapshot.transcriptionContainerIds),
-});
-
-/**
- * Applies the graph-revision and provenance policy to an already-computed immutable patch.
- * Source catalogs may be present in the patch, but they stay outside history snapshots because
- * a File chosen by the user must remain available when an import is undone and later redone.
- */
-const finalizeDurablePatch = (
-    state: TimelineStore,
-    patch: Partial<TimelineStore>,
-    impact: AudioGraphMutationImpact = 'preserve-transcription',
-): Partial<TimelineStore> => {
-    const candidate = {
-        ...state,
-        ...patch,
-        audioGraphRevision: state.audioGraphRevision,
-        transcriptionByTrackId: patch.transcriptionByTrackId ?? state.transcriptionByTrackId,
-    } as TimelineStore;
-    const finalized = finalizeAudioGraphMutation(
-        buildEditorDocumentFromState(state),
-        buildEditorDocumentFromState(candidate),
-        impact,
-    );
-    return {
-        ...patch,
-        revision: state.revision + 1,
-        audioGraphRevision: finalized.audioGraphRevision,
-        transcriptionByTrackId: finalized.transcriptionByTrackId,
-    };
-};
-
-const getTrackTimingDomain = (track: SubtitleTrack): 'video-ripple' | 'absolute' => (
-    'timingDomain' in track && track.timingDomain === 'absolute' ? 'absolute' : 'video-ripple'
-);
-
-/**
- * Legacy v2 subtitle tracks implicitly live in the video-ripple domain. Absolute v3 tracks are
- * excluded from the video transform and merged back in their original lane order afterwards.
- */
-const applyVideoEditToSubtitleDomains = (
-    tracks: SubtitleTrack[],
-    selectedSubtitleIds: string[],
-    edit: Parameters<typeof applyMediaEditToTimeline>[2],
-): { tracks: SubtitleTrack[]; selectedSubtitleIds: string[] } => {
-    const rippleTracks = tracks.filter((track) => getTrackTimingDomain(track) === 'video-ripple');
-    const absoluteTracks = tracks.filter((track) => getTrackTimingDomain(track) === 'absolute');
-    const rippleSubtitleIds = new Set(rippleTracks.flatMap((track) => track.subtitles.map((subtitle) => subtitle.id)));
-    const transformed = applyMediaEditToTimeline(
-        rippleTracks,
-        selectedSubtitleIds.filter((id) => rippleSubtitleIds.has(id)),
-        edit,
-        () => crypto.randomUUID(),
-    );
-    const transformedById = new Map(transformed.tracks.map((track) => [track.id, track]));
-    const absoluteById = new Map(absoluteTracks.map((track) => [track.id, track]));
-    const nextTracks = tracks.map((track) => transformedById.get(track.id) ?? absoluteById.get(track.id) ?? track);
-    const absoluteSelection = selectedSubtitleIds.filter((id) => !rippleSubtitleIds.has(id));
-    return {
-        tracks: nextTracks,
-        selectedSubtitleIds: cleanSubtitleSelection(
-            [...absoluteSelection, ...transformed.selectedSubtitleIds],
-            nextTracks,
-        ),
-    };
+    // The same manifest instance feeds dirty revision tracking and persistence, so a keystroke or
+    // pointer commit never rebuilds and serializes the full editor graph merely to test dirtiness.
+    const payload = createTimelinePersistencePayload(timeline, sourceAssets);
+    useProjectStore.getState().checkDirty(payload.manifest.revision);
+    timelinePersistenceBinding?.enqueue(payload.manifest, payload.sourceAssets, payload.history);
 };
 
 const sourceFpsToRational = (fps: number) => {
@@ -504,22 +156,261 @@ const renderProfileForFirstVideoSource = (source: VideoSourceAsset): RenderProfi
     isCanvasSizeLocked: true,
 });
 
-const transientSubtitleSelection = (
-    tracks: readonly SubtitleTrack[],
-    selectedSubtitleIds: readonly string[],
-    preferredTrackId: string | null,
-): TransientMediaSelection => {
-    const selectedIds = new Set(selectedSubtitleIds);
-    const track = tracks.find((item) => item.id === preferredTrackId && item.subtitles.some((subtitle) => selectedIds.has(subtitle.id)))
-        ?? tracks.find((item) => item.subtitles.some((subtitle) => selectedIds.has(subtitle.id)));
-    if (!track) return { kind: 'none' };
-    const subtitleIds = track.subtitles
-        .filter((subtitle) => selectedIds.has(subtitle.id))
-        .map((subtitle) => subtitle.id);
-    return subtitleIds.length > 0 ? { kind: 'subtitles', trackId: track.id, subtitleIds } : { kind: 'none' };
+const audioClipsEqual = (left: AudioClip, right: AudioClip): boolean => {
+    if (left.id !== right.id
+        || left.timelineStartFrame !== right.timelineStartFrame
+        || left.muted !== right.muted
+        || left.gainDb !== right.gainDb
+        || left.source.kind !== right.source.kind) return false;
+
+    if ('sourceStartSample' in left && 'sourceStartSample' in right) {
+        return left.source.audioSourceId === right.source.audioSourceId
+            && left.sourceStartSample === right.sourceStartSample
+            && left.sourceEndSample === right.sourceEndSample
+            && left.fadeInSamples === right.fadeInSamples
+            && left.fadeOutSamples === right.fadeOutSamples;
+    }
+    if ('sourceStart' in left && 'sourceStart' in right) {
+        return left.source.videoSourceId === right.source.videoSourceId
+            && left.sourceStart === right.sourceStart
+            && left.sourceEnd === right.sourceEnd
+            && left.fadeInFrames === right.fadeInFrames
+            && left.fadeOutFrames === right.fadeOutFrames;
+    }
+    return false;
 };
 
-export const useTimelineStore = create<TimelineStore>((set, get) => ({
+type SubtitlePreviewField = 'startTime' | 'endTime' | 'text';
+
+interface SubtitleDragPreviewSession {
+    /** Latest durable lane graph after any commands that completed while the pointer was down. */
+    durableTracks: SubtitleTrack[];
+    /** Latest visual pointer result, used as an overlay and never persisted on its own. */
+    previewTracks: SubtitleTrack[];
+    touchedFields: Map<string, Set<SubtitlePreviewField>>;
+    movedSubtitleIds: Set<string>;
+    historyMetadata: TimelineHistoryMetadata;
+}
+
+const locateSubtitle = (tracks: readonly SubtitleTrack[], subtitleId: string) => {
+    for (const track of tracks) {
+        const subtitle = track.subtitles.find((entry) => entry.id === subtitleId);
+        if (subtitle) return { trackId: track.id, subtitle };
+    }
+    return null;
+};
+
+const replaceSubtitleLocation = (
+    tracks: readonly SubtitleTrack[],
+    subtitleId: string,
+    targetTrackId: string,
+    subtitle: Subtitle,
+): SubtitleTrack[] => tracks.map((track) => {
+    const withoutSubtitle = track.subtitles.filter((entry) => entry.id !== subtitleId);
+    if (track.id !== targetTrackId) {
+        return withoutSubtitle.length === track.subtitles.length
+            ? track
+            : { ...track, subtitles: withoutSubtitle };
+    }
+    return {
+        ...track,
+        subtitles: [...withoutSubtitle, subtitle].sort((left, right) => left.startTime - right.startTime),
+    };
+});
+
+/**
+ * Removes only the active pointer overlay from a command's candidate tracks.
+ *
+ * Commands are allowed to complete while a subtitle is being dragged. They are calculated from
+ * the visible graph, so this function compares their candidate with that visible graph to retain
+ * real concurrent edits while restoring untouched preview fields from the durable graph.
+ */
+const removeSubtitlePreviewFromTracks = (
+    candidateTracks: readonly SubtitleTrack[],
+    visibleTracks: readonly SubtitleTrack[],
+    session: SubtitleDragPreviewSession,
+): SubtitleTrack[] => {
+    let result = candidateTracks.map((track) => ({ ...track, subtitles: [...track.subtitles] }));
+    const affectedIds = new Set([
+        ...Array.from(session.touchedFields.keys()),
+        ...Array.from(session.movedSubtitleIds),
+    ]);
+
+    affectedIds.forEach((subtitleId) => {
+        const candidate = locateSubtitle(candidateTracks, subtitleId);
+        const visible = locateSubtitle(visibleTracks, subtitleId);
+        const durable = locateSubtitle(session.durableTracks, subtitleId);
+
+        // A concurrent deletion is durable and must not be undone by the pointer overlay.
+        if (!candidate) {
+            result = result.map((track) => {
+                const subtitles = track.subtitles.filter((entry) => entry.id !== subtitleId);
+                return subtitles.length === track.subtitles.length ? track : { ...track, subtitles };
+            });
+            return;
+        }
+        if (!durable) return;
+
+        const rebasedSubtitle = { ...candidate.subtitle };
+        session.touchedFields.get(subtitleId)?.forEach((field) => {
+            if (visible && Object.is(candidate.subtitle[field], visible.subtitle[field])) {
+                Object.assign(rebasedSubtitle, { [field]: durable.subtitle[field] });
+            }
+        });
+        const candidateMovedOutsidePreview = visible && candidate.trackId !== visible.trackId;
+        const targetTrackId = session.movedSubtitleIds.has(subtitleId) && !candidateMovedOutsidePreview
+            ? durable.trackId
+            : candidate.trackId;
+        if (result.some((track) => track.id === targetTrackId)) {
+            result = replaceSubtitleLocation(result, subtitleId, targetTrackId, rebasedSubtitle);
+        }
+    });
+    return result;
+};
+
+/** Applies the final pointer intent over the newest durable lane graph. */
+const applySubtitlePreviewToDurableTracks = (
+    session: SubtitleDragPreviewSession,
+): SubtitleTrack[] => {
+    let result = session.durableTracks.map((track) => ({ ...track, subtitles: [...track.subtitles] }));
+    const affectedIds = new Set([
+        ...Array.from(session.touchedFields.keys()),
+        ...Array.from(session.movedSubtitleIds),
+    ]);
+
+    affectedIds.forEach((subtitleId) => {
+        const preview = locateSubtitle(session.previewTracks, subtitleId);
+        const durable = locateSubtitle(result, subtitleId);
+        if (!preview || !durable) return;
+
+        const finalSubtitle = { ...durable.subtitle };
+        session.touchedFields.get(subtitleId)?.forEach((field) => {
+            Object.assign(finalSubtitle, { [field]: preview.subtitle[field] });
+        });
+        const targetTrackId = session.movedSubtitleIds.has(subtitleId)
+            ? preview.trackId
+            : durable.trackId;
+        if (result.some((track) => track.id === targetTrackId)) {
+            result = replaceSubtitleLocation(result, subtitleId, targetTrackId, finalSubtitle);
+        }
+    });
+    return result;
+};
+
+const subtitlePreviewChangesDurableTracks = (session: SubtitleDragPreviewSession): boolean => {
+    for (const [subtitleId, fields] of Array.from(session.touchedFields.entries())) {
+        const preview = locateSubtitle(session.previewTracks, subtitleId);
+        const durable = locateSubtitle(session.durableTracks, subtitleId);
+        if (!preview || !durable) continue;
+        for (const field of Array.from(fields)) {
+            if (!Object.is(preview.subtitle[field], durable.subtitle[field])) return true;
+        }
+    }
+    for (const subtitleId of Array.from(session.movedSubtitleIds)) {
+        const preview = locateSubtitle(session.previewTracks, subtitleId);
+        const durable = locateSubtitle(session.durableTracks, subtitleId);
+        if (preview && durable && preview.trackId !== durable.trackId) return true;
+    }
+    return false;
+};
+
+const subtitlePreviewRecalculatesContentBoundary = (
+    session: SubtitleDragPreviewSession,
+): boolean => Array.from(session.touchedFields.values()).some((fields) => (
+    fields.has('startTime') || fields.has('endTime')
+));
+
+const subtitleUpdatesTiming = (updates: Partial<Subtitle>): boolean => (
+    Object.prototype.hasOwnProperty.call(updates, 'startTime')
+    || Object.prototype.hasOwnProperty.call(updates, 'endTime')
+);
+
+export const useTimelineStore = create<TimelineStore>((set, get) => {
+    let subtitleDragPreview: SubtitleDragPreviewSession | null = null;
+
+    const commitDurableMutation = (
+        state: TimelineStore,
+        patch: Partial<TimelineStore>,
+        options: {
+            impact?: AudioGraphMutationImpact;
+            recordHistory?: boolean;
+            history?: TimelineHistoryMetadata;
+            sourceAssets?: readonly EditorPersistentAsset[];
+            persist?: boolean;
+            recalculateContentBoundary?: boolean;
+        } = {},
+    ): boolean => {
+        const preview = subtitleDragPreview;
+        const durableState = preview
+            ? { ...state, tracks: preview.durableTracks }
+            : state;
+        const durablePatch = preview && patch.tracks
+            ? {
+                ...patch,
+                tracks: removeSubtitlePreviewFromTracks(patch.tracks, state.tracks, preview),
+            }
+            : patch;
+        const prepared = prepareDurableTimelineMutation(durableState, durablePatch, options);
+        if (!prepared) return false;
+
+        const committedDurableState = { ...durableState, ...prepared } as TimelineStore;
+        if (preview) {
+            preview.durableTracks = committedDurableState.tracks;
+            const visibleTracks = applySubtitlePreviewToDurableTracks(preview);
+            preview.previewTracks = visibleTracks;
+            set({ ...prepared, tracks: visibleTracks });
+        } else {
+            set(prepared);
+        }
+        // Persistence reads the complete committed state. Keeping the enqueue after set prevents a
+        // manifest from observing only one half of a linked video/audio or provenance mutation.
+        if (options.persist !== false) {
+            persistEditorMutation(options.sourceAssets, committedDurableState);
+        }
+        return true;
+    };
+
+    /**
+     * Removes an in-flight subtitle overlay before a history command reads the current state.
+     *
+     * Undo/redo snapshots must be built from the latest durable graph, never from pointer-only
+     * timing. Clearing the closure-owned preview also makes the browser's eventual mouseup a
+     * strict no-op instead of letting it reapply stale tracks over the restored history state.
+     */
+    const discardActiveDragPreview = (): TimelineStore => {
+        const state = get();
+        const preview = subtitleDragPreview;
+        subtitleDragPreview = null;
+        if (!preview && !state.isDragging) return state;
+
+        const tracks = preview?.durableTracks ?? state.tracks;
+        const recalculatesContentBoundary = preview
+            ? subtitlePreviewRecalculatesContentBoundary(preview)
+            : false;
+        const transientSelection = state.transientSelection.kind === 'subtitles'
+            ? transientSubtitleSelection(tracks, state.selectedSubtitleIds, state.activeTrackId)
+            : state.transientSelection;
+        const durableState = {
+            ...state,
+            tracks,
+            transientSelection,
+            isDragging: false,
+            contentBoundaryRevision: recalculatesContentBoundary
+                ? state.contentBoundaryRevision + 1
+                : state.contentBoundaryRevision,
+        } as TimelineStore;
+        set({
+            tracks,
+            transientSelection,
+            isDragging: false,
+            ...(recalculatesContentBoundary
+                ? { contentBoundaryRevision: durableState.contentBoundaryRevision }
+                : {}),
+        });
+        return durableState;
+    };
+
+    return ({
     zoomLevel: 1,
     scrollLeft: 0,
     pixelsPerSecond: 100, // Base pixels per second at zoom 1
@@ -529,6 +420,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     selectedClipId: null,
     revision: 1,
     audioGraphRevision: 0,
+    contentBoundaryRevision: 0,
     projectFps: 30,
     renderProfile: createDefaultRenderProfile(),
     videoSources: [],
@@ -545,6 +437,8 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     history: [],
     redoStack: [],
+    historySequence: 0,
+    historyBytes: 0,
 
     rawTranscription: null,
     transcriptionGroups: null,
@@ -559,64 +453,128 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     setZoom: (zoom) => set({ zoomLevel: Math.max(0.1, Math.min(10, zoom)) }),
     setScrollLeft: (scroll) => set({ scrollLeft: scroll }),
 
-    pushHistory: (impact = 'preserve-transcription') => {
-        const state = get();
-        const { history } = state;
-        set({
-            history: [...history, createHistorySnapshot(state, impact)],
-            redoStack: []
-        });
-    },
-
     undo: async () => {
-        const state = get();
+        const state = discardActiveDragPreview();
         const { history, redoStack } = state;
         if (history.length === 0) return;
 
-        const previousSnapshot = history[history.length - 1];
-        // Save state for redo
-        const newRedoStack = [
-            ...redoStack,
-            createHistorySnapshot(state, previousSnapshot.audioGraphMutationImpact),
-        ];
-        const newHistory = history.slice(0, -1);
-
-        const restored = restoreSnapshotState(previousSnapshot);
+        const entry = history[history.length - 1];
+        const projection = applySerializablePatches(
+            selectTimelineHistoryProjection(state),
+            entry.inversePatches,
+            TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+        );
+        const boundedHistory = boundTimelineHistory({
+            history: history.slice(0, -1),
+            redoStack: [...redoStack, entry],
+            historySequence: state.historySequence,
+            historyBytes: state.historyBytes,
+        });
+        const restored = restoreTimelineHistoryProjection(projection);
         set({
-            ...finalizeDurablePatch(state, restored, previousSnapshot.audioGraphMutationImpact),
-            history: newHistory,
-            redoStack: newRedoStack
+            ...finalizeDurablePatch(
+                state,
+                restored,
+                entry.audioGraphMutationImpact,
+                entry.recalculatesContentBoundary,
+            ),
+            ...boundedHistory,
         });
         persistEditorMutation();
     },
 
     redo: async () => {
-        const state = get();
+        const state = discardActiveDragPreview();
         const { history, redoStack } = state;
         if (redoStack.length === 0) return;
 
-        const nextSnapshot = redoStack[redoStack.length - 1];
-        // Save state for undo
-        const newHistory = [
-            ...history,
-            createHistorySnapshot(state, nextSnapshot.audioGraphMutationImpact),
-        ];
-        const newRedoStack = redoStack.slice(0, -1);
-
-        const restored = restoreSnapshotState(nextSnapshot);
+        const entry = redoStack[redoStack.length - 1];
+        const projection = applySerializablePatches(
+            selectTimelineHistoryProjection(state),
+            entry.patches,
+            TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+        );
+        const boundedHistory = boundTimelineHistory({
+            history: [...history, entry],
+            redoStack: redoStack.slice(0, -1),
+            historySequence: state.historySequence,
+            historyBytes: state.historyBytes,
+        });
+        const restored = restoreTimelineHistoryProjection(projection);
         set({
-            ...finalizeDurablePatch(state, restored, nextSnapshot.audioGraphMutationImpact),
-            history: newHistory,
-            redoStack: newRedoStack
+            ...finalizeDurablePatch(
+                state,
+                restored,
+                entry.audioGraphMutationImpact,
+                entry.recalculatesContentBoundary,
+            ),
+            ...boundedHistory,
+        });
+        persistEditorMutation();
+    },
+
+    jumpToHistoryEntry: async (entryId) => {
+        const state = discardActiveDragPreview();
+        const chronological = [...state.history, ...[...state.redoStack].reverse()];
+        const targetCount = entryId === null
+            ? 0
+            : chronological.findIndex((entry) => entry.id === entryId) + 1;
+        if (targetCount < 0 || (entryId !== null && targetCount === 0)) return;
+        if (targetCount === state.history.length) return;
+
+        let projection = selectTimelineHistoryProjection(state);
+        let history: TimelineHistoryEntry[];
+        let redoStack: TimelineHistoryEntry[];
+        let affected: TimelineHistoryEntry[];
+        if (targetCount < state.history.length) {
+            affected = state.history.slice(targetCount);
+            [...affected].reverse().forEach((entry) => {
+                projection = applySerializablePatches(
+                    projection,
+                    entry.inversePatches,
+                    TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+                );
+            });
+            history = state.history.slice(0, targetCount);
+            redoStack = [...state.redoStack, ...[...affected].reverse()];
+        } else {
+            const count = targetCount - state.history.length;
+            affected = state.redoStack.slice(-count).reverse();
+            affected.forEach((entry) => {
+                projection = applySerializablePatches(
+                    projection,
+                    entry.patches,
+                    TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+                );
+            });
+            history = [...state.history, ...affected];
+            redoStack = state.redoStack.slice(0, -count);
+        }
+
+        const impact = affected.some((entry) => entry.audioGraphMutationImpact === 'invalidate-transcription')
+            ? 'invalidate-transcription'
+            : 'preserve-transcription';
+        const recalculatesContentBoundary = affected.some((entry) => entry.recalculatesContentBoundary);
+        const bounded = boundTimelineHistory({
+            history,
+            redoStack,
+            historySequence: state.historySequence,
+            historyBytes: state.historyBytes,
+        });
+        set({
+            ...finalizeDurablePatch(
+                state,
+                restoreTimelineHistoryProjection(projection),
+                impact,
+                recalculatesContentBoundary,
+            ),
+            ...bounded,
         });
         persistEditorMutation();
     },
 
     addTrack: (name, style, options) => {
-        if (!options?.skipHistory) {
-            get().pushHistory();
-        }
-
+        const state = get();
         const id = crypto.randomUUID();
         const defaultStyle: AnimationStyle = style || {
             fadeInDuration: 0.2,
@@ -648,114 +606,125 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             backgroundOffsetY: 0
         };
 
-        set((state) => {
-            const newTracks = [...state.tracks, {
+        commitDurableMutation(state, {
+            tracks: [...state.tracks, {
                 id,
                 name: name || `Capa ${state.tracks.length + 1}`,
                 style: defaultStyle,
                 subtitles: [],
                 isVisible: true,
-                isLocked: false
-            }];
-            return {
-                tracks: newTracks,
-                activeTrackId: id,
-                revision: state.revision + 1,
-            };
+                isLocked: false,
+            }],
+            activeTrackId: id,
+        }, {
+            recordHistory: !options?.skipHistory,
+            history: { label: 'Add subtitle track' },
         });
-        persistEditorMutation();
         return id;
     },
 
     removeTrack: (id) => {
-        get().pushHistory();
-        let savedTracks: SubtitleTrack[] = [];
-        set((state) => {
-            const nextTracks = state.tracks.filter(t => t.id !== id);
-            savedTracks = nextTracks;
-            let nextActiveId = state.activeTrackId;
+        const state = get();
+        const removedTrack = state.tracks.find((track) => track.id === id);
+        if (!removedTrack) return;
+        const nextTracks = state.tracks.filter((track) => track.id !== id);
+        const nextActiveId = state.activeTrackId === id
+            ? nextTracks[0]?.id ?? null
+            : state.activeTrackId;
+        const transcriptionByTrackId = { ...state.transcriptionByTrackId };
+        delete transcriptionByTrackId[id];
+        const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, nextActiveId);
+        const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, nextTracks);
 
-            // Si borramos la capa activa, intentamos activar otra
-            if (state.activeTrackId === id) {
-                nextActiveId = nextTracks.length > 0 ? nextTracks[0].id : null;
-            }
-
-            const transcriptionByTrackId = { ...state.transcriptionByTrackId };
-            delete transcriptionByTrackId[id];
-            const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, nextActiveId);
-            const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, nextTracks);
-
-            return {
-                tracks: nextTracks,
-                activeTrackId: nextActiveId,
-                selectedSubtitleIds,
-                transientSelection: state.transientSelection.kind === 'subtitles'
-                    ? transientSubtitleSelection(nextTracks, selectedSubtitleIds, nextActiveId)
-                    : state.transientSelection,
-                transcriptionByTrackId,
-                rawTranscription: cloneSubtitles(legacy?.raw ?? null),
-                transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
-                transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
-                revision: state.revision + 1,
-            };
+        commitDurableMutation(state, {
+            tracks: nextTracks,
+            activeTrackId: nextActiveId,
+            selectedSubtitleIds,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(nextTracks, selectedSubtitleIds, nextActiveId)
+                : state.transientSelection,
+            transcriptionByTrackId,
+            rawTranscription: cloneSubtitles(legacy?.raw ?? null),
+            transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
+            transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
+        }, {
+            history: { label: 'Remove subtitle track' },
+            recalculateContentBoundary: removedTrack.subtitles.length > 0,
         });
-        void savedTracks;
-        persistEditorMutation();
     },
 
     updateTrackStyle: (id, styleUpdates) => {
-        get().pushHistory();
-        set((state) => {
-            const newTracks = state.tracks.map(t =>
-                t.id === id ? { ...t, style: { ...t.style, ...styleUpdates } } : t
-            );
-            return { tracks: newTracks, revision: state.revision + 1 };
-        });
-        persistEditorMutation();
+        const state = get();
+        const track = state.tracks.find((item) => item.id === id);
+        if (!track || Object.entries(styleUpdates).every(([key, value]) => (
+            Object.is(track.style[key as keyof AnimationStyle], value)
+        ))) return;
+        commitDurableMutation(state, {
+            tracks: state.tracks.map((track) => track.id === id
+                ? { ...track, style: { ...track.style, ...styleUpdates } }
+                : track),
+        }, { history: { label: 'Edit subtitle style' } });
     },
 
     updateTrackName: (id, name) => {
-        get().pushHistory();
-        set((state) => {
-            const newTracks = state.tracks.map(t =>
-                t.id === id ? { ...t, name } : t
-            );
-            return { tracks: newTracks, revision: state.revision + 1 };
-        });
-        persistEditorMutation();
+        const state = get();
+        const track = state.tracks.find((item) => item.id === id);
+        if (!track || track.name === name) return;
+        commitDurableMutation(state, {
+            tracks: state.tracks.map((track) => track.id === id ? { ...track, name } : track),
+        }, { history: { label: 'Rename subtitle track', mergeKey: `subtitle-track-name:${id}` } });
     },
 
     addSubtitleToTrack: (trackId, subtitle) => {
-        get().pushHistory();
         const newId = crypto.randomUUID();
-        set((state) => {
-            const newTracks = state.tracks.map(t =>
-                t.id === trackId
-                    ? { ...t, subtitles: [...t.subtitles, { ...subtitle, id: newId }] }
-                    : t
-            );
-            return { tracks: newTracks, revision: state.revision + 1 };
-        });
-        persistEditorMutation();
+        const state = get();
+        commitDurableMutation(state, {
+            tracks: state.tracks.map((track) => track.id === trackId
+                ? { ...track, subtitles: [...track.subtitles, { ...subtitle, id: newId }] }
+                : track),
+        }, { history: { label: 'Add subtitle' }, recalculateContentBoundary: true });
         return newId;
     },
 
     updateSubtitleInTrack: (trackId, subtitleId, updates, options) => {
-        const track = get().tracks.find(t => t.id === trackId);
-        if (!track?.subtitles.some(s => s.id === subtitleId)) return;
-
-        if (!options?.skipHistory) get().pushHistory();
-        set((state) => {
-            const newTracks = state.tracks.map(t => {
-                if (t.id !== trackId) return t;
-                return {
-                    ...t,
-                    subtitles: t.subtitles.map(s => s.id === subtitleId ? { ...s, ...updates } : s)
-                };
+        const state = get();
+        const preview = subtitleDragPreview;
+        if (options?.skipHistory && (!state.isDragging || !preview)) {
+            // `skipHistory` belongs exclusively to the pointer-preview protocol. A history
+            // command invalidates that protocol synchronously, so a late window mousemove must
+            // not fall through into an untracked durable mutation after Undo or Redo.
+            return;
+        }
+        const tracks = updateSubtitleCommand(state.tracks, trackId, subtitleId, updates);
+        if (!tracks) return;
+        if (options?.skipHistory && preview) {
+            // Pointer movement is a visual preview. The terminal setIsDragging(false) call folds
+            // every intermediate position into one revision and one persistence transaction.
+            const touched = preview.touchedFields.get(subtitleId) ?? new Set();
+            (['startTime', 'endTime', 'text'] as const).forEach((field) => {
+                if (Object.prototype.hasOwnProperty.call(updates, field)) touched.add(field);
             });
-            return { tracks: newTracks, revision: state.revision + 1 };
+            preview.touchedFields.set(subtitleId, touched);
+            preview.previewTracks = tracks;
+            set({
+                tracks,
+                // Preview timing is visible to the audio transport immediately. Incrementing the
+                // token keeps its cached terminal frame exact without persisting pointer noise.
+                ...(subtitleUpdatesTiming(updates)
+                    ? { contentBoundaryRevision: state.contentBoundaryRevision + 1 }
+                    : {}),
+            });
+            return;
+        }
+        commitDurableMutation(state, {
+            tracks,
+        }, {
+            recordHistory: !options?.skipHistory,
+            history: {
+                label: subtitleUpdatesTiming(updates) ? 'Edit subtitle timing' : 'Edit subtitle',
+            },
+            recalculateContentBoundary: subtitleUpdatesTiming(updates),
         });
-        persistEditorMutation();
     },
 
     moveSubtitleToTrack: (subtitleId, sourceTrackId, targetTrackId) => {
@@ -766,54 +735,50 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const targetTrack = state.tracks.find(t => t.id === targetTrackId);
         if (!sourceTrack || !targetTrack || !sourceTrack.subtitles.some(s => s.id === subtitleId)) return;
 
-        get().pushHistory();
-        set((state) => {
-            let movedSubtitle: Subtitle | null = null;
+        let movedSubtitle: Subtitle | null = null;
 
-            // Remove from source and capture subtitle
-            const tracksWithSourcedRemoved = state.tracks.map(t => {
-                if (t.id === sourceTrackId) {
-                    const subtitle = t.subtitles.find(s => s.id === subtitleId);
-                    if (subtitle) movedSubtitle = { ...subtitle };
-                    return {
-                        ...t,
-                        subtitles: t.subtitles.filter(s => s.id !== subtitleId)
-                    };
-                }
-                return t;
-            });
-
-            if (!movedSubtitle) return state;
-
-            // Add to target
-            const finalTracks = tracksWithSourcedRemoved.map(t => {
-                if (t.id === targetTrackId) {
-                    return {
-                        ...t,
-                        subtitles: [...t.subtitles, movedSubtitle!].sort((a, b) => a.startTime - b.startTime)
-                    };
-                }
-                return t;
-            });
-
-            return {
-                tracks: finalTracks,
-                activeTrackId: targetTrackId,
-                transientSelection: state.transientSelection.kind === 'subtitles'
-                    ? transientSubtitleSelection(finalTracks, state.selectedSubtitleIds, targetTrackId)
-                    : state.transientSelection,
-                revision: state.revision + 1,
-            };
+        const tracksWithSourcedRemoved = state.tracks.map((track) => {
+            if (track.id === sourceTrackId) {
+                const subtitle = track.subtitles.find((item) => item.id === subtitleId);
+                if (subtitle) movedSubtitle = { ...subtitle };
+                return { ...track, subtitles: track.subtitles.filter((item) => item.id !== subtitleId) };
+            }
+            return track;
         });
-        persistEditorMutation();
+
+        if (!movedSubtitle) return;
+
+        const finalTracks = tracksWithSourcedRemoved.map((track) => track.id === targetTrackId
+            ? {
+                ...track,
+                subtitles: [...track.subtitles, movedSubtitle!].sort((a, b) => a.startTime - b.startTime),
+            }
+            : track);
+
+        commitDurableMutation(state, {
+            tracks: finalTracks,
+            activeTrackId: targetTrackId,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(finalTracks, state.selectedSubtitleIds, targetTrackId)
+                : state.transientSelection,
+        }, { history: { label: 'Move subtitle to track' }, recalculateContentBoundary: true });
     },
 
     moveSubtitlesToTrack: (subtitleIds, deltaTrackIndex, options) => {
         if (deltaTrackIndex === 0 || subtitleIds.length === 0) return;
 
-        const currentTracks = get().tracks;
+        const state = get();
+        const preview = subtitleDragPreview;
+        if (options?.skipHistory && (!state.isDragging || !preview)) {
+            // Vertical lane moves use the same preview-only contract as timing changes. Once
+            // history cancellation clears the preview, stale pointer delivery is ignored rather
+            // than persisted without a corresponding history entry.
+            return;
+        }
+
+        const currentTracks = state.tracks;
         const trackIds = currentTracks.map(t => t.id);
-        const subtitleLocations = subtitleIds.flatMap(subtitleId => {
+        const subtitleTrackIndexes = subtitleIds.flatMap(subtitleId => {
             const currentTrackIndex = currentTracks.findIndex(track =>
                 track.subtitles.some(subtitle => subtitle.id === subtitleId)
             );
@@ -821,107 +786,112 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         });
 
         if (
-            subtitleLocations.length === 0 ||
-            subtitleLocations.some(currentTrackIndex => {
+            subtitleTrackIndexes.length === 0 ||
+            subtitleTrackIndexes.some(currentTrackIndex => {
                 const targetIndex = currentTrackIndex + deltaTrackIndex;
                 return targetIndex < 0 || targetIndex >= trackIds.length;
             })
         ) return;
 
-        if (!options?.skipHistory) get().pushHistory();
-        set((state) => {
-            const currentTracks = state.tracks;
-            const subtitleLocations = new Map<string, { trackId: string, subtitle: Subtitle }>();
+        const currentTracksForMutation = state.tracks;
+        const subtitleLocations = new Map<string, { trackId: string, subtitle: Subtitle }>();
 
-            // 1. Locate all subtitles to move
-            currentTracks.forEach(track => {
-                track.subtitles.forEach(s => {
-                    if (subtitleIds.includes(s.id)) {
-                        subtitleLocations.set(s.id, { trackId: track.id, subtitle: { ...s } });
-                    }
-                });
-            });
-
-            // 2. Identify target tracks and check bounds
-            const trackIds = currentTracks.map(t => t.id);
-            const updates = new Map<string, string>(); // subtitleId -> newTrackId
-
-            for (const [sId, loc] of Array.from(subtitleLocations.entries())) {
-                const currentIdx = trackIds.indexOf(loc.trackId);
-                const targetIdx = currentIdx + deltaTrackIndex;
-
-                if (targetIdx < 0 || targetIdx >= trackIds.length) {
-                    // If ANY subtitle would go out of bounds, we cancel the track shift for the WHOLE group
-                    // or just cap it? Caps are safer for group movement.
-                    return state;
+        // 1. Locate all subtitles to move
+        currentTracksForMutation.forEach(track => {
+            track.subtitles.forEach(s => {
+                if (subtitleIds.includes(s.id)) {
+                    subtitleLocations.set(s.id, { trackId: track.id, subtitle: { ...s } });
                 }
-                updates.set(sId, trackIds[targetIdx]);
+            });
+        });
+
+        // 2. Identify target tracks and check bounds
+        const mutationTrackIds = currentTracksForMutation.map(t => t.id);
+        const updates = new Map<string, string>(); // subtitleId -> newTrackId
+
+        for (const [sId, loc] of Array.from(subtitleLocations.entries())) {
+            const currentIdx = mutationTrackIds.indexOf(loc.trackId);
+            const targetIdx = currentIdx + deltaTrackIndex;
+
+            if (targetIdx < 0 || targetIdx >= trackIds.length) {
+                // If any subtitle would leave the lane set, cancel the complete group command.
+                return;
+            }
+            updates.set(sId, mutationTrackIds[targetIdx]);
+        }
+
+        // 3. Perform the move
+        const newTracks = currentTracksForMutation.map(track => {
+            // Remove subtitles that are moving OUT of this track
+            let subtitles = track.subtitles.filter(s => !updates.has(s.id) || updates.get(s.id) === track.id);
+
+            // Add subtitles that are moving IN to this track
+            const movingIn = Array.from(updates.entries())
+                .filter(([, tId]) => tId === track.id)
+                .map(([sId]) => subtitleLocations.get(sId)!.subtitle);
+
+            if (movingIn.length > 0) {
+                subtitles = [...subtitles, ...movingIn].sort((a, b) => a.startTime - b.startTime);
             }
 
-            // 3. Perform the move
-            const newTracks = currentTracks.map(track => {
-                // Remove subtitles that are moving OUT of this track
-                let subtitles = track.subtitles.filter(s => !updates.has(s.id) || updates.get(s.id) === track.id);
+            return { ...track, subtitles };
+        });
 
-                // Add subtitles that are moving IN to this track
-                const movingIn = Array.from(updates.entries())
-                    .filter(([, tId]) => tId === track.id)
-                    .map(([sId]) => subtitleLocations.get(sId)!.subtitle);
-
-                if (movingIn.length > 0) {
-                    subtitles = [...subtitles, ...movingIn].sort((a, b) => a.startTime - b.startTime);
-                }
-
-                return { ...track, subtitles };
-            });
-
-            return {
+        if (options?.skipHistory && preview) {
+            subtitleIds.forEach((subtitleId) => preview.movedSubtitleIds.add(subtitleId));
+            preview.previewTracks = newTracks;
+            set({
                 tracks: newTracks,
                 transientSelection: state.transientSelection.kind === 'subtitles'
                     ? transientSubtitleSelection(newTracks, state.selectedSubtitleIds, state.activeTrackId)
                     : state.transientSelection,
-                revision: state.revision + 1,
-            };
+            });
+            return;
+        }
+
+        commitDurableMutation(state, {
+            tracks: newTracks,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(newTracks, state.selectedSubtitleIds, state.activeTrackId)
+                : state.transientSelection,
+        }, {
+            recordHistory: !options?.skipHistory,
+            history: { label: 'Move subtitles between tracks' },
+            recalculateContentBoundary: true,
         });
-        persistEditorMutation();
     },
 
     removeSubtitleFromTrack: (trackId, subtitleId) => {
-        const track = get().tracks.find(t => t.id === trackId);
+        const state = get();
+        const track = state.tracks.find(t => t.id === trackId);
         if (!track?.subtitles.some(s => s.id === subtitleId)) return;
-
-        get().pushHistory();
-        set((state) => {
-            const newTracks = state.tracks.map(t =>
-                t.id === trackId
-                    ? { ...t, subtitles: t.subtitles.filter(s => s.id !== subtitleId) }
-                    : t
-            );
-            const selectedSubtitleIds = state.selectedSubtitleIds.filter(id => id !== subtitleId);
-            return {
-                tracks: newTracks,
-                selectedSubtitleIds,
-                transientSelection: state.transientSelection.kind === 'subtitles'
-                    ? transientSubtitleSelection(newTracks, selectedSubtitleIds, state.activeTrackId)
-                    : state.transientSelection,
-                revision: state.revision + 1,
-            };
-        });
-        persistEditorMutation();
+        const newTracks = state.tracks.map(t => t.id === trackId
+            ? { ...t, subtitles: t.subtitles.filter(s => s.id !== subtitleId) }
+            : t);
+        const selectedSubtitleIds = state.selectedSubtitleIds.filter(id => id !== subtitleId);
+        commitDurableMutation(state, {
+            tracks: newTracks,
+            selectedSubtitleIds,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(newTracks, selectedSubtitleIds, state.activeTrackId)
+                : state.transientSelection,
+        }, { history: { label: 'Delete subtitle' }, recalculateContentBoundary: true });
     },
 
-    hydrateEditorDocument: (document) => {
+    hydrateEditorDocument: (document, historyState) => {
         const validation = validateEditorDocumentV3(document);
         if (!validation.valid) {
             throw new Error(validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
         }
         const provenance = cloneTranscriptionByTrackId(document.transcriptionByTrackId);
         const legacy = getLegacyTranscriptionForTrack(provenance, document.activeSubtitleTrackId);
-        const projectFps = document.renderProfile.fps.numerator / document.renderProfile.fps.denominator;
+        const projectFps = frameRateToNumber(document.renderProfile.fps);
         const tracks = cloneTracks(document.subtitleTracks);
+        const contentBoundaryRevision = get().contentBoundaryRevision + 1;
         set({
             revision: document.revision,
             audioGraphRevision: document.audioGraphRevision,
+            contentBoundaryRevision,
             projectFps,
             renderProfile: cloneRenderProfile(document.renderProfile),
             tracks,
@@ -943,20 +913,27 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             rawTranscription: cloneSubtitles(legacy?.raw ?? null),
             transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
             transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
-            history: [],
-            redoStack: [],
+            history: historyState?.history ?? [],
+            redoStack: historyState?.redoStack ?? [],
+            historySequence: historyState?.historySequence ?? 0,
+            historyBytes: historyState?.historyBytes ?? 0,
             lastSelectedId: null,
             isVideoSelected: document.transientSelection.kind === 'video-clip',
+            isDragging: false,
         });
+        subtitleDragPreview = null;
         useVideoStore.getState().syncSourceCatalog(document.videoSources);
     },
 
     resetEditorDocument: () => {
+        const contentBoundaryRevision = get().contentBoundaryRevision + 1;
+        const renderProfile = createDefaultRenderProfile();
         set({
             revision: 1,
             audioGraphRevision: 0,
-            projectFps: 30,
-            renderProfile: createDefaultRenderProfile(),
+            contentBoundaryRevision,
+            projectFps: frameRateToNumber(renderProfile.fps),
+            renderProfile,
             tracks: [],
             videoSources: [],
             videoClips: [],
@@ -972,9 +949,13 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             transcriptionContainerIds: null,
             history: [],
             redoStack: [],
+            historySequence: 0,
+            historyBytes: 0,
             lastSelectedId: null,
             isVideoSelected: false,
+            isDragging: false,
         });
+        subtitleDragPreview = null;
         useVideoStore.getState().syncSourceCatalog([]);
     },
 
@@ -1008,7 +989,6 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const nextRenderProfile = !state.renderProfile.isFrameRateLocked && firstCandidateVideoSource
             ? renderProfileForFirstVideoSource(firstCandidateVideoSource)
             : state.renderProfile;
-        const nextProjectFps = nextRenderProfile.fps.numerator / nextRenderProfile.fps.denominator;
         const nextVideoSources = [...state.videoSources];
         const videoSourceIds = new Set(nextVideoSources.map((source) => source.id));
         videoSources.forEach((source) => {
@@ -1125,23 +1105,25 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             transientSelection: state.transientSelection.kind === 'subtitles'
                 ? transientSubtitleSelection(nextTracks, nextSubtitleSelection, state.activeTrackId)
                 : state.transientSelection,
-            projectFps: nextProjectFps,
             renderProfile: nextRenderProfile,
         };
         if (!hasHistoricalMutation) return;
-        const finalizedPatch = finalizeDurablePatch(state, patch, 'invalidate-transcription');
-        const validation = validateEditorDocumentV3(buildEditorDocumentFromState({ ...state, ...finalizedPatch } as TimelineStore));
+        const validationPatch = finalizeDurablePatch(state, patch, 'invalidate-transcription');
+        const validation = validateEditorDocumentV3(buildEditorDocumentFromState({ ...state, ...validationPatch } as TimelineStore));
         if (!validation.valid) {
             throw new Error(validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
         }
 
-        get().pushHistory('invalidate-transcription');
-        set(finalizedPatch);
+        commitDurableMutation(state, patch, {
+            history: { label: 'Import media' },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+            sourceAssets: [
+                ...videoSources.map((asset): EditorPersistentAsset => ({ kind: 'video-source', asset })),
+                ...audioSources.map((asset): EditorPersistentAsset => ({ kind: 'audio-source', asset })),
+            ],
+        });
         if (videoSources.length > 0) useVideoStore.getState().syncSourceCatalog(nextVideoSources);
-        persistEditorMutation([
-            ...videoSources.map((asset): EditorPersistentAsset => ({ kind: 'video-source', asset })),
-            ...audioSources.map((asset): EditorPersistentAsset => ({ kind: 'audio-source', asset })),
-        ]);
     },
 
     detachVideoClipAudio: (clipId, idsOrTrackId, requestedDetachedClipId) => {
@@ -1197,57 +1179,29 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             selectedSubtitleIds: [],
             isVideoSelected: false,
         };
-        get().pushHistory('invalidate-transcription');
-        set(finalizeDurablePatch(state, patch, 'invalidate-transcription'));
-        persistEditorMutation();
+        commitDurableMutation(state, patch, {
+            history: { label: 'Separate embedded audio' },
+            impact: 'invalidate-transcription',
+        });
     },
 
     splitVideoClip: (clipId, projectTime, rightClipId) => {
         const state = get();
-        const originalClip = state.videoClips.find((clip) => clip.id === clipId);
-        if (!originalClip) return;
-        let result: ReturnType<typeof splitClipInTimeline>;
-        try {
-            // Boundary, duplicate-ID, and otherwise invalid split requests are interaction no-ops.
-            // Computing the complete result before history ensures a rejected gesture cannot
-            // consume undo state, revisions, provenance, or a persistence write.
-            result = splitClipInTimeline(state.videoClips, clipId, projectTime, rightClipId, state.projectFps);
-        } catch {
-            return;
-        }
-        const splitVideoClips = cloneVideoClips(result.videoClips).map((clip): TimelineVideoClip => {
-            if (!originalClip.audio || !clip.audio) return clip;
-            if (clip.id === clipId) {
-                const durationFrames = getCanonicalVideoClipDurationFrames(clip, state.renderProfile);
-                // A split creates an artificial right edge. It must not duplicate the source
-                // fade-out at that seam; only the original outer fade-in belongs to the left.
-                return {
-                    ...clip,
-                    audio: clampVideoClipAudioFades({
-                        ...originalClip.audio,
-                        fadeOutFrames: 0,
-                    }, durationFrames),
-                };
-            }
-            if (clip.id === rightClipId) {
-                const durationFrames = getCanonicalVideoClipDurationFrames(clip, state.renderProfile);
-                // The matching artificial left edge must start at full level. The original
-                // outer fade-out stays on the right-hand clip and is clamped to its duration.
-                return {
-                    ...clip,
-                    audio: clampVideoClipAudioFades({
-                        ...originalClip.audio,
-                        fadeInFrames: 0,
-                    }, durationFrames),
-                };
-            }
-            return clip;
-        });
-        get().pushHistory('invalidate-transcription');
-        set(finalizeDurablePatch(state, {
+        const splitVideoClips = splitVideoClipCommand(
+            state.videoClips,
+            clipId,
+            projectTime,
+            rightClipId,
+            state.renderProfile,
+        );
+        if (!splitVideoClips) return;
+        commitDurableMutation(state, {
             videoClips: splitVideoClips,
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Split video clip' },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     trimVideoClip: (clipId, sourceStart, sourceEnd) => {
@@ -1266,7 +1220,6 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         // returns the existing placement sequence, this is not an edit and must not invalidate
         // transcription provenance, consume history, increment revision, or enqueue persistence.
         if (haveEqualClipPlacements(state.videoClips, edit.videoClips)) return;
-        get().pushHistory('invalidate-transcription');
         const transformed = applyVideoEditToSubtitleDomains(
             state.tracks,
             state.selectedSubtitleIds,
@@ -1284,21 +1237,23 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
                 ),
             };
         });
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             videoClips: trimmedVideoClips,
             tracks: transformed.tracks,
             selectedSubtitleIds: transformed.selectedSubtitleIds,
             transientSelection: state.transientSelection.kind === 'subtitles'
                 ? transientSubtitleSelection(transformed.tracks, transformed.selectedSubtitleIds, state.activeTrackId)
                 : state.transientSelection,
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Trim video clip', mergeKey: `video-trim:${clipId}` },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     deleteVideoClip: (clipId) => {
         const state = get();
         if (!state.videoClips.some((clip) => clip.id === clipId)) return;
-        get().pushHistory('invalidate-transcription');
         const edit = deleteClipFromTimeline(
             state.videoClips,
             clipId,
@@ -1310,7 +1265,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             state.selectedSubtitleIds,
             edit,
         );
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             videoClips: cloneVideoClips(edit.videoClips),
             tracks: transformed.tracks,
             selectedSubtitleIds: transformed.selectedSubtitleIds,
@@ -1321,8 +1276,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
                 : state.transientSelection.kind === 'subtitles'
                     ? transientSubtitleSelection(transformed.tracks, transformed.selectedSubtitleIds, state.activeTrackId)
                     : state.transientSelection,
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Delete video clip' },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     reorderVideoClips: (orderedClipIds) => {
@@ -1337,21 +1295,23 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             getTimelineDurations(state.videoClips, state.tracks).contentDuration,
             state.renderProfile.fps,
         );
-        get().pushHistory('invalidate-transcription');
         const transformed = applyVideoEditToSubtitleDomains(
             state.tracks,
             state.selectedSubtitleIds,
             edit,
         );
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             videoClips: cloneVideoClips(edit.videoClips),
             tracks: transformed.tracks,
             selectedSubtitleIds: transformed.selectedSubtitleIds,
             transientSelection: state.transientSelection.kind === 'subtitles'
                 ? transientSubtitleSelection(transformed.tracks, transformed.selectedSubtitleIds, state.activeTrackId)
                 : state.transientSelection,
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Reorder video clips' },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     selectClip: (clipId) => set((state) => {
@@ -1381,84 +1341,66 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
 
     moveAudioClip: (clipId, targetTrackId, timelineStartFrame) => {
         const state = get();
-        const audioTracks = moveAudioClipInTracks(
-            state.audioTracks,
-            getAudioTimelineSources(state),
-            state.renderProfile,
-            clipId,
-            targetTrackId,
-            timelineStartFrame,
-        );
+        const audioTracks = moveAudioClipCommand(state, clipId, targetTrackId, timelineStartFrame);
         if (!audioTracks) return;
-        get().pushHistory('invalidate-transcription');
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             audioTracks,
             transientSelection: { kind: 'audio-clip', trackId: targetTrackId, clipId },
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Move audio clip', mergeKey: `audio-move:${clipId}` },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     trimAudioClip: (clipId, side, timelineFrame) => {
         const state = get();
-        const audioTracks = trimAudioClipInTracks(
-            state.audioTracks,
-            getAudioTimelineSources(state),
-            state.renderProfile,
-            clipId,
-            side,
-            timelineFrame,
-        );
+        const audioTracks = trimAudioClipCommand(state, clipId, side, timelineFrame);
         if (!audioTracks) return;
-        get().pushHistory('invalidate-transcription');
-        set(finalizeDurablePatch(state, { audioTracks }, 'invalidate-transcription'));
-        persistEditorMutation();
+        commitDurableMutation(state, { audioTracks }, {
+            history: { label: 'Trim audio clip', mergeKey: `audio-trim:${clipId}:${side}` },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     splitAudioClip: (clipId, timelineFrame, rightClipId) => {
         if (!isSafeVideoId(rightClipId)) return;
         const state = get();
-        const audioTracks = splitAudioClipInTracks(
-            state.audioTracks,
-            getAudioTimelineSources(state),
-            state.renderProfile,
-            clipId,
-            timelineFrame,
-            rightClipId,
-        );
-        if (!audioTracks) return;
-        const located = findAudioClip(audioTracks, getAudioTimelineSources(state), rightClipId);
-        if (!located) return;
-        get().pushHistory('invalidate-transcription');
-        set(finalizeDurablePatch(state, {
-            audioTracks,
-            transientSelection: { kind: 'audio-clip', trackId: located.track.id, clipId: rightClipId },
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        const result = splitAudioClipCommand(state, clipId, timelineFrame, rightClipId);
+        if (!result) return;
+        commitDurableMutation(state, {
+            audioTracks: result.audioTracks,
+            transientSelection: { kind: 'audio-clip', trackId: result.trackId, clipId: rightClipId },
+        }, {
+            history: { label: 'Split audio clip' },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     deleteAudioClip: (clipId) => {
         const state = get();
-        const located = findAudioClip(state.audioTracks, getAudioTimelineSources(state), clipId);
-        if (!located || located.track.locked) return;
-        get().pushHistory('invalidate-transcription');
-        set(finalizeDurablePatch(state, {
-            audioTracks: state.audioTracks.map((track) => track.id === located.track.id
-                ? { ...track, clips: track.clips.filter((clip) => clip.id !== clipId) }
-                : track),
+        const audioTracks = deleteAudioClipCommand(state, clipId);
+        if (!audioTracks) return;
+        commitDurableMutation(state, {
+            audioTracks,
             transientSelection: state.transientSelection.kind === 'audio-clip'
                 && state.transientSelection.clipId === clipId
                 ? { kind: 'none' }
                 : state.transientSelection,
-        }, 'invalidate-transcription'));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Delete audio clip' },
+            impact: 'invalidate-transcription',
+            recalculateContentBoundary: true,
+        });
     },
 
     addAudioTrack: (name, requestedId) => {
         const state = get();
         const id = requestedId ?? crypto.randomUUID();
         if (!isSafeVideoId(id) || state.audioTracks.some((track) => track.id === id)) return '';
-        get().pushHistory();
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             audioTracks: [...state.audioTracks, {
                 id,
                 name: name?.trim() || `Audio ${state.audioTracks.length + 1}`,
@@ -1468,8 +1410,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
                 gainDb: 0,
                 clips: [],
             }],
-        }));
-        persistEditorMutation();
+        }, { history: { label: 'Add audio track' } });
         return id;
     },
 
@@ -1480,15 +1421,17 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const impact: AudioGraphMutationImpact = track.clips.length > 0
             ? 'invalidate-transcription'
             : 'preserve-transcription';
-        get().pushHistory(impact);
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             audioTracks: state.audioTracks.filter((item) => item.id !== trackId),
             transientSelection: state.transientSelection.kind === 'audio-clip'
                 && state.transientSelection.trackId === trackId
                 ? { kind: 'none' }
                 : state.transientSelection,
-        }, impact));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Remove audio track' },
+            impact,
+            recalculateContentBoundary: track.clips.length > 0,
+        });
     },
 
     renameAudioTrack: (trackId, name) => {
@@ -1496,11 +1439,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const track = state.audioTracks.find((item) => item.id === trackId);
         const nextName = name.trim();
         if (!track || track.locked || !nextName || track.name === nextName) return;
-        get().pushHistory();
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             audioTracks: state.audioTracks.map((item) => item.id === trackId ? { ...item, name: nextName } : item),
-        }));
-        persistEditorMutation();
+        }, { history: { label: 'Rename audio track', mergeKey: `audio-track-name:${trackId}` } });
     },
 
     updateAudioClipMix: (clipId, updates) => {
@@ -1532,16 +1473,20 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
                 fadeOutFrames: Math.max(0, Math.round(updates.fadeOutFrames ?? candidateClip.fadeOutFrames)),
             }, durationFrames);
         }
-        if (JSON.stringify(candidateClip) === JSON.stringify(located.clip)) return;
+        // Mix controls run continuously while sliders are dragged. Audio clips have a small,
+        // discriminated scalar schema, so direct equality keeps no-op updates off the durable
+        // mutation path without serializing objects on every pointer event.
+        if (audioClipsEqual(candidateClip, located.clip)) return;
         const audioTracks = state.audioTracks.map((track) => track.id === located.track.id
             ? { ...track, clips: track.clips.map((clip) => clip.id === clipId ? candidateClip : clip) }
             : track);
         const impact: AudioGraphMutationImpact = candidateClip.muted !== located.clip.muted
             ? 'invalidate-transcription'
             : 'preserve-transcription';
-        get().pushHistory(impact);
-        set(finalizeDurablePatch(state, { audioTracks }, impact));
-        persistEditorMutation();
+        commitDurableMutation(state, { audioTracks }, {
+            history: { label: 'Edit audio clip mix', mergeKey: `audio-clip-mix:${clipId}` },
+            impact,
+        });
     },
 
     updateAudioTrackMix: (trackId, updates) => {
@@ -1556,24 +1501,23 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const impact: AudioGraphMutationImpact = nextMuted !== track.muted || nextSolo !== track.solo
             ? 'invalidate-transcription'
             : 'preserve-transcription';
-        get().pushHistory(impact);
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             audioTracks: state.audioTracks.map((item) => item.id === trackId
                 ? { ...item, muted: nextMuted, solo: nextSolo, gainDb: nextGainDb }
                 : item),
-        }, impact));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Edit audio track mix', mergeKey: `audio-track-mix:${trackId}` },
+            impact,
+        });
     },
 
     setAudioTrackLocked: (trackId, locked) => {
         const state = get();
         const track = state.audioTracks.find((item) => item.id === trackId);
         if (!track || track.locked === locked) return;
-        get().pushHistory();
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             audioTracks: state.audioTracks.map((item) => item.id === trackId ? { ...item, locked } : item),
-        }));
-        persistEditorMutation();
+        }, { history: { label: locked ? 'Lock audio track' : 'Unlock audio track' } });
     },
 
     updateVideoClipAudio: (clipId, updates) => {
@@ -1611,23 +1555,21 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         const impact: AudioGraphMutationImpact = audio.muted !== current.muted
             ? 'invalidate-transcription'
             : 'preserve-transcription';
-        get().pushHistory(impact);
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             videoClips: state.videoClips.map((item) => item.id === clipId ? { ...item, audio } : item),
-        }, impact));
-        persistEditorMutation();
+        }, {
+            history: { label: 'Edit embedded audio', mergeKey: `video-audio:${clipId}` },
+            impact,
+        });
     },
 
     setSubtitleTrackTimingDomain: (trackId, timingDomain) => {
         const state = get();
         const track = state.tracks.find((item) => item.id === trackId);
         if (!track || getTrackTimingDomain(track) === timingDomain) return;
-        get().pushHistory();
-        set({
+        commitDurableMutation(state, {
             tracks: state.tracks.map((item) => item.id === trackId ? { ...item, timingDomain } : item),
-            revision: state.revision + 1,
-        });
-        persistEditorMutation();
+        }, { history: { label: 'Change subtitle timing domain' } });
     },
 
     setTrackTranscriptionState: (trackId, provenance) => {
@@ -1650,14 +1592,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             delete transcriptionByTrackId[trackId];
         }
         const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, state.activeTrackId);
-        get().pushHistory();
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             transcriptionByTrackId,
             rawTranscription: cloneSubtitles(legacy?.raw ?? null),
             transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
             transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
-        }));
-        persistEditorMutation();
+        }, { history: { label: 'Update transcription state' } });
     },
 
     createTranscriptionGuard: (trackId) => {
@@ -1680,40 +1620,38 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             return false;
         }
 
-        get().pushHistory();
-        set((current) => {
-            const tracks = current.tracks.map((track) => (
+        const tracks = state.tracks.map((track) => (
                 track.id === trackId ? { ...track, subtitles: cloneSubtitles(subtitles) ?? [] } : track
             ));
-            const nextRevision = current.revision + 1;
-            const transcriptionByTrackId = {
-                ...current.transcriptionByTrackId,
+        const nextRevision = state.revision + 1;
+        const transcriptionByTrackId = {
+                ...state.transcriptionByTrackId,
                 [trackId]: cloneTranscriptionByTrackId({
                     value: {
                         ...provenance,
                         sourceDocumentRevision: nextRevision,
-                        sourceAudioGraphRevision: current.audioGraphRevision,
-                        sourceAudioGraphSignature: getEditorAudioGraphSignature(buildEditorDocumentFromState(current)),
+                        sourceAudioGraphRevision: state.audioGraphRevision,
+                        sourceAudioGraphSignature: getEditorAudioGraphSignature(buildEditorDocumentFromState(state)),
                         stale: false,
                     },
                 }).value,
             };
-            const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, current.activeTrackId);
-            const selectedSubtitleIds = cleanSubtitleSelection(current.selectedSubtitleIds, tracks);
-            return {
-                tracks,
-                transcriptionByTrackId,
-                rawTranscription: cloneSubtitles(legacy?.raw ?? null),
-                transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
-                transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
-                selectedSubtitleIds,
-                transientSelection: current.transientSelection.kind === 'subtitles'
-                    ? transientSubtitleSelection(tracks, selectedSubtitleIds, current.activeTrackId)
-                    : current.transientSelection,
-                revision: nextRevision,
-            };
+        const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, state.activeTrackId);
+        const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, tracks);
+        commitDurableMutation(state, {
+            tracks,
+            transcriptionByTrackId,
+            rawTranscription: cloneSubtitles(legacy?.raw ?? null),
+            transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
+            transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
+            selectedSubtitleIds,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(tracks, selectedSubtitleIds, state.activeTrackId)
+                : state.transientSelection,
+        }, {
+            history: { label: 'Replace subtitles with transcription' },
+            recalculateContentBoundary: true,
         });
-        persistEditorMutation();
         return true;
     },
 
@@ -1754,47 +1692,60 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         return revision;
     },
 
+    ensureRevisionAtLeast: (revisionFloor) => {
+        const currentRevision = get().revision;
+        const revision = Math.max(currentRevision, Math.floor(revisionFloor));
+        if (revision !== currentRevision) set({ revision });
+        return revision;
+    },
+
     setTracks: (tracks, options) => {
-        if (!options?.resetHistory && !options?.skipHistory) {
-            get().pushHistory();
+        const state = get();
+        const isValidActive = tracks.some(t => t.id === state.activeTrackId);
+        const activeTrackId = isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null);
+        const trackIds = new Set(tracks.map((track) => track.id));
+        const transcriptionByTrackId = Object.fromEntries(
+            Object.entries(state.transcriptionByTrackId).filter(([trackId]) => trackIds.has(trackId)),
+        );
+        const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, activeTrackId);
+        const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, tracks);
+
+        const patch: Partial<TimelineStore> = {
+            tracks,
+            activeTrackId,
+            selectedSubtitleIds,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(tracks, selectedSubtitleIds, activeTrackId)
+                : state.transientSelection,
+            selectedClipId: state.selectedClipId
+                && state.videoClips.some((clip) => clip.id === state.selectedClipId)
+                ? state.selectedClipId
+                : null,
+            transcriptionByTrackId,
+            rawTranscription: cloneSubtitles(legacy?.raw ?? null),
+            transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
+            transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
+            lastSelectedId: null,
+            isVideoSelected: false,
+        };
+        if (options?.resetHistory) {
+            set({
+                ...patch,
+                contentBoundaryRevision: state.contentBoundaryRevision + 1,
+                history: [],
+                redoStack: [],
+                historySequence: 0,
+                historyBytes: 0,
+            });
+            if (!options.skipSave) persistEditorMutation();
+            return;
         }
-
-        set((state) => {
-            const isValidActive = tracks.some(t => t.id === state.activeTrackId);
-            const activeTrackId = isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null);
-            const trackIds = new Set(tracks.map((track) => track.id));
-            const transcriptionByTrackId = Object.fromEntries(
-                Object.entries(state.transcriptionByTrackId).filter(([trackId]) => trackIds.has(trackId)),
-            );
-            const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, activeTrackId);
-            const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, tracks);
-
-            return {
-                tracks,
-                activeTrackId,
-                selectedSubtitleIds,
-                transientSelection: state.transientSelection.kind === 'subtitles'
-                    ? transientSubtitleSelection(tracks, selectedSubtitleIds, activeTrackId)
-                    : state.transientSelection,
-                selectedClipId: state.selectedClipId
-                    && state.videoClips.some((clip) => clip.id === state.selectedClipId)
-                    ? state.selectedClipId
-                    : null,
-                transcriptionByTrackId,
-                rawTranscription: cloneSubtitles(legacy?.raw ?? null),
-                transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
-                transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
-                lastSelectedId: null,
-                revision: options?.resetHistory ? state.revision : state.revision + 1,
-                history: options?.resetHistory ? [] : state.history,
-                redoStack: options?.resetHistory ? [] : state.redoStack,
-                isVideoSelected: false
-            };
+        commitDurableMutation(state, patch, {
+            recordHistory: !options?.skipHistory,
+            history: { label: 'Replace subtitle tracks' },
+            persist: !options?.skipSave,
+            recalculateContentBoundary: true,
         });
-
-        if (!options?.skipSave) {
-            persistEditorMutation();
-        }
     },
 
     setVideoSelected: (selected) => set((state) => ({
@@ -1807,7 +1758,81 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             : { kind: 'none' },
     })),
 
-    setIsDragging: (dragging) => set({ isDragging: dragging }),
+    setIsDragging: (dragging, metadata) => {
+        if (dragging) {
+            if (metadata && !metadata.label.trim()) {
+                throw new Error('Subtitle drag sessions require semantic history metadata.');
+            }
+            if (!subtitleDragPreview && metadata) {
+                const state = get();
+                subtitleDragPreview = {
+                    durableTracks: state.tracks,
+                    previewTracks: state.tracks,
+                    touchedFields: new Map(),
+                    movedSubtitleIds: new Set(),
+                    historyMetadata: metadata,
+                };
+            }
+            // Ruler, playhead, and numeric-input drags share this UI activity flag but do not
+            // mutate subtitle documents. Only a caller with semantic metadata opens the deferred
+            // subtitle history transaction above.
+            set({ isDragging: true });
+            return;
+        }
+
+        const current = get();
+        const preview = subtitleDragPreview;
+        subtitleDragPreview = null;
+        if (!preview) {
+            if (current.isDragging) set({ isDragging: false });
+            return;
+        }
+
+        const recalculateContentBoundary = subtitlePreviewRecalculatesContentBoundary(preview);
+        if (!subtitlePreviewChangesDurableTracks(preview)) {
+            // Returning to the durable position is a strict no-op. A deferred history request was
+            // never inserted, so concurrent command history remains untouched. A timing preview
+            // still invalidates the cached terminal frame once more when its overlay is removed.
+            set({
+                tracks: preview.durableTracks,
+                isDragging: false,
+                ...(recalculateContentBoundary
+                    ? { contentBoundaryRevision: current.contentBoundaryRevision + 1 }
+                    : {}),
+            });
+            return;
+        }
+
+        const durableState = { ...current, tracks: preview.durableTracks } as TimelineStore;
+        const finalTracks = applySubtitlePreviewToDurableTracks(preview);
+        const prepared = prepareDurableTimelineMutation(durableState, {
+            tracks: finalTracks,
+        }, {
+            history: preview.historyMetadata,
+            recalculateContentBoundary,
+        });
+        if (!prepared) {
+            set({
+                tracks: preview.durableTracks,
+                isDragging: false,
+                ...(recalculateContentBoundary
+                    ? { contentBoundaryRevision: current.contentBoundaryRevision + 1 }
+                    : {}),
+            });
+            return;
+        }
+
+        const committedState = { ...durableState, ...prepared, isDragging: false } as TimelineStore;
+        set({ ...prepared, isDragging: false });
+        persistEditorMutation([], committedState);
+    },
+
+    cancelSubtitleDrag: () => {
+        // Cancellation restores the closure-owned durable baseline without recording the pointer
+        // preview as a command. This is intentionally distinct from setIsDragging(false), whose
+        // physical pointer-up terminal commits the complete gesture.
+        discardActiveDragPreview();
+    },
 
     setActiveTrackId: (id) => {
         const state = get();
@@ -1816,14 +1841,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             : (state.tracks.length > 0 ? state.tracks[0].id : null);
         if (activeTrackId === state.activeTrackId) return;
         const legacy = getLegacyTranscriptionForTrack(state.transcriptionByTrackId, activeTrackId);
-        set({
+        commitDurableMutation(state, {
             activeTrackId,
             rawTranscription: cloneSubtitles(legacy?.raw ?? null),
             transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
             transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
-            revision: state.revision + 1,
-        });
-        persistEditorMutation();
+        }, { recordHistory: false });
     },
 
     toggleSubtitleSelection: (id, isMulti, isRange) => set((state) => {
@@ -1911,10 +1934,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     }),
 
     pasteSelection: (targetStartTime) => {
-        const { clipboard, tracks, activeTrackId, pushHistory, toggleSubtitleSelection, clearSelection } = get();
+        const state = get();
+        const { clipboard, tracks, activeTrackId } = state;
         if (!clipboard || clipboard.length === 0) return;
-
-        pushHistory();
 
         const baseTrackIndex = tracks.findIndex(t => t.id === activeTrackId);
         const refTrackIndex = baseTrackIndex !== -1 ? baseTrackIndex : 0;
@@ -1951,16 +1973,18 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             };
         });
 
-        set((state) => ({ tracks: newTracks, revision: state.revision + 1 }));
-        persistEditorMutation();
-
-        // Select the newly pasted subtitles
-        if (newSelectionIds.length > 0) {
-            clearSelection();
-            newSelectionIds.forEach((id, idx) => {
-                toggleSubtitleSelection(id, idx > 0);
-            });
-        }
+        const selectedSubtitleIds = [...newSelectionIds];
+        commitDurableMutation(state, {
+            tracks: newTracks,
+            selectedSubtitleIds,
+            lastSelectedId: selectedSubtitleIds.at(-1) ?? null,
+            selectedClipId: null,
+            isVideoSelected: false,
+            transientSelection: transientSubtitleSelection(newTracks, selectedSubtitleIds, activeTrackId),
+        }, {
+            history: { label: 'Paste subtitles' },
+            recalculateContentBoundary: true,
+        });
     },
 
     trimSubtitleAtTime: (time, side) => {
@@ -2060,7 +2084,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     },
 
     requestEditSubtitleAtTime: (time) => {
-        const { tracks, activeTrackId, selectSubtitleAtTime, addSubtitleToTrack, toggleSubtitleSelection } = get();
+        const { tracks, activeTrackId, selectSubtitleAtTime } = get();
         const subtitleId = selectSubtitleAtTime(time);
 
         if (subtitleId) {
@@ -2095,14 +2119,32 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
         if (endTime - time < 1 / fps) return;
 
         // 5. Create and focus
-        const newId = addSubtitleToTrack(targetTrackId, {
-            startTime: time,
-            endTime: endTime,
-            text: ''
+        const newId = crypto.randomUUID();
+        const state = get();
+        const nextTracks = state.tracks.map((track) => track.id === targetTrackId
+            ? {
+                ...track,
+                subtitles: [...track.subtitles, {
+                    id: newId,
+                    startTime: time,
+                    endTime,
+                    text: '',
+                }],
+            }
+            : track);
+        commitDurableMutation(state, {
+            tracks: nextTracks,
+            activeTrackId: targetTrackId,
+            selectedSubtitleIds: [newId],
+            lastSelectedId: newId,
+            selectedClipId: null,
+            isVideoSelected: false,
+            transientSelection: transientSubtitleSelection(nextTracks, [newId], targetTrackId),
+        }, {
+            history: { label: 'Add subtitle' },
+            recalculateContentBoundary: true,
         });
 
-        // Select it (so it highlights on timeline) and request edit (so SubtitleList focuses it)
-        toggleSubtitleSelection(newId, false, false);
         set({ requestEditSubtitleId: newId });
     },
 
@@ -2128,17 +2170,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
             }
         }
 
-        get().pushHistory();
-        set(finalizeDurablePatch(state, {
+        commitDurableMutation(state, {
             transcriptionGroups: groups,
             transcriptionContainerIds: containerIds,
             rawTranscription: nextRaw,
             transcriptionByTrackId,
-        }));
-
-        // Save after Zustand has applied the new transcription fields; the
-        // storage helper reads them from the current store state.
-        persistEditorMutation();
+        }, { history: { label: 'Update transcription grouping' } });
     },
 
     generateDefaultGrouperState: (words, wordsPerLine = 3) =>
@@ -2151,4 +2188,5 @@ export const useTimelineStore = create<TimelineStore>((set, get) => ({
     clearCuts: () => set({ cuts: [] }),
     setDetectionProgress: (progress) => set({ detectionProgress: progress }),
     setIsDetecting: (isDetecting) => set({ isDetecting })
-}));
+    });
+});

@@ -166,7 +166,8 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
             const requestGeneration = ++clockRequestGeneration;
             stopTimer();
             externalClockDriving = true;
-            clockDriver.seek(get().currentTime);
+            // Snapshot application and every editor seek already position the driver. Re-seeking
+            // on each play discarded its warm queue and reopened the exact same scheduling work.
             clockDriver.setPlaybackRate(get().speed);
             clockDriver.setMasterGain(get().volume);
             Promise.resolve(clockDriver.play()).catch((error) => {
@@ -282,7 +283,9 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
         externalClockDriving = false;
         clockDriver = driver;
         if (driver) {
-            driver.seek(get().currentTime);
+            // The editor applies its document and current playhead atomically before registering
+            // the driver. Seeking here used to discard that freshly primed queue a second time.
+            // Explicit user/store seeks still flow through the ordinary seek action below.
             driver.setPlaybackRate(get().speed);
             driver.setMasterGain(get().volume);
         }

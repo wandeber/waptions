@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_RENDER_PROFILE,
     createDefaultRenderProfile,
+    frameRateToNumber,
     framesToSeconds,
     normalizeFrameRate,
     outputFramesToSamples,
@@ -20,6 +21,7 @@ describe('render profile timing', () => {
             denominator: 1_001,
         });
         expect(framesToSeconds(24_000, { numerator: 24_000, denominator: 1_001 })).toBe(1_001);
+        expect(frameRateToNumber({ numerator: 24_000, denominator: 1_001 })).toBe(24_000 / 1_001);
     });
 
     it('supports explicit boundary rounding when converting seconds to frames', () => {

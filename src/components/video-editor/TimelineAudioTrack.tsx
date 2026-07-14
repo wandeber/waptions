@@ -19,6 +19,7 @@ import {
 import { secondsToFrames } from '@/lib/render-profile';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { TimelineAudioClip } from './TimelineAudioClip';
+import { useShallow } from 'zustand/react/shallow';
 
 interface TimelineAudioTrackProps {
     track: AudioTrack;
@@ -83,7 +84,10 @@ export function TimelineAudioTrack({
     pixelsPerSecond,
     peaksByMediaKey,
 }: TimelineAudioTrackProps) {
-    const { transientSelection, selectClip } = useTimelineStore();
+    const { transientSelection, selectClip } = useTimelineStore(useShallow((state) => ({
+        transientSelection: state.transientSelection,
+        selectClip: state.selectClip,
+    })));
     const visualDataByClipId = useMemo(() => {
         const data = new Map<string, AudioClipVisualData>();
         allTracks.forEach((candidateTrack) => candidateTrack.clips.forEach((clip) => {

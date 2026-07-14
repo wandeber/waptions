@@ -8,6 +8,7 @@ import { CloseIcon } from '../../icons/CloseIcon';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { FileText } from 'lucide-react';
 import { TranscriptionViewModal } from '../TranscriptionViewModal';
+import { useShallow } from 'zustand/react/shallow';
 
 interface SubtitleListProps {
   subtitles: Subtitle[];
@@ -20,6 +21,10 @@ interface SubtitleListProps {
   onGenerateSubtitles?: () => void;
   isGeneratingSubtitles?: boolean;
   onTextChange: (subtitle: Subtitle, newText: string) => void;
+  onTextFocus: (subtitle: Subtitle) => void;
+  onTextBlur: (subtitle: Subtitle) => void;
+  onCompositionStart: (subtitle: Subtitle) => void;
+  onCompositionEnd: (subtitle: Subtitle) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>, subtitle: Subtitle) => void;
 }
 
@@ -34,9 +39,17 @@ export function SubtitleList({
   onGenerateSubtitles,
   isGeneratingSubtitles,
   onTextChange,
+  onTextFocus,
+  onTextBlur,
+  onCompositionStart,
+  onCompositionEnd,
   onKeyDown
 }: SubtitleListProps) {
-  const { selectedSubtitleIds, toggleSubtitleSelection, clearSelection } = useTimelineStore();
+  const { selectedSubtitleIds, toggleSubtitleSelection, clearSelection } = useTimelineStore(useShallow((state) => ({
+    selectedSubtitleIds: state.selectedSubtitleIds,
+    toggleSubtitleSelection: state.toggleSubtitleSelection,
+    clearSelection: state.clearSelection,
+  })));
   const selectedSubtitleId = selectedSubtitleIds[selectedSubtitleIds.length - 1]; // Main selected for scrolling
   const textAreasRef = useRef<{ [key: string]: HTMLTextAreaElement | null }>({});
   const isInternalInteraction = useRef(false);
@@ -103,7 +116,10 @@ export function SubtitleList({
     }
   }, [selectedSubtitleId]);
 
-  const { requestEditSubtitleId, clearEditRequest } = useTimelineStore();
+  const { requestEditSubtitleId, clearEditRequest } = useTimelineStore(useShallow((state) => ({
+    requestEditSubtitleId: state.requestEditSubtitleId,
+    clearEditRequest: state.clearEditRequest,
+  })));
 
   // Handle focus request from shortcuts
   useEffect(() => {
@@ -133,6 +149,7 @@ export function SubtitleList({
       toggleSubtitleSelection(subtitle.id);
     }
     onSubtitleClick?.(subtitle);
+    onTextFocus(subtitle);
   };
 
   return (
@@ -260,6 +277,9 @@ export function SubtitleList({
                     handleInternalSelect(e, subtitle);
                   }}
                   onFocus={() => handleFocus(subtitle)}
+                  onBlur={() => onTextBlur(subtitle)}
+                  onCompositionStart={() => onCompositionStart(subtitle)}
+                  onCompositionEnd={() => onCompositionEnd(subtitle)}
                   onMouseDown={(e) => e.stopPropagation()}
                   onKeyDown={(e) => onKeyDown(e, subtitle)}
                   placeholder="Escribe el texto del subtítulo aquí..."

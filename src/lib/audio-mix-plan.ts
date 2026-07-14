@@ -38,6 +38,11 @@ export interface AudioMixPlan {
     contributors: AudioMixContributor[];
 }
 
+export type AudioMixDocument = Pick<
+    EditorDocumentV3,
+    'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
+>;
+
 interface CandidateContributor extends AudioMixContributor {
     trackSolo: boolean;
 }
@@ -55,7 +60,7 @@ export function decibelsToLinear(decibels: number): number {
  * any track that has an audible contributor suppresses both non-solo tracks and embedded video
  * audio, matching the behavior of conventional editor track mixers.
  */
-export function buildAudioMixPlan(document: EditorDocumentV3): AudioMixPlan {
+export function buildAudioMixPlan(document: AudioMixDocument): AudioMixPlan {
     const { fps } = document.renderProfile;
     const videoSourcesById = new Map(document.videoSources.map((source) => [source.id, source]));
     const candidates: CandidateContributor[] = [];

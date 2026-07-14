@@ -33,6 +33,7 @@ export function extractWaveformPeaksInWorker(
     duration: number,
     signal: AbortSignal,
     createWorker: CreateWaveformWorker = createBrowserWaveformWorker,
+    onProgress?: (peaks: WaveformPeaks) => void,
 ): Promise<WaveformPeaks | null> {
     if (signal.aborted) return Promise.resolve(null);
 
@@ -59,6 +60,17 @@ export function extractWaveformPeaksInWorker(
         const handleAbort = () => settle(null);
 
         worker.onmessage = (event) => {
+            if (settled) return;
+            if (event.data.type === 'progress') {
+                // Progress is advisory. A rendering callback must never strand the worker or
+                // convert a successful decode into an unhandled message-event exception.
+                try {
+                    onProgress?.(event.data.peaks);
+                } catch (error) {
+                    console.error('Failed to publish progressive waveform peaks:', error);
+                }
+                return;
+            }
             if (event.data.type === 'result') {
                 settle(event.data.peaks);
                 return;

@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Headphones, Lock, Trash2, Unlock, Volume2, VolumeX } from 'lucide-react';
+import { CommittedRangeInput } from '@/components/design-system/CommittedRangeInput';
 import type { AudioTrack } from '@/types/video';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useShallow } from 'zustand/react/shallow';
 
 interface TimelineAudioTrackHeaderProps {
     track: AudioTrack;
@@ -16,24 +18,20 @@ export function TimelineAudioTrackHeader({ track }: TimelineAudioTrackHeaderProp
         removeAudioTrack,
         setAudioTrackLocked,
         updateAudioTrackMix,
-    } = useTimelineStore();
+    } = useTimelineStore(useShallow((state) => ({
+        renameAudioTrack: state.renameAudioTrack,
+        removeAudioTrack: state.removeAudioTrack,
+        setAudioTrackLocked: state.setAudioTrackLocked,
+        updateAudioTrackMix: state.updateAudioTrackMix,
+    })));
     const [nameDraft, setNameDraft] = useState(track.name);
-    const [gainDraft, setGainDraft] = useState(track.gainDb);
     const escapedNameRef = useRef(false);
     const lastCommittedNameRef = useRef(track.name);
-    const pointerGainRef = useRef(false);
-    const gainDraftRef = useRef(track.gainDb);
-    const lastCommittedGainRef = useRef(track.gainDb);
 
     useEffect(() => {
         setNameDraft(track.name);
         lastCommittedNameRef.current = track.name;
     }, [track.name]);
-    useEffect(() => {
-        setGainDraft(track.gainDb);
-        gainDraftRef.current = track.gainDb;
-        lastCommittedGainRef.current = track.gainDb;
-    }, [track.gainDb]);
 
     const commitName = () => {
         if (escapedNameRef.current) {
@@ -47,13 +45,6 @@ export function TimelineAudioTrackHeader({ track }: TimelineAudioTrackHeaderProp
             renameAudioTrack(track.id, nextName);
         }
         else setNameDraft(track.name);
-    };
-    const commitGain = (value: number) => {
-        if (value === lastCommittedGainRef.current) return;
-        // Marking the terminal value before the store call prevents pointerup followed by blur
-        // from dispatching the same durable action twice while React is still rendering it.
-        lastCommittedGainRef.current = value;
-        updateAudioTrackMix(track.id, { gainDb: value });
     };
 
     return (
@@ -111,34 +102,14 @@ export function TimelineAudioTrackHeader({ track }: TimelineAudioTrackHeaderProp
               </button>
               <label className="flex min-w-0 flex-1 items-center gap-1 px-1 text-[9px] text-gray-500" title="Track gain">
                 <span className="sr-only">Gain for {track.name}</span>
-                <input
-                    type="range"
-                    min={-60}
-                    max={12}
-                    step={1}
-                    value={gainDraft}
+                <CommittedRangeInput
+                    minimum={-60}
+                    maximum={12}
+                    value={track.gainDb}
                     disabled={track.locked}
-                    aria-label={`Gain for ${track.name}`}
+                    ariaLabel={`Gain for ${track.name}`}
                     className="w-full min-w-8 accent-emerald-500 disabled:opacity-40"
-                    onPointerDown={() => { pointerGainRef.current = true; }}
-                    onPointerUp={() => {
-                        pointerGainRef.current = false;
-                        commitGain(gainDraftRef.current);
-                    }}
-                    onPointerCancel={() => {
-                        pointerGainRef.current = false;
-                        gainDraftRef.current = track.gainDb;
-                        setGainDraft(track.gainDb);
-                    }}
-                    onChange={(event) => {
-                        const value = Number(event.target.value);
-                        gainDraftRef.current = value;
-                        setGainDraft(value);
-                        if (!pointerGainRef.current) commitGain(value);
-                    }}
-                    onBlur={() => {
-                        if (!pointerGainRef.current) commitGain(gainDraftRef.current);
-                    }}
+                    onCommit={(gainDb) => updateAudioTrackMix(track.id, { gainDb })}
                 />
               </label>
               <button

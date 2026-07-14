@@ -31,6 +31,12 @@ export function isSafeFrameRate(rate: RationalFrameRate): boolean {
         && rate.denominator > 0;
 }
 
+/** Converts the canonical rational frame rate to the runtime scalar used by legacy UI helpers. */
+export function frameRateToNumber(rate: RationalFrameRate): number {
+    const normalized = normalizeFrameRate(rate);
+    return normalized.numerator / normalized.denominator;
+}
+
 export function createDefaultRenderProfile(
     overrides: Partial<Omit<RenderProfile, 'audioSampleRate'>> = {},
 ): RenderProfile {

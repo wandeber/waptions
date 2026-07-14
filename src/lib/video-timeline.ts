@@ -31,6 +31,12 @@ export interface VideoFingerprintInput {
     lastModified: number;
 }
 
+export interface LegacySourceFingerprintScope {
+    projectId: string;
+    kind: 'video-source' | 'audio-source';
+    sourceId: string;
+}
+
 export interface SourceFramePosition {
     index: number;
     time: number;
@@ -46,9 +52,9 @@ export function isSafeVideoId(id: string): boolean {
 }
 
 /**
- * Creates a stable metadata fingerprint without reading the source bytes. Length-prefixed
- * fields avoid ambiguous concatenations, while the two FNV-1a passes make the compact result
- * deterministic in browsers and Node without relying on crypto or browser globals.
+ * Creates the deterministic v1 metadata fingerprint retained for legacy projects and validation.
+ * New imports wrap this checksum with a persisted random identity below, because metadata alone
+ * cannot safely identify byte content. Length prefixes keep the compatibility hash unambiguous.
  */
 export function createVideoSourceFingerprint(input: VideoFingerprintInput): string {
     const parts = [input.name, input.type, String(input.size), String(input.lastModified)];
@@ -66,6 +72,70 @@ export function createVideoSourceFingerprint(input: VideoFingerprintInput): stri
     const first = hash(0x811c9dc5, value);
     const second = hash(0x9e3779b9, value.split('').reverse().join(''));
     return `v1_${first.toString(16).padStart(8, '0')}${second.toString(16).padStart(8, '0')}`;
+}
+
+const IMMUTABLE_SOURCE_IDENTITY_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Creates the collision-safe identity persisted for a newly imported media source.
+ *
+ * The v1 prefix remains a metadata compatibility checksum. A separate random import identity
+ * makes two different byte streams with identical name, type, size, and mtime distinct without
+ * reading a multi-gigabyte File into memory. This deliberately gives up cross-import content
+ * deduplication: correctness is preferable to reusing derived frames or peaks for the wrong file.
+ */
+export function createImmutableVideoSourceFingerprint(
+    input: VideoFingerprintInput,
+    importIdentity = crypto.randomUUID(),
+): string {
+    if (!IMMUTABLE_SOURCE_IDENTITY_PATTERN.test(importIdentity)) {
+        throw new Error('Media source import identity must contain only safe ID characters.');
+    }
+    return `v2_${createVideoSourceFingerprint(input).slice(3)}_${importIdentity}`;
+}
+
+/**
+ * Upgrades a metadata-only legacy fingerprint to a durable identity without reading the File.
+ *
+ * The length-prefixed scope is encoded losslessly instead of hashed. That makes the upgrade
+ * deterministic across reloads while keeping two legacy blobs in different project/source slots
+ * isolated even when every piece of File metadata is identical. New imports must continue using
+ * a random identity: this project-scoped form exists only for records that predate import IDs.
+ */
+export function createLegacySourceUpgradeFingerprint(
+    input: VideoFingerprintInput,
+    scope: LegacySourceFingerprintScope,
+): string {
+    const scopeParts = [scope.projectId, scope.kind, scope.sourceId];
+    const scopeValue = scopeParts.map((part) => `${part.length}:${part}`).join('|');
+    let encodedScope = '';
+    // Encoding every UTF-16 code unit avoids TextEncoder's replacement of lone surrogates, so
+    // even unusual imported project IDs retain a one-to-one mapping to the cache identity.
+    for (let index = 0; index < scopeValue.length; index += 1) {
+        encodedScope += scopeValue.charCodeAt(index).toString(16).padStart(4, '0');
+    }
+    return createImmutableVideoSourceFingerprint(input, `legacy_${encodedScope}`);
+}
+
+/** Returns true for the durable v2 identity format used by new imports and legacy migrations. */
+export function isImmutableVideoSourceFingerprint(fingerprint: string): boolean {
+    const match = /^v2_([0-9a-f]{16})_([A-Za-z0-9_-]+)$/.exec(fingerprint);
+    return Boolean(match);
+}
+
+/**
+ * Validates both deterministic v1 fingerprints and durable v2 fingerprints against File
+ * metadata. Keeping v1 readable preserves V1/V2/V3 projects and bundles created before the
+ * immutable import identity was introduced.
+ */
+export function doesVideoSourceFingerprintMatch(
+    fingerprint: string,
+    input: VideoFingerprintInput,
+): boolean {
+    const legacyFingerprint = createVideoSourceFingerprint(input);
+    if (fingerprint === legacyFingerprint) return true;
+    if (!isImmutableVideoSourceFingerprint(fingerprint)) return false;
+    return fingerprint.startsWith(`v2_${legacyFingerprint.slice(3)}_`);
 }
 
 export function validateEditorDocument(document: EditorDocumentV2): VideoDocumentValidationResult {
@@ -673,12 +743,12 @@ function validateSourceMetadata(
     path: string,
     addIssue: (code: VideoDocumentValidationIssue['code'], path: string, message: string) => void,
 ): void {
-    const descriptorFingerprint = createVideoSourceFingerprint({
+    const fingerprintInput = {
         name: source.originalName,
         type: source.mimeType,
         size: source.size,
         lastModified: source.lastModified,
-    });
+    };
     if (
         !isPositiveFinite(source.duration)
         || !isPositiveFinite(source.fps)
@@ -690,7 +760,7 @@ function validateSourceMetadata(
         || source.size < 0
         || !Number.isFinite(source.lastModified)
         || (source.bitrate !== null && (!Number.isFinite(source.bitrate) || source.bitrate < 0))
-        || source.fingerprint !== descriptorFingerprint
+        || !doesVideoSourceFingerprintMatch(source.fingerprint, fingerprintInput)
     ) {
         addIssue('invalid-source', path, 'Video source metadata contains invalid numeric values.');
     }
@@ -705,7 +775,7 @@ function validateSourceFile(
         addIssue('file-mismatch', `${path}.file`, 'Source File is missing.');
         return;
     }
-    const fingerprint = createVideoSourceFingerprint({
+    const fingerprintMatches = doesVideoSourceFingerprintMatch(source.fingerprint, {
         name: source.file.name,
         type: source.file.type,
         size: source.file.size,
@@ -716,7 +786,7 @@ function validateSourceFile(
         || source.file.type !== source.mimeType
         || source.file.size !== source.size
         || source.file.lastModified !== source.lastModified
-        || fingerprint !== source.fingerprint
+        || !fingerprintMatches
     ) {
         addIssue('file-mismatch', `${path}.file`, 'Source File metadata does not match its descriptor.');
     }

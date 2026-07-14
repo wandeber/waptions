@@ -1,33 +1,62 @@
 import {
+    ALL_FORMATS,
     AudioSampleSource,
-    BufferTarget,
+    BlobSource,
+    CanvasSink,
     CanvasSource,
+    Input,
     Mp4OutputFormat,
     Output,
     WebMOutputFormat,
     getFirstEncodableAudioCodec,
+    type InputVideoTrack,
+    type WrappedCanvas,
 } from 'mediabunny';
 import type {
     ExportOptions,
-    ExportProjectRequest,
+    ExportProjectContext,
     ExportResult,
-    LegacyExportProjectContext,
 } from '@/types/export';
-import type { ClipPlacement, EditorDocumentV3, RationalFrameRate } from '@/types/video';
-import { videoCache } from './video-cache';
+import type {
+    ClipPlacement,
+    EditorDocumentV3,
+    VideoSourceAssetV3,
+} from '@/types/video';
 import { renderSubtitles } from './subtitle-renderer';
 import { waitForFonts } from './fonts/google-fonts';
 import {
     buildClipPlacements,
     getSourceFrameAtOrBefore,
-    getTimelineContentEndFrame,
     projectTimeToSourceTime,
     resolveClipAtProjectTime,
 } from './video-timeline';
-import { calculateActiveTimelineBitrate } from './export-bitrate';
 import { frameToOutputSample } from './audio-timebase';
-import { framesToSeconds, normalizeFrameRate } from './render-profile';
+import { framesToSeconds } from './render-profile';
 import { TimelineAudioRenderer } from './timeline-audio-renderer';
+import { drawContainedVideoFrame } from './video-compositor';
+import {
+    VideoFrameSession,
+    type VideoFrameSessionBackend,
+    type VideoFrameSessionInput,
+} from './video-frame-session';
+import { runtimeDiagnostics } from './runtime-diagnostics';
+import {
+    awaitExportPhase,
+    calculateExportVideoBitrate,
+    createExportDocumentSnapshot,
+    createExportProgressReporter,
+    getExportContentEndFrame,
+    isExportAbortError,
+    throwIfExportAborted,
+} from './export-job';
+import {
+    createExportDestinationRuntime,
+    type ExportDestinationRuntime,
+} from './export-destination';
+
+export { getExportContentEndFrame } from './export-job';
+export { estimateExportOutputBytes } from './export-job';
+export { createExportDocumentSnapshot } from './export-job';
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     format: 'mp4',
@@ -35,22 +64,16 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     includeAudio: true,
 };
 
-class ExportCancelledError extends Error {
-    constructor() {
-        super('Export was cancelled.');
-        this.name = 'AbortError';
-    }
-}
-
-/** Exact exclusive content boundary shared by the timeline, playback, and export. */
-export function getExportContentEndFrame(document: EditorDocumentV3): number {
-    return getTimelineContentEndFrame(document.videoClips, document.subtitleTracks, {
-        renderProfile: document.renderProfile,
-        videoSources: document.videoSources,
-        audioSources: document.audioSources,
-        audioTracks: document.audioTracks,
-    });
-}
+const EXPORT_VIDEO_SESSION_BACKEND: VideoFrameSessionBackend = {
+    createInput: (file) => new Input({
+        source: new BlobSource(file),
+        formats: ALL_FORMATS,
+    }) as unknown as VideoFrameSessionInput,
+    // Export consumes each pooled canvas before requesting the next frame. A pool of two permits
+    // decoder handoff between current and next while preventing the five-frame preview pool from
+    // being multiplied by large export canvases.
+    createSink: (track) => new CanvasSink(track as InputVideoTrack, { poolSize: 2 }),
+};
 
 /**
  * Resolves the visual clip for one canonical output frame.
@@ -70,30 +93,52 @@ export function resolveExportVideoPlacement(
     );
 }
 
-/** Exports the complete v3 editor graph with deterministic video, subtitle, and audio tails. */
-export async function exportProject(request: ExportProjectRequest): Promise<ExportResult> {
+/**
+ * Exports one immutable V3 editor snapshot into an already-authorized destination.
+ *
+ * This job never calls the shared preview cache. It owns one source-native VideoFrameSession at a
+ * time and disposes it on source switches, cancellation, or completion, so a long export cannot
+ * evict warmed playhead frames or retain a frame per source. Every asynchronous boundary observes
+ * the caller's AbortSignal, while terminal cleanup remains idempotent and awaited.
+ */
+export async function exportProject(request: ExportProjectContext): Promise<ExportResult> {
+    const startedAt = now();
+    const signal = request.options.signal;
+    const reportProgress = createExportProgressReporter(request.options.onProgress);
     let output: Output | null = null;
     let videoSource: CanvasSource | null = null;
     let audioSource: AudioSampleSource | null = null;
-    let outputTarget: BufferTarget | null = null;
+    let videoReader: ExportVideoFrameReader | null = null;
+    let destinationRuntime: ExportDestinationRuntime | null = null;
     let videoSourceClosed = false;
     let audioSourceClosed = false;
-    const mediaIds = new Set<string>();
+    let finalizePromise: Promise<void> | null = null;
+    let outcome: 'completed' | 'failed' | 'aborted' = 'failed';
+    let terminalReason: unknown;
 
     const closeVideoSource = (): void => {
         if (!videoSource || videoSourceClosed) return;
-        videoSource.close();
         videoSourceClosed = true;
+        videoSource.close();
     };
     const closeAudioSource = (): void => {
         if (!audioSource || audioSourceClosed) return;
-        audioSource.close();
         audioSourceClosed = true;
+        audioSource.close();
     };
 
+    runtimeDiagnostics.increment('export', 'started');
+
     try {
-        const document = normalizeExportRequest(request);
-        const { format, quality, includeAudio = true, onProgress, onCancel } = request.options;
+        // The File System Access writable is already open when exportProject is called. Establish
+        // its idempotent owner before snapshotting, validation, cancellation checks, font loading,
+        // or progress callbacks so every early exit reaches one awaited terminal operation.
+        destinationRuntime = createExportDestinationRuntime(request.destination, signal);
+        const destination = destinationRuntime;
+        const document = createExportDocumentSnapshot(request.document);
+        throwIfExportAborted(signal);
+        reportProgress(0);
+        const { format, quality, includeAudio = true } = request.options;
         if (document.videoClips.length === 0) {
             return { success: false, error: 'The timeline has no video clips.' };
         }
@@ -102,10 +147,10 @@ export async function exportProject(request: ExportProjectRequest): Promise<Expo
         const firstSource = sourcesById.get(document.videoClips[0].sourceId);
         if (!firstSource) return { success: false, error: 'The first clip source is missing.' };
 
-        await waitForFonts(Array.from(new Set(
+        await awaitExportPhase(waitForFonts(Array.from(new Set(
             document.subtitleTracks.map((track) => track.style.fontFamily),
-        )));
-        throwIfCancelled(onCancel);
+        ))), signal);
+        throwIfExportAborted(signal);
 
         const frameRate = document.renderProfile.fps;
         const frameRateNumber = frameRate.numerator / frameRate.denominator;
@@ -114,19 +159,13 @@ export async function exportProject(request: ExportProjectRequest): Promise<Expo
         const placements = buildClipPlacements(document.videoClips, frameRate);
         const canvasWidth = document.renderProfile.width;
         const canvasHeight = document.renderProfile.height;
-
-        const sourceBitrate = calculateActiveTimelineBitrate(document.videoSources, document.videoClips);
-        const multipliers = { low: 0.5, medium: 0.8, high: 1.2, very_high: 2.0 };
-        const baseBitrate = canvasWidth * canvasHeight / (1920 * 1080) * 10_000_000;
-        const targetBitrate = Math.max(
-            Math.max(500_000, baseBitrate * 0.2),
-            Math.min(Math.max(50_000_000, baseBitrate * 5), sourceBitrate * multipliers[quality]),
-        );
-
-        outputTarget = new BufferTarget();
         output = new Output({
-            format: format === 'webm' ? new WebMOutputFormat() : new Mp4OutputFormat(),
-            target: outputTarget,
+            // Streaming MP4 deliberately places metadata at the end. Mediabunny's in-memory fast
+            // start mode would retain every media chunk and defeat the bounded destination.
+            format: format === 'webm'
+                ? new WebMOutputFormat()
+                : new Mp4OutputFormat({ fastStart: false }),
+            target: destination.target,
         });
         const canvas = globalThis.document.createElement('canvas');
         canvas.width = canvasWidth;
@@ -136,34 +175,37 @@ export async function exportProject(request: ExportProjectRequest): Promise<Expo
 
         videoSource = new CanvasSource(canvas, {
             codec: format === 'webm' ? 'vp9' : 'avc',
-            bitrate: Math.round(targetBitrate),
+            bitrate: calculateExportVideoBitrate(document, quality),
         });
         output.addVideoTrack(videoSource, { frameRate: frameRateNumber });
 
         if (includeAudio) {
             const requiredCodec = format === 'webm' ? 'opus' : 'aac';
-            const codec = await getFirstEncodableAudioCodec([requiredCodec]);
+            const codec = await awaitExportPhase(
+                getFirstEncodableAudioCodec([requiredCodec]),
+                signal,
+            );
             if (!codec) {
                 throw new Error(`${requiredCodec.toUpperCase()} audio encoding is unavailable.`);
             }
-            // The track is always present when requested, even if the mix plan has no audible
-            // contributors. TimelineAudioRenderer then emits exact zero-valued samples through
-            // the exclusive content boundary instead of silently omitting the track.
+            // A requested audio track is present even for an empty mix. TimelineAudioRenderer
+            // emits exact silence through subtitle and black-video tails using the shared DSP.
             audioSource = new AudioSampleSource({ codec, bitrate: 128_000 });
             output.addAudioTrack(audioSource);
         }
 
-        await output.start();
-        const exportId = crypto.randomUUID();
+        await awaitExportPhase(output.start(), signal);
+        videoReader = new ExportVideoFrameReader(signal);
+        const videoProgressWeight = audioSource ? 0.8 : 0.98;
         for (let frameIndex = 0; frameIndex < contentEndFrame; frameIndex += 1) {
-            throwIfCancelled(onCancel);
+            throwIfExportAborted(signal);
             const projectTime = framesToSeconds(frameIndex, frameRate);
             const nextProjectTime = framesToSeconds(frameIndex + 1, frameRate);
             const placement = resolveClipAtProjectTime(placements, projectTime);
             const activeSource = placement ? sourcesById.get(placement.clip.sourceId) ?? null : null;
 
-            // Paint first on every iteration. If video ended before subtitle or audio content,
-            // this black frame becomes the stable visual tail on which subtitles still render.
+            // Paint first on every iteration. If video ends before subtitle or audio content, this
+            // black frame is the deterministic visual tail on which subtitles still render.
             context2d.fillStyle = '#000';
             context2d.fillRect(0, 0, canvasWidth, canvasHeight);
             if (placement && activeSource) {
@@ -172,142 +214,204 @@ export async function exportProject(request: ExportProjectRequest): Promise<Expo
                     activeSource.fps,
                     activeSource.duration,
                 );
-                const mediaId = `export:${exportId}:${activeSource.id}`;
-                mediaIds.add(mediaId);
-                videoCache.setTargetResolution(canvasWidth, canvasHeight, mediaId);
-                const frame = await videoCache.getFrameAt(
-                    mediaId,
-                    activeSource.file,
-                    sourceFrame.time,
-                    { mode: 'export', fps: activeSource.fps },
-                );
+                const frame = await videoReader.getFrame(activeSource, sourceFrame.time);
+                throwIfExportAborted(signal);
                 if (frame) {
-                    const sourceRatio = activeSource.width / activeSource.height;
-                    const canvasRatio = canvasWidth / canvasHeight;
-                    const drawWidth = canvasRatio > sourceRatio ? canvasHeight * sourceRatio : canvasWidth;
-                    const drawHeight = canvasRatio > sourceRatio ? canvasHeight : canvasWidth / sourceRatio;
-                    context2d.drawImage(
+                    // This is the sole contain operation in export. VideoFrameSession decodes at
+                    // source aspect and the compositor owns all letterboxing decisions.
+                    drawContainedVideoFrame(
+                        context2d,
                         frame.canvas,
-                        (canvasWidth - drawWidth) / 2,
-                        (canvasHeight - drawHeight) / 2,
-                        drawWidth,
-                        drawHeight,
+                        activeSource.width,
+                        activeSource.height,
+                        canvasWidth,
+                        canvasHeight,
                     );
                 }
             }
 
             document.subtitleTracks.forEach((track) => {
-                if (track.isVisible) {
-                    renderSubtitles(
-                        context2d,
-                        track.subtitles,
-                        track.style,
-                        projectTime,
-                        canvasWidth,
-                        canvasHeight,
-                    );
-                }
+                if (!track.isVisible) return;
+                renderSubtitles(
+                    context2d,
+                    track.subtitles,
+                    track.style,
+                    projectTime,
+                    canvasWidth,
+                    canvasHeight,
+                );
             });
-            await videoSource.add(projectTime, nextProjectTime - projectTime);
-            onProgress?.((frameIndex + 1) / contentEndFrame * 0.8);
+            await awaitExportPhase(
+                videoSource.add(projectTime, nextProjectTime - projectTime),
+                signal,
+            );
+            runtimeDiagnostics.increment('export', 'framesRendered');
+            reportProgress((frameIndex + 1) / Math.max(1, contentEndFrame) * videoProgressWeight);
         }
         closeVideoSource();
+        await videoReader.dispose();
+        videoReader = null;
 
         if (audioSource) {
             const renderer = new TimelineAudioRenderer(document, audioSource);
+            let previousAudioProgress = -1;
             await renderer.render({
                 outputEndSample: audioEndSample,
-                shouldCancel: onCancel,
-                onProgress: (progress) => onProgress?.(0.8 + progress * 0.18),
+                signal,
+                onProgress: (progress) => {
+                    // Renderer progress advances once per bounded audio window. Counting it here
+                    // avoids exposing DSP internals merely for diagnostics.
+                    if (progress > previousAudioProgress) {
+                        runtimeDiagnostics.increment('export', 'audioBlocksRendered');
+                        previousAudioProgress = progress;
+                    }
+                    reportProgress(0.8 + progress * 0.18);
+                },
             });
             closeAudioSource();
         }
 
-        throwIfCancelled(onCancel);
-        await output.finalize();
-        onProgress?.(1);
-        return { success: true, buffer: outputTarget.buffer || undefined };
+        throwIfExportAborted(signal);
+        destination.prepareCommit();
+        finalizePromise = output.finalize();
+        await awaitExportPhase(finalizePromise, signal);
+        throwIfExportAborted(signal);
+        const bytesWritten = destination.getBytesWritten();
+        let result: Extract<ExportResult, { success: true }>;
+        let deliveryCounter: 'streamed' | 'memoryFallback';
+        if (destination.kind === 'stream') {
+            result = { success: true, delivery: 'streamed', bytesWritten };
+            deliveryCounter = 'streamed';
+        } else {
+            const buffer = destination.getMemoryBuffer();
+            if (!buffer) {
+                throw new Error('The in-memory export completed without an output buffer.');
+            }
+            result = { success: true, delivery: 'memory', bytesWritten, buffer };
+            deliveryCounter = 'memoryFallback';
+        }
+
+        // Final memory assembly and the consumer's terminal progress callback can still fail after
+        // the muxer finalizes. Keep the destination under failure ownership until every fallible
+        // delivery step succeeds, then publish success diagnostics immediately before returning.
+        reportProgress(1);
+        runtimeDiagnostics.increment('export', deliveryCounter);
+        outcome = 'completed';
+        return result;
     } catch (error) {
-        if (isAbortError(error)) return { success: false, cancelled: true };
+        terminalReason = error;
+        if (isExportAbortError(error) || signal?.aborted) {
+            outcome = 'aborted';
+            return { success: false, cancelled: true };
+        }
         console.error('Export failed:', error);
-        return { success: false, error: error instanceof Error ? error.message : 'Unknown export error' };
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown export error',
+        };
     } finally {
-        // Sources signal track completion to Mediabunny and must be closed even if setup, frame
-        // decoding, audio decoding, or encoding fails. Output.cancel releases encoders/muxers for
-        // every non-finalized state; it is safe to await here because this is the terminal cleanup.
+        // Close signals track completion and is deliberately guarded because Mediabunny may also
+        // force-close sources during Output.cancel(). AudioSample instances remain owned by the
+        // renderer until each source.add() promise resolves, then close in its own finally block.
         closeVideoSource();
         closeAudioSource();
-        if (output && output.state !== 'finalized' && output.state !== 'canceled') {
+        await videoReader?.dispose();
+
+        // Aborting during finalize causes the streaming destination to reject its pending writer.
+        // Await the original promise before returning so no muxer work or rejection escapes the
+        // export job after its result has been delivered.
+        if (finalizePromise && output?.state === 'finalizing') {
+            try {
+                await finalizePromise;
+            } catch {
+                // The primary failure/cancellation contract was already selected above.
+            }
+        }
+        if (output && output.state !== 'finalized' && output.state !== 'canceled'
+            && output.state !== 'finalizing') {
             try {
                 await output.cancel();
             } catch (cleanupError) {
                 console.error('Failed to cancel export output during cleanup:', cleanupError);
             }
         }
-        mediaIds.forEach((mediaId) => videoCache.clearVideo(mediaId));
+        if (outcome !== 'completed' && destinationRuntime) {
+            try {
+                // Output.cancel() cannot reach a StreamTarget writer before Output.start(). The
+                // destination therefore owns an independent terminal guard, and awaiting it here
+                // closes that pre-start gap while remaining a no-op after Mediabunny already
+                // aborted the same underlying writer.
+                await destinationRuntime.abort(terminalReason ?? signal?.reason);
+            } catch (cleanupError) {
+                console.error('Failed to abort export destination during cleanup:', cleanupError);
+            }
+        }
+
+        runtimeDiagnostics.increment('export', outcome);
+        runtimeDiagnostics.setGauge('export', 'bufferedBytes', 0);
+        runtimeDiagnostics.observeTiming('export', 'duration', Math.max(0, now() - startedAt));
     }
 }
 
-function normalizeExportRequest(request: ExportProjectRequest): EditorDocumentV3 {
-    if ('document' in request) return request.document;
-    return migrateLegacyExportContext(request);
-}
+/**
+ * Owns one export-only decode session. Source switches dispose the previous Input before opening
+ * the next one, which bounds decoded state to the current pooled frame and prevents any insertion
+ * into the preview LRU.
+ */
+class ExportVideoFrameReader {
+    private session: VideoFrameSession | null = null;
+    private sourceId: string | null = null;
+    private disposed = false;
+    private disposePromise: Promise<void> | null = null;
+    private generation = 0;
+    private readonly handleAbort = () => { void this.dispose(); };
 
-/** Keeps the existing UI compiling while WP9 moves it to the canonical store snapshot. */
-function migrateLegacyExportContext(request: LegacyExportProjectContext): EditorDocumentV3 {
-    const firstSource = request.videoSources.find((source) => (
-        source.id === request.videoClips[0]?.sourceId
-    ));
-    const frameRate = decimalFrameRateToRational(
-        request.options.fps ?? firstSource?.fps ?? 30,
-    );
-    const audioSourcesById = new Map(request.videoSources.map((source) => [source.id, source]));
-    return {
-        version: 3,
-        revision: 1,
-        audioGraphRevision: 1,
-        renderProfile: {
-            fps: frameRate,
-            width: firstSource?.width ?? 1920,
-            height: firstSource?.height ?? 1080,
-            audioSampleRate: 48_000,
-            isFrameRateLocked: firstSource !== undefined,
-            isCanvasSizeLocked: firstSource !== undefined,
-        },
-        subtitleTracks: request.tracks.map((track) => ({ ...track, timingDomain: 'video-ripple' })),
-        videoSources: request.videoSources,
-        videoClips: request.videoClips.map((clip) => ({
-            ...clip,
-            audio: audioSourcesById.get(clip.sourceId)?.hasAudio ? {
-                linkState: 'linked',
-                muted: false,
-                gainDb: 0,
-                fadeInFrames: 0,
-                fadeOutFrames: 0,
-            } : null,
-        })),
-        audioSources: [],
-        audioTracks: [],
-        activeSubtitleTrackId: request.tracks[0]?.id ?? null,
-        transientSelection: { kind: 'none' },
-        transcriptionByTrackId: {},
-    };
-}
+    constructor(private readonly signal?: AbortSignal) {
+        signal?.addEventListener('abort', this.handleAbort, { once: true });
+    }
 
-function decimalFrameRateToRational(fps: number): RationalFrameRate {
-    if (!Number.isFinite(fps) || fps <= 0) return { numerator: 30, denominator: 1 };
-    const broadcastRates = [24_000, 30_000, 60_000, 120_000];
-    const broadcast = broadcastRates.find((numerator) => Math.abs(fps - numerator / 1_001) < 0.001);
-    if (broadcast) return { numerator: broadcast, denominator: 1_001 };
-    return normalizeFrameRate({ numerator: Math.round(fps * 1_000_000), denominator: 1_000_000 });
-}
+    async getFrame(
+        source: VideoSourceAssetV3,
+        sourceTime: number,
+    ): Promise<WrappedCanvas | null> {
+        throwIfExportAborted(this.signal);
+        if (this.disposed) throw new Error('The export video reader has been disposed.');
+        if (!this.session || this.sourceId !== source.id) {
+            await this.disposeSession();
+            const generation = ++this.generation;
+            const session = await VideoFrameSession.open({
+                file: source.file,
+                generation,
+                signal: this.signal ?? new AbortController().signal,
+                backend: EXPORT_VIDEO_SESSION_BACKEND,
+            });
+            if (this.disposed || this.signal?.aborted || generation !== this.generation) {
+                await session.dispose();
+                throwIfExportAborted(this.signal);
+                return null;
+            }
+            this.session = session;
+            this.sourceId = source.id;
+        }
+        const frame = await this.session.request('export', sourceTime);
+        throwIfExportAborted(this.signal);
+        return frame;
+    }
 
-function throwIfCancelled(onCancel?: () => boolean): void {
-    if (onCancel?.()) throw new ExportCancelledError();
-}
+    async dispose(): Promise<void> {
+        if (this.disposePromise) return this.disposePromise;
+        this.disposed = true;
+        this.signal?.removeEventListener('abort', this.handleAbort);
+        this.disposePromise = this.disposeSession();
+        return this.disposePromise;
+    }
 
-function isAbortError(error: unknown): boolean {
-    return error instanceof Error && error.name === 'AbortError';
+    private async disposeSession(): Promise<void> {
+        const session = this.session;
+        this.session = null;
+        this.sourceId = null;
+        if (session) await session.dispose();
+    }
 }
 
 export function getExportMimeType(format: 'mp4' | 'webm'): string {
@@ -316,4 +420,8 @@ export function getExportMimeType(format: 'mp4' | 'webm'): string {
 
 export function getExportFileExtension(format: 'mp4' | 'webm'): string {
     return `.${format}`;
+}
+
+function now(): number {
+    return typeof performance === 'undefined' ? Date.now() : performance.now();
 }

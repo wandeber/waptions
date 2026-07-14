@@ -250,6 +250,8 @@ describe('project bundle v3', () => {
             await zip.generateAsync({ type: 'uint8array' }) as unknown as Blob,
         )).resolves.toMatchObject({ versionMismatch: true });
         expect(saveDocument.mock.calls[0][1]).toMatchObject({ version: 3 });
+        expect(saveDocument.mock.calls[0][1].videoSourceDescriptors[0].fingerprint)
+            .toMatch(/^v2_/);
 
         const newer = new JSZip();
         newer.file('metadata.json', JSON.stringify({ ...metadata, version: '4.0' }));

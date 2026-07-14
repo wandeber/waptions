@@ -11,9 +11,17 @@ export interface WaveformWorkerResultResponse {
     peaks: WaveformPeaks;
 }
 
+export interface WaveformWorkerProgressResponse {
+    type: 'progress';
+    peaks: WaveformPeaks;
+}
+
 export interface WaveformWorkerErrorResponse {
     type: 'error';
     error: string;
 }
 
-export type WaveformWorkerResponse = WaveformWorkerResultResponse | WaveformWorkerErrorResponse;
+export type WaveformWorkerResponse =
+    | WaveformWorkerProgressResponse
+    | WaveformWorkerResultResponse
+    | WaveformWorkerErrorResponse;

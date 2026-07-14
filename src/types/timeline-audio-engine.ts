@@ -9,12 +9,20 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
             ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
             : T;
 
+/** Minimal media graph required by preview decoding and mix projection. */
+export type TimelineAudioRuntimeDocument = DeepReadonly<Pick<
+    EditorDocumentV3,
+    'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
+>>;
+
 /** Immutable handoff from editor state to the real-time audio engine. */
 export interface TimelineAudioEngineSnapshot {
-    readonly documentRevision: number;
-    readonly audioGraphRevision: number;
-    readonly document: DeepReadonly<EditorDocumentV3>;
+    readonly document: TimelineAudioRuntimeDocument;
     readonly mixPlan: DeepReadonly<AudioMixPlan>;
+    /** Changes only when a typed source id points at a different immutable media fingerprint. */
+    readonly sourceCatalogKey: string;
+    /** Complete audible mix semantics, including the fingerprints of referenced media sources. */
+    readonly audibleMixKey: string;
     readonly contentEndSample: number;
 }
 
@@ -53,7 +61,13 @@ export interface TimelineAudioTransientOverride {
  * samples, keeping play, seek, clock reporting, and export comparisons in one integer domain.
  */
 export interface TimelineAudioEnginePort {
-    setSnapshot(snapshot: TimelineAudioEngineSnapshot): void;
+    /**
+     * Applies editor state and its current playhead as one transaction.
+     *
+     * Semantic projection keys let the implementation distinguish a mix replacement from a
+     * subtitle-only content boundary update, avoiding duplicate seek + snapshot queue resets.
+     */
+    applySnapshot(snapshot: TimelineAudioEngineSnapshot, playheadSample: number): void;
     play(): Promise<void>;
     pause(): void;
     seek(outputSample: number): void;

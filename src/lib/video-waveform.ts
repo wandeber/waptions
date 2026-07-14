@@ -20,6 +20,11 @@ import {
 const DEFAULT_SAMPLE_RATE = 48_000;
 const MINIMUM_BUCKET_COUNT = 1_000;
 const MAXIMUM_BUCKET_COUNT = 100_000;
+// Version 3 invalidates the metadata-only persistent keys used before import fingerprints became
+// nonce-bearing immutable identities. Old cache entries remain harmless orphaned derived data.
+export const WAVEFORM_PEAK_ALGORITHM_VERSION = 3;
+export const WAVEFORM_PROGRESS_INTERVAL_MS = 200;
+const WAVEFORM_MIX_CHUNK_FRAMES = 16_384;
 
 export interface WaveformPeaks {
     duration: number;
@@ -38,21 +43,6 @@ export interface WaveformPeakAggregator {
     readonly max: Float32Array;
     readonly populated: Uint8Array;
     nextSampleIndex: number;
-}
-
-export interface WaveformLruEntry {
-    cacheKey: AudioMediaCacheKey;
-    reference: AudioMediaReference;
-    peaks: WaveformPeaks;
-    bytes: number;
-    lastAccess: number;
-}
-
-export interface WaveformLru {
-    maxBytes: number;
-    totalBytes: number;
-    accessCounter: number;
-    entries: Map<AudioMediaCacheKey, WaveformLruEntry>;
 }
 
 export interface WaveformSampleWindow {
@@ -82,6 +72,12 @@ export interface OpenWaveformAudioResult {
 }
 
 export type OpenWaveformAudio = (file: File) => Promise<OpenWaveformAudioResult | null>;
+
+export interface WaveformExtractionProgressOptions {
+    onProgress?: (peaks: WaveformPeaks) => void;
+    intervalMs?: number;
+    now?: () => number;
+}
 
 async function openWaveformAudioWithMediabunny(file: File): Promise<OpenWaveformAudioResult | null> {
     const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
@@ -115,12 +111,14 @@ export async function extractAudioMediaWaveformPeaks(
     media: AudioMediaAsset,
     shouldCancel: () => boolean = () => false,
     openAudio: OpenWaveformAudio = openWaveformAudioWithMediabunny,
+    progress: WaveformExtractionProgressOptions = {},
 ): Promise<WaveformPeaks | null> {
     return extractAudioFileWaveformPeaks(
         media.asset.file,
         getAudioMediaDuration(media),
         shouldCancel,
         openAudio,
+        progress,
     );
 }
 
@@ -136,12 +134,24 @@ export async function extractAudioFileWaveformPeaks(
     duration: number,
     shouldCancel: () => boolean = () => false,
     openAudio: OpenWaveformAudio = openWaveformAudioWithMediabunny,
+    progress: WaveformExtractionProgressOptions = {},
 ): Promise<WaveformPeaks | null> {
     if (shouldCancel()) return null;
     const reader = await openAudio(file);
     if (!reader) return finalizeWaveformPeaks(createWaveformPeakAggregator(duration));
 
     let aggregator: WaveformPeakAggregator | null = null;
+    let lastProgressAt = Number.NEGATIVE_INFINITY;
+    const now = progress.now ?? (() => (
+        typeof performance !== 'undefined' ? performance.now() : Date.now()
+    ));
+    const requestedProgressInterval = Number.isFinite(progress.intervalMs)
+        ? progress.intervalMs as number
+        : WAVEFORM_PROGRESS_INTERVAL_MS;
+    const progressIntervalMs = Math.min(
+        250,
+        Math.max(1, requestedProgressInterval),
+    );
     try {
         if (shouldCancel()) return null;
         for await (const sample of reader.samples) {
@@ -161,23 +171,48 @@ export async function extractAudioFileWaveformPeaks(
                 // Advancing the absolute cursor preserves actual timestamp gaps as neutral
                 // buckets instead of manufacturing a potentially large silence buffer.
                 aggregator.nextSampleIndex = window.timelineSampleIndex;
-                const mono = mixWaveformChannelsToMono(
-                    sample.numberOfChannels,
-                    window.frameCount,
-                    (channel) => {
-                        const plane = new Float32Array(window.frameCount);
-                        sample.copyTo(plane, {
-                            planeIndex: channel,
-                            format: 'f32-planar',
-                            frameOffset: window.sourceFrameOffset,
-                            frameCount: window.frameCount,
-                        });
-                        return plane;
-                    },
-                    shouldCancel,
-                );
-                if (!mono) return null;
-                appendWaveformSamples(aggregator, mono);
+                // A PCM container may expose one very large AudioData sample. Bounded chunks keep
+                // peak publication and cancellation responsive even in that case, while also
+                // avoiding a full-sample mono allocation in the worker.
+                for (
+                    let processedFrames = 0;
+                    processedFrames < window.frameCount;
+                    processedFrames += WAVEFORM_MIX_CHUNK_FRAMES
+                ) {
+                    const frameCount = Math.min(
+                        WAVEFORM_MIX_CHUNK_FRAMES,
+                        window.frameCount - processedFrames,
+                    );
+                    const mono = mixWaveformChannelsToMono(
+                        sample.numberOfChannels,
+                        frameCount,
+                        (channel) => {
+                            const plane = new Float32Array(frameCount);
+                            sample.copyTo(plane, {
+                                planeIndex: channel,
+                                format: 'f32-planar',
+                                frameOffset: window.sourceFrameOffset + processedFrames,
+                                frameCount,
+                            });
+                            return plane;
+                        },
+                        shouldCancel,
+                    );
+                    if (!mono) return null;
+                    appendWaveformSamples(aggregator, mono);
+
+                    const currentTime = now();
+                    if (
+                        progress.onProgress
+                        && currentTime - lastProgressAt >= progressIntervalMs
+                    ) {
+                        lastProgressAt = currentTime;
+                        // finalizeWaveformPeaks slices both live arrays. The worker may therefore
+                        // transfer this snapshot without detaching the accumulator still owned by
+                        // the decoder, which continues receiving later samples.
+                        progress.onProgress(finalizeWaveformPeaks(aggregator));
+                    }
+                }
             } finally {
                 // AudioSampleSink yields owned samples. Close exactly once before requesting the
                 // next sample, even if copyTo or cancellation exits this function early.
@@ -329,98 +364,6 @@ export function finalizeWaveformPeaks(aggregator: WaveformPeakAggregator): Wavef
 
 export function estimateWaveformPeaksBytes(peaks: WaveformPeaks): number {
     return peaks.min.byteLength + peaks.max.byteLength;
-}
-
-export function createWaveformLru(maxBytes: number): WaveformLru {
-    if (!Number.isFinite(maxBytes) || maxBytes < 0) {
-        throw new Error('Waveform LRU byte cap must be non-negative and finite.');
-    }
-    return {
-        maxBytes,
-        totalBytes: 0,
-        accessCounter: 0,
-        entries: new Map(),
-    };
-}
-
-export function getWaveformFromLru(
-    cache: WaveformLru,
-    reference: AudioMediaReference,
-): WaveformPeaks | null {
-    const entry = cache.entries.get(getAudioMediaCacheKey(reference));
-    if (!entry) {
-        return null;
-    }
-    cache.accessCounter += 1;
-    entry.lastAccess = cache.accessCounter;
-    return entry.peaks;
-}
-
-/** Returns source IDs evicted while enforcing the caller-selected project byte cap. */
-export function putWaveformInLru(
-    cache: WaveformLru,
-    reference: AudioMediaReference,
-    peaks: WaveformPeaks,
-): AudioMediaCacheKey[] {
-    const evictedKeys: AudioMediaCacheKey[] = [];
-    const cacheKey = getAudioMediaCacheKey(reference);
-    const existing = cache.entries.get(cacheKey);
-    if (existing) {
-        cache.entries.delete(cacheKey);
-        cache.totalBytes -= existing.bytes;
-    }
-
-    const bytes = estimateWaveformPeaksBytes(peaks);
-    if (bytes > cache.maxBytes) {
-        return existing ? [cacheKey] : [];
-    }
-
-    cache.accessCounter += 1;
-    cache.entries.set(cacheKey, {
-        cacheKey,
-        reference,
-        peaks,
-        bytes,
-        lastAccess: cache.accessCounter,
-    });
-    cache.totalBytes += bytes;
-
-    while (cache.totalBytes > cache.maxBytes) {
-        const leastRecentlyUsed = Array.from(cache.entries.values())
-            .sort((left, right) => left.lastAccess - right.lastAccess)[0];
-        if (!leastRecentlyUsed) {
-            break;
-        }
-        cache.entries.delete(leastRecentlyUsed.cacheKey);
-        cache.totalBytes -= leastRecentlyUsed.bytes;
-        evictedKeys.push(leastRecentlyUsed.cacheKey);
-    }
-
-    return evictedKeys;
-}
-
-export function deleteWaveformFromLru(cache: WaveformLru, reference: AudioMediaReference): boolean {
-    const cacheKey = getAudioMediaCacheKey(reference);
-    const entry = cache.entries.get(cacheKey);
-    if (!entry) {
-        return false;
-    }
-    cache.entries.delete(cacheKey);
-    cache.totalBytes -= entry.bytes;
-    return true;
-}
-
-/** Returns references owned by the current LRU, filtered to the active project catalog. */
-export function snapshotWaveformsFromLru(
-    cache: WaveformLru,
-    projectReferences: readonly AudioMediaReference[],
-): ReadonlyMap<AudioMediaCacheKey, WaveformPeaks> {
-    const projectKeys = new Set(projectReferences.map(getAudioMediaCacheKey));
-    const snapshot = new Map<AudioMediaCacheKey, WaveformPeaks>();
-    cache.entries.forEach((entry, cacheKey) => {
-        if (projectKeys.has(cacheKey)) snapshot.set(cacheKey, entry.peaks);
-    });
-    return snapshot;
 }
 
 /** Selects only explicitly requested audible sources, preserving visible clip order. */

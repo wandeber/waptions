@@ -3,6 +3,7 @@ import type {
     WaveformWorkerExtractRequest,
     WaveformWorkerResponse,
 } from './video-waveform-worker-protocol';
+import type { WaveformPeaks } from './video-waveform';
 import {
     extractWaveformPeaksInWorker,
     type WaveformWorkerPort,
@@ -56,6 +57,38 @@ describe('waveform worker client', () => {
         expect(worker.terminateCount).toBe(1);
     });
 
+    it('publishes progressive peaks without terminating the live decoder', async () => {
+        const worker = new FakeWaveformWorker();
+        const progress: WaveformPeaks[] = [];
+        const promise = extractWaveformPeaksInWorker(
+            createFile(),
+            2,
+            new AbortController().signal,
+            () => worker,
+            (peaks) => progress.push(peaks),
+        );
+        const partial = {
+            duration: 2,
+            sampleRate: 48_000,
+            bucketCount: 2,
+            min: Float32Array.from([-0.25, 0]),
+            max: Float32Array.from([0.25, 0]),
+        };
+        const complete = {
+            ...partial,
+            min: Float32Array.from([-0.25, -0.5]),
+            max: Float32Array.from([0.25, 0.5]),
+        };
+
+        worker.emit({ type: 'progress', peaks: partial });
+        expect(progress).toEqual([partial]);
+        expect(worker.terminateCount).toBe(0);
+
+        worker.emit({ type: 'result', peaks: complete });
+        await expect(promise).resolves.toBe(complete);
+        expect(worker.terminateCount).toBe(1);
+    });
+
     it('terminates an in-flight decoder and resolves without stale peaks when aborted', async () => {
         const worker = new FakeWaveformWorker();
         const controller = new AbortController();
@@ -70,6 +103,17 @@ describe('waveform worker client', () => {
 
         await expect(promise).resolves.toBeNull();
         expect(worker.terminateCount).toBe(1);
+
+        worker.emit({
+            type: 'progress',
+            peaks: {
+                duration: 2,
+                sampleRate: 48_000,
+                bucketCount: 1,
+                min: new Float32Array(1),
+                max: new Float32Array(1),
+            },
+        });
     });
 
     it('propagates worker errors after releasing its resources', async () => {

@@ -1,30 +1,26 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
+import { usePlaybackStore } from '@/stores/playback-store';
 import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
 
 interface TimelinePlayheadProps {
-    currentTime: number;
     duration: number;
     fps: number;
-    zoomLevel?: number;
-    pixelsPerSecond?: number;
+    zoomLevel: number;
+    pixelsPerSecond: number;
     onTimeUpdate?: (time: number) => void;
 }
 
 export function TimelinePlayhead({
-    currentTime,
     duration,
     fps,
-    zoomLevel: propZoom,
-    pixelsPerSecond: propPPS,
+    zoomLevel,
+    pixelsPerSecond,
     onTimeUpdate
 }: TimelinePlayheadProps) {
-    const store = useTimelineStore();
-    const zoom = propZoom ?? store.zoomLevel;
-    const basePPS = propPPS ?? store.pixelsPerSecond;
-
-    const pps = basePPS * zoom;
+    const currentTime = usePlaybackStore((state) => state.currentTime);
+    const pps = pixelsPerSecond * zoomLevel;
     const left = currentTime * pps;
     const frameDuration = fps > 0 ? 1 / fps : 0.1;
 

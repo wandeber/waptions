@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { Button } from '@/components/design-system/Button';
 import { Subtitle } from '@/types/timeline';
 import { Layers } from 'lucide-react';
@@ -314,7 +315,11 @@ export function TranscriptionViewModal({
         transcriptionGroups,
         transcriptionContainerIds,
         setTranscriptionState
-    } = useTimelineStore();
+    } = useTimelineStore(useShallow((state) => ({
+        transcriptionGroups: state.transcriptionGroups,
+        transcriptionContainerIds: state.transcriptionContainerIds,
+        setTranscriptionState: state.setTranscriptionState,
+    })));
 
     // Grouping State based on IDs
     const [groups, setGroups] = useState<{ [key: string]: Subtitle[] }>({});
