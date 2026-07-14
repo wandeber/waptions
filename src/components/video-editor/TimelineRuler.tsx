@@ -1,10 +1,10 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
-import { useVideoStore } from '@/stores/video-store';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useState, useEffect } from 'react';
 import { frameCache } from '@/lib/frame-cache';
+import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
 
 interface TimelineRulerProps {
     duration: number;
@@ -36,10 +36,14 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
         // One-shot snap points
         const snapPoints: number[] = [];
         if (snapEnabled) {
-            const { duration: videoStoreDuration } = useVideoStore.getState();
-            const snappedVideoDuration = Math.round(videoStoreDuration / frameDuration) * frameDuration;
+            const { videoClips } = useTimelineStore.getState();
+            const mediaDuration = getMediaDuration(videoClips);
 
-            const points = new Set<number>([0, snappedVideoDuration, duration]);
+            const points = new Set<number>([0, mediaDuration, duration]);
+            buildClipPlacements(videoClips).forEach((placement) => {
+                points.add(placement.projectStart);
+                points.add(placement.projectEnd);
+            });
             tracks.forEach(t => {
                 t.subtitles.forEach(s => {
                     points.add(s.startTime);
@@ -186,11 +190,21 @@ export function TimelineRuler({ duration, fps, zoomLevel: propZoom, pixelsPerSec
 function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
     const [cachedSegments, setCachedSegments] = useState<{ start: number; end: number }[]>([]);
     const fps = usePlaybackStore(s => s.fps);
+    const videoClips = useTimelineStore((state) => state.videoClips);
     const frameDuration = fps > 0 ? 1 / fps : 0.033;
 
     useEffect(() => {
         const updateSegments = () => {
-            const timestamps = frameCache.getCachedTimestamps('preview');
+            const timestamps = buildClipPlacements(videoClips).flatMap((placement) => (
+                frameCache.getCachedTimestamps(`preview:${placement.clip.sourceId}`)
+                    .filter((sourceTime) => (
+                        sourceTime >= placement.clip.sourceStart
+                        && sourceTime < placement.clip.sourceEnd
+                    ))
+                    .map((sourceTime) => (
+                        placement.projectStart + sourceTime - placement.clip.sourceStart
+                    ))
+            )).sort((left, right) => left - right);
             if (timestamps.length === 0) {
                 setCachedSegments([]);
                 return;
@@ -221,7 +235,7 @@ function TimelineCacheIndicator({ pps }: { duration: number; pps: number }) {
         const interval = setInterval(updateSegments, 500);
         updateSegments();
         return () => clearInterval(interval);
-    }, [frameDuration]);
+    }, [frameDuration, videoClips]);
 
     if (cachedSegments.length === 0) return null;
 

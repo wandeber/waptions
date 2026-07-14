@@ -1,19 +1,33 @@
 import {
-    Output,
-    Mp4OutputFormat,
-    WebMOutputFormat,
+    AudioSampleSource,
     BufferTarget,
     CanvasSource,
-    Input,
-    BlobSource,
-    ALL_FORMATS,
-    AudioSampleSource,
+    Mp4OutputFormat,
+    Output,
+    WebMOutputFormat,
+    getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import type { ExportOptions, ExportResult } from '@/types/export';
+import type {
+    ExportOptions,
+    ExportProjectRequest,
+    ExportResult,
+    LegacyExportProjectContext,
+} from '@/types/export';
+import type { ClipPlacement, EditorDocumentV3, RationalFrameRate } from '@/types/video';
 import { videoCache } from './video-cache';
 import { renderSubtitles } from './subtitle-renderer';
 import { waitForFonts } from './fonts/google-fonts';
-import { SubtitleTrack } from '@/types/timeline';
+import {
+    buildClipPlacements,
+    getSourceFrameAtOrBefore,
+    getTimelineContentEndFrame,
+    projectTimeToSourceTime,
+    resolveClipAtProjectTime,
+} from './video-timeline';
+import { calculateActiveTimelineBitrate } from './export-bitrate';
+import { frameToOutputSample } from './audio-timebase';
+import { framesToSeconds, normalizeFrameRate } from './render-profile';
+import { TimelineAudioRenderer } from './timeline-audio-renderer';
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     format: 'mp4',
@@ -21,193 +35,279 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
     includeAudio: true,
 };
 
-interface ExportContext {
-    videoFile: File;
-    tracks: SubtitleTrack[];
-    options: ExportOptions;
+class ExportCancelledError extends Error {
+    constructor() {
+        super('Export was cancelled.');
+        this.name = 'AbortError';
+    }
 }
 
+/** Exact exclusive content boundary shared by the timeline, playback, and export. */
+export function getExportContentEndFrame(document: EditorDocumentV3): number {
+    return getTimelineContentEndFrame(document.videoClips, document.subtitleTracks, {
+        renderProfile: document.renderProfile,
+        videoSources: document.videoSources,
+        audioSources: document.audioSources,
+        audioTracks: document.audioTracks,
+    });
+}
 
 /**
- * Export a video with subtitles using mediabunny.
- * Uses WebCodecs for fast encoding without FFmpeg.
+ * Resolves the visual clip for one canonical output frame.
+ *
+ * Returning null is deliberate: export paints the canvas black before every frame, so subtitle
+ * and independent-audio tails continue at the locked canvas size after the video program ends.
  */
-export async function exportProject(context: ExportContext): Promise<ExportResult> {
-    const { videoFile, tracks, options } = context;
-    const { format, quality, fps: optionsFps, includeAudio, onProgress, onCancel } = options;
+export function resolveExportVideoPlacement(
+    document: EditorDocumentV3,
+    frameIndex: number,
+): ClipPlacement | null {
+    if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) return null;
+    const placements = buildClipPlacements(document.videoClips, document.renderProfile.fps);
+    return resolveClipAtProjectTime(
+        placements,
+        framesToSeconds(frameIndex, document.renderProfile.fps),
+    );
+}
+
+/** Exports the complete v3 editor graph with deterministic video, subtitle, and audio tails. */
+export async function exportProject(request: ExportProjectRequest): Promise<ExportResult> {
+    let output: Output | null = null;
+    let videoSource: CanvasSource | null = null;
+    let audioSource: AudioSampleSource | null = null;
+    let outputTarget: BufferTarget | null = null;
+    let videoSourceClosed = false;
+    let audioSourceClosed = false;
+    const mediaIds = new Set<string>();
+
+    const closeVideoSource = (): void => {
+        if (!videoSource || videoSourceClosed) return;
+        videoSource.close();
+        videoSourceClosed = true;
+    };
+    const closeAudioSource = (): void => {
+        if (!audioSource || audioSourceClosed) return;
+        audioSource.close();
+        audioSourceClosed = true;
+    };
 
     try {
-        // ENSURE FONTS ARE LOADED - Collect all unique fonts from tracks
-        const uniqueFonts = Array.from(new Set(tracks.map(t => t.style.fontFamily)));
-        await waitForFonts(uniqueFonts);
-
-        // Get video info
-        const input = new Input({
-            source: new BlobSource(videoFile),
-            formats: ALL_FORMATS,
-        });
-
-        const videoTrack = await input.getPrimaryVideoTrack();
-        if (!videoTrack) {
-            return { success: false, error: 'No video track found' };
+        const document = normalizeExportRequest(request);
+        const { format, quality, includeAudio = true, onProgress, onCancel } = request.options;
+        if (document.videoClips.length === 0) {
+            return { success: false, error: 'The timeline has no video clips.' };
         }
 
-        const videoDuration = await input.computeDuration();
+        const sourcesById = new Map(document.videoSources.map((source) => [source.id, source]));
+        const firstSource = sourcesById.get(document.videoClips[0].sourceId);
+        if (!firstSource) return { success: false, error: 'The first clip source is missing.' };
 
-        // Calculate absolute content end from all tracks
-        const lastSubEnd = tracks.reduce((max, track) => {
-            const trackMax = track.subtitles.reduce((tMax, s) => Math.max(tMax, s.endTime), 0);
-            return Math.max(max, trackMax);
-        }, 0);
+        await waitForFonts(Array.from(new Set(
+            document.subtitleTracks.map((track) => track.style.fontFamily),
+        )));
+        throwIfCancelled(onCancel);
 
-        const packetStats = await videoTrack.computePacketStats(100);
-        const videoFps = optionsFps ?? Math.round(packetStats.averagePacketRate);
-        const frameDuration = 1 / videoFps;
+        const frameRate = document.renderProfile.fps;
+        const frameRateNumber = frameRate.numerator / frameRate.denominator;
+        const contentEndFrame = getExportContentEndFrame(document);
+        const audioEndSample = frameToOutputSample(contentEndFrame, frameRate);
+        const placements = buildClipPlacements(document.videoClips, frameRate);
+        const canvasWidth = document.renderProfile.width;
+        const canvasHeight = document.renderProfile.height;
 
-        // Align durations to frame boundaries for Sacred Frames
-        const snappedVideoDuration = Math.round(videoDuration / frameDuration) * frameDuration;
-        const snappedSubEnd = Math.round(lastSubEnd / frameDuration) * frameDuration;
-
-        const exportDuration = Math.max(snappedVideoDuration, snappedSubEnd);
-        const totalFrames = Math.round(exportDuration / frameDuration);
-
-        const canvasWidth = videoTrack.displayWidth;
-        const canvasHeight = videoTrack.displayHeight;
-        const mediaId = 'export-' + Date.now();
-
-        // Ensure VideoCache uses native resolution for this export mediaId
-        videoCache.setTargetResolution(canvasWidth, canvasHeight, mediaId);
-
-        // Calculate intelligent bitrate
-        const sourceBitrate = videoDuration > 0 ? (videoFile.size * 8) / videoDuration : 5000000;
+        const sourceBitrate = calculateActiveTimelineBitrate(document.videoSources, document.videoClips);
         const multipliers = { low: 0.5, medium: 0.8, high: 1.2, very_high: 2.0 };
-        let targetBitrate = sourceBitrate * (multipliers[quality] || multipliers.high);
+        const baseBitrate = canvasWidth * canvasHeight / (1920 * 1080) * 10_000_000;
+        const targetBitrate = Math.max(
+            Math.max(500_000, baseBitrate * 0.2),
+            Math.min(Math.max(50_000_000, baseBitrate * 5), sourceBitrate * multipliers[quality]),
+        );
 
-        const pixelCount = canvasWidth * canvasHeight;
-        const baseBitrate = (pixelCount / (1920 * 1080)) * 10000000;
-        const minBitrate = Math.max(500000, baseBitrate * 0.2);
-        const maxBitrate = Math.max(50000000, baseBitrate * 5);
-        targetBitrate = Math.max(minBitrate, Math.min(maxBitrate, targetBitrate));
-
-        // Setup output
-        const outputFormat = format === 'webm' ? new WebMOutputFormat() : new Mp4OutputFormat();
-        const output = new Output({
-            format: outputFormat,
-            target: new BufferTarget(),
+        outputTarget = new BufferTarget();
+        output = new Output({
+            format: format === 'webm' ? new WebMOutputFormat() : new Mp4OutputFormat(),
+            target: outputTarget,
         });
-
-        const canvas = document.createElement('canvas');
+        const canvas = globalThis.document.createElement('canvas');
         canvas.width = canvasWidth;
         canvas.height = canvasHeight;
-        const ctx = canvas.getContext('2d');
+        const context2d = canvas.getContext('2d');
+        if (!context2d) throw new Error('Failed to create canvas context.');
 
-        if (!ctx) return { success: false, error: 'Failed to create canvas context' };
-
-        const videoSource = new CanvasSource(canvas, {
+        videoSource = new CanvasSource(canvas, {
             codec: format === 'webm' ? 'vp9' : 'avc',
             bitrate: Math.round(targetBitrate),
         });
-        output.addVideoTrack(videoSource, { frameRate: videoFps });
+        output.addVideoTrack(videoSource, { frameRate: frameRateNumber });
 
-        let cancelled = false;
-
-        // Handle audio track if included
-        let audioSource: AudioSampleSource | null = null;
         if (includeAudio) {
-            const inputAudioTrack = await input.getPrimaryAudioTrack();
-            if (inputAudioTrack) {
-                const { getFirstEncodableAudioCodec, AudioSampleSource, AudioSampleSink } = await import('mediabunny');
-                const codec = (await getFirstEncodableAudioCodec(['aac', 'opus'])) || 'aac';
-
-                audioSource = new AudioSampleSource({
-                    codec: codec as 'aac' | 'opus',
-                    bitrate: 128000,
-                });
-                output.addAudioTrack(audioSource);
-
-                // Start audio processing in background or interleaved
-                // For simplicity in this implementation, we interleave or process after video
-                const audioSink = new AudioSampleSink(inputAudioTrack);
-
-                // Audio processing loop (independent from video loop but part of same output)
-                (async () => {
-                    try {
-                        for await (const sample of audioSink.samples()) {
-                            if (cancelled) break;
-                            await audioSource.add(sample);
-                            sample.close();
-                        }
-                    } catch (e) {
-                        console.error('Audio encoding error:', e);
-                    } finally {
-                        audioSource?.close();
-                    }
-                })();
+            const requiredCodec = format === 'webm' ? 'opus' : 'aac';
+            const codec = await getFirstEncodableAudioCodec([requiredCodec]);
+            if (!codec) {
+                throw new Error(`${requiredCodec.toUpperCase()} audio encoding is unavailable.`);
             }
+            // The track is always present when requested, even if the mix plan has no audible
+            // contributors. TimelineAudioRenderer then emits exact zero-valued samples through
+            // the exclusive content boundary instead of silently omitting the track.
+            audioSource = new AudioSampleSource({ codec, bitrate: 128_000 });
+            output.addAudioTrack(audioSource);
         }
 
         await output.start();
+        const exportId = crypto.randomUUID();
+        for (let frameIndex = 0; frameIndex < contentEndFrame; frameIndex += 1) {
+            throwIfCancelled(onCancel);
+            const projectTime = framesToSeconds(frameIndex, frameRate);
+            const nextProjectTime = framesToSeconds(frameIndex + 1, frameRate);
+            const placement = resolveClipAtProjectTime(placements, projectTime);
+            const activeSource = placement ? sourcesById.get(placement.clip.sourceId) ?? null : null;
 
-        for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
-            if (onCancel?.()) {
-                cancelled = true;
-                break;
+            // Paint first on every iteration. If video ended before subtitle or audio content,
+            // this black frame becomes the stable visual tail on which subtitles still render.
+            context2d.fillStyle = '#000';
+            context2d.fillRect(0, 0, canvasWidth, canvasHeight);
+            if (placement && activeSource) {
+                const sourceFrame = getSourceFrameAtOrBefore(
+                    projectTimeToSourceTime(placement, projectTime),
+                    activeSource.fps,
+                    activeSource.duration,
+                );
+                const mediaId = `export:${exportId}:${activeSource.id}`;
+                mediaIds.add(mediaId);
+                videoCache.setTargetResolution(canvasWidth, canvasHeight, mediaId);
+                const frame = await videoCache.getFrameAt(
+                    mediaId,
+                    activeSource.file,
+                    sourceFrame.time,
+                    { mode: 'export', fps: activeSource.fps },
+                );
+                if (frame) {
+                    const sourceRatio = activeSource.width / activeSource.height;
+                    const canvasRatio = canvasWidth / canvasHeight;
+                    const drawWidth = canvasRatio > sourceRatio ? canvasHeight * sourceRatio : canvasWidth;
+                    const drawHeight = canvasRatio > sourceRatio ? canvasHeight : canvasWidth / sourceRatio;
+                    context2d.drawImage(
+                        frame.canvas,
+                        (canvasWidth - drawWidth) / 2,
+                        (canvasHeight - drawHeight) / 2,
+                        drawWidth,
+                        drawHeight,
+                    );
+                }
             }
 
-            const time = frameIndex / videoFps;
-
-            // Get video frame - Only request if within video duration
-            // Use a small epsilon to avoid floating point issues at exactly the end
-            const isWithinVideo = time < snappedVideoDuration - (frameDuration / 2);
-            const frame = isWithinVideo
-                ? await videoCache.getFrameAt(mediaId, videoFile, time, { mode: 'export', fps: videoFps })
-                : null;
-
-            if (frame) {
-                ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-                ctx.drawImage(frame.canvas, 0, 0, canvasWidth, canvasHeight);
-            } else {
-                // Fill with black if no frame available or beyond video duration
-                ctx.fillStyle = '#000000';
-                ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-            }
-
-            // Render subtitles from all tracks on top
-            tracks.forEach(track => {
+            document.subtitleTracks.forEach((track) => {
                 if (track.isVisible) {
-                    renderSubtitles(ctx, track.subtitles, track.style, time, canvasWidth, canvasHeight);
+                    renderSubtitles(
+                        context2d,
+                        track.subtitles,
+                        track.style,
+                        projectTime,
+                        canvasWidth,
+                        canvasHeight,
+                    );
                 }
             });
+            await videoSource.add(projectTime, nextProjectTime - projectTime);
+            onProgress?.((frameIndex + 1) / contentEndFrame * 0.8);
+        }
+        closeVideoSource();
 
-            // Add frame to output
-            await videoSource.add(time, frameDuration);
-
-            onProgress?.(frameIndex / totalFrames);
+        if (audioSource) {
+            const renderer = new TimelineAudioRenderer(document, audioSource);
+            await renderer.render({
+                outputEndSample: audioEndSample,
+                shouldCancel: onCancel,
+                onProgress: (progress) => onProgress?.(0.8 + progress * 0.18),
+            });
+            closeAudioSource();
         }
 
-        // Cleanup
-        videoCache.clearVideo(mediaId);
-
-        if (cancelled) {
-            await output.cancel();
-            return { success: false, cancelled: true };
-        }
-
-        videoSource.close();
+        throwIfCancelled(onCancel);
         await output.finalize();
         onProgress?.(1);
-
-        return {
-            success: true,
-            buffer: output.target.buffer || undefined,
-        };
+        return { success: true, buffer: outputTarget.buffer || undefined };
     } catch (error) {
+        if (isAbortError(error)) return { success: false, cancelled: true };
         console.error('Export failed:', error);
-        return {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown export error',
-        };
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown export error' };
+    } finally {
+        // Sources signal track completion to Mediabunny and must be closed even if setup, frame
+        // decoding, audio decoding, or encoding fails. Output.cancel releases encoders/muxers for
+        // every non-finalized state; it is safe to await here because this is the terminal cleanup.
+        closeVideoSource();
+        closeAudioSource();
+        if (output && output.state !== 'finalized' && output.state !== 'canceled') {
+            try {
+                await output.cancel();
+            } catch (cleanupError) {
+                console.error('Failed to cancel export output during cleanup:', cleanupError);
+            }
+        }
+        mediaIds.forEach((mediaId) => videoCache.clearVideo(mediaId));
     }
+}
+
+function normalizeExportRequest(request: ExportProjectRequest): EditorDocumentV3 {
+    if ('document' in request) return request.document;
+    return migrateLegacyExportContext(request);
+}
+
+/** Keeps the existing UI compiling while WP9 moves it to the canonical store snapshot. */
+function migrateLegacyExportContext(request: LegacyExportProjectContext): EditorDocumentV3 {
+    const firstSource = request.videoSources.find((source) => (
+        source.id === request.videoClips[0]?.sourceId
+    ));
+    const frameRate = decimalFrameRateToRational(
+        request.options.fps ?? firstSource?.fps ?? 30,
+    );
+    const audioSourcesById = new Map(request.videoSources.map((source) => [source.id, source]));
+    return {
+        version: 3,
+        revision: 1,
+        audioGraphRevision: 1,
+        renderProfile: {
+            fps: frameRate,
+            width: firstSource?.width ?? 1920,
+            height: firstSource?.height ?? 1080,
+            audioSampleRate: 48_000,
+            isFrameRateLocked: firstSource !== undefined,
+            isCanvasSizeLocked: firstSource !== undefined,
+        },
+        subtitleTracks: request.tracks.map((track) => ({ ...track, timingDomain: 'video-ripple' })),
+        videoSources: request.videoSources,
+        videoClips: request.videoClips.map((clip) => ({
+            ...clip,
+            audio: audioSourcesById.get(clip.sourceId)?.hasAudio ? {
+                linkState: 'linked',
+                muted: false,
+                gainDb: 0,
+                fadeInFrames: 0,
+                fadeOutFrames: 0,
+            } : null,
+        })),
+        audioSources: [],
+        audioTracks: [],
+        activeSubtitleTrackId: request.tracks[0]?.id ?? null,
+        transientSelection: { kind: 'none' },
+        transcriptionByTrackId: {},
+    };
+}
+
+function decimalFrameRateToRational(fps: number): RationalFrameRate {
+    if (!Number.isFinite(fps) || fps <= 0) return { numerator: 30, denominator: 1 };
+    const broadcastRates = [24_000, 30_000, 60_000, 120_000];
+    const broadcast = broadcastRates.find((numerator) => Math.abs(fps - numerator / 1_001) < 0.001);
+    if (broadcast) return { numerator: broadcast, denominator: 1_001 };
+    return normalizeFrameRate({ numerator: Math.round(fps * 1_000_000), denominator: 1_000_000 });
+}
+
+function throwIfCancelled(onCancel?: () => boolean): void {
+    if (onCancel?.()) throw new ExportCancelledError();
+}
+
+function isAbortError(error: unknown): boolean {
+    return error instanceof Error && error.name === 'AbortError';
 }
 
 export function getExportMimeType(format: 'mp4' | 'webm'): string {

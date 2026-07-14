@@ -3,7 +3,8 @@
 import { useState, memo } from 'react';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
-import { useVideoStore } from '@/stores/video-store';
+import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
+import { getClampedSubtitleTrackShift } from '@/lib/editor-layout';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
 
 interface TimelineTrackOverlayProps {
@@ -45,7 +46,7 @@ export const TimelineTrackOverlay = memo(function TimelineTrackOverlay({
 
     return (
         <div
-            className="relative h-16 border-b border-gray-800/50 hover:bg-white/5 transition-colors cursor-crosshair"
+            className="relative h-full border-b border-gray-800/50 hover:bg-white/5 transition-colors cursor-crosshair"
             style={{ width: `${duration * pps}px` }}
             onMouseDown={handleMouseClick}
         >
@@ -126,7 +127,6 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         onPushHistory();
 
         const startX = e.clientX;
-        const startY = e.clientY;
         // Note: we can also get it from refs, but tracksContentRef isn't easily accessible here.
         // Actually, we can just use the DOM since we are in a browser event.
         const tracksEl = document.querySelector('.overflow-x-scroll'); // The tracks container
@@ -154,18 +154,27 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         const groupMinStart = Math.min(...Array.from(initialStates.values()).map(s => s.startTime));
         const groupMaxEnd = Math.max(...Array.from(initialStates.values()).map(s => s.endTime));
         const groupDuration = groupMaxEnd - groupMinStart;
+        const originalTrackIndexes = Array.from(initialStates.values()).map((state) => (
+            allTracks.findIndex((track) => track.id === state.trackId)
+        )).filter((index) => index >= 0);
+        const anchorTrackIndex = allTracks.findIndex((track) => (
+            track.id === initialStates.get(subtitle.id)?.trackId
+        ));
 
         // Collect snap points once (one-shot optimization)
         const snapPoints: { time: number, isInitial: boolean }[] = [];
         if (snapEnabled) {
             const pointsMap = new Map<number, boolean>(); // time -> isInitial
 
-            const videoDuration = useVideoStore.getState().duration;
-            const videoFrameDuration = fps > 0 ? 1 / fps : 1 / 30;
-            const snappedVideoDuration = Math.round(videoDuration / videoFrameDuration) * videoFrameDuration;
+            const { videoClips } = useTimelineStore.getState();
+            const mediaDuration = getMediaDuration(videoClips);
 
             pointsMap.set(0, false);
-            pointsMap.set(snappedVideoDuration, false);
+            pointsMap.set(mediaDuration, false);
+            buildClipPlacements(videoClips).forEach((placement) => {
+                pointsMap.set(placement.projectStart, false);
+                pointsMap.set(placement.projectEnd, false);
+            });
 
             const playheadTime = usePlaybackStore.getState().currentTime;
             pointsMap.set(playheadTime, false);
@@ -233,18 +242,30 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             const currentScroll = tracksEl?.scrollLeft || 0;
             const scrollDelta = currentScroll - startScroll;
             const deltaX = moveEvent.clientX - startX;
-            const deltaY = moveEvent.clientY - startY;
             const deltaTime = (deltaX + scrollDelta) / pps;
 
             const { setPreviewTime } = usePlaybackStore.getState();
 
             if (type === 'move') {
-                // 1. Vertical track switching (Group)
-                const trackIndexShift = Math.round(deltaY / 64);
-                if (trackIndexShift !== lastShift) {
-                    // Try to move all selected subtitles
-                    moveSubtitlesToTrack(targetIds, trackIndexShift - lastShift, { skipHistory: true });
-                    lastShift = trackIndexShift;
+                // Row heights are independently resizable, so vertical intent is derived from
+                // the actual subtitle row under the pointer instead of a fixed 64 px divisor.
+                // Clamp the desired group delta against every selected subtitle's original row;
+                // the store can then apply each incremental shift without partially moving it.
+                const hoveredTrackId = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
+                    ?.closest<HTMLElement>('[data-subtitle-track-id]')
+                    ?.dataset.subtitleTrackId;
+                const hoveredTrackIndex = hoveredTrackId
+                    ? allTracks.findIndex((track) => track.id === hoveredTrackId)
+                    : -1;
+                const desiredShift = getClampedSubtitleTrackShift(
+                    originalTrackIndexes,
+                    anchorTrackIndex,
+                    hoveredTrackIndex,
+                    allTracks.length,
+                );
+                if (desiredShift !== null && desiredShift !== lastShift) {
+                    moveSubtitlesToTrack(targetIds, desiredShift - lastShift, { skipHistory: true });
+                    lastShift = desiredShift;
                 }
 
                 // 2. Horizontal movement (Group)

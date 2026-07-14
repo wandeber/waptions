@@ -34,9 +34,8 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
 
     return (
         <div
-            className={`flex items-center gap-2 px-3 border-b border-gray-800 cursor-pointer transition-all duration-200 relative
+            className={`relative flex h-full items-center gap-2 border-b border-gray-800 px-3 cursor-pointer transition-colors duration-200
                 ${isActive ? 'bg-gray-800 shadow-[inset_4px_0_0_0_#3b82f6]' : 'bg-gray-900 hover:bg-gray-800/50'}`}
-            style={{ height: '64px' }}
             onClick={onClick}
         >
             <div className="flex-1 min-w-0">

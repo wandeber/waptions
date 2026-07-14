@@ -1,10 +1,17 @@
 import { create } from 'zustand';
 import { TProject } from '@/types/project';
 import { storageService } from '@/lib/storage/storage-service';
-import { useTimelineStore } from './timeline-store';
-import { useVideoStore } from './video-store';
+import { setTimelinePersistenceBinding, useTimelineStore } from './timeline-store';
 import { usePlaybackStore } from './playback-store';
-import { getVideoInfo } from '@/lib/mediabunny-utils';
+import type { EditorDocumentV3, TrackTranscriptionState } from '@/types/video';
+import { inspectVideoSource } from '@/lib/video-source';
+import { migrateLegacyEditorDocumentToV3 } from '@/lib/editor-document-migration';
+import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
+import { getTimelineDurations } from '@/lib/video-timeline';
+import {
+    editorPersistenceRegistry,
+    type EditorPersistenceStatus,
+} from '@/lib/storage/editor-persistence';
 
 interface ProjectStore {
     activeProject: TProject | null;
@@ -15,6 +22,9 @@ interface ProjectStore {
     isInitialized: boolean;
     isDirty: boolean;
     lastSavedState: string;
+    persistenceGeneration: number;
+    persistenceStatus: EditorPersistenceStatus | null;
+    persistenceError: unknown | null;
 
     // Actions
     createProject: (name: string) => Promise<string>;
@@ -31,6 +41,61 @@ interface ProjectStore {
     updateLastSavedState: () => void;
 }
 
+const attachProjectPersistence = (projectId: string) => {
+    const attachment = editorPersistenceRegistry.attach(projectId);
+    setTimelinePersistenceBinding({
+        projectId,
+        generation: attachment.generation,
+        enqueue: (manifest, sourceAssets) => editorPersistenceRegistry.enqueue(
+            projectId,
+            attachment.generation,
+            manifest,
+            sourceAssets,
+        ),
+    });
+    return attachment;
+};
+
+const getPersistentAssets = (timeline: ReturnType<typeof useTimelineStore.getState>): EditorPersistentAsset[] => [
+    ...timeline.videoSources.map((asset): EditorPersistentAsset => ({ kind: 'video-source', asset })),
+    ...timeline.audioSources.map((asset): EditorPersistentAsset => ({ kind: 'audio-source', asset })),
+];
+
+const serializeDirtyState = (project: TProject): string => {
+    const timeline = useTimelineStore.getState();
+    return JSON.stringify({
+        name: project.name,
+        editorManifest: timeline.buildEditorManifest(),
+    });
+};
+
+const buildLegacyEditorDocument = async (
+    legacy: Awaited<ReturnType<typeof storageService.loadLegacyProjectPayload>>,
+): Promise<EditorDocumentV3> => {
+    const tracks = legacy.tracks ?? [];
+    const activeTrackId = tracks[0]?.id ?? null;
+    const transcriptionByTrackId: Record<string, TrackTranscriptionState> = {};
+
+    if (activeTrackId && legacy.transcriptionGroups && legacy.transcriptionContainerIds) {
+        transcriptionByTrackId[activeTrackId] = {
+            raw: legacy.rawTranscription ?? [],
+            groups: legacy.transcriptionGroups,
+            containerIds: legacy.transcriptionContainerIds,
+        };
+    }
+
+    // A scalar legacy project has no stream descriptor. Inspection is the only safe way to
+    // recover its audio flag and render profile before the pure V3 migration is applied.
+    const source = legacy.videoFile ? await inspectVideoSource(legacy.videoFile) : null;
+    return migrateLegacyEditorDocumentToV3({
+        tracks,
+        rawTranscription: activeTrackId ? transcriptionByTrackId[activeTrackId]?.raw ?? null : null,
+        transcriptionGroups: activeTrackId ? transcriptionByTrackId[activeTrackId]?.groups ?? null : null,
+        transcriptionContainerIds: activeTrackId ? transcriptionByTrackId[activeTrackId]?.containerIds ?? null : null,
+        loadedVideoSource: source,
+    });
+};
+
 export const useProjectStore = create<ProjectStore>((set, get) => ({
     activeProject: null,
     savedProjects: [],
@@ -40,6 +105,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     isInitialized: false,
     isDirty: false,
     lastSavedState: '',
+    persistenceGeneration: 0,
+    persistenceStatus: null,
+    persistenceError: null,
 
     setIsDirty: (isDirty) => {
         // Deprecated manual setter, but kept for compatibility. 
@@ -56,37 +124,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             return;
         }
 
-        // Dynamically import timeline store to avoid circular dependency at module level if possible, 
-        // or just use the imported one. The import at top is fine as long as we use .getState() inside functions.
-        // But we need to use the actual store instance.
-        const timelineStore = useTimelineStore.getState();
-        const videoFile = useVideoStore.getState().videoFile;
-        const videoState = videoFile ? `${videoFile.name}-${videoFile.size}-${videoFile.type}` : 'no-video';
-
-        const currentState = JSON.stringify({
-            name: activeProject.name,
-            tracks: timelineStore.tracks,
-            video: videoState
-        });
-
-        set({ isDirty: currentState !== lastSavedState });
+        set({ isDirty: serializeDirtyState(activeProject) !== lastSavedState });
     },
 
     updateLastSavedState: () => {
         const { activeProject } = get();
         if (!activeProject) return;
 
-        const timelineStore = useTimelineStore.getState();
-        const videoFile = useVideoStore.getState().videoFile;
-        const videoState = videoFile ? `${videoFile.name}-${videoFile.size}-${videoFile.type}` : 'no-video';
-
-        const currentState = JSON.stringify({
-            name: activeProject.name,
-            tracks: timelineStore.tracks,
-            video: videoState
-        });
-
-        set({ lastSavedState: currentState, isDirty: false });
+        set({ lastSavedState: serializeDirtyState(activeProject), isDirty: false });
     },
 
     createProject: async (name: string) => {
@@ -97,14 +142,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             updatedAt: new Date(),
         };
 
-        set({ activeProject: newProject });
+        const attachment = attachProjectPersistence(newProject.id);
+        set({
+            activeProject: newProject,
+            persistenceGeneration: attachment.generation,
+            persistenceStatus: null,
+            persistenceError: null,
+        });
 
-        // Reset timeline
         const timelineStore = useTimelineStore.getState();
-        timelineStore.setTracks([], { resetHistory: true });
-
-        // Reset video
-        useVideoStore.getState().clearVideo();
+        timelineStore.resetEditorDocument();
 
         // Reset playback
         usePlaybackStore.getState().reset();
@@ -114,10 +161,25 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         try {
             await storageService.saveProject(newProject);
-            await storageService.saveTimeline(newProject.id, []);
+            editorPersistenceRegistry.enqueue(
+                newProject.id,
+                attachment.generation,
+                timelineStore.buildEditorManifest(),
+                getPersistentAssets(timelineStore),
+            );
+            await editorPersistenceRegistry.flush(newProject.id);
             await get().loadAllProjects();
             return newProject.id;
         } catch (error) {
+            editorPersistenceRegistry.close(newProject.id, attachment.generation);
+            setTimelinePersistenceBinding(null);
+            // Project discovery is created before the first document flush. If that flush fails,
+            // remove both records so the dashboard cannot expose an empty, unreopenable project.
+            await editorPersistenceRegistry.deleteProject(newProject.id).catch(() => undefined);
+            await storageService.deleteProjectIndex(newProject.id).catch(() => undefined);
+            timelineStore.resetEditorDocument();
+            usePlaybackStore.getState().reset();
+            set({ activeProject: null, persistenceGeneration: 0, persistenceError: error });
             console.error('Failed to create project:', error);
             throw error;
         }
@@ -125,51 +187,100 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
     loadProject: async (id: string) => {
         set({ isProjectLoading: true });
+        let persistenceGeneration = 0;
+        let recoveredPersistenceFailure: unknown | null = null;
         try {
+            recoveredPersistenceFailure = await editorPersistenceRegistry.settleBeforeOpen(id);
             const project = await storageService.loadProject(id);
             if (!project) throw new Error(`Project ${id} not found`);
+            const previous = get();
+            if (previous.activeProject) {
+                editorPersistenceRegistry.close(previous.activeProject.id, previous.persistenceGeneration);
+                setTimelinePersistenceBinding(null);
+            }
+            set({ activeProject: null });
 
-            const { tracks, rawTranscription, transcriptionGroups, transcriptionContainerIds } = await storageService.loadTimeline(id);
-
-            set({ activeProject: project });
-
+            const attachment = editorPersistenceRegistry.attach(id);
+            persistenceGeneration = attachment.generation;
+            let document = await storageService.loadEditorDocument(id);
+            const legacy = document ? null : await storageService.loadLegacyProjectPayload(id);
             const timelineStore = useTimelineStore.getState();
-            timelineStore.setTracks(tracks || [], { resetHistory: true });
-            timelineStore.setTranscriptionState(transcriptionGroups, transcriptionContainerIds, rawTranscription);
+            let migratedLegacy = false;
 
-            get().updateLastSavedState();
-
-            // Load video if exists
-            const videoFile = await storageService.loadVideo(id);
-            const videoStore = useVideoStore.getState();
-
-            if (videoFile) {
-                try {
-                    const info = await getVideoInfo(videoFile);
-                    videoStore.loadVideo(videoFile, info);
-
-                    // Generate metadata if missing
-                    if (!project.thumbnail || !project.duration) {
-                        if (!project.duration) {
-                            get().updateProjectDuration(info.duration);
-                        }
-
-                        if (!project.thumbnail) {
-                            const { generateThumbnail } = await import('@/lib/mediabunny-utils');
-                            generateThumbnail(videoFile, 0).then(thumb => {
-                                get().updateThumbnail(thumb);
-                            }).catch(e => console.error("Failed to generate missing thumbnail", e));
-                        }
-                    }
-                } catch (e) {
-                    console.error("Failed to load video metadata", e);
-                    videoStore.clearVideo();
-                }
+            if (document) {
+                timelineStore.hydrateEditorDocument(document);
+                editorPersistenceRegistry.markManifestDurable(id, timelineStore.buildEditorManifest());
             } else {
-                videoStore.clearVideo();
+                document = await buildLegacyEditorDocument(legacy!);
+                timelineStore.hydrateEditorDocument(document);
+                migratedLegacy = true;
             }
 
+            set({
+                activeProject: project,
+                persistenceGeneration,
+                persistenceStatus: null,
+                persistenceError: recoveredPersistenceFailure ?? attachment.coordinator.observeFailure(),
+            });
+
+            setTimelinePersistenceBinding({
+                projectId: id,
+                generation: attachment.generation,
+                enqueue: (manifest, sourceAssets) => editorPersistenceRegistry.enqueue(
+                    id,
+                    attachment.generation,
+                    manifest,
+                    sourceAssets,
+                ),
+            });
+
+            if (migratedLegacy) {
+                // The manifest and its File are committed in one IndexedDB transaction. Legacy
+                // records remain as a harmless fallback until the V3 transaction is durable.
+                const migratedTimeline = useTimelineStore.getState();
+                editorPersistenceRegistry.enqueue(
+                    id,
+                    attachment.generation,
+                    migratedTimeline.buildEditorManifest(),
+                    getPersistentAssets(migratedTimeline),
+                );
+                await editorPersistenceRegistry.flush(id);
+                // A successful migration must not erase a failure recovered from a previous
+                // session before the user has had a chance to see it.
+                set({ persistenceError: recoveredPersistenceFailure });
+            }
+
+            const hydratedTimeline = useTimelineStore.getState();
+            const contentDuration = getTimelineDurations(
+                hydratedTimeline.videoClips,
+                hydratedTimeline.tracks,
+                {
+                    audioTracks: hydratedTimeline.audioTracks,
+                    videoSources: hydratedTimeline.videoSources,
+                    audioSources: hydratedTimeline.audioSources,
+                    renderProfile: hydratedTimeline.renderProfile,
+                },
+            ).contentDuration;
+            const primarySource = document.videoSources[0];
+            if (project.duration !== contentDuration) {
+                // Dashboard duration reflects the complete edit, including audio tails and a
+                // still-editable audio-only graph after every video clip has been removed.
+                set((state) => state.activeProject
+                    ? { activeProject: { ...state.activeProject, duration: contentDuration } }
+                    : state);
+                void get().updateProjectDuration(contentDuration);
+            }
+            if (primarySource && !project.thumbnail) {
+                const { generateThumbnail } = await import('@/lib/mediabunny-utils');
+                void generateThumbnail(primarySource.file, 0)
+                    .then((thumbnail) => get().updateThumbnail(thumbnail))
+                    .catch((error) => console.error('Failed to generate missing thumbnail', error));
+            }
+            get().updateLastSavedState();
         } catch (error) {
+            if (persistenceGeneration) editorPersistenceRegistry.close(id, persistenceGeneration);
+            setTimelinePersistenceBinding(null);
+            set({ persistenceError: recoveredPersistenceFailure ?? error });
             console.error('Failed to load project:', error);
             throw error;
         } finally {
@@ -178,12 +289,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     },
 
     saveCurrentProject: async () => {
-        const { activeProject } = get();
+        const { activeProject, persistenceGeneration } = get();
         if (!activeProject) return;
 
         set({ isSaving: true });
         const timelineStore = useTimelineStore.getState();
-        const tracks = timelineStore.tracks;
 
         const updatedProject = {
             ...activeProject,
@@ -192,17 +302,21 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         try {
             await storageService.saveProject(updatedProject);
-            await storageService.saveTimeline(
+            if (!persistenceGeneration) {
+                throw new Error(`Project ${updatedProject.id} has no active persistence generation.`);
+            }
+            editorPersistenceRegistry.enqueue(
                 updatedProject.id,
-                tracks,
-                timelineStore.rawTranscription,
-                timelineStore.transcriptionGroups,
-                timelineStore.transcriptionContainerIds
+                persistenceGeneration,
+                timelineStore.buildEditorManifest(),
+                getPersistentAssets(timelineStore),
             );
+            await editorPersistenceRegistry.flush(updatedProject.id);
             set({ activeProject: updatedProject });
             get().updateLastSavedState();
             await get().loadAllProjects();
         } catch (error) {
+            set({ persistenceError: error });
             console.error('Failed to save project:', error);
         } finally {
             set({ isSaving: false });
@@ -223,7 +337,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
     deleteProject: async (id: string) => {
         try {
-            await storageService.deleteProject(id);
+            await editorPersistenceRegistry.deleteProject(id);
+            // Project discovery is removed last, only after the long-lived database deletion
+            // request has actually succeeded rather than merely reporting onblocked.
+            await storageService.deleteProjectIndex(id);
             await get().loadAllProjects();
 
             const { activeProject } = get();
@@ -231,15 +348,24 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 get().closeProject();
             }
         } catch (error) {
+            set({ persistenceError: error });
             console.error('Failed to delete project:', error);
+            throw error;
         }
     },
 
     closeProject: () => {
-        set({ activeProject: null });
+        const { activeProject, persistenceGeneration } = get();
+        if (activeProject) editorPersistenceRegistry.close(activeProject.id, persistenceGeneration);
+        setTimelinePersistenceBinding(null);
+        set({
+            activeProject: null,
+            persistenceGeneration: 0,
+            persistenceStatus: null,
+            persistenceError: null,
+        });
         const timelineStore = useTimelineStore.getState();
-        timelineStore.setTracks([], { resetHistory: true });
-        useVideoStore.getState().clearVideo();
+        timelineStore.resetEditorDocument();
         usePlaybackStore.getState().reset();
     },
 
@@ -301,3 +427,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }
     }
 }));
+
+editorPersistenceRegistry.setActiveStatusListener((event) => {
+    useProjectStore.setState({
+        persistenceStatus: event.status,
+        persistenceError: event.status === 'error' ? event.error ?? new Error('Persistence failed.') : null,
+    });
+});

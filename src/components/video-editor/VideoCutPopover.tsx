@@ -4,13 +4,13 @@ import { useState } from 'react';
 import { Scissors, ChevronDown, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { useTimelineStore } from '@/stores/timeline-store';
-import { useVideoStore } from '@/stores/video-store';
 import { Popover } from '../design-system/Popover';
 import {
     CutDetectionPipeline,
     HistogramHsvDetector,
     WebCodecsFrameSource
 } from '@/lib/video-cut';
+import { buildClipPlacements } from '@/lib/video-timeline';
 
 export function VideoCutPopover() {
     const [isOpen, setIsOpen] = useState(false);
@@ -23,15 +23,22 @@ export function VideoCutPopover() {
         isDetecting,
         setIsDetecting,
         detectionProgress,
-        setDetectionProgress
+        setDetectionProgress,
+        videoSources,
+        videoClips,
+        selectedClipId,
+        projectFps,
     } = useTimelineStore();
-
-    const { videoFile } = useVideoStore();
+    const selectedPlacement = buildClipPlacements(videoClips)
+        .find((placement) => placement.clip.id === selectedClipId);
+    const selectedSource = selectedPlacement
+        ? videoSources.find((source) => source.id === selectedPlacement.clip.sourceId) ?? null
+        : null;
 
     const handleDetect = async () => {
-        if (!videoFile || isDetecting) return;
+        if (!selectedSource || !selectedPlacement || isDetecting) return;
 
-        const source = new WebCodecsFrameSource(videoFile);
+        const source = new WebCodecsFrameSource(selectedSource.file);
         try {
             setIsDetecting(true);
             setDetectionProgress(0);
@@ -49,7 +56,15 @@ export function VideoCutPopover() {
                 setDetectionProgress(progress);
             });
 
-            setCuts(detectedCuts);
+            setCuts(detectedCuts.flatMap((cut) => {
+                if (cut.timeSec < selectedPlacement.clip.sourceStart || cut.timeSec >= selectedPlacement.clip.sourceEnd) {
+                    return [];
+                }
+                const timeSec = selectedPlacement.projectStart
+                    + cut.timeSec
+                    - selectedPlacement.clip.sourceStart;
+                return [{ ...cut, timeSec, frameIndex: Math.round(timeSec * projectFps) }];
+            }));
         } catch (error) {
             console.error('[VideoCut] Detection failed:', error);
             alert('Error al detectar cortes. Revisa la consola para más detalles.');
@@ -70,7 +85,7 @@ export function VideoCutPopover() {
                     variant={isOpen || cuts.length > 0 ? 'primary' : 'secondary'}
                     title="Detección de cortes"
                     className="flex items-center gap-1"
-                    disabled={!videoFile}
+                    disabled={!selectedSource}
                 >
                     {isDetecting ? (
                         <Loader2 className="w-[18px] h-[18px] animate-spin" />

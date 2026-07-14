@@ -16,7 +16,7 @@ These instructions apply to the whole repository. This file replaces the old Cur
 
 - Waptions is a browser-based subtitle editor built with Next.js App Router, React 19, TypeScript, Tailwind CSS, Zustand, Mediabunny, and WebCodecs.
 - The public release is MIT licensed and designed to run without login and without bundled paid transcription providers.
-- The default public transcription path is a user-configured OpenAI-compatible `/audio/transcriptions` endpoint selected in the editor.
+- The default public transcription paths are browser-local transcription and a user-configured OpenAI-compatible `/audio/transcriptions` endpoint selected in the editor.
 - The README acknowledges inspiration from OpenCut and the wider open-source web video editing ecosystem.
 
 ## Feature Flags
@@ -28,16 +28,19 @@ AUTH_ENABLED=false
 NEXT_PUBLIC_AUTH_ENABLED=false
 SHOW_PAID_TRANSCRIPTION_MODELS=false
 NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS=false
+NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR=false
 ```
 
 - When authentication is disabled, `/login` redirects to `/` and `/api/auth/*` returns 404.
-- When paid transcription models are hidden, backend subtitle generation must reject built-in paid provider models and accept only the custom OpenAI-compatible transcriber path.
+- When paid transcription models are hidden, backend subtitle generation must reject built-in paid provider models; public transcription should happen through browser-local models or the custom OpenAI-compatible transcriber path.
+- Keep experimental Qwen/Mega-ASR browser manifests hidden unless `NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR=true`.
 - Production server-mode custom transcription hosts must be allowlisted with `OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS`.
 
 ## Transcription Routing
 
-The transcription modal lets users configure an endpoint URL, optional model, optional API key, and request mode.
+The transcription modal lets users run a browser-local model or configure an endpoint URL, optional model, optional API key, and request mode.
 
+- Local browser mode runs through `src/lib/ai/local-browser-transcription.ts` and a dedicated module worker. It should prefer WebGPU and expose WASM only as a slower fallback.
 - Browser mode sends the multipart OpenAI-compatible request directly from the user's browser. It is the best mode for local transcribers because `localhost` resolves on the user's machine, but the transcriber must allow CORS from the Waptions origin.
 - Server mode proxies through the Waptions backend. It avoids browser CORS, but `localhost` resolves on the Waptions server, not on the user's computer.
 - Keep SSRF protections strict. In production, server-mode hosts must pass the allowlist in `src/lib/ai/openai-compatible-transcription-server.ts`.
@@ -51,6 +54,7 @@ The transcription modal lets users configure an endpoint URL, optional model, op
 - Preview frames are cached by discrete frame index, not raw timestamps, so playback and scrubbing can reuse warmed frames predictably.
 - Always close WebCodecs and Mediabunny samples when code owns them.
 - Custom transcription helpers live in `src/lib/ai/openai-compatible-transcription.ts` and `src/lib/ai/openai-compatible-transcription-server.ts`.
+- Browser-local transcription helpers live in `src/lib/ai/local-browser-transcription.ts`, `src/lib/ai/local-browser-transcription-output.ts`, and `src/lib/ai/local-browser-transcription.worker.ts`.
 
 ## Commands
 

@@ -10,6 +10,7 @@ interface OpenAICompatibleTranscriptionRequest {
     fallbackModel: string;
     options?: Record<string, unknown>;
     fetchImpl?: typeof fetch;
+    signal?: AbortSignal;
 }
 
 export function parseOpenAICompatibleTranscriptionSettings(value: FormDataEntryValue | null): OpenAICompatibleTranscriptionSettings | null {
@@ -89,6 +90,7 @@ export async function transcribeWithOpenAICompatibleEndpoint({
     fallbackModel,
     options = {},
     fetchImpl = fetch,
+    signal,
 }: OpenAICompatibleTranscriptionRequest): Promise<unknown> {
     const endpointUrl = resolveOpenAICompatibleTranscriptionUrl(settings.endpoint);
     const formData = new FormData();
@@ -107,6 +109,7 @@ export async function transcribeWithOpenAICompatibleEndpoint({
         body: formData,
         headers,
         redirect: "error",
+        signal,
     });
 
     const responseText = await response.text();

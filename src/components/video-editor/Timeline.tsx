@@ -1,10 +1,12 @@
 'use client';
 
-import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
-import { Subtitle } from '@/types/timeline';
-import { Play, Pause, Plus, ZoomIn, ZoomOut, RotateCcw, Magnet } from 'lucide-react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo, useState } from 'react';
+import type { Subtitle, SubtitleTrack } from '@/types/timeline';
+import type { AudioTrack } from '@/types/video';
+import { ChevronLeft, ChevronRight, Headphones, Pause, Play, Plus, RotateCcw, Scissors, Trash2, ZoomIn, ZoomOut, Magnet } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useProjectStore } from '@/stores/project-store';
 import { TimelineRuler } from './TimelineRuler';
 import { TimelineTrackHeader } from './TimelineTrackHeader';
 import { TimelinePlayhead } from './TimelinePlayhead';
@@ -15,12 +17,21 @@ const MemoizedTimelineRuler = memo(TimelineRuler);
 const MemoizedTimelinePlayhead = memo(TimelinePlayhead);
 const MemoizedTimelineTrackOverlay = memo(TimelineTrackOverlay);
 const MemoizedTimelineTrackHeader = memo(TimelineTrackHeader);
-import { useWaveform } from '@/hooks/use-waveform';
-import { TimelineWaveform } from './TimelineWaveform';
+import { useAudioWaveforms } from '@/hooks/use-waveform';
 import { OverlayMenu } from './OverlayMenu';
 import { TimelineVideoTrack } from './TimelineVideoTrack';
+import { TimelineAudioTrack, getAudioClipVisualData } from './TimelineAudioTrack';
+import { TimelineAudioTrackHeader } from './TimelineAudioTrackHeader';
+import { TimelineRowResizeHandle } from './TimelineRowResizeHandle';
 import { VideoCutPopover } from './VideoCutPopover';
-import { useVideoStore } from '@/stores/video-store';
+import { buildClipPlacements, getTimelineDurations } from '@/lib/video-timeline';
+import { getVisibleVideoAudioReferences } from '@/lib/video-waveform';
+import { getAudioMediaCacheKey, type AudioMediaReference } from '@/lib/media-asset-ref';
+import { framesToSeconds, secondsToFrames } from '@/lib/render-profile';
+import {
+  DEFAULT_TIMELINE_ROW_HEIGHT,
+  clampTimelineRowHeight,
+} from '@/lib/editor-layout';
 
 interface TimelineProps {
   duration: number;
@@ -39,6 +50,18 @@ interface TimelineProps {
   onMetaInfoToggle?: () => void;
 }
 
+type TimelineRowKey = `subtitle:${string}` | 'video' | `audio:${string}`;
+
+type TimelineRowDescriptor =
+  | { key: `subtitle:${string}`; kind: 'subtitle'; label: string; track: SubtitleTrack }
+  | { key: 'video'; kind: 'video'; label: 'video' }
+  | { key: `audio:${string}`; kind: 'audio'; label: string; track: AudioTrack };
+
+interface TimelineRowHeightState {
+  projectId: string | null;
+  overrides: Partial<Record<TimelineRowKey, number>>;
+}
+
 export function Timeline({
   duration,
   contentDuration,
@@ -55,13 +78,22 @@ export function Timeline({
   showMetaInfo = false,
   onMetaInfoToggle,
 }: TimelineProps) {
+  const projectId = useProjectStore((state) => state.activeProject?.id ?? null);
   const {
     zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond,
     activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled,
-    activeSnapTime, cuts, isDragging
+    activeSnapTime, cuts, isDragging, videoSources, videoClips, selectedClipId,
+    audioSources, audioTracks, renderProfile, transientSelection,
+    splitSelectedMediaAtFrame, deleteSelectedMedia, reorderVideoClips, addAudioTrack,
   } = useTimelineStore();
-  const { videoFile } = useVideoStore();
-  const { audioBuffer } = useWaveform(videoFile);
+  const clipPlacements = useMemo(
+    () => buildClipPlacements(videoClips, renderProfile.fps),
+    [renderProfile.fps, videoClips],
+  );
+  const selectedClipIndex = selectedClipId
+    ? videoClips.findIndex((clip) => clip.id === selectedClipId)
+    : -1;
+  const hasSelectedMedia = transientSelection.kind === 'video-clip' || transientSelection.kind === 'audio-clip';
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -69,6 +101,138 @@ export function Timeline({
   const isSyncingRef = useRef(false);
   const virtualScrollLeftRef = useRef(0);
   const pendingScrollRef = useRef<number | null>(null);
+  const effectivePixelsPerSecond = pixelsPerSecond * zoomLevel;
+  const [requestedWaveformReferences, setRequestedWaveformReferences] = useState<AudioMediaReference[]>([]);
+  const [horizontalScrollbarHeight, setHorizontalScrollbarHeight] = useState(0);
+  const [rowHeightState, setRowHeightState] = useState<TimelineRowHeightState>({
+    projectId,
+    overrides: {},
+  });
+  const rowHeightOverrides = useMemo(() => (
+    rowHeightState.projectId === projectId ? rowHeightState.overrides : {}
+  ), [projectId, rowHeightState]);
+  const timelineRows = useMemo<TimelineRowDescriptor[]>(() => [
+    ...tracks.map((track) => ({
+      key: `subtitle:${track.id}` as const,
+      kind: 'subtitle' as const,
+      label: track.name,
+      track,
+    })),
+    { key: 'video', kind: 'video', label: 'video' },
+    ...audioTracks.map((track) => ({
+      key: `audio:${track.id}` as const,
+      kind: 'audio' as const,
+      label: track.name,
+      track,
+    })),
+  ], [audioTracks, tracks]);
+  const getRowHeight = useCallback((rowKey: TimelineRowKey) => (
+    rowHeightOverrides[rowKey] ?? DEFAULT_TIMELINE_ROW_HEIGHT
+  ), [rowHeightOverrides]);
+  const setRowHeight = useCallback((rowKey: TimelineRowKey, requestedHeight: number) => {
+    const nextHeight = clampTimelineRowHeight(requestedHeight);
+    setRowHeightState((current) => {
+      const currentOverrides = current.projectId === projectId ? current.overrides : {};
+      if ((currentOverrides[rowKey] ?? DEFAULT_TIMELINE_ROW_HEIGHT) === nextHeight) return current;
+      return {
+        projectId,
+        // Missing rows deliberately remain in this sparse map so undo can restore their visual
+        // height during the same editor session without polluting the durable project document.
+        overrides: { ...currentOverrides, [rowKey]: nextHeight },
+      };
+    });
+  }, [projectId]);
+
+  useLayoutEffect(() => {
+    // Ignore stale overrides during render, then atomically replace them before paint when the
+    // active project changes. The project ID also keys every live resize handle below.
+    setRowHeightState((current) => current.projectId === projectId
+      ? current
+      : { projectId, overrides: {} });
+  }, [projectId]);
+
+  const updateVisibleWaveformRange = useCallback(() => {
+    const tracksElement = tracksContentRef.current;
+    if (!tracksElement || effectivePixelsPerSecond <= 0) return;
+    const visibleStart = tracksElement.scrollLeft / effectivePixelsPerSecond;
+    const visibleEnd = (tracksElement.scrollLeft + tracksElement.clientWidth) / effectivePixelsPerSecond;
+    const nextReferences = getVisibleVideoAudioReferences(
+      videoClips,
+      renderProfile.fps,
+      visibleStart,
+      visibleEnd,
+    );
+    audioTracks.forEach((track) => track.clips.forEach((clip) => {
+      const visual = getAudioClipVisualData(clip, renderProfile.fps, videoSources, audioSources);
+      if (!visual) return;
+      const clipStart = framesToSeconds(clip.timelineStartFrame, renderProfile.fps);
+      const clipEnd = framesToSeconds(clip.timelineStartFrame + visual.durationFrames, renderProfile.fps);
+      if (clipEnd <= visibleStart || clipStart >= visibleEnd) return;
+      nextReferences.push(clip.source);
+    }));
+
+    const uniqueReferences = nextReferences.filter((reference, index, references) => {
+      const key = getAudioMediaCacheKey(reference);
+      return references.findIndex((candidate) => getAudioMediaCacheKey(candidate) === key) === index;
+    });
+    // Scrolling within the same clips must not restart an in-flight waveform decode.
+    setRequestedWaveformReferences((currentReferences) => {
+      const currentKeys = currentReferences.map(getAudioMediaCacheKey);
+      const nextKeys = uniqueReferences.map(getAudioMediaCacheKey);
+      return currentKeys.length === nextKeys.length
+        && currentKeys.every((key, index) => key === nextKeys[index])
+        ? currentReferences
+        : uniqueReferences;
+    });
+  }, [audioSources, audioTracks, effectivePixelsPerSecond, renderProfile.fps, videoClips, videoSources]);
+
+  useEffect(() => {
+    const tracksElement = tracksContentRef.current;
+    if (!tracksElement) return;
+
+    // Measure once after mount so the initial viewport is requested before the user scrolls.
+    updateVisibleWaveformRange();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateVisibleWaveformRange);
+      return () => window.removeEventListener('resize', updateVisibleWaveformRange);
+    }
+
+    const observer = new ResizeObserver(updateVisibleWaveformRange);
+    observer.observe(tracksElement);
+    return () => observer.disconnect();
+  }, [duration, updateVisibleWaveformRange]);
+
+  const { peaksByMediaKey } = useAudioWaveforms(videoSources, audioSources, requestedWaveformReferences);
+
+  useEffect(() => {
+    const tracksElement = tracksContentRef.current;
+    if (!tracksElement) return;
+    const measureHorizontalScrollbar = () => {
+      const measuredHeight = Math.max(0, tracksElement.offsetHeight - tracksElement.clientHeight);
+      setHorizontalScrollbarHeight((current) => current === measuredHeight ? current : measuredHeight);
+    };
+    measureHorizontalScrollbar();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measureHorizontalScrollbar);
+      return () => window.removeEventListener('resize', measureHorizontalScrollbar);
+    }
+    const observer = new ResizeObserver(measureHorizontalScrollbar);
+    observer.observe(tracksElement);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    const tracksElement = tracksContentRef.current;
+    const sidebarElement = sidebarContentRef.current;
+    if (!tracksElement || !sidebarElement) return;
+    // The sidebar receives bottom padding equal to the real horizontal scrollbar gutter. Clamp
+    // against the content scroller after every geometry change, then publish the exact same
+    // vertical offset so both independently rendered columns remain aligned at their lower edge.
+    const maximumScrollTop = Math.max(0, tracksElement.scrollHeight - tracksElement.clientHeight);
+    const nextScrollTop = Math.min(tracksElement.scrollTop, maximumScrollTop);
+    tracksElement.scrollTop = nextScrollTop;
+    sidebarElement.scrollTop = nextScrollTop;
+  }, [horizontalScrollbarHeight, rowHeightState, timelineRows]);
 
 
 
@@ -97,6 +261,7 @@ export function Timeline({
     }
 
     isSyncingRef.current = false;
+    updateVisibleWaveformRange();
   };
 
   const formatTime = (seconds: number) => {
@@ -106,7 +271,7 @@ export function Timeline({
     return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   };
 
-  const timelineWidth = duration * pixelsPerSecond * zoomLevel;
+  const timelineWidth = Math.max(1, duration * pixelsPerSecond * zoomLevel);
 
   // Sync refs for wheel handler to avoid effect re-runs
   const currentTimeRef = useRef(currentTime);
@@ -297,11 +462,19 @@ export function Timeline({
   }, [pixelsPerSecond, zoomLevel]);
 
   const memoizedKeyPoints = useMemo(() => {
-    const rawVideoDuration = useVideoStore.getState().duration;
-    const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
-    const snappedVideoDuration = Math.round(rawVideoDuration / frameDuration) * frameDuration;
+    const mediaDuration = getTimelineDurations(videoClips, tracks).mediaDuration;
 
-    const keyPoints = new Set<number>([0, snappedVideoDuration, duration]);
+    const keyPoints = new Set<number>([0, mediaDuration, duration]);
+    clipPlacements.forEach((placement) => {
+      keyPoints.add(placement.projectStart);
+      keyPoints.add(placement.projectEnd);
+    });
+    audioTracks.forEach((track) => track.clips.forEach((clip) => {
+      const visual = getAudioClipVisualData(clip, renderProfile.fps, videoSources, audioSources);
+      if (!visual) return;
+      keyPoints.add(framesToSeconds(clip.timelineStartFrame, renderProfile.fps));
+      keyPoints.add(framesToSeconds(clip.timelineStartFrame + visual.durationFrames, renderProfile.fps));
+    }));
     tracks.forEach(track => {
       track.subtitles.forEach(s => {
         // Guardamos con precisión de ms
@@ -310,7 +483,7 @@ export function Timeline({
       });
     });
     return Array.from(keyPoints).sort((a, b) => a - b);
-  }, [tracks, duration, fps]);
+  }, [audioSources, audioTracks, clipPlacements, duration, renderProfile.fps, tracks, videoClips, videoSources]);
 
   // Keyboard navigation (Frame-by-Frame)
   useEffect(() => {
@@ -377,10 +550,10 @@ export function Timeline({
   return (
     <div
       ref={containerRef}
-      className="flex flex-col bg-gray-900 border-t border-gray-800 min-w-0 overflow-hidden"
+      className="h-full flex flex-col bg-gray-900 border border-gray-800 rounded-lg min-w-0 overflow-hidden"
     >
       {/* Toolbar */}
-      <div className="flex items-center gap-4 p-2 bg-gray-800/50 border-b border-gray-800 relative z-30">
+      <div className="h-11 flex-none flex items-center gap-2 px-2 bg-gray-800/50 border-b border-gray-800 relative z-30 overflow-x-auto">
         <div className="flex items-center gap-2">
           <Button
             variant={isPlaying ? 'primary' : 'secondary'}
@@ -399,16 +572,16 @@ export function Timeline({
 
         </div>
 
-        <div className="flex gap-2 ml-auto">
+        <div className="flex gap-1 ml-auto">
           <div className="flex items-center gap-1">
             <span className="text-xs font-mono text-gray-400 mr-2 w-10 text-right">{(zoomLevel * 100).toFixed(0)}%</span>
-            <Button variant="secondary" onClick={handleZoomOut} title="Alejar">
+            <Button variant="secondary" onClick={handleZoomOut} title="Zoom out">
               <ZoomOut className="w-[18px] h-[18px]" />
             </Button>
-            <Button variant="secondary" onClick={handleZoomIn} title="Acercar">
+            <Button variant="secondary" onClick={handleZoomIn} title="Zoom in">
               <ZoomIn className="w-[18px] h-[18px]" />
             </Button>
-            <Button variant="secondary" onClick={handleResetZoom} title="Ajustar a la vista">
+            <Button variant="secondary" onClick={handleResetZoom} title="Fit timeline to view">
               <RotateCcw className="w-[18px] h-[18px]" />
             </Button>
           </div>
@@ -423,12 +596,60 @@ export function Timeline({
             onMetaInfoToggle={() => onMetaInfoToggle?.()}
           />
           <VideoCutPopover />
+          <Button
+            variant="secondary"
+            data-testid="split-selected-media"
+            onClick={() => splitSelectedMediaAtFrame(secondsToFrames(currentTime, renderProfile.fps, 'nearest'))}
+            disabled={!hasSelectedMedia}
+            title="Split selected media at playhead"
+          >
+            <Scissors className="w-[18px] h-[18px]" />
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              if (selectedClipIndex <= 0) return;
+              const ids = videoClips.map((clip) => clip.id);
+              [ids[selectedClipIndex - 1], ids[selectedClipIndex]] = [ids[selectedClipIndex], ids[selectedClipIndex - 1]];
+              reorderVideoClips(ids);
+            }}
+            disabled={selectedClipIndex <= 0}
+            title="Move selected clip left"
+          >
+            <ChevronLeft className="w-[18px] h-[18px]" />
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              if (selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1) return;
+              const ids = videoClips.map((clip) => clip.id);
+              [ids[selectedClipIndex], ids[selectedClipIndex + 1]] = [ids[selectedClipIndex + 1], ids[selectedClipIndex]];
+              reorderVideoClips(ids);
+            }}
+            disabled={selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1}
+            title="Move selected clip right"
+          >
+            <ChevronRight className="w-[18px] h-[18px]" />
+          </Button>
+          <Button
+            variant="danger"
+            data-testid="delete-selected-media"
+            onClick={deleteSelectedMedia}
+            disabled={!hasSelectedMedia}
+            title="Delete selected media"
+          >
+            <Trash2 className="w-[18px] h-[18px]" />
+          </Button>
           <Button variant="secondary" isActive={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)} title="Snap">
             <Magnet className="w-[18px] h-[18px]" />
           </Button>
           <div className="w-px h-6 bg-gray-800 mx-1" />
-          <Button variant="secondary" onClick={() => addTrack()} title="Nueva Capa">
+          <Button variant="secondary" onClick={() => addTrack()} title="Add subtitle track">
             <Plus className="w-[18px] h-[18px]" />
+          </Button>
+          <Button variant="secondary" onClick={() => addAudioTrack()} title="Add audio track">
+            <Headphones className="w-[18px] h-[18px]" />
+            <Plus className="w-3 h-3" />
           </Button>
         </div>
       </div>
@@ -443,29 +664,51 @@ export function Timeline({
           <div
             ref={sidebarContentRef}
             className="flex-1 overflow-hidden bg-gray-900/50"
+            data-testid="timeline-sidebar-scroll"
+            style={{ paddingBottom: horizontalScrollbarHeight }}
           >
-            {tracks.map(track => (
-              <MemoizedTimelineTrackHeader
-                key={track.id}
-                track={track}
-                isActive={track.id === activeTrackId}
-                onClick={() => setActiveTrackId(track.id)}
-                onToggleVisibility={(id) => {
-                  const { tracks, setTracks } = useTimelineStore.getState();
-                  setTracks(tracks.map(t => t.id === id ? { ...t, isVisible: !t.isVisible } : t));
-                }}
-              />
-            ))}
-
-            {/* Video Track Label */}
-            <div className="h-[48px] border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-blue-300/60 uppercase tracking-wider">
-              Video
-            </div>
-
-            {/* Audio Track Label */}
-            <div className="h-12 border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-blue-400 uppercase tracking-wider mt-auto">
-              Audio
-            </div>
+            {timelineRows.map((row) => {
+              const rowHeight = getRowHeight(row.key);
+              return (
+                <div
+                  key={row.key}
+                  className="relative flex-none"
+                  style={{ height: rowHeight }}
+                  data-testid="timeline-row-header"
+                  data-row-key={row.key}
+                  data-row-kind={row.kind}
+                >
+                  {row.kind === 'subtitle' && (
+                    <MemoizedTimelineTrackHeader
+                      track={row.track}
+                      isActive={row.track.id === activeTrackId}
+                      onClick={() => setActiveTrackId(row.track.id)}
+                      onToggleVisibility={(id) => {
+                        const { tracks, setTracks } = useTimelineStore.getState();
+                        setTracks(tracks.map((track) => track.id === id
+                          ? { ...track, isVisible: !track.isVisible }
+                          : track));
+                      }}
+                    />
+                  )}
+                  {row.kind === 'video' && (
+                    <div className="flex h-full items-center border-b border-gray-800 bg-gray-900 px-4 text-[10px] font-bold uppercase tracking-wider text-blue-300">
+                      Video
+                    </div>
+                  )}
+                  {row.kind === 'audio' && <TimelineAudioTrackHeader track={row.track} />}
+                  <TimelineRowResizeHandle
+                    key={`${projectId ?? 'no-project'}:${row.key}`}
+                    rowKey={row.key}
+                    rowKind={row.kind}
+                    label={row.label}
+                    height={rowHeight}
+                    projectId={projectId}
+                    onHeightChange={(nextHeight) => setRowHeight(row.key, nextHeight)}
+                  />
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -511,6 +754,7 @@ export function Timeline({
           <div
             ref={tracksContentRef}
             className="flex-1 overflow-x-scroll overflow-y-scroll relative scrollbar-thin scrollbar-thumb-gray-700 z-10"
+            data-testid="timeline-tracks-scroll"
             style={{
               scrollbarGutter: 'stable'
             }}
@@ -521,10 +765,6 @@ export function Timeline({
               style={{
                 width: timelineWidth,
                 minHeight: '100%',
-                backgroundImage: tracks.length > 1
-                  ? 'linear-gradient(to bottom, transparent 63px, #1f2937 1px)'
-                  : 'none',
-                backgroundSize: '100% 64px'
               }}
             >
               {/* Snapping Indicator (inside relative container to scroll) */}
@@ -548,38 +788,43 @@ export function Timeline({
                 ))}
               </div>
 
-              {/* Tracks rendered as overlays */}
-              {tracks.map(track => (
-                <MemoizedTimelineTrackOverlay
-                  key={track.id}
-                  duration={duration}
-                  track={track}
-                  zoomLevel={zoomLevel}
-                  pixelsPerSecond={pixelsPerSecond}
-                  fps={fps}
-                  onTimeUpdate={onTimeUpdate}
-                  onSubtitleClick={onSubtitleClick}
-                />
+              {timelineRows.map((row) => (
+                <div
+                  key={row.key}
+                  className={`relative flex-none ${row.kind === 'video' ? 'border-b border-gray-800/50' : ''}`}
+                  style={{ height: getRowHeight(row.key) }}
+                  data-testid="timeline-row-content"
+                  data-row-key={row.key}
+                  data-row-kind={row.kind}
+                  data-subtitle-track-id={row.kind === 'subtitle' ? row.track.id : undefined}
+                >
+                  {row.kind === 'subtitle' && (
+                    <MemoizedTimelineTrackOverlay
+                      duration={duration}
+                      track={row.track}
+                      zoomLevel={zoomLevel}
+                      pixelsPerSecond={pixelsPerSecond}
+                      fps={fps}
+                      onTimeUpdate={onTimeUpdate}
+                      onSubtitleClick={onSubtitleClick}
+                    />
+                  )}
+                  {row.kind === 'video' && (
+                    <TimelineVideoTrack peaksByMediaKey={peaksByMediaKey} />
+                  )}
+                  {row.kind === 'audio' && (
+                    <TimelineAudioTrack
+                      track={row.track}
+                      allTracks={audioTracks}
+                      videoSources={videoSources}
+                      audioSources={audioSources}
+                      frameRate={renderProfile.fps}
+                      pixelsPerSecond={pixelsPerSecond * zoomLevel}
+                      peaksByMediaKey={peaksByMediaKey}
+                    />
+                  )}
+                </div>
               ))}
-
-              {/* Video track indicator */}
-              <div className="relative h-[48px] border-b border-gray-800/50">
-                <TimelineVideoTrack duration={useVideoStore.getState().duration} />
-              </div>
-
-              {/* Audio Waveform Area */}
-              <div
-                className="sticky bottom-0 h-12 bg-gray-900/80 z-0 flex items-center overflow-hidden relative"
-                style={{ width: timelineWidth }}
-              >
-                <TimelineWaveform
-                  audioBuffer={audioBuffer}
-                  duration={duration}
-                  pps={pixelsPerSecond * zoomLevel}
-                  height={48}
-                  containerRef={tracksContentRef}
-                />
-              </div>
             </div>
           </div>
         </div>

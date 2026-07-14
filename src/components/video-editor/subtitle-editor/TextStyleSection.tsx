@@ -1,6 +1,6 @@
 import { FontSelector } from '../FontSelector';
 import { DraggableNumberInput } from '../../design-system/DraggableNumberInput';
-import { ChevronDownIcon } from '../../icons/ChevronDownIcon';
+import { Select } from '../../design-system/Select';
 import { AlignLeftIcon } from '../../icons/AlignLeftIcon';
 import { AlignCenterIcon } from '../../icons/AlignCenterIcon';
 import { AlignRightIcon } from '../../icons/AlignRightIcon';
@@ -41,23 +41,19 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
 
       <div className="flex items-center gap-4">
         <label className="text-sm text-gray-300 whitespace-nowrap">Grosor de fuente</label>
-        <div className="relative flex-1">
-          <select
-            value={style.fontWeight}
-            onChange={(e) => onStyleChange('fontWeight', parseInt(e.target.value))}
-            className="w-full bg-gray-700 text-white rounded px-2 py-1.5 text-sm appearance-none"
-          >
-            <option value="400">Normal (400)</option>
-            <option value="500">Medium (500)</option>
-            <option value="600">Semi Bold (600)</option>
-            <option value="700">Bold (700)</option>
-            <option value="800">Extra Bold (800)</option>
-            <option value="900">Black (900)</option>
-          </select>
-          <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
-            <ChevronDownIcon />
-          </div>
-        </div>
+        <Select
+          value={style.fontWeight}
+          onChange={(e) => onStyleChange('fontWeight', parseInt(e.target.value))}
+          wrapperClassName="flex-1"
+          tone="flat"
+        >
+          <option value="400">Normal (400)</option>
+          <option value="500">Medium (500)</option>
+          <option value="600">Semi Bold (600)</option>
+          <option value="700">Bold (700)</option>
+          <option value="800">Extra Bold (800)</option>
+          <option value="900">Black (900)</option>
+        </Select>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -239,4 +235,4 @@ export function TextStyleSection({ style, onStyleChange }: TextStyleSectionProps
       </div>
     </div>
   );
-} 
+}

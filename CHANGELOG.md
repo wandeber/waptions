@@ -7,14 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added browser-local transcription powered by `@huggingface/transformers`, with WebGPU-first execution, optional WASM fallback, model progress reporting, and cancellation from the transcription modal.
+- Added a stable local Whisper browser manifest and an experimental Qwen/Mega-ASR validation manifest hidden behind `NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR`.
+- Added a multi-source main video timeline with split, trim, delete, reorder, per-clip audio waveforms, and ripple-aware subtitle editing.
+- Added a resizable, internally scrollable timeline workspace and a collapsible inspector.
+- Added independent audio tracks for imported media and audio separated from video clips, with move, cross-track placement, trim, split, delete, lock, mute, solo, gain, and fade controls.
+- Added a selection-aware media inspector and accessible pointer, context-menu, and keyboard editing paths for video and audio clips.
+- Added a sample-accurate 48 kHz AudioWorklet preview engine shared with the export mix contract.
+
 ### Changed
 - Disabled login and built-in paid transcription models by default for the public release.
-- Limited public transcription to user-configured OpenAI-compatible endpoints.
+- Limited public paid-provider transcription while keeping browser-local transcription and user-configured OpenAI-compatible endpoints available.
 - Added MIT licensing and an OpenCut acknowledgement.
 - Replaced Cursor-specific rules and `project-knowledge.md` with a current `AGENTS.md` guide.
 - Expanded the public README with setup, transcription, security, validation, and deployment notes.
 - Documented that the project started as an AI-built experiment.
 - Moved authorized email configuration out of plain Wrangler variables.
+- Upgraded project persistence and `.waptions` bundles to the atomic V3 editor document, with typed video/audio assets and v1/v2 migration.
+- Updated preview, transcription, MP4/WebM export, and audio assembly to follow linked video audio, detached clips, imported audio, mute/solo state, and full timeline tails.
+- Replaced hidden media-element audio playback with one editor-owned audio engine and mutually exclusive audio/visual playback clocks.
 
 ## [2026.1.0] - 2026-01-27
 

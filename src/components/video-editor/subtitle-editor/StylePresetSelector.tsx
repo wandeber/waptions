@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { ChevronDownIcon } from '../../icons/ChevronDownIcon';
 import { TrashIcon } from '../../icons/TrashIcon';
 import { SaveIcon } from '../../icons/SaveIcon';
 import { PlusIcon } from '../../icons/PlusIcon';
 import { Button } from '../../design-system/Button';
+import { Select } from '../../design-system/Select';
 import type { StylePreset, SubtitleAnimationStyle } from './types';
 import {
   getStylePresets,
@@ -170,27 +170,24 @@ export function StylePresetSelector({
     <>
       <div className="flex flex-col gap-2">
         <div className="flex justify-between items-center gap-2">
-          <div className="relative flex-1 max-w-[300px]">
-            <select
-              value={selectedPresetId || ''}
-              onChange={(e) => handlePresetSelect(e.target.value)}
-              className={`w-full bg-gray-700 text-white rounded p-1 text-sm appearance-none ${selectedPresetId === 'custom' ? 'text-yellow-400 italic' : ''
-                }`}
-            >
-              <option value="" disabled>Seleccionar preset...</option>
-              {selectedPresetId === 'custom' && (
-                <option value="custom">Estilo personalizado (sin guardar)</option>
-              )}
-              {presets.map(preset => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name} {preset.isDefault ? '(predeterminado)' : ''}
-                </option>
-              ))}
-            </select>
-            <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
-              <ChevronDownIcon />
-            </div>
-          </div>
+          <Select
+            value={selectedPresetId || ''}
+            onChange={(e) => handlePresetSelect(e.target.value)}
+            wrapperClassName="flex-1 max-w-[300px]"
+            tone="flat"
+            controlSize="compact"
+            className={selectedPresetId === 'custom' ? 'text-yellow-400 italic' : ''}
+          >
+            <option value="" disabled>Seleccionar preset...</option>
+            {selectedPresetId === 'custom' && (
+              <option value="custom">Estilo personalizado (sin guardar)</option>
+            )}
+            {presets.map(preset => (
+              <option key={preset.id} value={preset.id}>
+                {preset.name} {preset.isDefault ? '(predeterminado)' : ''}
+              </option>
+            ))}
+          </Select>
 
           <div className="flex gap-2">
             <Button
@@ -282,4 +279,4 @@ export function StylePresetSelector({
       )}
     </>
   );
-} 
+}

@@ -24,6 +24,21 @@ interface WhisperResponse {
     words: WhisperWord[];
 }
 
+function buildSubtitlesFromWhisperWords(transcription: WhisperResponse) {
+    if (!transcription.words) {
+        return { subtitles: [] };
+    }
+
+    const subtitles = transcription.words.map(word => ({
+        id: crypto.randomUUID(),
+        startTime: word.start,
+        endTime: word.end,
+        text: word.word.trim()
+    }));
+
+    return { subtitles };
+}
+
 interface DeepgramWord {
     word: string;
     start: number;
@@ -54,13 +69,28 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
         const paidModelsVisible = shouldShowPaidTranscriptionModels();
         const usesCustomServerTranscriber = customOpenAITranscription?.enabled && customOpenAITranscription.requestMode !== 'browser';
         if (!paidModelsVisible) {
-            if (model !== 'whisper-1') {
-                throw new ValidationError("Paid transcription models are disabled.");
-            }
-
-            if (!usesCustomServerTranscriber) {
+            if (model !== 'whisper-1' || !usesCustomServerTranscriber) {
                 throw new ValidationError("Configure a custom OpenAI-compatible transcriber.");
             }
+
+            assertServerTranscriptionEndpointAllowed(customOpenAITranscription.endpoint);
+
+            // Public production runs without bundled paid providers. Keep this
+            // branch isolated from the OpenAI provider so unauthenticated requests
+            // can only reach an explicitly configured and allowlisted transcriber.
+            const transcription = await transcribeWithOpenAICompatibleEndpoint({
+                settings: customOpenAITranscription,
+                audioFile,
+                fallbackModel: 'faster-whisper',
+                options: {
+                    response_format: "verbose_json",
+                    timestamp_granularities: ["word"],
+                    prompt: `Usa puntuación correcta.`,
+                    temperature: 0
+                },
+            }) as WhisperResponse;
+
+            return buildSubtitlesFromWhisperWords(transcription);
         }
 
         const whisperProvider = getAiProvider('openai');
@@ -73,7 +103,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
                 return transcribeWithOpenAICompatibleEndpoint({
                     settings: customOpenAITranscription,
                     audioFile,
-                    fallbackModel: 'whisper-1',
+                    fallbackModel: 'faster-whisper',
                     options,
                 });
             }
@@ -214,18 +244,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
                     temperature: 0
                 }) as WhisperResponse;
 
-                if (!transcription.words) {
-                    return { subtitles: [] };
-                }
-
-                const subtitles = transcription.words.map(word => ({
-                    id: crypto.randomUUID(),
-                    startTime: word.start,
-                    endTime: word.end,
-                    text: word.word.trim()
-                }));
-
-                return { subtitles };
+                return buildSubtitlesFromWhisperWords(transcription);
             }
 
             default:

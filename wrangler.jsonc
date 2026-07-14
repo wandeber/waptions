@@ -7,12 +7,13 @@
         "global_fetch_strictly_public"
     ],
     "vars": {
-        "NEXT_PUBLIC_BASE_URL": "http://localhost:3000",
-        "AUTH_URL": "http://localhost:3000",
+        "NEXT_PUBLIC_BASE_URL": "http://localhost:59940",
+        "AUTH_URL": "http://localhost:59940",
         "AUTH_ENABLED": "false",
         "NEXT_PUBLIC_AUTH_ENABLED": "false",
         "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
         "NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+        "NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR": "false",
         "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS": ""
     },
     "assets": {
@@ -36,6 +37,7 @@
                 "NEXT_PUBLIC_AUTH_ENABLED": "false",
                 "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
                 "NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+                "NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR": "false",
                 "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS": ""
             },
             "r2_buckets": [
@@ -55,6 +57,7 @@
                 "NEXT_PUBLIC_AUTH_ENABLED": "false",
                 "SHOW_PAID_TRANSCRIPTION_MODELS": "false",
                 "NEXT_PUBLIC_SHOW_PAID_TRANSCRIPTION_MODELS": "false",
+                "NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR": "true",
                 "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS": ""
             },
             "observability": {

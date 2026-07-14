@@ -1,7 +1,7 @@
 'use client';
 
 import { useTimelineStore } from '@/stores/timeline-store';
-import { useVideoStore } from '@/stores/video-store';
+import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
 
 interface TimelinePlayheadProps {
     currentTime: number;
@@ -42,12 +42,14 @@ export function TimelinePlayhead({
         // One-shot snap points
         const snapPoints: number[] = [];
         if (snapEnabled) {
-            const { duration: videoStoreDuration } = useVideoStore.getState();
-            // User requested video boundaries specifically
-            const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
-            const snappedVideoDuration = Math.round(videoStoreDuration / frameDuration) * frameDuration;
+            const { videoClips } = useTimelineStore.getState();
+            const mediaDuration = getMediaDuration(videoClips);
 
-            const points = new Set<number>([0, snappedVideoDuration, duration]);
+            const points = new Set<number>([0, mediaDuration, duration]);
+            buildClipPlacements(videoClips).forEach((placement) => {
+                points.add(placement.projectStart);
+                points.add(placement.projectEnd);
+            });
             tracks.forEach(t => {
                 t.subtitles.forEach(s => {
                     points.add(s.startTime);

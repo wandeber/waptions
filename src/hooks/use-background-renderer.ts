@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { usePlaybackStore } from '@/stores/playback-store';
-import { useVideoStore } from '@/stores/video-store';
+import { useTimelineStore } from '@/stores/timeline-store';
 import { videoCache } from '@/lib/video-cache';
 import { frameCache } from '@/lib/frame-cache';
 import { frameIndexToTime, normalizeFps, timeToFrameIndex } from '@/lib/frame-utils';
+import { buildClipPlacements, projectTimeToSourceTime, resolveClipAtProjectTime } from '@/lib/video-timeline';
 
 interface BackgroundRendererOptions {
     rangeForward?: number; // Seconds to look ahead while idle.
@@ -94,11 +95,22 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
     } = options;
 
     const { isPlaying, currentTime } = usePlaybackStore();
-    const { videoFile, fps: sourceFps } = useVideoStore();
-    const cacheFps = normalizeFps(sourceFps);
+    const { videoSources, videoClips } = useTimelineStore();
+    const placements = useMemo(() => buildClipPlacements(videoClips), [videoClips]);
+    const placement = useMemo(
+        () => resolveClipAtProjectTime(placements, currentTime),
+        [currentTime, placements],
+    );
+    const source = useMemo(() => (
+        placement
+            ? videoSources.find((candidate) => candidate.id === placement.clip.sourceId) ?? null
+            : null
+    ), [placement, videoSources]);
+    const sourceTime = placement ? projectTimeToSourceTime(placement, currentTime) : 0;
+    const cacheFps = normalizeFps(source?.fps);
     const currentFrameIndex = useMemo(
-        () => timeToFrameIndex(currentTime, cacheFps),
-        [currentTime, cacheFps]
+        () => timeToFrameIndex(sourceTime, cacheFps),
+        [sourceTime, cacheFps]
     );
 
     const runIdRef = useRef(0);
@@ -113,18 +125,23 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
             idleTimeoutRef.current = null;
         }
 
-        if (!videoFile) return;
+        if (!source || !placement) return;
+        const mediaId = `preview:${source.id}`;
 
         const renderFrames = async (frames: number[], index = 0): Promise<void> => {
             if (runIdRef.current !== runId || index >= frames.length) return;
 
             const frameIndex = frames[index];
-            if (!frameCache.hasFrameAtIndex('preview', frameIndex)) {
+            const frameTime = frameIndexToTime(frameIndex, cacheFps);
+            // A source cache may serve several trimmed/reused clip instances, but warmup must
+            // stay inside the active source interval instead of decoding unrelated frames.
+            if (frameTime >= placement.clip.sourceStart && frameTime < placement.clip.sourceEnd
+                && !frameCache.hasFrameAtIndex(mediaId, frameIndex)) {
                 try {
                     await videoCache.getFrameAt(
-                        'preview',
-                        videoFile,
-                        frameIndexToTime(frameIndex, cacheFps),
+                        mediaId,
+                        source.file,
+                        frameTime,
                         { mode: 'warmup', fps: cacheFps }
                     );
                 } catch (error) {
@@ -146,7 +163,7 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
                 rangeBackward,
                 sparseFps: fps,
                 playbackLookaheadFrames,
-                hasFrame: (frameIndex) => frameCache.hasFrameAtIndex('preview', frameIndex),
+                hasFrame: (frameIndex) => frameCache.hasFrameAtIndex(mediaId, frameIndex),
             });
             if (frames.length > 0) {
                 void renderFrames(frames);
@@ -174,6 +191,7 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
         playbackLookaheadFrames,
         rangeBackward,
         rangeForward,
-        videoFile,
+        placement,
+        source,
     ]);
 }

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { Button } from '../design-system/Button';
+import { Select } from '../design-system/Select';
 import { Share } from 'lucide-react';
 import {
   exportProject,
@@ -12,20 +13,20 @@ import {
 } from '@/lib/export';
 import { SubtitleTrack } from '@/types/timeline';
 import { useProjectStore } from '@/stores/project-store';
+import { useTimelineStore } from '@/stores/timeline-store';
 import type { ExportFormat, ExportQuality } from '@/types/export';
 
 interface ExportButtonProps {
-  videoFile: File | null;
   tracks: SubtitleTrack[];
   fps: number;
 }
 
-export function ExportButton({
-  videoFile,
-  tracks,
-  fps,
-}: ExportButtonProps) {
+export function ExportButton(props: ExportButtonProps) {
+  // EditorHeader keeps these transitional props until its wider toolbar contract is migrated.
+  // Export itself always reads one atomic V3 document so independent audio cannot be omitted.
+  void props;
   const { activeProject } = useProjectStore();
+  const { videoClips } = useTimelineStore();
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState<string>('');
@@ -37,7 +38,7 @@ export function ExportButton({
   const [includeAudio] = useState(DEFAULT_EXPORT_OPTIONS.includeAudio ?? true);
 
   const handleExport = async () => {
-    if (!videoFile) return;
+    if (videoClips.length === 0) return;
 
     try {
       setIsExporting(true);
@@ -46,12 +47,10 @@ export function ExportButton({
       setShowOptions(false);
 
       const result = await exportProject({
-        videoFile,
-        tracks,
+        document: useTimelineStore.getState().buildEditorDocument(),
         options: {
           format,
           quality,
-          fps,
           includeAudio,
           onProgress: (p) => {
             setProgress(p * 100);
@@ -103,8 +102,7 @@ export function ExportButton({
     }
   };
 
-  const totalSubtitles = tracks.reduce((sum, t) => sum + t.subtitles.length, 0);
-  const canExport = videoFile && totalSubtitles > 0 && !isExporting;
+  const canExport = videoClips.length > 0 && !isExporting;
 
   return (
     <div className="flex items-center gap-2 relative">
@@ -156,16 +154,16 @@ export function ExportButton({
           {/* Quality */}
           <div className="mb-3">
             <label className="text-xs text-gray-400 block mb-1">Calidad</label>
-            <select
+            <Select
               value={quality}
               onChange={(e) => setQuality(e.target.value as ExportQuality)}
-              className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1.5 border border-gray-600"
+              controlSize="xs"
             >
               <option value="low">Baja - Archivo pequeño</option>
               <option value="medium">Media - Balanceado</option>
               <option value="high">Alta - Recomendado</option>
               <option value="very_high">Muy alta - Archivo grande</option>
-            </select>
+            </Select>
           </div>
 
           {/* Include audio 
@@ -200,14 +198,12 @@ export function ExportButton({
         onClick={() => {
           if (!isExporting) setShowOptions((isOpen) => !isOpen);
         }}
-        disabled={!videoFile || totalSubtitles === 0}
+        disabled={videoClips.length === 0}
         className="text-sm font-medium h-8 px-4"
         title={
-          !videoFile
-            ? 'Necesitas cargar un video primero'
-            : totalSubtitles === 0
-              ? 'Necesitas añadir subtítulos primero'
-              : isExporting
+          videoClips.length === 0
+            ? 'Import at least one video clip first'
+            : isExporting
                 ? 'Exportando...'
                 : 'Exportar video con subtítulos'
         }

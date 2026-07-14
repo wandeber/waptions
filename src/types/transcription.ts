@@ -1,7 +1,10 @@
 import { shouldShowPaidTranscriptionModels } from "@/lib/config/feature-flags";
 
-export type TranscriptionModelId = 'whisper-1' | 'deepgram-nova-2' | 'premium-whisper-gpt4o';
+export type TranscriptionModelId = 'whisper-1' | 'deepgram-nova-2' | 'premium-whisper-gpt4o' | 'local-browser';
 export type OpenAICompatibleTranscriptionRequestMode = 'browser' | 'server';
+export type LocalBrowserTranscriptionDevice = 'webgpu' | 'wasm';
+export type LocalBrowserTranscriptionEngine = 'whisper-webgpu' | 'qwen3-asr-aligner';
+export type LocalBrowserTranscriptionLanguage = 'auto' | 'en' | 'es';
 
 export interface OpenAICompatibleTranscriptionSettings {
     enabled: boolean;
@@ -9,6 +12,15 @@ export interface OpenAICompatibleTranscriptionSettings {
     endpoint: string;
     apiKey?: string;
     model?: string;
+}
+
+export interface LocalBrowserTranscriptionSettings {
+    enabled: boolean;
+    engine: LocalBrowserTranscriptionEngine;
+    manifestId: string;
+    device?: LocalBrowserTranscriptionDevice;
+    language?: LocalBrowserTranscriptionLanguage;
+    allowWasmFallback?: boolean;
 }
 
 export interface TranscriptionModel {

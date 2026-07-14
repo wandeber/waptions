@@ -1,0 +1,8 @@
+# Cloudflare Workers static assets bypass Next.js route headers, so the
+# browser-loaded worker chunks need the isolation headers here as well. Without
+# these headers, a COEP page can reject the transcription worker with
+# net::ERR_BLOCKED_BY_RESPONSE before the local ASR model even starts.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin

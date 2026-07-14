@@ -28,7 +28,6 @@ interface EditorHeaderProps {
     isDirty: boolean;
     isSaving: boolean;
     onExportBundle: () => void;
-    videoFile: File | null;
     tracks: SubtitleTrack[];
     fps: number;
 }
@@ -49,14 +48,13 @@ export function EditorHeader({
     isDirty,
     isSaving,
     onExportBundle,
-    videoFile,
     tracks,
     fps
 }: EditorHeaderProps) {
     return (
-        <header className="flex-none p-4 bg-gray-800 flex justify-between items-center border-b border-gray-700">
+        <header className="flex-none h-12 px-3 bg-gray-800 flex justify-between items-center border-b border-gray-700 gap-3">
             {/* ... */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 min-w-0">
                 <button
                     onClick={onClose}
                     className="text-gray-400 hover:text-white transition-colors"
@@ -66,12 +64,12 @@ export function EditorHeader({
                 <InlineEditor
                     initialValue={projectName}
                     onSave={onRename}
-                    textClassName="text-xl font-bold"
-                    inputClassName="text-xl font-bold h-8"
+                    textClassName="text-base font-semibold truncate"
+                    inputClassName="text-base font-semibold h-8"
                 />
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 min-w-0">
                 <StatusBar />
 
                 <div className="flex items-center gap-2">
@@ -143,7 +141,6 @@ export function EditorHeader({
                 <div className="w-px h-6 bg-gray-700 mx-1" />
 
                 <ExportButton
-                    videoFile={videoFile}
                     tracks={tracks}
                     fps={fps}
                 />
