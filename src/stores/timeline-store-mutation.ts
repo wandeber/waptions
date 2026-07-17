@@ -97,6 +97,7 @@ const DURABLE_STATE_KEYS = [
     'renderProfile',
     'videoSources',
     'videoClips',
+    'videoTracks',
     'audioSources',
     'audioTracks',
     'activeTrackId',

@@ -32,11 +32,11 @@ test.describe('real export round trip', () => {
     await page.getByTestId('separate-audio-action').click();
     await expect(page.getByTestId('timeline-audio-clip')).toHaveCount(2);
 
-    await page.getByTitle('Exportar video con subtítulos').click();
+    await page.getByTitle('Export video with timeline audio and subtitles').click();
     await page.getByRole('button', { name: 'WebM (VP9)' }).click();
     await expect(page.getByLabel('Include timeline audio')).toBeChecked();
     const downloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Exportar', exact: true }).first().click();
+    await page.getByRole('button', { name: 'Export', exact: true }).first().click();
     const download = await downloadPromise;
     const outputPath = await download.path();
     if (!outputPath) throw new Error('Playwright did not retain the exported artifact.');

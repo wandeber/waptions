@@ -146,7 +146,7 @@ export function TimelineRowResizeHandle({
                 onHeightChange(nextHeight);
             }}
         >
-            <div className="absolute inset-x-0 bottom-0 h-px bg-gray-700 transition-colors group-hover:bg-blue-400 group-focus:bg-blue-400" />
+            <div className="absolute inset-x-0 bottom-0 h-px bg-slate-700 transition-colors group-hover:bg-sky-400 group-focus:bg-sky-400" />
         </div>
     );
 }

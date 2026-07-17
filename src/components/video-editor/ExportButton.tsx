@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { Button } from '../design-system/Button';
 import { Select } from '../design-system/Select';
-import { Share } from 'lucide-react';
+import { Download } from 'lucide-react';
 import {
   exportProject,
   getExportMimeType,
@@ -63,7 +63,7 @@ export function ExportButton() {
     try {
       setIsExporting(true);
       setProgress(0);
-      setCurrentStep('Preparando exportación...');
+      setCurrentStep('Preparing export…');
       setShowOptions(false);
       const destination = await destinationPromise;
 
@@ -77,11 +77,11 @@ export function ExportButton() {
           onProgress: (p) => {
             setProgress(p * 100);
             if (p < 0.1) {
-              setCurrentStep('Inicializando...');
+              setCurrentStep('Initializing…');
             } else if (p < 0.9) {
-              setCurrentStep(`Renderizando frames... ${Math.round(p * 100)}%`);
+              setCurrentStep(`Rendering frames… ${Math.round(p * 100)}%`);
             } else {
-              setCurrentStep('Finalizando...');
+              setCurrentStep('Finalizing…');
             }
           },
           signal: abortController.signal,
@@ -104,7 +104,7 @@ export function ExportButton() {
         URL.revokeObjectURL(url);
       } else if (!result.success && !result.cancelled) {
         console.error('Export failed:', result.error);
-        alert(`Error al exportar: ${result.error}`);
+        alert(`Export failed: ${result.error}`);
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
@@ -147,12 +147,12 @@ export function ExportButton() {
 
       {/* Options dropdown */}
       {showOptions && !isExporting && (
-        <div className="absolute top-full right-0 mt-2 bg-gray-800 border border-gray-700 rounded-lg p-4 shadow-xl z-50 min-w-[280px]">
-          <h3 className="text-sm font-medium text-white mb-3">Opciones de exportación</h3>
+        <div className="absolute right-0 top-full z-50 mt-2 min-w-[280px] rounded border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+          <h3 className="mb-3 text-sm font-medium text-white">Export settings</h3>
 
           {/* Format */}
           <div className="mb-3">
-            <label className="text-xs text-gray-400 block mb-1">Formato</label>
+            <label className="mb-1 block text-xs text-slate-400">Format</label>
             <div className="flex gap-2">
               <button
                 onClick={() => setFormat('mp4')}
@@ -177,16 +177,16 @@ export function ExportButton() {
 
           {/* Quality */}
           <div className="mb-3">
-            <label className="text-xs text-gray-400 block mb-1">Calidad</label>
+            <label className="mb-1 block text-xs text-slate-400">Quality</label>
             <Select
               value={quality}
               onChange={(e) => setQuality(e.target.value as ExportQuality)}
               controlSize="xs"
             >
-              <option value="low">Baja - Archivo pequeño</option>
-              <option value="medium">Media - Balanceado</option>
-              <option value="high">Alta - Recomendado</option>
-              <option value="very_high">Muy alta - Archivo grande</option>
+              <option value="low">Low — smaller file</option>
+              <option value="medium">Medium — balanced</option>
+              <option value="high">High — recommended</option>
+              <option value="very_high">Very high — larger file</option>
             </Select>
           </div>
 
@@ -210,8 +210,8 @@ export function ExportButton() {
             disabled={!canExport}
             className="w-full text-sm font-medium h-9"
           >
-            <Share className="w-4 h-4" />
-            <span>Exportar</span>
+            <Download className="w-4 h-4" />
+            <span>Export</span>
           </Button>
         </div>
       )}
@@ -222,24 +222,24 @@ export function ExportButton() {
           if (!isExporting) setShowOptions((isOpen) => !isOpen);
         }}
         disabled={videoClips.length === 0}
-        className="text-sm font-medium h-8 px-4"
+        className="h-8 border border-blue-400/20 px-4 text-sm font-semibold shadow-[0_1px_0_rgba(255,255,255,0.08)]"
         title={
           videoClips.length === 0
             ? 'Import at least one video clip first'
             : isExporting
-                ? 'Exportando...'
-                : 'Exportar video con subtítulos'
+                ? 'Exporting…'
+                : 'Export video with timeline audio and subtitles'
         }
       >
         {isExporting ? (
           <>
             <SpinnerIcon className="w-4 h-4" />
-            <span>Exportando...</span>
+            <span>Exporting…</span>
           </>
         ) : (
           <>
-            <Share className="w-4 h-4" />
-            <span>Exportar</span>
+            <Download className="w-4 h-4" />
+            <span>Export</span>
           </>
         )}
       </Button>

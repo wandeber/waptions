@@ -13,7 +13,7 @@ import {
     frameToOutputSample,
     nativeBoundaryToOutputSample,
     outputSampleToCoveringFrame,
-    outputSampleToNearestNativeBoundary,
+    outputSampleToFloorNativeBoundary,
 } from './audio-timebase';
 import { framesToSeconds, secondsToFrames } from './render-profile';
 
@@ -65,7 +65,7 @@ export function findAudioClip(
     return null;
 }
 
-/** Returns the exact output-sample occupancy used by collision checks and the mix plan. */
+/** Returns the exact rendered output interval, independently from rounded timeline geometry. */
 export function getAudioClipOutputInterval(
     clip: AudioClip,
     source: ResolvedAudioClipSource,
@@ -80,6 +80,12 @@ export function getAudioClipOutputInterval(
         };
     }
     if (source.kind !== 'audio-source') throw new Error('Imported clip resolved to a video source.');
+    if (clip.timelineDurationSamples !== undefined) {
+        return {
+            startSample,
+            endSample: startSample + clip.timelineDurationSamples,
+        };
+    }
     const durationSamples = nativeBoundaryToOutputSample(
         clip.sourceEndSample,
         source.descriptor.nativeSampleRate,
@@ -229,12 +235,21 @@ export function splitAudioClipInTracks(
     const interval = getAudioClipOutputInterval(located.clip, located.source, renderProfile);
     const left = trimRight(located.clip, located.source, renderProfile, interval, splitFrame);
     const rightBase = trimLeft(located.clip, located.source, renderProfile, interval, splitFrame);
-    const right = isVideoSourceAudioClip(rightBase)
-        ? { ...rightBase, id: rightClipId, fadeInFrames: 0 }
-        : { ...rightBase, id: rightClipId, fadeInSamples: 0 };
-    const leftWithSplitFade = isVideoSourceAudioClip(left)
-        ? { ...left, fadeOutFrames: 0 }
-        : { ...left, fadeOutSamples: 0 };
+    // Opposite stable trim anchors can round one split to adjacent native boundaries. Select the
+    // single boundary that minimizes the worst output-duration drift across both children, then
+    // apply it symmetrically so the durable source partition has neither a gap nor a duplicate.
+    const importedSplit = isImportedAudioClip(left) && isImportedAudioClip(rightBase)
+        && located.source.kind === 'audio-source'
+        ? alignImportedAudioSplit(left, rightBase, located.source.descriptor.nativeSampleRate)
+        : null;
+    const alignedLeft = importedSplit?.left ?? left;
+    const alignedRightBase = importedSplit?.right ?? rightBase;
+    const right = isVideoSourceAudioClip(alignedRightBase)
+        ? { ...alignedRightBase, id: rightClipId, fadeInFrames: 0 }
+        : { ...alignedRightBase, id: rightClipId, fadeInSamples: 0 };
+    const leftWithSplitFade = isVideoSourceAudioClip(alignedLeft)
+        ? { ...alignedLeft, fadeOutFrames: 0 }
+        : { ...alignedLeft, fadeOutSamples: 0 };
 
     return tracks.map((track) => track.id === located.track.id
         ? { ...track, clips: track.clips.flatMap((clip) => clip.id === clipId ? [leftWithSplitFade, right] : [clip]).sort(compareAudioClips) }
@@ -281,18 +296,29 @@ function trimLeft(
             getCanonicalVideoFrameCount(clip.sourceEnd - nextSourceStart, profile.fps));
     }
     if (source.kind !== 'audio-source') throw new Error('Imported clip resolved to a video source.');
+    const nextDurationSamples = Math.max(
+        1,
+        interval.endSample - frameToOutputSample(nextStartFrame, profile.fps),
+    );
+    // Anchor repeated left trims at the unchanged source end. Re-basing each edit from the already
+    // quantized source start would discard its residual phase and accumulate native-boundary drift.
     const targetOutputBoundary = nativeBoundaryToOutputSample(
-        clip.sourceStartSample,
+        clip.sourceEndSample,
         source.descriptor.nativeSampleRate,
-    ) + frameToOutputSample(nextStartFrame, profile.fps) - interval.startSample;
+    ) - nextDurationSamples;
     const nextSourceStart = Math.min(
         clip.sourceEndSample - 1,
         Math.max(
             clip.sourceStartSample + 1,
-            outputSampleToNearestNativeBoundary(targetOutputBoundary, source.descriptor.nativeSampleRate),
+            outputSampleToFloorNativeBoundary(targetOutputBoundary, source.descriptor.nativeSampleRate),
         ),
     );
-    return clampSampleFades({ ...clip, timelineStartFrame: nextStartFrame, sourceStartSample: nextSourceStart },
+    return clampSampleFades({
+        ...clip,
+        timelineStartFrame: nextStartFrame,
+        timelineDurationSamples: nextDurationSamples,
+        sourceStartSample: nextSourceStart,
+    },
         clip.sourceEndSample - nextSourceStart);
 }
 
@@ -321,10 +347,17 @@ function trimRight(
         clip.sourceStartSample + 1,
         Math.min(
             clip.sourceEndSample,
-            outputSampleToNearestNativeBoundary(targetOutputBoundary, source.descriptor.nativeSampleRate),
+            outputSampleToFloorNativeBoundary(targetOutputBoundary, source.descriptor.nativeSampleRate),
         ),
     );
-    return clampSampleFades({ ...clip, sourceEndSample: nextSourceEnd }, nextSourceEnd - clip.sourceStartSample);
+    return clampSampleFades({
+        ...clip,
+        timelineDurationSamples: Math.max(
+            1,
+            frameToOutputSample(nextEndFrame, profile.fps) - interval.startSample,
+        ),
+        sourceEndSample: nextSourceEnd,
+    }, nextSourceEnd - clip.sourceStartSample);
 }
 
 function getClipFrameCount(
@@ -337,9 +370,11 @@ function getClipFrameCount(
     }
     if (source.kind !== 'audio-source') throw new Error('Imported clip resolved to a video source.');
     const startSample = frameToOutputSample(clip.timelineStartFrame, frameRate);
-    const endSample = startSample
-        + nativeBoundaryToOutputSample(clip.sourceEndSample, source.descriptor.nativeSampleRate)
-        - nativeBoundaryToOutputSample(clip.sourceStartSample, source.descriptor.nativeSampleRate);
+    const durationSamples = clip.timelineDurationSamples ?? (
+        nativeBoundaryToOutputSample(clip.sourceEndSample, source.descriptor.nativeSampleRate)
+        - nativeBoundaryToOutputSample(clip.sourceStartSample, source.descriptor.nativeSampleRate)
+    );
+    const endSample = startSample + durationSamples;
     return outputSampleToCoveringFrame(endSample, frameRate) - clip.timelineStartFrame;
 }
 
@@ -358,7 +393,9 @@ function isSameCrop(left: AudioClip, right: AudioClip): boolean {
     return isVideoSourceAudioClip(left) && isVideoSourceAudioClip(right)
         ? left.sourceStart === right.sourceStart && left.sourceEnd === right.sourceEnd
         : isImportedAudioClip(left) && isImportedAudioClip(right)
-            && left.sourceStartSample === right.sourceStartSample && left.sourceEndSample === right.sourceEndSample;
+            && left.sourceStartSample === right.sourceStartSample
+            && left.sourceEndSample === right.sourceEndSample
+            && left.timelineDurationSamples === right.timelineDurationSamples;
 }
 
 function cloneAudioClip(clip: AudioClip): AudioClip {
@@ -373,6 +410,51 @@ function isVideoSourceAudioClip(clip: AudioClip): clip is VideoSourceAudioClip {
 
 function isImportedAudioClip(clip: AudioClip): clip is ImportedAudioClip {
     return clip.source.kind === 'audio-source';
+}
+
+function alignImportedAudioSplit(
+    left: ImportedAudioClip,
+    right: ImportedAudioClip,
+    nativeSampleRate: number,
+): { left: ImportedAudioClip; right: ImportedAudioClip } {
+    const candidates = Array.from(new Set([left.sourceEndSample, right.sourceStartSample]))
+        .filter((candidate) => candidate > left.sourceStartSample && candidate < right.sourceEndSample);
+    const boundary = candidates.reduce((best, candidate) => {
+        const score = getImportedSplitBoundaryScore(left, right, candidate, nativeSampleRate);
+        const bestScore = getImportedSplitBoundaryScore(left, right, best, nativeSampleRate);
+        return score.maximumDrift < bestScore.maximumDrift
+            || (score.maximumDrift === bestScore.maximumDrift && score.totalDrift < bestScore.totalDrift)
+            ? candidate
+            : best;
+    }, candidates[0] ?? left.sourceEndSample);
+    return {
+        left: clampSampleFades(
+            { ...left, sourceEndSample: boundary },
+            boundary - left.sourceStartSample,
+        ),
+        right: clampSampleFades(
+            { ...right, sourceStartSample: boundary },
+            right.sourceEndSample - boundary,
+        ),
+    };
+}
+
+function getImportedSplitBoundaryScore(
+    left: ImportedAudioClip,
+    right: ImportedAudioClip,
+    boundary: number,
+    nativeSampleRate: number,
+): { maximumDrift: number; totalDrift: number } {
+    const leftNaturalDuration = nativeBoundaryToOutputSample(boundary, nativeSampleRate)
+        - nativeBoundaryToOutputSample(left.sourceStartSample, nativeSampleRate);
+    const rightNaturalDuration = nativeBoundaryToOutputSample(right.sourceEndSample, nativeSampleRate)
+        - nativeBoundaryToOutputSample(boundary, nativeSampleRate);
+    const leftDrift = Math.abs(leftNaturalDuration - (left.timelineDurationSamples ?? leftNaturalDuration));
+    const rightDrift = Math.abs(rightNaturalDuration - (right.timelineDurationSamples ?? rightNaturalDuration));
+    return {
+        maximumDrift: Math.max(leftDrift, rightDrift),
+        totalDrift: leftDrift + rightDrift,
+    };
 }
 
 function getCanonicalVideoFrameCount(durationSeconds: number, frameRate: RationalFrameRate): number {

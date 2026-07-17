@@ -1,62 +1,71 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-
-import { Headphones, Lock, Unlock, Volume2, VolumeX } from 'lucide-react';
-import { CommittedRangeInput } from '@/components/design-system/CommittedRangeInput';
+import { Headphones, Lock, Plus, Unlock, Volume2, VolumeX } from 'lucide-react';
+import { DraggableNumberInput } from '@/components/design-system/DraggableNumberInput';
 import { secondsToFrames } from '@/lib/render-profile';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useShallow } from 'zustand/react/shallow';
 
-interface CommittedRangeProps {
+interface DraggableSettingProps {
     label: string;
     value: number;
     minimum: number;
     maximum: number;
     step?: number;
     disabled?: boolean;
-    suffix?: string;
+    unit?: string;
+    defaultValue?: number;
+    decimalPlaces?: number;
+    normalizeValue?: (value: number) => number;
     onCommit: (value: number) => void;
 }
 
-/** Inspector wrapper that pairs the shared committed slider with its visible value. */
-function CommittedRange({
+/** Media inspector adapter for the editor's existing drag-or-type numeric form field. */
+function DraggableSetting({
     label,
     value,
     minimum,
     maximum,
     step = 1,
     disabled,
-    suffix = '',
+    unit = '',
+    defaultValue = 0,
+    decimalPlaces,
+    normalizeValue,
     onCommit,
-}: CommittedRangeProps) {
-    const [draft, setDraft] = useState(value);
-
-    useEffect(() => setDraft(value), [value]);
-
+}: DraggableSettingProps) {
     return (
-        <label className="grid gap-1 text-[11px] text-gray-400">
-            <span className="flex items-center justify-between gap-2">
-                {label}
-                <output className="font-mono text-gray-200">{draft}{suffix}</output>
-            </span>
-            <CommittedRangeInput
-                minimum={minimum}
-                maximum={maximum}
-                step={step}
-                value={value}
-                disabled={disabled}
-                className="w-full accent-blue-500 disabled:opacity-40"
-                ariaLabel={label}
-                onPreview={setDraft}
-                onCommit={(next) => {
-                    setDraft(next);
-                    onCommit(next);
-                }}
-                onCancel={setDraft}
-            />
-        </label>
+        <DraggableNumberInput
+            value={value}
+            min={minimum}
+            max={maximum}
+            step={step}
+            label={label}
+            unit={unit}
+            defaultValue={defaultValue}
+            layout="horizontal"
+            labelWidth={84}
+            disabled={disabled}
+            decimalPlaces={decimalPlaces}
+            normalizeValue={normalizeValue}
+            onPreview={() => undefined}
+            onCommit={onCommit}
+            onCancel={() => undefined}
+        />
     );
+}
+
+function samplesToMilliseconds(samples: number, sampleRate: number): number {
+    return samples * 1000 / sampleRate;
+}
+
+function millisecondsToSamples(milliseconds: number, sampleRate: number): number {
+    return Math.round(milliseconds * sampleRate / 1000);
+}
+
+/** Keeps a readable millisecond draft aligned with the source's discrete native sample domain. */
+function normalizeSampleMilliseconds(milliseconds: number, sampleRate: number): number {
+    return samplesToMilliseconds(millisecondsToSamples(milliseconds, sampleRate), sampleRate);
 }
 
 function ToggleButton({
@@ -75,8 +84,8 @@ function ToggleButton({
             type="button"
             disabled={disabled}
             className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs disabled:opacity-40 ${active
-                ? 'border-blue-400/50 bg-blue-500/20 text-blue-100'
-                : 'border-gray-700 bg-gray-900 text-gray-300 hover:bg-gray-800'}`}
+                ? 'border-sky-400/50 bg-sky-500/15 text-sky-100'
+                : 'border-slate-700 bg-slate-950/60 text-slate-300 hover:bg-slate-800'}`}
             onClick={onClick}
         >
             {active ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
@@ -91,6 +100,7 @@ export function MediaInspector() {
         transientSelection,
         videoClips,
         videoSources,
+        videoTracks,
         audioTracks,
         audioSources,
         renderProfile,
@@ -98,10 +108,13 @@ export function MediaInspector() {
         updateAudioClipMix,
         updateAudioTrackMix,
         setAudioTrackLocked,
+        moveVideoClipToTrack,
+        moveVideoClipToNewTrack,
     } = useTimelineStore(useShallow((state) => ({
         transientSelection: state.transientSelection,
         videoClips: state.videoClips,
         videoSources: state.videoSources,
+        videoTracks: state.videoTracks,
         audioTracks: state.audioTracks,
         audioSources: state.audioSources,
         renderProfile: state.renderProfile,
@@ -109,6 +122,8 @@ export function MediaInspector() {
         updateAudioClipMix: state.updateAudioClipMix,
         updateAudioTrackMix: state.updateAudioTrackMix,
         setAudioTrackLocked: state.setAudioTrackLocked,
+        moveVideoClipToTrack: state.moveVideoClipToTrack,
+        moveVideoClipToNewTrack: state.moveVideoClipToNewTrack,
     })));
 
     const videoClip = transientSelection.kind === 'video-clip'
@@ -131,17 +146,41 @@ export function MediaInspector() {
             secondsToFrames(videoClip.sourceEnd - videoClip.sourceStart, renderProfile.fps, 'nearest'),
         );
         const detached = settings?.linkState === 'detached';
+        const selectedVideoTrack = videoTracks.find((track) => track.clipIds.includes(videoClip.id));
         return (
             <section data-testid="media-inspector" className="grid gap-4 p-4">
                 <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Video clip</p>
-                    <p className="mt-1 truncate text-sm font-medium text-gray-100">{videoSource.originalName}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Video clip</p>
+                    <p className="mt-1 truncate text-sm font-medium text-slate-100">{videoSource.originalName}</p>
+                </div>
+                <div className="grid gap-2">
+                    <label className="grid gap-1 text-[11px] text-slate-400">
+                        Video track
+                        <select
+                            aria-label="Video track"
+                            className="h-8 rounded border border-slate-700 bg-slate-950 px-2 text-xs text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+                            value={selectedVideoTrack?.id ?? ''}
+                            onChange={(event) => moveVideoClipToTrack(videoClip.id, event.target.value)}
+                        >
+                            {videoTracks.map((track, index) => (
+                                <option key={track.id} value={track.id}>V{index + 1} · {track.name}</option>
+                            ))}
+                        </select>
+                    </label>
+                    <button
+                        type="button"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded border border-slate-700 bg-slate-950/60 px-2 text-xs text-slate-300 transition-colors hover:bg-slate-800 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+                        onClick={() => moveVideoClipToNewTrack(videoClip.id, videoTracks.length)}
+                    >
+                        <Plus className="h-3.5 w-3.5" />
+                        New video track
+                    </button>
                 </div>
                 {!settings ? (
-                    <p className="text-xs text-gray-500">This source has no audio stream.</p>
+                    <p className="text-xs text-slate-500">This source has no audio stream.</p>
                 ) : (
                     <>
-                        <div className="rounded border border-gray-800 bg-gray-900/60 p-2 text-xs text-gray-300">
+                        <div className="rounded border border-slate-700 bg-slate-950/60 p-2 text-xs text-slate-300">
                             Embedded audio: {detached ? 'Separated' : 'Linked'}
                         </div>
                         <ToggleButton
@@ -150,30 +189,34 @@ export function MediaInspector() {
                             label={settings.muted ? 'Unmute embedded audio' : 'Mute embedded audio'}
                             onClick={() => updateVideoClipAudio(videoClip.id, { muted: !settings.muted })}
                         />
-                        <CommittedRange
+                        <DraggableSetting
                             label="Embedded audio gain"
                             value={settings.gainDb}
                             minimum={-60}
                             maximum={12}
-                            suffix=" dB"
+                            step={0.1}
+                            decimalPlaces={1}
+                            unit="dB"
                             disabled={detached}
                             onCommit={(gainDb) => updateVideoClipAudio(videoClip.id, { gainDb })}
                         />
-                        <CommittedRange
+                        <DraggableSetting
                             label="Fade in"
                             value={settings.fadeInFrames}
                             minimum={0}
                             maximum={durationFrames}
-                            suffix=" fr"
+                            decimalPlaces={0}
+                            unit="fr"
                             disabled={detached}
                             onCommit={(fadeInFrames) => updateVideoClipAudio(videoClip.id, { fadeInFrames })}
                         />
-                        <CommittedRange
+                        <DraggableSetting
                             label="Fade out"
                             value={settings.fadeOutFrames}
                             minimum={0}
                             maximum={durationFrames}
-                            suffix=" fr"
+                            decimalPlaces={0}
+                            unit="fr"
                             disabled={detached}
                             onCommit={(fadeOutFrames) => updateVideoClipAudio(videoClip.id, { fadeOutFrames })}
                         />
@@ -191,24 +234,48 @@ export function MediaInspector() {
             ? videoSources.find((source) => source.id === audioClip.source.videoSourceId)
             : undefined;
         const sourceName = importedSource?.originalName ?? embeddedSource?.originalName ?? 'Audio clip';
-        const fadeIn = 'fadeInSamples' in audioClip ? audioClip.fadeInSamples : audioClip.fadeInFrames;
-        const fadeOut = 'fadeOutSamples' in audioClip ? audioClip.fadeOutSamples : audioClip.fadeOutFrames;
-        const maximumFade = 'sourceStartSample' in audioClip
-            ? audioClip.sourceEndSample - audioClip.sourceStartSample
+        const usesNativeSamples = 'sourceStartSample' in audioClip;
+        const sampleRate = importedSource?.nativeSampleRate ?? null;
+        // Imported audio keeps sample-accurate persistence, but milliseconds are substantially
+        // easier to scan and edit than raw sample counts. Missing legacy source metadata falls
+        // back to the exact integer-sample presentation rather than guessing a sample rate.
+        const showSampleFadesAsMilliseconds = usesNativeSamples && sampleRate !== null;
+        const fadeIn = usesNativeSamples
+            ? showSampleFadesAsMilliseconds
+                ? samplesToMilliseconds(audioClip.fadeInSamples, sampleRate)
+                : audioClip.fadeInSamples
+            : audioClip.fadeInFrames;
+        const fadeOut = usesNativeSamples
+            ? showSampleFadesAsMilliseconds
+                ? samplesToMilliseconds(audioClip.fadeOutSamples, sampleRate)
+                : audioClip.fadeOutSamples
+            : audioClip.fadeOutFrames;
+        const maximumFade = usesNativeSamples
+            ? showSampleFadesAsMilliseconds
+                ? samplesToMilliseconds(audioClip.sourceEndSample - audioClip.sourceStartSample, sampleRate)
+                : audioClip.sourceEndSample - audioClip.sourceStartSample
             : Math.max(1, secondsToFrames(audioClip.sourceEnd - audioClip.sourceStart, renderProfile.fps, 'nearest'));
+        const fadeUnit = showSampleFadesAsMilliseconds ? 'ms' : usesNativeSamples ? 'smp' : 'fr';
+        const fadePrecision = showSampleFadesAsMilliseconds ? 3 : 0;
+        const normalizeFade = showSampleFadesAsMilliseconds
+            ? (milliseconds: number) => normalizeSampleMilliseconds(milliseconds, sampleRate)
+            : undefined;
+        const persistFade = (next: number): number => showSampleFadesAsMilliseconds
+            ? millisecondsToSamples(next, sampleRate)
+            : next;
         const locked = selectedAudioTrack.locked;
 
         return (
             <section data-testid="media-inspector" className="grid gap-4 p-4">
                 <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Audio clip</p>
-                    <p className="mt-1 truncate text-sm font-medium text-gray-100">{sourceName}</p>
-                    <p className="truncate text-xs text-gray-500">{selectedAudioTrack.name}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Audio clip</p>
+                    <p className="mt-1 truncate text-sm font-medium text-slate-100">{sourceName}</p>
+                    <p className="truncate text-xs text-slate-500">{selectedAudioTrack.name}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                     <button
                         type="button"
-                        className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs ${locked ? 'border-amber-500/40 text-amber-300' : 'border-gray-700 text-gray-300'}`}
+                        className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs ${locked ? 'border-amber-500/40 text-amber-300' : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`}
                         onClick={() => setAudioTrackLocked(selectedAudioTrack.id, !locked)}
                     >
                         {locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
@@ -217,7 +284,7 @@ export function MediaInspector() {
                     <button
                         type="button"
                         disabled={locked}
-                        className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs disabled:opacity-40 ${selectedAudioTrack.solo ? 'border-emerald-400/50 text-emerald-200' : 'border-gray-700 text-gray-300'}`}
+                        className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs disabled:opacity-40 ${selectedAudioTrack.solo ? 'border-teal-400/50 text-teal-200' : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`}
                         onClick={() => updateAudioTrackMix(selectedAudioTrack.id, { solo: !selectedAudioTrack.solo })}
                     >
                         <Headphones className="h-3.5 w-3.5" />
@@ -226,7 +293,7 @@ export function MediaInspector() {
                     <button
                         type="button"
                         disabled={locked}
-                        className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs disabled:opacity-40 ${selectedAudioTrack.muted ? 'border-red-400/50 text-red-200' : 'border-gray-700 text-gray-300'}`}
+                        className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs disabled:opacity-40 ${selectedAudioTrack.muted ? 'border-red-400/50 text-red-200' : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`}
                         onClick={() => updateAudioTrackMix(selectedAudioTrack.id, { muted: !selectedAudioTrack.muted })}
                     >
                         {selectedAudioTrack.muted
@@ -235,12 +302,14 @@ export function MediaInspector() {
                         {selectedAudioTrack.muted ? 'Unmute track' : 'Mute track'}
                     </button>
                 </div>
-                <CommittedRange
+                <DraggableSetting
                     label="Track gain"
                     value={selectedAudioTrack.gainDb}
                     minimum={-60}
                     maximum={12}
-                    suffix=" dB"
+                    step={0.1}
+                    decimalPlaces={1}
+                    unit="dB"
                     disabled={locked}
                     onCommit={(gainDb) => updateAudioTrackMix(selectedAudioTrack.id, { gainDb })}
                 />
@@ -250,35 +319,43 @@ export function MediaInspector() {
                     label={audioClip.muted ? 'Unmute clip' : 'Mute clip'}
                     onClick={() => updateAudioClipMix(audioClip.id, { muted: !audioClip.muted })}
                 />
-                <CommittedRange
+                <DraggableSetting
                     label="Clip gain"
                     value={audioClip.gainDb}
                     minimum={-60}
                     maximum={12}
-                    suffix=" dB"
+                    step={0.1}
+                    decimalPlaces={1}
+                    unit="dB"
                     disabled={locked}
                     onCommit={(gainDb) => updateAudioClipMix(audioClip.id, { gainDb })}
                 />
-                <CommittedRange
+                <DraggableSetting
                     label="Fade in"
                     value={fadeIn}
                     minimum={0}
                     maximum={maximumFade}
-                    suffix={'sourceStartSample' in audioClip ? ' smp' : ' fr'}
+                    step={1}
+                    decimalPlaces={fadePrecision}
+                    normalizeValue={normalizeFade}
+                    unit={fadeUnit}
                     disabled={locked}
                     onCommit={(next) => updateAudioClipMix(audioClip.id, 'fadeInSamples' in audioClip
-                        ? { fadeInSamples: next }
+                        ? { fadeInSamples: persistFade(next) }
                         : { fadeInFrames: next })}
                 />
-                <CommittedRange
+                <DraggableSetting
                     label="Fade out"
                     value={fadeOut}
                     minimum={0}
                     maximum={maximumFade}
-                    suffix={'sourceStartSample' in audioClip ? ' smp' : ' fr'}
+                    step={1}
+                    decimalPlaces={fadePrecision}
+                    normalizeValue={normalizeFade}
+                    unit={fadeUnit}
                     disabled={locked}
                     onCommit={(next) => updateAudioClipMix(audioClip.id, 'fadeOutSamples' in audioClip
-                        ? { fadeOutSamples: next }
+                        ? { fadeOutSamples: persistFade(next) }
                         : { fadeOutFrames: next })}
                 />
             </section>
@@ -286,7 +363,7 @@ export function MediaInspector() {
     }
 
     return (
-        <section data-testid="media-inspector" className="p-4 text-xs text-gray-500">
+        <section data-testid="media-inspector" className="p-4 text-xs text-slate-500">
             Select a video or audio clip to edit its media settings.
         </section>
     );

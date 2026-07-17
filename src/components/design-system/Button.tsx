@@ -1,6 +1,6 @@
 'use client';
 
-import { ButtonHTMLAttributes, ReactNode } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 
 // Button variants
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'info' | 'success';
@@ -17,16 +17,16 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 // Base button component
-export function Button({
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   children,
   variant = 'primary',
   size = 'md',
   isActive = false,
   className = '',
   ...props
-}: ButtonProps) {
+}, ref) {
   // Base styles
-  const baseStyles = 'rounded transition-colors select-none flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none';
+  const baseStyles = 'rounded transition-colors select-none flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed';
 
   // Variant styles with active states
   const variantStyles = {
@@ -62,8 +62,8 @@ export function Button({
   const finalStyles = `${baseStyles} ${variantStyles[variant]} ${sizeStyles[size]} ${className}`;
 
   return (
-    <button className={finalStyles} {...props}>
+    <button ref={ref} className={finalStyles} {...props}>
       {children}
     </button>
   );
-} 
+});

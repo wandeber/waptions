@@ -13,11 +13,13 @@ import {
     cloneTransientSelection,
     cloneVideoClips,
 } from './timeline-store-snapshot';
+import { cloneVideoTracks } from '@/lib/video-tracks';
 
 /** Only these roots may be addressed by serialized history patches. */
 export const TIMELINE_HISTORY_ROOTS = new Set<keyof TimelineHistoryProjection>([
     'tracks',
     'videoClips',
+    'videoTracks',
     'renderProfile',
     'audioTracks',
     'transientSelection',
@@ -40,6 +42,7 @@ export function projectTimelineHistory(state: TimelineStore): TimelineHistoryPro
     return {
         tracks: cloneSubtitleTracks(state.tracks),
         videoClips: cloneVideoClips(state.videoClips),
+        videoTracks: cloneVideoTracks(state.videoTracks),
         renderProfile: cloneRenderProfile(state.renderProfile),
         audioTracks: cloneAudioTracks(state.audioTracks),
         transientSelection: cloneTransientSelection(state.transientSelection),
@@ -65,6 +68,7 @@ export function selectTimelineHistoryProjection(state: TimelineStore): TimelineH
     return {
         tracks: state.tracks,
         videoClips: state.videoClips,
+        videoTracks: state.videoTracks,
         renderProfile: state.renderProfile,
         audioTracks: state.audioTracks,
         transientSelection: state.transientSelection,
@@ -91,6 +95,7 @@ export function restoreTimelineHistoryProjection(
         ...projection,
         tracks: cloneSubtitleTracks(projection.tracks),
         videoClips: cloneVideoClips(projection.videoClips),
+        videoTracks: cloneVideoTracks(projection.videoTracks),
         renderProfile: cloneRenderProfile(projection.renderProfile),
         projectFps: frameRateToNumber(projection.renderProfile.fps),
         audioTracks: cloneAudioTracks(projection.audioTracks),

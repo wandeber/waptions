@@ -7,8 +7,8 @@ test.describe('editor transaction history', () => {
     const failures = monitorPageFailures(page);
     await createEditorProject(page, 'Style history');
 
-    await page.getByRole('button', { name: 'Estilo' }).click();
-    await page.getByRole('button', { name: 'Estilo del texto' }).click();
+    await page.getByRole('button', { name: 'Style', exact: true }).click();
+    await page.getByRole('button', { name: 'Text style', exact: true }).click();
     const fontSizeInput = page.getByRole('textbox', { name: 'Tamaño' });
     await expect(fontSizeInput).toHaveValue('48');
     // The accordion animates its row height; measure only after the drag field reaches its final
@@ -29,9 +29,9 @@ test.describe('editor transaction history', () => {
     await page.mouse.up();
 
     await expect(fontSizeInput).toHaveValue('60');
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(fontSizeInput).toHaveValue('48');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(fontSizeInput).toHaveValue('60');
     expect(failures.errors).toEqual([]);
   });
@@ -41,8 +41,8 @@ test.describe('editor transaction history', () => {
     const failures = monitorPageFailures(page);
     await createEditorProject(page, 'Style history cancellation');
 
-    await page.getByRole('button', { name: 'Estilo' }).click();
-    await page.getByRole('button', { name: 'Estilo del texto' }).click();
+    await page.getByRole('button', { name: 'Style', exact: true }).click();
+    await page.getByRole('button', { name: 'Text style', exact: true }).click();
     const fontSizeInput = page.getByRole('textbox', { name: 'Tamaño' });
     await fontSizeInput.focus();
     await fontSizeInput.selectText();
@@ -68,7 +68,7 @@ test.describe('editor transaction history', () => {
     await page.keyboard.press('Escape');
     await page.mouse.up();
     await expect(fontSizeInput).toHaveValue('48');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(fontSizeInput).toHaveValue('60');
 
     await dragPreview();
@@ -76,7 +76,7 @@ test.describe('editor transaction history', () => {
     await expect(fontSizeInput).toHaveValue('48');
     await page.mouse.up();
     await expect(fontSizeInput).toHaveValue('48');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(fontSizeInput).toHaveValue('60');
     expect(failures.errors).toEqual([]);
   });
@@ -86,8 +86,8 @@ test.describe('editor transaction history', () => {
     const failures = monitorPageFailures(page);
     await createEditorProject(page, 'Decimal style history');
 
-    await page.getByRole('button', { name: 'Estilo' }).click();
-    await page.getByRole('button', { name: 'Estilo del texto' }).click();
+    await page.getByRole('button', { name: 'Style', exact: true }).click();
+    await page.getByRole('button', { name: 'Text style', exact: true }).click();
     const strokeWidthInput = page.getByRole('textbox', { name: 'Grosor del borde' }).first();
     await expect(strokeWidthInput).toHaveValue('6');
 
@@ -100,9 +100,9 @@ test.describe('editor transaction history', () => {
     await expect(strokeWidthInput).toHaveValue('6.5');
     await strokeWidthInput.press('Enter');
 
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(strokeWidthInput).toHaveValue('6');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(strokeWidthInput).toHaveValue('6.5');
     expect(failures.errors).toEqual([]);
   });
@@ -112,8 +112,8 @@ test.describe('editor transaction history', () => {
     const failures = monitorPageFailures(page);
     await createEditorProject(page, 'Reset style history');
 
-    await page.getByRole('button', { name: 'Estilo' }).click();
-    await page.getByRole('button', { name: 'Estilo del texto' }).click();
+    await page.getByRole('button', { name: 'Style', exact: true }).click();
+    await page.getByRole('button', { name: 'Text style', exact: true }).click();
     const strokeWidthInput = page.getByRole('textbox', { name: 'Grosor del borde' }).first();
     await expect(strokeWidthInput).toHaveValue('6');
 
@@ -133,13 +133,13 @@ test.describe('editor transaction history', () => {
 
     // Reset and the post-reset typed value are two independent durable sessions. Any lost edit or
     // duplicate blur command changes this exact two-step walk back through 4 -> 0 -> 6.
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(strokeWidthInput).toHaveValue('0');
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(strokeWidthInput).toHaveValue('6');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(strokeWidthInput).toHaveValue('0');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(strokeWidthInput).toHaveValue('4');
     expect(failures.errors).toEqual([]);
   });
@@ -149,8 +149,8 @@ test.describe('editor transaction history', () => {
     const failures = monitorPageFailures(page);
     await createEditorProject(page, 'Hex style history');
 
-    await page.getByRole('button', { name: 'Estilo' }).click();
-    await page.getByRole('button', { name: 'Estilo del texto' }).click();
+    await page.getByRole('button', { name: 'Style', exact: true }).click();
+    await page.getByRole('button', { name: 'Text style', exact: true }).click();
     const textColorInput = page.getByRole('textbox', { name: 'Text color hex' });
     await expect(textColorInput).toHaveValue('#FFF50B');
 
@@ -169,14 +169,14 @@ test.describe('editor transaction history', () => {
 
     // If the prior invalid draft had reached history, this single Undo would reveal `#12`
     // instead of the durable color that existed before either focus session.
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(textColorInput).toHaveValue('#FFF50B');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(textColorInput).toHaveValue('#123456');
 
     // Background fields use the same transactional draft boundary. Exercising this section keeps
     // incomplete text away from its paired native color input and verifies the shared wiring.
-    await page.getByRole('button', { name: 'Fondo' }).click();
+    await page.getByRole('button', { name: 'Background', exact: true }).click();
     const backgroundColorInput = page.getByRole('textbox', { name: 'Background color hex' });
     await expect(backgroundColorInput).toHaveValue('#000000');
     await backgroundColorInput.focus();
@@ -189,9 +189,9 @@ test.describe('editor transaction history', () => {
     await backgroundColorInput.selectText();
     await backgroundColorInput.pressSequentially('#ABCDEF');
     await backgroundColorInput.press('Enter');
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(backgroundColorInput).toHaveValue('#000000');
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(backgroundColorInput).toHaveValue('#ABCDEF');
     expect(failures.errors).toEqual([]);
   });
@@ -201,12 +201,12 @@ test.describe('editor transaction history', () => {
     const failures = monitorPageFailures(page);
     await createEditorProject(page, 'History pointer ordering');
 
-    await page.getByRole('button', { name: 'Estilo' }).click();
-    await page.getByRole('button', { name: 'Estilo del texto' }).click();
+    await page.getByRole('button', { name: 'Style', exact: true }).click();
+    await page.getByRole('button', { name: 'Text style', exact: true }).click();
     const fontSizeInput = page.getByRole('textbox', { name: 'Tamaño' });
     const textColorInput = page.getByRole('textbox', { name: 'Text color hex' });
-    const undoButton = page.getByTitle('Deshacer (Ctrl+Z)');
-    const redoButton = page.getByTitle('Rehacer (Ctrl+Shift+Z)');
+    const undoButton = page.getByTitle('Undo (Ctrl/Cmd+Z)');
+    const redoButton = page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)');
 
     await fontSizeInput.focus();
     await fontSizeInput.selectText();
@@ -286,7 +286,7 @@ test.describe('editor transaction history', () => {
 
     // Pointerdown commits the focused draft, and the subsequent click undoes exactly that new
     // command. Cancelling the draft here would make the click also consume the prior edit.
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(textarea).toHaveValue('Before');
     await expect(page.locator('textarea')).toHaveCount(1);
 
@@ -307,9 +307,9 @@ test.describe('editor transaction history', () => {
     let textarea = page.locator('textarea').first();
     await textarea.fill('Before');
     await textarea.blur();
-    const saveButton = page.getByTitle('Guardar cambios');
+    const saveButton = page.getByTitle('Save changes');
     if (await saveButton.isVisible()) await saveButton.click();
-    await expect(page.getByTitle('Todo guardado')).toBeVisible();
+    await expect(page.getByTitle(/^All changes saved \(/)).toBeVisible();
 
     const projectId = new URL(page.url()).pathname.split('/').at(-1);
     if (!projectId) throw new Error('The editor URL does not contain a project ID.');
@@ -338,7 +338,7 @@ test.describe('editor transaction history', () => {
 
     await page.reload();
     textarea = page.locator('textarea').first();
-    const undoButton = page.getByTitle('Deshacer (Ctrl+Z)');
+    const undoButton = page.getByTitle('Undo (Ctrl/Cmd+Z)');
     await expect(textarea).toHaveValue('Before');
     await expect(undoButton).toBeDisabled();
 
@@ -377,13 +377,13 @@ test.describe('editor transaction history', () => {
     await page.keyboard.press('Control+z');
     await expect(textarea).toHaveValue('');
     await page.mouse.up();
-    await page.getByTitle('Rehacer (Ctrl+Shift+Z)').click();
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
     await expect(textarea).toHaveValue('Drag target');
 
     await drag();
     await page.keyboard.press('Escape');
     await page.mouse.up();
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(textarea).toHaveValue('');
     expect(failures.errors).toEqual([]);
   });
@@ -398,17 +398,17 @@ test.describe('editor transaction history', () => {
     await textarea.fill('History entry');
     await textarea.blur();
 
-    await page.getByRole('button', { name: 'History', exact: true }).click();
+    await page.getByRole('tab', { name: 'History', exact: true }).click();
     const panel = page.getByTestId('history-panel');
     await expect(panel).toBeVisible();
     await expect(panel.locator('[data-history-entry-id]')).toHaveCount(2);
 
-    await panel.getByRole('button', { name: 'Oldest retained state' }).click();
+    await panel.getByRole('button', { name: 'Earliest retained state' }).click();
     await expect(page.locator('textarea')).toHaveCount(0);
     // Jumping backward retains the complete future branch in the same panel. One direct jump to
     // its last entry restores both commands with one store revision and one persistence enqueue.
-    await panel.locator('[data-history-entry-id]').last().click();
-    await page.getByRole('button', { name: 'Properties', exact: true }).click();
+    await panel.locator('[data-history-entry-id]').first().click();
+    await page.getByRole('tab', { name: 'Properties', exact: true }).click();
     await expect(page.locator('textarea').first()).toHaveValue('History entry');
 
     await page.getByTitle('Hide inspector').click();

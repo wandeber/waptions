@@ -20,4 +20,18 @@ describe('editor playback selectors', () => {
       selectTimelinePlaybackStatus(next),
     )).toBe(false);
   });
+
+  it('keeps transport-only volume updates out of the structural timeline selection', () => {
+    const initial = usePlaybackStore.getState();
+    const next = { ...initial, volume: 0.5, muted: false };
+
+    expect(shallow(
+      selectTimelinePlaybackStructure(initial),
+      selectTimelinePlaybackStructure(next),
+    )).toBe(true);
+    expect(shallow(
+      selectTimelinePlaybackStatus(initial),
+      selectTimelinePlaybackStatus(next),
+    )).toBe(false);
+  });
 });

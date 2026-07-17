@@ -3,8 +3,8 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Subtitle, SubtitleTrack } from '@/types/timeline';
-import type { AudioTrack } from '@/types/video';
-import { ChevronLeft, ChevronRight, Headphones, Pause, Play, Plus, RotateCcw, Scissors, Trash2, ZoomIn, ZoomOut, Magnet } from 'lucide-react';
+import type { AudioTrack, VideoTrack } from '@/types/video';
+import { Captions, ChevronLeft, ChevronRight, Clapperboard, Headphones, Plus, RotateCcw, Scissors, Trash2, ZoomIn, ZoomOut, Magnet } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useProjectStore } from '@/stores/project-store';
@@ -21,23 +21,29 @@ const MemoizedTimelineTrackOverlay = memo(TimelineTrackOverlay);
 const MemoizedTimelineTrackHeader = memo(TimelineTrackHeader);
 import { useAudioWaveforms } from '@/hooks/use-waveform';
 import { OverlayMenu } from './OverlayMenu';
-import { TimelineVideoTrack } from './TimelineVideoTrack';
+import { TimelineVideoTrack, type VideoTrackDragPreview } from './TimelineVideoTrack';
 import { TimelineAudioTrack, getAudioClipVisualData } from './TimelineAudioTrack';
 import { TimelineAudioTrackHeader } from './TimelineAudioTrackHeader';
 import { TimelineRowResizeHandle } from './TimelineRowResizeHandle';
-import { VideoCutPopover } from './VideoCutPopover';
-import { buildClipPlacements, getTimelineDurations } from '@/lib/video-timeline';
+import { VideoCutDialog } from './VideoCutDialog';
+import { buildClipPlacements } from '@/lib/video-timeline';
 import { getVisibleVideoAudioReferences } from '@/lib/video-waveform';
 import { getAudioMediaCacheKey, type AudioMediaReference } from '@/lib/media-asset-ref';
+import { isTextEditingKeyboardTarget } from '@/lib/keyboard-target';
 import { framesToSeconds, secondsToFrames } from '@/lib/render-profile';
 import {
   DEFAULT_TIMELINE_ROW_HEIGHT,
   clampTimelineRowHeight,
 } from '@/lib/editor-layout';
+import { selectTimelinePlaybackStructure } from './playback-selectors';
+import { TimelineVideoTrackHeader } from './TimelineVideoTrackHeader';
+import { formatShortcutTitle, getShortcutAriaKeys } from '@/config/shortcuts';
 import {
-  selectTimelinePlaybackStatus,
-  selectTimelinePlaybackStructure,
-} from './playback-selectors';
+  buildAudioClipSnapPoints,
+  buildVideoClipSnapPoints,
+  type TimelineSnapPoint,
+} from '@/lib/timeline-snap';
+import type { VideoCutDetectionRequest } from '@/lib/video-cut/targets';
 
 interface TimelineProps {
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
@@ -49,11 +55,11 @@ interface TimelineProps {
   onMetaInfoToggle?: () => void;
 }
 
-type TimelineRowKey = `subtitle:${string}` | 'video' | `audio:${string}`;
+type TimelineRowKey = `subtitle:${string}` | `video:${string}` | `audio:${string}`;
 
 type TimelineRowDescriptor =
   | { key: `subtitle:${string}`; kind: 'subtitle'; label: string; track: SubtitleTrack }
-  | { key: 'video'; kind: 'video'; label: 'video' }
+  | { key: `video:${string}`; kind: 'video'; label: string; track: VideoTrack; videoTrackIndex: number }
   | { key: `audio:${string}`; kind: 'audio'; label: string; track: AudioTrack };
 
 interface TimelineRowHeightState {
@@ -71,15 +77,16 @@ export function Timeline({
   onMetaInfoToggle,
 }: TimelineProps) {
   const projectId = useProjectStore((state) => state.activeProject?.id ?? null);
-  const { duration, fps, onTimeUpdate, onPlayPause } = usePlaybackStore(
+  const { duration, fps, onTimeUpdate } = usePlaybackStore(
     useShallow(selectTimelinePlaybackStructure),
   );
   const {
     zoomLevel, setZoom, tracks, addTrack, pixelsPerSecond,
     activeTrackId, setActiveTrackId, snapEnabled, setSnapEnabled,
-    cuts, isDragging, videoSources, videoClips, selectedClipId,
+    cuts, isDragging, videoSources, videoClips, videoTracks, selectedClipId,
     audioSources, audioTracks, renderProfile, transientSelection,
     splitSelectedMediaAtFrame, deleteSelectedMedia, reorderVideoClips, addAudioTrack,
+    addVideoTrack, removeVideoTrack, selectClip,
   } = useTimelineStore(useShallow((state) => ({
     zoomLevel: state.zoomLevel,
     setZoom: state.setZoom,
@@ -94,6 +101,7 @@ export function Timeline({
     isDragging: state.isDragging,
     videoSources: state.videoSources,
     videoClips: state.videoClips,
+    videoTracks: state.videoTracks,
     selectedClipId: state.selectedClipId,
     audioSources: state.audioSources,
     audioTracks: state.audioTracks,
@@ -103,6 +111,9 @@ export function Timeline({
     deleteSelectedMedia: state.deleteSelectedMedia,
     reorderVideoClips: state.reorderVideoClips,
     addAudioTrack: state.addAudioTrack,
+    addVideoTrack: state.addVideoTrack,
+    removeVideoTrack: state.removeVideoTrack,
+    selectClip: state.selectClip,
   })));
   const clipPlacements = useMemo(
     () => buildClipPlacements(videoClips, renderProfile.fps),
@@ -112,6 +123,29 @@ export function Timeline({
     ? videoClips.findIndex((clip) => clip.id === selectedClipId)
     : -1;
   const hasSelectedMedia = transientSelection.kind === 'video-clip' || transientSelection.kind === 'audio-clip';
+  const mediaSnapPoints = useMemo<TimelineSnapPoint[]>(() => {
+    const points: TimelineSnapPoint[] = [{ frame: 0, ownerKey: 'timeline:start' }];
+    points.push(...buildVideoClipSnapPoints(videoClips, renderProfile.fps));
+    tracks.forEach((track) => track.subtitles.forEach((subtitle) => {
+      points.push(
+        {
+          frame: secondsToFrames(subtitle.startTime, renderProfile.fps, 'nearest'),
+          ownerKey: `subtitle:${subtitle.id}`,
+        },
+        {
+          frame: secondsToFrames(subtitle.endTime, renderProfile.fps, 'nearest'),
+          ownerKey: `subtitle:${subtitle.id}`,
+        },
+      );
+    }));
+    points.push(...buildAudioClipSnapPoints(
+      audioTracks,
+      renderProfile.fps,
+      videoSources,
+      audioSources,
+    ));
+    return points;
+  }, [audioSources, audioTracks, renderProfile.fps, tracks, videoClips, videoSources]);
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -122,6 +156,11 @@ export function Timeline({
   const effectivePixelsPerSecond = pixelsPerSecond * zoomLevel;
   const [requestedWaveformReferences, setRequestedWaveformReferences] = useState<AudioMediaReference[]>([]);
   const [horizontalScrollbarHeight, setHorizontalScrollbarHeight] = useState(0);
+  const [videoTrackDragPreview, setVideoTrackDragPreview] = useState<VideoTrackDragPreview | null>(null);
+  const [selectedVideoClipIds, setSelectedVideoClipIds] = useState<string[]>(
+    selectedClipId ? [selectedClipId] : [],
+  );
+  const [cutDetectionRequest, setCutDetectionRequest] = useState<VideoCutDetectionRequest | null>(null);
   const [rowHeightState, setRowHeightState] = useState<TimelineRowHeightState>({
     projectId,
     overrides: {},
@@ -129,6 +168,28 @@ export function Timeline({
   const rowHeightOverrides = useMemo(() => (
     rowHeightState.projectId === projectId ? rowHeightState.overrides : {}
   ), [projectId, rowHeightState]);
+  useEffect(() => {
+    const existing = new Set(videoClips.map((clip) => clip.id));
+    setSelectedVideoClipIds((current) => {
+      if (!selectedClipId) return [];
+      const valid = current.filter((clipId) => existing.has(clipId));
+      return valid.includes(selectedClipId) ? valid : [selectedClipId];
+    });
+  }, [selectedClipId, videoClips]);
+  const changeVideoClipSelection = useCallback((clipId: string, additive: boolean) => {
+    if (!videoClips.some((clip) => clip.id === clipId)) return;
+    const next = additive
+      ? selectedVideoClipIds.includes(clipId)
+        ? selectedVideoClipIds.filter((selectedId) => selectedId !== clipId)
+        : [...selectedVideoClipIds, clipId]
+      : [clipId];
+    setSelectedVideoClipIds(next);
+    selectClip(next.includes(clipId) ? clipId : next.at(-1) ?? null);
+  }, [selectClip, selectedVideoClipIds, videoClips]);
+  const clearVideoClipSelection = useCallback(() => {
+    setSelectedVideoClipIds([]);
+    selectClip(null);
+  }, [selectClip]);
   const timelineRows = useMemo<TimelineRowDescriptor[]>(() => [
     ...tracks.map((track) => ({
       key: `subtitle:${track.id}` as const,
@@ -136,14 +197,20 @@ export function Timeline({
       label: track.name,
       track,
     })),
-    { key: 'video', kind: 'video', label: 'video' },
+    ...videoTracks.map((track, videoTrackIndex) => ({
+      key: `video:${track.id}` as const,
+      kind: 'video' as const,
+      label: track.name,
+      track,
+      videoTrackIndex,
+    })),
     ...audioTracks.map((track) => ({
       key: `audio:${track.id}` as const,
       kind: 'audio' as const,
       label: track.name,
       track,
     })),
-  ], [audioTracks, tracks]);
+  ], [audioTracks, tracks, videoTracks]);
   const getRowHeight = useCallback((rowKey: TimelineRowKey) => (
     rowHeightOverrides[rowKey] ?? DEFAULT_TIMELINE_ROW_HEIGHT
   ), [rowHeightOverrides]);
@@ -280,13 +347,6 @@ export function Timeline({
 
     isSyncingRef.current = false;
     updateVisibleWaveformRange();
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    const ms = Math.floor((seconds % 1) * 100);
-    return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   };
 
   const timelineWidth = Math.max(1, duration * pixelsPerSecond * zoomLevel);
@@ -482,7 +542,7 @@ export function Timeline({
   }, [pixelsPerSecond, zoomLevel]);
 
   const memoizedKeyPoints = useMemo(() => {
-    const mediaDuration = getTimelineDurations(videoClips, tracks).mediaDuration;
+    const mediaDuration = clipPlacements[clipPlacements.length - 1]?.projectEnd ?? 0;
 
     const keyPoints = new Set<number>([0, mediaDuration, duration]);
     clipPlacements.forEach((placement) => {
@@ -503,20 +563,15 @@ export function Timeline({
       });
     });
     return Array.from(keyPoints).sort((a, b) => a - b);
-  }, [audioSources, audioTracks, clipPlacements, duration, renderProfile.fps, tracks, videoClips, videoSources]);
+  }, [audioSources, audioTracks, clipPlacements, duration, renderProfile.fps, tracks, videoSources]);
 
   // Keyboard navigation (Frame-by-Frame)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // No interferir si el usuario está escribiendo en un input o textarea
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
-        return;
-      }
+      // Native and custom editing surfaces keep their own selection and navigation keystrokes.
+      if (isTextEditingKeyboardTarget(e.target)) return;
 
-      if (e.key === ' ') {
-        e.preventDefault();
-        onPlayPause();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         const frameDuration = fps > 0 ? 1 / fps : 1 / 30;
         const multiplier = e.shiftKey ? 5 : 1;
         const delta = e.key === 'ArrowRight' ? frameDuration * multiplier : -frameDuration * multiplier;
@@ -565,43 +620,19 @@ export function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fps, duration, onTimeUpdate, onPlayPause, memoizedKeyPoints, scrollToTime]);
+  }, [fps, duration, onTimeUpdate, memoizedKeyPoints, scrollToTime]);
 
   return (
     <div
       ref={containerRef}
-      className="h-full flex flex-col bg-gray-900 border border-gray-800 rounded-lg min-w-0 overflow-hidden"
+      className="flex h-full min-w-0 flex-col overflow-hidden bg-slate-950"
     >
-      {/* Toolbar */}
-      <div className="h-11 flex-none flex items-center gap-2 px-2 bg-gray-800/50 border-b border-gray-800 relative z-30 overflow-x-auto">
-        <TimelinePlaybackStatus formatTime={formatTime} />
-
-        <div className="flex gap-1 ml-auto">
-          <div className="flex items-center gap-1">
-            <span className="text-xs font-mono text-gray-400 mr-2 w-10 text-right">{(zoomLevel * 100).toFixed(0)}%</span>
-            <Button variant="secondary" onClick={handleZoomOut} title="Zoom out">
-              <ZoomOut className="w-[18px] h-[18px]" />
-            </Button>
-            <Button variant="secondary" onClick={handleZoomIn} title="Zoom in">
-              <ZoomIn className="w-[18px] h-[18px]" />
-            </Button>
-            <Button variant="secondary" onClick={handleResetZoom} title="Fit timeline to view">
-              <RotateCcw className="w-[18px] h-[18px]" />
-            </Button>
-          </div>
-          <div className="w-px h-6 bg-gray-800 mx-1" />
-
-          <OverlayMenu
-            showThirdsGuide={showThirdsGuide}
-            onThirdsGuideToggle={() => onThirdsGuideToggle?.()}
-            showDevinGuide={showDevinGuide}
-            onDevinGuideToggle={() => onDevinGuideToggle?.()}
-            showMetaInfo={showMetaInfo}
-            onMetaInfoToggle={() => onMetaInfoToggle?.()}
-          />
-          <VideoCutPopover />
+      <div className="relative z-30 flex h-10 flex-none items-center gap-2 overflow-x-auto border-b border-slate-800 bg-slate-900/95 px-2">
+        <div className="flex items-center gap-1" role="group" aria-label="Timeline edit tools">
           <Button
-            variant="secondary"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
             data-testid="split-selected-media"
             onClick={() => splitSelectedMediaAtFrame(secondsToFrames(
               usePlaybackStore.getState().currentTime,
@@ -610,11 +641,14 @@ export function Timeline({
             ))}
             disabled={!hasSelectedMedia}
             title="Split selected media at playhead"
+            aria-label="Split selected media at playhead"
           >
-            <Scissors className="w-[18px] h-[18px]" />
+            <Scissors className="h-4 w-4" />
           </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
             onClick={() => {
               if (selectedClipIndex <= 0) return;
               const ids = videoClips.map((clip) => clip.id);
@@ -622,12 +656,15 @@ export function Timeline({
               reorderVideoClips(ids);
             }}
             disabled={selectedClipIndex <= 0}
-            title="Move selected clip left"
+            title="Move selected video clip left"
+            aria-label="Move selected video clip left"
           >
-            <ChevronLeft className="w-[18px] h-[18px]" />
+            <ChevronLeft className="h-4 w-4" />
           </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
             onClick={() => {
               if (selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1) return;
               const ids = videoClips.map((clip) => clip.id);
@@ -635,43 +672,137 @@ export function Timeline({
               reorderVideoClips(ids);
             }}
             disabled={selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1}
-            title="Move selected clip right"
+            title="Move selected video clip right"
+            aria-label="Move selected video clip right"
           >
-            <ChevronRight className="w-[18px] h-[18px]" />
+            <ChevronRight className="h-4 w-4" />
           </Button>
           <Button
-            variant="danger"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 bg-transparent text-red-300 hover:bg-red-500/15 hover:text-red-200"
             data-testid="delete-selected-media"
             onClick={deleteSelectedMedia}
             disabled={!hasSelectedMedia}
-            title="Delete selected media"
+            title={formatShortcutTitle('Delete selected media', 'DELETE')}
+            aria-label="Delete selected media"
+            aria-keyshortcuts={getShortcutAriaKeys('DELETE')}
           >
-            <Trash2 className="w-[18px] h-[18px]" />
+            <Trash2 className="h-4 w-4" />
           </Button>
-          <Button variant="secondary" isActive={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)} title="Snap">
-            <Magnet className="w-[18px] h-[18px]" />
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`h-7 w-7 ${snapEnabled
+              ? 'bg-sky-500/20 text-sky-100 hover:bg-sky-500/30 hover:text-white'
+              : 'bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white'}`}
+            onClick={() => setSnapEnabled(!snapEnabled)}
+            title={snapEnabled ? 'Disable snapping' : 'Enable snapping'}
+            aria-label={snapEnabled ? 'Disable snapping' : 'Enable snapping'}
+            aria-pressed={snapEnabled}
+          >
+            <Magnet className="h-4 w-4" />
           </Button>
-          <div className="w-px h-6 bg-gray-800 mx-1" />
-          <Button variant="secondary" onClick={() => addTrack()} title="Add subtitle track">
-            <Plus className="w-[18px] h-[18px]" />
-          </Button>
-          <Button variant="secondary" onClick={() => addAudioTrack()} title="Add audio track">
-            <Headphones className="w-[18px] h-[18px]" />
-            <Plus className="w-3 h-3" />
-          </Button>
+        </div>
+
+        <div className="ml-auto flex items-center gap-1">
+          <OverlayMenu
+            showThirdsGuide={showThirdsGuide}
+            onThirdsGuideToggle={() => onThirdsGuideToggle?.()}
+            showDevinGuide={showDevinGuide}
+            onDevinGuideToggle={() => onDevinGuideToggle?.()}
+            showMetaInfo={showMetaInfo}
+            onMetaInfoToggle={() => onMetaInfoToggle?.()}
+          />
+          <div className="mx-1 h-5 w-px bg-slate-700" />
+          <div className="flex items-center gap-1" role="group" aria-label="Timeline zoom controls">
+            <span className="w-11 text-right font-mono text-[11px] tabular-nums text-slate-500">{(zoomLevel * 100).toFixed(0)}%</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
+              onClick={handleZoomOut}
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <ZoomOut className="w-[18px] h-[18px]" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
+              onClick={handleZoomIn}
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              <ZoomIn className="w-[18px] h-[18px]" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
+              onClick={handleResetZoom}
+              title="Fit timeline to view"
+              aria-label="Fit timeline to view"
+            >
+              <RotateCcw className="w-[18px] h-[18px]" />
+            </Button>
+          </div>
         </div>
       </div>
 
       <div className="flex flex-1 min-h-0 relative">
         {/* Track Labels Sidebar */}
-        <div className="w-48 flex-none border-r border-gray-800 bg-gray-900 z-20 flex flex-col">
+        <div className="z-20 flex w-44 flex-none flex-col border-r border-slate-800 bg-slate-950">
           {/* Header spacer for ruler */}
-          <div className="h-8 border-b border-gray-800 bg-gray-900 flex items-center px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-
+          <div
+            className="flex h-8 items-center justify-between gap-2 border-b border-slate-800 bg-slate-950 px-2 text-[11px] font-medium text-slate-500"
+            data-testid="timeline-track-controls-header"
+          >
+            <span>Tracks</span>
+            <div
+              role="group"
+              className="flex items-center gap-1"
+              aria-label="Track controls"
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                className="relative h-6 w-6 bg-transparent p-0 text-slate-400 hover:bg-sky-500/15 hover:text-sky-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-sky-400"
+                onClick={() => addVideoTrack()}
+                title="Add video track"
+                aria-label="Add video track"
+              >
+                <Clapperboard className="h-3.5 w-3.5" />
+                <Plus className="absolute right-0.5 top-0.5 h-2.5 w-2.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="relative h-6 w-6 bg-transparent p-0 text-slate-400 hover:bg-teal-500/15 hover:text-teal-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-sky-400"
+                onClick={() => addAudioTrack()}
+                title="Add audio track"
+                aria-label="Add audio track"
+              >
+                <Headphones className="h-3.5 w-3.5" />
+                <Plus className="absolute right-0.5 top-0.5 h-2.5 w-2.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="relative h-6 w-6 bg-transparent p-0 text-slate-400 hover:bg-violet-500/15 hover:text-violet-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-sky-400"
+                onClick={() => addTrack()}
+                title="Add subtitle track"
+                aria-label="Add subtitle track"
+              >
+                <Captions className="h-3.5 w-3.5" />
+                <Plus className="absolute right-0.5 top-0.5 h-2.5 w-2.5" />
+              </Button>
+            </div>
           </div>
           <div
             ref={sidebarContentRef}
-            className="flex-1 overflow-hidden bg-gray-900/50"
+            className="flex-1 overflow-hidden bg-slate-950"
             data-testid="timeline-sidebar-scroll"
             style={{ paddingBottom: horizontalScrollbarHeight }}
           >
@@ -700,9 +831,14 @@ export function Timeline({
                     />
                   )}
                   {row.kind === 'video' && (
-                    <div className="flex h-full items-center border-b border-gray-800 bg-gray-900 px-4 text-[10px] font-bold uppercase tracking-wider text-blue-300">
-                      Video
-                    </div>
+                    <TimelineVideoTrackHeader
+                      track={row.track}
+                      index={row.videoTrackIndex}
+                      canRemove={videoTracks.length > 1 && row.track.clipIds.length === 0}
+                      onRemove={() => removeVideoTrack(row.track.id)}
+                      selectedClipIds={selectedVideoClipIds}
+                      onOpenCutDetection={setCutDetectionRequest}
+                    />
                   )}
                   {row.kind === 'audio' && <TimelineAudioTrackHeader track={row.track} />}
                   <TimelineRowResizeHandle
@@ -745,7 +881,8 @@ export function Timeline({
           {/* Ruler */}
           <div
             ref={rulerContentRef}
-            className="h-8 border-b border-gray-800 overflow-hidden bg-gray-900 relative z-0"
+            className="relative z-0 h-8 overflow-hidden border-b border-slate-800 bg-slate-950"
+            data-testid="timeline-ruler-scroll"
             onScroll={() => handleScroll('ruler')}
           >
             <MemoizedTimelineRuler
@@ -760,7 +897,7 @@ export function Timeline({
           {/* Tracks Area */}
           <div
             ref={tracksContentRef}
-            className="flex-1 overflow-x-scroll overflow-y-scroll relative scrollbar-thin scrollbar-thumb-gray-700 z-10"
+            className="relative z-10 flex-1 overflow-x-scroll overflow-y-scroll bg-slate-950 scrollbar-thin scrollbar-thumb-slate-700"
             data-testid="timeline-tracks-scroll"
             style={{
               scrollbarGutter: 'stable'
@@ -790,13 +927,33 @@ export function Timeline({
               {timelineRows.map((row) => (
                 <div
                   key={row.key}
-                  className={`relative flex-none ${row.kind === 'video' ? 'border-b border-gray-800/50' : ''}`}
+                  className={`relative flex-none ${row.kind === 'video'
+                    && videoTrackDragPreview?.target?.kind === 'track'
+                    && videoTrackDragPreview.target.trackId === row.track.id
+                    ? 'bg-sky-500/15 ring-1 ring-inset ring-sky-400/70'
+                    : ''}`}
                   style={{ height: getRowHeight(row.key) }}
                   data-testid="timeline-row-content"
                   data-row-key={row.key}
                   data-row-kind={row.kind}
                   data-subtitle-track-id={row.kind === 'subtitle' ? row.track.id : undefined}
+                  data-video-track-id={row.kind === 'video' ? row.track.id : undefined}
                 >
+                  {row.kind === 'video' && videoTrackDragPreview && (
+                    <div
+                      className={`absolute -top-2 inset-x-0 z-40 h-4 ${videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === row.videoTrackIndex
+                        ? 'bg-sky-400/15'
+                        : ''}`}
+                      data-video-track-insertion-index={row.videoTrackIndex}
+                      aria-hidden="true"
+                    >
+                      <div className={`absolute inset-x-0 top-1/2 h-px -translate-y-1/2 ${videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === row.videoTrackIndex
+                        ? 'bg-sky-300'
+                        : 'bg-transparent'}`} />
+                    </div>
+                  )}
                   {row.kind === 'subtitle' && (
                     <MemoizedTimelineTrackOverlay
                       duration={duration}
@@ -809,7 +966,15 @@ export function Timeline({
                     />
                   )}
                   {row.kind === 'video' && (
-                    <TimelineVideoTrack peaksByMediaKey={peaksByMediaKey} />
+                    <TimelineVideoTrack
+                      track={row.track}
+                      peaksByMediaKey={peaksByMediaKey}
+                      selectedClipIds={selectedVideoClipIds}
+                      onClipSelectionChange={changeVideoClipSelection}
+                      onClearClipSelection={clearVideoClipSelection}
+                      onOpenCutDetection={setCutDetectionRequest}
+                      onDragPreviewChange={setVideoTrackDragPreview}
+                    />
                   )}
                   {row.kind === 'audio' && (
                     <TimelineAudioTrack
@@ -820,7 +985,25 @@ export function Timeline({
                       frameRate={renderProfile.fps}
                       pixelsPerSecond={pixelsPerSecond * zoomLevel}
                       peaksByMediaKey={peaksByMediaKey}
+                      snapPoints={mediaSnapPoints}
                     />
+                  )}
+                  {row.kind === 'video'
+                    && videoTrackDragPreview
+                    && row.videoTrackIndex === videoTracks.length - 1 && (
+                    <div
+                      className={`absolute -bottom-2 inset-x-0 z-40 h-4 ${videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === videoTracks.length
+                        ? 'bg-sky-400/15'
+                        : ''}`}
+                      data-video-track-insertion-index={videoTracks.length}
+                      aria-hidden="true"
+                    >
+                      <div className={`absolute inset-x-0 top-1/2 h-px -translate-y-1/2 ${videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === videoTracks.length
+                        ? 'bg-sky-300'
+                        : 'bg-transparent'}`} />
+                    </div>
                   )}
                 </div>
               ))}
@@ -828,42 +1011,11 @@ export function Timeline({
           </div>
         </div>
       </div>
+      <VideoCutDialog
+        request={cutDetectionRequest}
+        onClose={() => setCutDetectionRequest(null)}
+      />
     </div>
-  );
-}
-
-/** Keeps frame-clock updates inside the small toolbar fragment instead of repainting all rows. */
-function TimelinePlaybackStatus({ formatTime }: { formatTime: (seconds: number) => string }) {
-  const { currentTime, contentDuration, isPlaying, toggle } = usePlaybackStore(
-    useShallow(selectTimelinePlaybackStatus),
-  );
-
-  return (
-    <>
-      <div className="flex items-center gap-2">
-        <Button
-          variant={isPlaying ? 'primary' : 'secondary'}
-          onClick={toggle}
-          aria-label={isPlaying ? 'Pause timeline' : 'Play timeline'}
-          data-testid="timeline-playback-toggle"
-        >
-          {isPlaying ? <Pause className="w-[18px] h-[18px]" /> : <Play className="w-[18px] h-[18px]" />}
-        </Button>
-      </div>
-      <div className="flex items-center gap-4 text-xs font-mono text-gray-400">
-        <div>
-          <span
-            className="text-blue-400"
-            data-testid="timeline-current-time"
-            data-time-seconds={currentTime.toFixed(6)}
-          >
-            {formatTime(currentTime)}
-          </span>
-          <span className="mx-1 text-gray-600">/</span>
-          <span>{formatTime(contentDuration)}</span>
-        </div>
-      </div>
-    </>
   );
 }
 

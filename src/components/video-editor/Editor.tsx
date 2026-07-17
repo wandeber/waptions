@@ -15,6 +15,7 @@ import { GoogleFontManager } from '@/components/video-editor/GoogleFontManager';
 import { TranscriptionModal } from '@/components/video-editor/TranscriptionModal';
 import type { SubtitleAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
 import { useBackgroundRenderer } from '@/hooks/use-background-renderer';
+import { useEditorLayout } from '@/hooks/use-editor-layout';
 import { useEditorProjectSync } from '@/hooks/use-editor-project-sync';
 import { useEditorTranscription } from '@/hooks/use-editor-transcription';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -98,6 +99,7 @@ function EditorContent() {
         updateProjectName: state.updateProjectName,
     })));
     const [showExitConfirm, setShowExitConfirm] = useState(false);
+    const layout = useEditorLayout();
     const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? tracks[0];
     const transcription = useEditorTranscription(activeTrack?.id);
 
@@ -209,7 +211,7 @@ function EditorContent() {
     }, [activeProject, saveCurrentProject]);
 
     return (
-        <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-white">
+        <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-white">
             <EditorRuntimeEffects />
             <GoogleFontManager />
             <EditorHeader
@@ -231,6 +233,7 @@ function EditorContent() {
                 onExportBundle={handleExportBundle}
             />
             <EditorWorkspace
+                layout={layout}
                 subtitles={activeTrack?.subtitles ?? []}
                 projectFps={projectFps}
                 animationStyle={activeTrack?.style}

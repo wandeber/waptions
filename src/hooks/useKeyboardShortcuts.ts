@@ -1,21 +1,36 @@
 import { useEffect } from 'react';
 import { SHORTCUTS } from '@/config/shortcuts';
+import { isTextEditingKeyboardTarget } from '@/lib/keyboard-target';
 
 type ShortcutHandlers = {
     [K in keyof typeof SHORTCUTS]?: (e: KeyboardEvent) => void;
 };
 
+const NATIVE_ACTIVATION_TARGETS = [
+    'button',
+    'a[href]',
+    'area[href]',
+    'summary',
+    'audio[controls]',
+    'video[controls]',
+    '[role="button"]',
+].join(',');
+
 export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            // Don't trigger shortcuts when typing in inputs
-            const target = event.target as HTMLElement;
-            if (
-                target.tagName === 'INPUT' ||
-                target.tagName === 'TEXTAREA' ||
-                target.isContentEditable
-            ) {
-                return;
+            const target = event.target;
+            // Editing controls own every keystroke, including the controlled textarea's dedicated
+            // app-history implementation.
+            if (isTextEditingKeyboardTarget(target)) return;
+            if (target instanceof Element) {
+                // Activation controls only own unmodified Enter and Space; editor commands such as
+                // Ctrl/Cmd+S and Undo must still work after a toolbar button retains focus.
+                const isUnmodifiedActivationKey = (
+                    event.key === ' '
+                    || event.key === 'Enter'
+                ) && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+                if (isUnmodifiedActivationKey && target.closest(NATIVE_ACTIVATION_TARGETS)) return;
             }
 
             for (const [id, config] of Object.entries(SHORTCUTS)) {

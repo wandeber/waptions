@@ -2,7 +2,9 @@
 
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
-import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
+import { getMediaDuration } from '@/lib/video-timeline';
+import { buildAudioClipSnapPoints, buildVideoClipSnapPoints } from '@/lib/timeline-snap';
+import { framesToSeconds } from '@/lib/render-profile';
 
 interface TimelinePlayheadProps {
     duration: number;
@@ -32,26 +34,34 @@ export function TimelinePlayhead({
     const handleMouseDown = (e: React.MouseEvent) => {
         e.stopPropagation();
         const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement; // Up to synchronization container
-        const { snapEnabled, tracks, setIsDragging } = useTimelineStore.getState();
+        const {
+            audioSources,
+            audioTracks,
+            renderProfile,
+            snapEnabled,
+            tracks,
+            videoSources,
+            setIsDragging,
+        } = useTimelineStore.getState();
         setIsDragging(true);
 
         // One-shot snap points
         const snapPoints: number[] = [];
         if (snapEnabled) {
             const { videoClips } = useTimelineStore.getState();
-            const mediaDuration = getMediaDuration(videoClips);
+            const mediaDuration = getMediaDuration(videoClips, renderProfile.fps);
 
             const points = new Set<number>([0, mediaDuration, duration]);
-            buildClipPlacements(videoClips).forEach((placement) => {
-                points.add(placement.projectStart);
-                points.add(placement.projectEnd);
-            });
+            buildVideoClipSnapPoints(videoClips, renderProfile.fps)
+                .forEach((point) => points.add(framesToSeconds(point.frame, renderProfile.fps)));
             tracks.forEach(t => {
                 t.subtitles.forEach(s => {
                     points.add(s.startTime);
                     points.add(s.endTime);
                 });
             });
+            buildAudioClipSnapPoints(audioTracks, renderProfile.fps, videoSources, audioSources)
+                .forEach((point) => points.add(framesToSeconds(point.frame, renderProfile.fps)));
             snapPoints.push(...Array.from(points));
         }
 

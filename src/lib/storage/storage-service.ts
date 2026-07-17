@@ -21,6 +21,7 @@ import {
     hydrateEditorDocumentV3,
     migrateEditorDocumentV2ToV3,
     migrateLegacyEditorDocumentToV3,
+    normalizeLegacyEditorManifestV3,
 } from '@/lib/editor-document-migration';
 import { resolveEditorManifestAssets, resolveEditorVideoAsset } from './editor-asset-resolver';
 import { IndexedDBAdapter, type IndexedDBBatchOperation } from './indexeddb-adapter';
@@ -237,6 +238,7 @@ export class StorageService {
                 new Map(),
             );
         }
+        const normalizedManifest = normalizeLegacyEditorManifestV3(persistedManifest);
         const indexes = await adapter.getMany<unknown>([
             EDITOR_HISTORY_INDEX_KEY,
             EDITOR_RECOVERY_INDEX_KEY,
@@ -256,7 +258,7 @@ export class StorageService {
         const recoveryEntries = await adapter.getMany<unknown>(recoveryKeys);
         return restoreEditorRuntimeState(
             document,
-            persistedManifest,
+            normalizedManifest,
             historyIndex,
             historyEntriesById,
             recoveryIndex,
@@ -274,15 +276,16 @@ export class StorageService {
             if (!isEditorManifestV3(v3Value)) {
                 throw new Error(`Project ${projectId} contains an invalid editor-document-v3 manifest.`);
             }
-            const validation = validateEditorManifestV3(v3Value);
+            const normalizedManifest = normalizeLegacyEditorManifestV3(v3Value);
+            const validation = validateEditorManifestV3(normalizedManifest);
             if (!validation.valid) {
                 const details = validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ');
                 throw new Error(`Project ${projectId} v3 manifest failed validation: ${details}`);
             }
-            const assets = await resolveEditorManifestAssets(adapter, v3Value);
-            const hydrated = hydrateEditorDocumentV3(v3Value, assets.videoSources, assets.audioSources);
+            const assets = await resolveEditorManifestAssets(adapter, normalizedManifest);
+            const hydrated = hydrateEditorDocumentV3(normalizedManifest, assets.videoSources, assets.audioSources);
             const upgraded = upgradeLegacyMediaFingerprints(projectId, hydrated);
-            if (upgraded.changed) {
+            if (upgraded.changed || normalizedManifest !== v3Value) {
                 // Only the small manifest changes. Rewriting legacy Files under new keys would
                 // duplicate potentially multi-gigabyte blobs and can make a safe migration fail.
                 await adapter.batch([{
@@ -475,6 +478,7 @@ function isEditorManifestV3(value: unknown): value is EditorManifestV3 {
         && Array.isArray(value.audioSourceDescriptors)
         && 'videoClips' in value
         && Array.isArray(value.videoClips)
+        && (!('videoTracks' in value) || Array.isArray(value.videoTracks))
         && 'audioTracks' in value
         && Array.isArray(value.audioTracks);
 }

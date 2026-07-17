@@ -7,6 +7,7 @@ import {
 import { finalizeAudioGraphMutation } from '@/lib/audio-graph-signature';
 import { cloneAudioTracks } from '@/lib/audio-timeline';
 import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
+import { cloneVideoTracks } from '@/lib/video-tracks';
 import type { EditorDocumentV3, EditorManifestV3 } from '@/types/video';
 import { normalizeTimelineHistory } from '@/stores/timeline-history';
 import {
@@ -28,10 +29,12 @@ export const EDITOR_HISTORY_INDEX_KEY = 'editor-history:index';
 export const EDITOR_HISTORY_ENTRY_PREFIX = 'editor-history:entry:';
 export const EDITOR_RECOVERY_INDEX_KEY = 'editor-recovery:index';
 export const EDITOR_RECOVERY_ENTRY_PREFIX = 'editor-recovery:entry:';
-export const EDITOR_HISTORY_STORAGE_VERSION = 1;
+// V2 projections include durable video-lane membership. V1 entries are discarded instead of
+// replayed because their inverse patches cannot reconstruct exact vertical track ownership.
+export const EDITOR_HISTORY_STORAGE_VERSION = 2;
 
 export interface PersistedHistoryIndex {
-    version: 1;
+    version: 2;
     documentRevision: number;
     sourceSignature: string;
     historyEntryIds: string[];
@@ -39,14 +42,14 @@ export interface PersistedHistoryIndex {
 }
 
 export interface PersistedRecoveryIndex {
-    version: 1;
+    version: 2;
     documentRevision: number;
     sourceSignature: string;
     entryKeys: string[];
 }
 
 export interface PersistedRecoveryEntry {
-    version: 1;
+    version: 2;
     fromRevision: number;
     toRevision: number;
     fromAudioGraphRevision: number;
@@ -363,6 +366,7 @@ function projectionsEqual(left: TimelineHistoryProjection, right: TimelineHistor
     const durableRoots = new Set<string>([
         'tracks',
         'videoClips',
+        'videoTracks',
         'renderProfile',
         'audioTracks',
         'activeTrackId',
@@ -376,6 +380,7 @@ function projectionsEqual(left: TimelineHistoryProjection, right: TimelineHistor
             timingDomain: getTrackTimingDomain(track),
         })),
         videoClips: projection.videoClips,
+        videoTracks: projection.videoTracks,
         renderProfile: projection.renderProfile,
         audioTracks: projection.audioTracks,
         activeTrackId: projection.activeTrackId,
@@ -449,6 +454,9 @@ function documentFromProjection(
             timingDomain: getTrackTimingDomain(track),
         })),
         videoClips: projection.videoClips,
+        // Recovery/history projections own lane membership just like clip order. Clone at this
+        // boundary so replay cannot alias the detached patch graph into the live V3 document.
+        videoTracks: cloneVideoTracks(projection.videoTracks),
         audioTracks: cloneAudioTracks(projection.audioTracks),
         activeSubtitleTrackId,
         transientSelection: projection.transientSelection,

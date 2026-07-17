@@ -17,7 +17,9 @@ function makeDocument(): EditorDocumentV3 {
             fps: { numerator: 30, denominator: 1 }, width: 1920, height: 1080,
             audioSampleRate: 48_000, isFrameRateLocked: true, isCanvasSizeLocked: true,
         },
-        subtitleTracks: [], videoSources: [], videoClips: [], audioSources: [], audioTracks: [],
+        subtitleTracks: [], videoSources: [], videoClips: [],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
+        audioSources: [], audioTracks: [],
         activeSubtitleTrackId: null, transientSelection: { kind: 'none' }, transcriptionByTrackId: {},
     };
 }

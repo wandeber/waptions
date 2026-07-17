@@ -11,15 +11,10 @@ import type {
 import type { AudioMediaCacheKey } from '@/lib/media-asset-ref';
 import type { WaveformPeaks } from '@/lib/video-waveform';
 import { getAudioMediaCacheKey } from '@/lib/media-asset-ref';
-import {
-    frameToOutputSample,
-    nativeBoundaryToOutputSample,
-    outputSampleToCoveringFrame,
-} from '@/lib/audio-timebase';
-import { secondsToFrames } from '@/lib/render-profile';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { TimelineAudioClip } from './TimelineAudioClip';
 import { useShallow } from 'zustand/react/shallow';
+import { getAudioClipDurationFrames, type TimelineSnapPoint } from '@/lib/timeline-snap';
 
 interface TimelineAudioTrackProps {
     track: AudioTrack;
@@ -29,6 +24,7 @@ interface TimelineAudioTrackProps {
     frameRate: RationalFrameRate;
     pixelsPerSecond: number;
     peaksByMediaKey: ReadonlyMap<AudioMediaCacheKey, WaveformPeaks>;
+    snapPoints: readonly TimelineSnapPoint[];
 }
 
 interface AudioClipVisualData {
@@ -46,11 +42,13 @@ export function getAudioClipVisualData(
     videoSources: readonly VideoSourceAssetV3[],
     audioSources: readonly AudioSourceAsset[],
 ): AudioClipVisualData | null {
+    const durationFrames = getAudioClipDurationFrames(clip, frameRate, videoSources, audioSources);
+    if (durationFrames === null) return null;
     if ('sourceStart' in clip) {
         const source = videoSources.find((candidate) => candidate.id === clip.source.videoSourceId);
         if (!source?.hasAudio) return null;
         return {
-            durationFrames: Math.max(1, secondsToFrames(clip.sourceEnd - clip.sourceStart, frameRate, 'nearest')),
+            durationFrames,
             sourceName: source.originalName,
             waveformSourceStart: clip.sourceStart,
             waveformSourceEnd: clip.sourceEnd,
@@ -60,14 +58,8 @@ export function getAudioClipVisualData(
 
     const source = audioSources.find((candidate) => candidate.id === clip.source.audioSourceId);
     if (!source) return null;
-    const outputStart = frameToOutputSample(clip.timelineStartFrame, frameRate);
-    const outputDuration = nativeBoundaryToOutputSample(clip.sourceEndSample, source.nativeSampleRate)
-        - nativeBoundaryToOutputSample(clip.sourceStartSample, source.nativeSampleRate);
     return {
-        durationFrames: Math.max(
-            1,
-            outputSampleToCoveringFrame(outputStart + outputDuration, frameRate) - clip.timelineStartFrame,
-        ),
+        durationFrames,
         sourceName: source.originalName,
         waveformSourceStart: clip.sourceStartSample / source.nativeSampleRate,
         waveformSourceEnd: clip.sourceEndSample / source.nativeSampleRate,
@@ -83,6 +75,7 @@ export function TimelineAudioTrack({
     frameRate,
     pixelsPerSecond,
     peaksByMediaKey,
+    snapPoints,
 }: TimelineAudioTrackProps) {
     const { transientSelection, selectClip } = useTimelineStore(useShallow((state) => ({
         transientSelection: state.transientSelection,
@@ -96,7 +89,6 @@ export function TimelineAudioTrack({
         }));
         return data;
     }, [allTracks, audioSources, frameRate, videoSources]);
-
     const validatePlacement = (
         clipId: string,
         targetTrackId: string,
@@ -121,7 +113,7 @@ export function TimelineAudioTrack({
 
     return (
         <div
-            className={`relative h-full border-b border-gray-800/70 ${track.locked ? 'bg-gray-950/60' : 'bg-gray-900/55'}`}
+            className={`relative h-full border-b border-slate-800/70 ${track.locked ? 'bg-slate-950/80' : 'bg-slate-900/45'}`}
             data-testid="timeline-audio-track"
             data-audio-track-id={track.id}
             onClick={() => selectClip(null)}
@@ -143,6 +135,13 @@ export function TimelineAudioTrack({
                         waveformSourceEnd={visual.waveformSourceEnd}
                         peaks={peaksByMediaKey.get(visual.cacheKey)}
                         selected={transientSelection.kind === 'audio-clip' && transientSelection.clipId === clip.id}
+                        snapPoints={snapPoints}
+                        resolveDurationFrames={(candidateStartFrame) => getAudioClipDurationFrames(
+                            { ...clip, timelineStartFrame: candidateStartFrame },
+                            frameRate,
+                            videoSources,
+                            audioSources,
+                        ) ?? visual.durationFrames}
                         validatePlacement={validatePlacement}
                     />
                 );

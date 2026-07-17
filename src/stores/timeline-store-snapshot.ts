@@ -11,9 +11,11 @@ import type {
     VideoClip,
     VideoClipAudioSettings,
     VideoClipV3,
+    VideoTrack,
 } from '@/types/video';
 import type { TimelineStore, TimelineVideoClip } from './timeline-store-types';
 import { getTrackTimingDomain } from './timeline-store-selectors';
+import { cloneVideoTracks } from '@/lib/video-tracks';
 
 export const DEFAULT_VIDEO_CLIP_AUDIO: VideoClipAudioSettings = {
     linkState: 'linked',
@@ -81,6 +83,7 @@ export const buildEditorDocumentFromState = (state: TimelineStore): EditorDocume
     })),
     videoSources: state.videoSources.map((source) => ({ ...source })),
     videoClips: cloneVideoClips(state.videoClips),
+    videoTracks: cloneVideoTracks(state.videoTracks),
     audioSources: state.audioSources.map((source) => ({ ...source })),
     audioTracks: cloneAudioTracks(state.audioTracks),
     activeSubtitleTrackId: state.activeTrackId,
@@ -146,3 +149,5 @@ const AUDIO_GRAPH_STATE_KEYS = [
     'audioSources',
     'audioTracks',
 ] as const satisfies readonly (keyof TimelineStore)[];
+
+export const cloneTimelineVideoTracks = (tracks: readonly VideoTrack[]): VideoTrack[] => cloneVideoTracks(tracks);

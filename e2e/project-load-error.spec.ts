@@ -7,6 +7,6 @@ test.describe('editor project load failure', () => {
     await expect(page.getByRole('heading', { name: 'Project not found' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Projects' })).toBeVisible();
-    await expect(page.getByTitle('Exportar archivo de proyecto (.waptions)')).toHaveCount(0);
+    await expect(page.getByTitle('Download project file (.waptions)')).toHaveCount(0);
   });
 });

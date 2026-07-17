@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { PanelRightClose, PanelRightOpen, Plus } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { SpinnerIcon } from '../icons/SpinnerIcon';
 import { LoadVideoIcon } from '../icons/LoadVideoIcon';
@@ -35,6 +35,8 @@ interface VideoViewportProps {
   showDevinGuide?: boolean;
   showMetaInfo?: boolean;
   showSubtitles?: boolean;
+  isInspectorVisible: boolean;
+  onInspectorToggle: () => void;
 }
 
 interface MemoryInfo {
@@ -76,6 +78,8 @@ export function VideoViewport({
   showDevinGuide = false,
   showMetaInfo = true,
   showSubtitles = true,
+  isInspectorVisible,
+  onInspectorToggle,
 }: VideoViewportProps) {
   const isPlaying = usePlaybackStore((state) => state.isPlaying);
   const {
@@ -473,7 +477,7 @@ export function VideoViewport({
 
   return (
     <div
-      className="flex-1 flex flex-col bg-gray-950 overflow-hidden select-none min-h-0 rounded-lg border border-gray-800"
+      className="flex min-h-0 flex-1 select-none flex-col overflow-hidden bg-black"
       onDrop={handleDrop}
       onDragOver={(event) => event.preventDefault()}
     >
@@ -496,20 +500,16 @@ export function VideoViewport({
               aria-label="Video preview"
             />
 
-            <Button
-              variant="secondary"
-              size="sm"
-              className="absolute top-2 right-2 z-30 h-8 px-2.5 bg-gray-900/80 border border-white/10 backdrop-blur"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading}
-              title="Import video or audio media"
-            >
-              {isLoading ? <SpinnerIcon className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-              <span className="text-xs">Add media</span>
-            </Button>
+            <ViewportActions
+              className="absolute right-3 top-3 z-30"
+              isInspectorVisible={isInspectorVisible}
+              isLoading={isLoading}
+              onImport={() => fileInputRef.current?.click()}
+              onInspectorToggle={onInspectorToggle}
+            />
 
             {showMetaInfo && displayedSource && (
-              <div className="absolute top-2 left-2 bg-black/70 p-2 rounded-md text-[10px] text-white z-20 font-mono border border-white/10">
+              <div className="absolute left-3 top-3 z-20 rounded border border-white/10 bg-black/80 p-2 font-mono text-[10px] text-white shadow-lg">
                 <div className="flex flex-col gap-1 min-w-[176px]">
                   <div className="flex justify-between gap-4 border-b border-white/10 pb-1">
                     <span className="text-gray-400">Source</span>
@@ -533,15 +533,78 @@ export function VideoViewport({
             )}
           </>
         ) : (
-          <div className="flex flex-col items-center justify-center gap-4 text-gray-500 p-8 text-center">
-            <Button onClick={() => fileInputRef.current?.click()} disabled={isLoading} variant="primary" size="lg">
-              {isLoading ? <SpinnerIcon className="h-6 w-6" /> : <LoadVideoIcon />}
-              <span>{isLoading ? 'Importing…' : 'Import media'}</span>
-            </Button>
+          <div className="flex flex-col items-center justify-center gap-4 p-8 text-center text-gray-500">
+            <ViewportActions
+              isInspectorVisible={isInspectorVisible}
+              isLoading={isLoading}
+              onImport={() => fileInputRef.current?.click()}
+              onInspectorToggle={onInspectorToggle}
+              prominentImport
+            />
             <p className="text-sm">Start with at least one video; audio files in the same batch are also imported.</p>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+interface ViewportActionsProps {
+  className?: string;
+  isInspectorVisible: boolean;
+  isLoading: boolean;
+  onImport: () => void;
+  onInspectorToggle: () => void;
+  prominentImport?: boolean;
+}
+
+/** Keeps the inspector control adjacent to media import in both empty and editing viewport states. */
+function ViewportActions({
+  className = '',
+  isInspectorVisible,
+  isLoading,
+  onImport,
+  onInspectorToggle,
+  prominentImport = false,
+}: ViewportActionsProps) {
+  return (
+    <div className={`flex items-center gap-1.5 ${className}`} data-testid="viewport-actions">
+      <Button
+        variant={prominentImport ? 'primary' : 'secondary'}
+        size={prominentImport ? 'lg' : 'sm'}
+        className={prominentImport
+          ? 'h-10 px-3'
+          : 'h-8 border border-slate-700 bg-slate-900/90 px-2.5 text-slate-200 shadow-lg hover:bg-slate-800'}
+        onClick={onImport}
+        disabled={isLoading}
+        title="Import video or audio media"
+        aria-label="Add media"
+      >
+        {isLoading
+          ? <SpinnerIcon className={prominentImport ? 'h-6 w-6' : 'h-4 w-4'} />
+          : prominentImport ? <LoadVideoIcon /> : <Plus className="h-4 w-4" />}
+        <span className={prominentImport ? undefined : 'text-xs'}>
+          {isLoading ? 'Importing…' : 'Add media'}
+        </span>
+      </Button>
+      <Button
+        variant="secondary"
+        size="sm"
+        className={`${prominentImport ? 'h-10 w-10' : 'h-8 w-8'} border p-0 shadow-lg transition-colors ${isInspectorVisible
+          ? 'border-slate-600 bg-slate-800/95 text-slate-100 hover:bg-slate-700'
+          : 'border-slate-700 bg-slate-900/90 text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        onClick={onInspectorToggle}
+        title={isInspectorVisible ? 'Hide inspector' : 'Show inspector'}
+        aria-label={isInspectorVisible ? 'Hide inspector' : 'Show inspector'}
+        aria-expanded={isInspectorVisible}
+        aria-controls="editor-inspector-panel"
+        data-testid="inspector-toggle"
+      >
+        {isInspectorVisible
+          ? <PanelRightClose className="h-4 w-4" />
+          : <PanelRightOpen className="h-4 w-4" />}
+      </Button>
     </div>
   );
 }

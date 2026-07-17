@@ -1,6 +1,7 @@
 import type { AudioSourceAsset, EditorDocumentV3, VideoSourceAssetV3 } from '@/types/video';
 import { describe, expect, it } from 'vitest';
 import { buildAudioMixPlan, decibelsToLinear, getAudioMixPlanDurationSeconds } from './audio-mix-plan';
+import { renderAudioMixPlan } from './audio-dsp';
 import { createDefaultRenderProfile } from './render-profile';
 
 const fakeFile = {} as File;
@@ -58,6 +59,7 @@ function makeDocument(overrides: Partial<EditorDocumentV3> = {}): EditorDocument
             sourceEnd: 1.5,
             audio: { linkState: 'detached', muted: false, gainDb: 0, fadeInFrames: 0, fadeOutFrames: 0 },
         }],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['video_a', 'video_b'] }],
         audioSources: [audioSource],
         audioTracks: [{
             id: 'voice_track',
@@ -170,5 +172,104 @@ describe('buildAudioMixPlan', () => {
         const plan = buildAudioMixPlan(document);
         expect(plan.videoSampleCount).toBe(1_600);
         expect(plan.contributors[0]).toMatchObject({ outputStartSample: 0, outputEndSample: 1_600 });
+    });
+
+    it('uses explicit imported-audio frame occupancy while preserving its native crop', () => {
+        const document = makeDocument();
+        document.renderProfile.fps = { numerator: 30_000, denominator: 1_001 };
+        document.videoClips = [];
+        document.audioTracks = [{
+            id: 'trimmed_track',
+            name: 'Trimmed',
+            muted: false,
+            solo: false,
+            locked: false,
+            gainDb: 0,
+            clips: [{
+                id: 'trimmed_clip',
+                source: { kind: 'audio-source', audioSourceId: audioSource.id },
+                timelineStartFrame: 4,
+                timelineDurationSamples: 1_602,
+                sourceStartSample: 5_885,
+                sourceEndSample: 7_357,
+                muted: false,
+                gainDb: 0,
+                fadeInSamples: 0,
+                fadeOutSamples: 0,
+            }],
+        }];
+
+        expect(buildAudioMixPlan(document).contributors[0]).toMatchObject({
+            outputStartSample: 6_406,
+            outputEndSample: 8_008,
+            sourceRange: { domain: 'native-samples', startSample: 5_885, endSample: 7_357 },
+        });
+    });
+
+    it('preserves total render duration and a contiguous seam after a broadcast-rate split', async () => {
+        const original = makeDocument();
+        original.renderProfile.fps = { numerator: 30_000, denominator: 1_001 };
+        original.videoClips = [];
+        original.audioTracks = [{
+            id: 'original_track',
+            name: 'Original',
+            muted: false,
+            solo: false,
+            locked: false,
+            gainDb: 0,
+            clips: [{
+                id: 'original_clip',
+                source: { kind: 'audio-source', audioSourceId: audioSource.id },
+                timelineStartFrame: 0,
+                sourceStartSample: 0,
+                sourceEndSample: 44_100,
+                muted: false,
+                gainDb: 0,
+                fadeInSamples: 0,
+                fadeOutSamples: 0,
+            }],
+        }];
+        const originalPlan = buildAudioMixPlan(original);
+
+        original.audioTracks[0].clips = [{
+            ...original.audioTracks[0].clips[0],
+            id: 'left',
+            sourceEndSample: 5_885,
+            timelineDurationSamples: 6_406,
+        }, {
+            ...original.audioTracks[0].clips[0],
+            id: 'right',
+            timelineStartFrame: 4,
+            sourceStartSample: 5_885,
+            timelineDurationSamples: 41_594,
+        }];
+        const splitPlan = buildAudioMixPlan(original);
+
+        expect(originalPlan.totalSampleCount).toBe(48_000);
+        expect(splitPlan.totalSampleCount).toBe(originalPlan.totalSampleCount);
+        expect(splitPlan.contributors).toMatchObject([
+            { outputStartSample: 0, outputEndSample: 6_406 },
+            { outputStartSample: 6_406, outputEndSample: 48_000 },
+        ]);
+
+        const decoded = Float32Array.from({ length: 48_000 }, (_, index) => (
+            0.25 + Math.sin(index / 19) * 0.1
+        ));
+        const decode = () => ({ sampleRate: 48_000, startSample: 0, channels: [decoded] });
+        const [before, after] = await Promise.all([
+            renderAudioMixPlan(originalPlan, decode),
+            renderAudioMixPlan(splitPlan, decode),
+        ]);
+        let maximumDifference = 0;
+        for (let index = 0; index < before.channels[0].length; index += 1) {
+            maximumDifference = Math.max(
+                maximumDifference,
+                Math.abs(before.channels[0][index] - after.channels[0][index]),
+            );
+        }
+        expect(after.channels[0]).toHaveLength(before.channels[0].length);
+        expect(after.channels[0][6_405]).toBeGreaterThan(0.1);
+        expect(after.channels[0][6_406]).toBeGreaterThan(0.1);
+        expect(maximumDifference).toBeLessThan(0.01);
     });
 });

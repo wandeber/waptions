@@ -4,6 +4,7 @@ import {
     frameToOutputSample,
     nativeBoundaryToOutputSample,
     nativeSpanToOutputSamples,
+    outputSampleToFloorNativeBoundary,
     outputSampleToNearestNativeBoundary,
     outputSampleToCoveringFrame,
     roundNonNegativeRatioHalfUp,
@@ -51,5 +52,12 @@ describe('audio timebase', () => {
     it('inverts native boundaries deterministically and breaks ties toward the higher boundary', () => {
         expect(outputSampleToNearestNativeBoundary(24_000, 44_100)).toBe(22_050);
         expect(outputSampleToNearestNativeBoundary(0, 192_000)).toBe(1);
+    });
+
+    it('keeps a native boundary on or before a canonical output target', () => {
+        const boundary = outputSampleToFloorNativeBoundary(6_406, 44_100);
+        expect(boundary).toBe(5_885);
+        expect(nativeBoundaryToOutputSample(boundary, 44_100)).toBeLessThanOrEqual(6_406);
+        expect(nativeBoundaryToOutputSample(boundary + 1, 44_100)).toBeGreaterThan(6_406);
     });
 });

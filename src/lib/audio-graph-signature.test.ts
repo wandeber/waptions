@@ -36,6 +36,7 @@ const document = (): EditorDocumentV3 => ({
     subtitleTracks: [track],
     videoSources: [],
     videoClips: [],
+    videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
     audioSources: [],
     audioTracks: [],
     activeSubtitleTrackId: track.id,

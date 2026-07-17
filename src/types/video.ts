@@ -88,6 +88,18 @@ export interface VideoClipV3 {
     audio: VideoClipAudioSettings | null;
 }
 
+/**
+ * Durable vertical lane membership for video clips.
+ *
+ * Clip timing remains canonical in EditorDocumentV3.videoClips. Tracks only describe which
+ * visible lane owns each clip, so moving a clip vertically cannot change preview/export order.
+ */
+export interface VideoTrack {
+    id: string;
+    name: string;
+    clipIds: string[];
+}
+
 export interface AudioSourceDescriptor {
     id: string;
     originalName: string;
@@ -123,6 +135,11 @@ export interface ImportedAudioClip extends AudioClipCommon {
     };
     sourceStartSample: number;
     sourceEndSample: number;
+    /**
+     * Exact 48 kHz render duration after a trim or split. Older V3 documents derive it from the
+     * native crop; edited clips persist it so frame rounding never stretches their audio.
+     */
+    timelineDurationSamples?: number;
     fadeInSamples: number;
     fadeOutSamples: number;
 }
@@ -201,6 +218,7 @@ export interface EditorDocumentV3 {
     subtitleTracks: SubtitleTrackV3[];
     videoSources: VideoSourceAssetV3[];
     videoClips: VideoClipV3[];
+    videoTracks: VideoTrack[];
     audioSources: AudioSourceAsset[];
     audioTracks: AudioTrack[];
     activeSubtitleTrackId: string | null;
@@ -216,6 +234,7 @@ export interface EditorManifestV3 {
     subtitleTracks: SubtitleTrackV3[];
     videoSourceDescriptors: VideoSourceDescriptorV3[];
     videoClips: VideoClipV3[];
+    videoTracks: VideoTrack[];
     audioSourceDescriptors: AudioSourceDescriptor[];
     audioTracks: AudioTrack[];
     activeSubtitleTrackId: string | null;

@@ -20,6 +20,7 @@ const projection = (name = 'Captions'): TimelineHistoryProjection => ({
         isLocked: false,
     }],
     videoClips: [],
+    videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
     renderProfile: createDefaultRenderProfile(),
     audioTracks: [],
     transientSelection: { kind: 'none' },

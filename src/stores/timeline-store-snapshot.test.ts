@@ -58,6 +58,7 @@ const stateFixture = (): TimelineStore => ({
             fadeOutFrames: 0,
         },
     }],
+    videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['video_clip'] }],
     transientSelection: { kind: 'video-clip', clipId: 'video_clip' },
     selectedSubtitleIds: ['subtitle'],
     lastSelectedId: 'subtitle',
@@ -147,6 +148,15 @@ describe('timeline store snapshots', () => {
                 "width": 1920,
               },
             ],
+            "videoTracks": [
+              {
+                "clipIds": [
+                  "video_clip",
+                ],
+                "id": "video_track_1",
+                "name": "Video 1",
+              },
+            ],
           }
         `);
         expect('transientSelection' in manifest).toBe(false);
@@ -158,11 +168,15 @@ describe('timeline store snapshots', () => {
         const projection = projectTimelineHistory(state);
 
         state.tracks[0].subtitles[0].text = 'Live mutation';
+        state.videoTracks[0].clipIds = [];
         expect(projection.tracks[0].subtitles[0].text).toBe('Hello');
+        expect(projection.videoTracks[0].clipIds).toEqual(['video_clip']);
 
         const restored = restoreTimelineHistoryProjection(projection);
         projection.tracks[0].subtitles[0].text = 'Projection mutation';
+        projection.videoTracks[0].clipIds = [];
         expect(restored.tracks?.[0].subtitles[0].text).toBe('Hello');
+        expect(restored.videoTracks?.[0].clipIds).toEqual(['video_clip']);
         expect(projection.lastSelectedId).toBe('subtitle');
         expect(restored.lastSelectedId).toBe('subtitle');
         expect(projection).not.toHaveProperty('projectFps');

@@ -103,7 +103,10 @@ export function buildAudioMixPlan(document: AudioMixDocument): AudioMixPlan {
 
             const sourceRange = getIndependentSourceRange(clip, document);
             if (!sourceRange) return;
-            const fades = getIndependentOutputFades(clip, document);
+            const fades = clampOutputFades(
+                getIndependentOutputFades(clip, document),
+                interval.endSample - interval.startSample,
+            );
             candidates.push({
                 id: `independent-audio:${track.id}:${clip.id}`,
                 kind: 'independent-audio',
@@ -161,6 +164,12 @@ export function getIndependentAudioOutputInterval(
 
     const source = document.audioSources.find((item) => item.id === clip.source.audioSourceId);
     if (!source) return null;
+    if (clip.timelineDurationSamples !== undefined) {
+        return {
+            startSample,
+            endSample: startSample + clip.timelineDurationSamples,
+        };
+    }
     // The duration is the difference between the two absolute native boundary mappings. Mapping
     // only the crop's sample count would produce a different one-sample result after a left trim.
     const durationSamples = nativeBoundaryToOutputSample(clip.sourceEndSample, source.nativeSampleRate)
@@ -219,6 +228,16 @@ function getIndependentOutputFades(
         fadeOutSamples: nativeBoundaryToOutputSample(clip.sourceEndSample, source.nativeSampleRate)
             - nativeBoundaryToOutputSample(clip.sourceEndSample - clip.fadeOutSamples, source.nativeSampleRate),
     };
+}
+
+function clampOutputFades(
+    fades: { fadeInSamples: number; fadeOutSamples: number },
+    outputSampleCount: number,
+): { fadeInSamples: number; fadeOutSamples: number } {
+    const combined = fades.fadeInSamples + fades.fadeOutSamples;
+    if (combined <= outputSampleCount || combined === 0) return fades;
+    const fadeInSamples = Math.floor(fades.fadeInSamples * outputSampleCount / combined);
+    return { fadeInSamples, fadeOutSamples: outputSampleCount - fadeInSamples };
 }
 
 function stripCandidateState(candidate: CandidateContributor): AudioMixContributor {

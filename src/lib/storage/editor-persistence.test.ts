@@ -53,6 +53,7 @@ const manifest = (
     subtitleTracks: [],
     videoSourceDescriptors: sourceDescriptors,
     videoClips: [],
+    videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
     audioSourceDescriptors: [],
     audioTracks: [],
     activeSubtitleTrackId: null,
@@ -67,6 +68,7 @@ const historyRuntime = (): TimelineHistoryRuntimeState => ({
     projection: {
         tracks: [],
         videoClips: [],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
         renderProfile: createDefaultRenderProfile(),
         audioTracks: [],
         transientSelection: { kind: 'none' as const },

@@ -17,9 +17,15 @@ import type {
     VideoSourceAssetV3,
     VideoSourceAudioClip,
     VideoSourceDescriptorV3,
+    VideoTrack,
 } from '@/types/video';
-import { frameToOutputSample, nativeBoundaryToOutputSample } from './audio-timebase';
+import {
+    AUDIO_OUTPUT_SAMPLE_RATE,
+    frameToOutputSample,
+    nativeBoundaryToOutputSample,
+} from './audio-timebase';
 import { isSafeFrameRate, secondsToFrames } from './render-profile';
+import { validateVideoTracks } from './video-tracks';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_CANVAS_DIMENSION = 16_384;
@@ -39,6 +45,7 @@ interface V3GraphView {
     subtitleTracks: SubtitleTrackV3[];
     videoSources: (VideoSourceDescriptorV3 | VideoSourceAssetV3)[];
     videoClips: VideoClipV3[];
+    videoTracks: VideoTrack[];
     audioSources: (AudioSourceDescriptor | AudioSourceAsset)[];
     audioTracks: AudioTrack[];
     activeSubtitleTrackId: string | null;
@@ -119,6 +126,7 @@ export function getEditorAudioGraphSignature(
                     sourceId: clip.source.audioSourceId,
                     sourceFingerprint: source?.fingerprint ?? null,
                     timelineStartFrame: clip.timelineStartFrame,
+                    timelineDurationSamples: clip.timelineDurationSamples ?? null,
                     sourceStartSample: clip.sourceStartSample,
                     sourceEndSample: clip.sourceEndSample,
                     muted: clip.muted,
@@ -149,6 +157,20 @@ function validateGraph(graph: V3GraphView, validateFiles: boolean): EditorDocume
 
     validateNamespaceIds(graph.videoSources, 'videoSources', addIssue);
     const videoClipIds = validateNamespaceIds(graph.videoClips, 'videoClips', addIssue);
+    if (!Array.isArray(graph.videoTracks)) {
+        addIssue('missing-track', 'videoTracks', 'Video tracks are required.');
+    } else {
+        validateVideoTracks(graph.videoTracks, graph.videoClips).forEach((issue) => {
+            const code: IssueCode = issue.message.startsWith('Duplicate') || issue.message.includes('already assigned')
+                ? 'duplicate-id'
+                : issue.message.includes('Unknown') || issue.message.includes('not assigned')
+                    ? 'missing-clip'
+                    : issue.path.endsWith('.id')
+                        ? 'invalid-id'
+                        : 'missing-track';
+            addIssue(code, issue.path, issue.message);
+        });
+    }
     validateNamespaceIds(graph.audioSources, 'audioSources', addIssue);
     const audioTrackIds = validateNamespaceIds(graph.audioTracks, 'audioTracks', addIssue);
     const subtitleTrackIds = validateNamespaceIds(graph.subtitleTracks, 'subtitleTracks', addIssue);
@@ -306,8 +328,27 @@ function validateImportedAudioClip(
     validateSampleFades(clip.fadeInSamples, clip.fadeOutSamples,
         clip.sourceEndSample - clip.sourceStartSample, path, addIssue);
     const startSample = frameToOutputSample(clip.timelineStartFrame, profile.fps);
-    const durationSamples = nativeBoundaryToOutputSample(clip.sourceEndSample, source.nativeSampleRate)
+    const nativeDurationSamples = nativeBoundaryToOutputSample(clip.sourceEndSample, source.nativeSampleRate)
         - nativeBoundaryToOutputSample(clip.sourceStartSample, source.nativeSampleRate);
+    if (clip.timelineDurationSamples !== undefined
+        && (!Number.isSafeInteger(clip.timelineDurationSamples) || clip.timelineDurationSamples <= 0)) {
+        addIssue('invalid-clip-bounds', `${path}.timelineDurationSamples`,
+            'Imported audio render duration must be a positive safe integer when present.');
+        return null;
+    }
+    // A frame-aligned seam may sit between native boundaries. The last boundary that does not
+    // cross it can trail by at most one native sample's output width minus one output sample.
+    const maximumBoundaryDrift = Math.max(
+        0,
+        Math.ceil(AUDIO_OUTPUT_SAMPLE_RATE / source.nativeSampleRate) - 1,
+    );
+    if (clip.timelineDurationSamples !== undefined
+        && Math.abs(clip.timelineDurationSamples - nativeDurationSamples) > maximumBoundaryDrift) {
+        addIssue('invalid-clip-bounds', `${path}.timelineDurationSamples`,
+            'Imported audio render duration exceeds the native-boundary quantization margin.');
+        return null;
+    }
+    const durationSamples = clip.timelineDurationSamples ?? nativeDurationSamples;
     return { startSample, endSample: startSample + durationSamples };
 }
 

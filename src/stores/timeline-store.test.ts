@@ -125,6 +125,106 @@ const resetStores = () => {
 describe('canonical V3 timeline state', () => {
     beforeEach(resetStores);
 
+    it('persists video lanes and moves clips vertically as one history transaction without timing or audio changes', async () => {
+        const source = videoSource('lane_source', 4, true);
+        useTimelineStore.getState().appendMixedMediaCandidate({
+            videoSources: [source],
+            videoClips: [
+                { id: 'clip_a', sourceId: source.id, sourceStart: 0, sourceEnd: 2 },
+                { id: 'clip_b', sourceId: source.id, sourceStart: 2, sourceEnd: 4 },
+            ],
+        });
+        expect(useTimelineStore.getState().videoTracks).toEqual([{
+            id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a', 'clip_b'],
+        }]);
+
+        useTimelineStore.getState().addVideoTrack('Upper video', 'video_track_2');
+        useTimelineStore.setState({ history: [], redoStack: [], historySequence: 0, historyBytes: 0 });
+        const before = useTimelineStore.getState();
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        before.moveVideoClipToTrack('clip_b', 'video_track_2');
+        const moved = useTimelineStore.getState();
+
+        expect(moved.videoTracks).toEqual([
+            { id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a'] },
+            { id: 'video_track_2', name: 'Upper video', clipIds: ['clip_b'] },
+        ]);
+        expect(moved.videoClips).toEqual(before.videoClips);
+        expect(moved.audioGraphRevision).toBe(before.audioGraphRevision);
+        expect(moved.contentBoundaryRevision).toBe(before.contentBoundaryRevision);
+        expect(moved.transcriptionByTrackId).toBe(before.transcriptionByTrackId);
+        expect(moved.history).toHaveLength(1);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+
+        moved.moveVideoClipToTrack('clip_b', 'video_track_2');
+        expect(useTimelineStore.getState().revision).toBe(moved.revision);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+
+        await moved.undo();
+        expect(useTimelineStore.getState().videoTracks).toEqual(before.videoTracks);
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState().videoTracks).toEqual(moved.videoTracks);
+    });
+
+    it('couples video lane membership to split, delete, reorder, and create-and-move pruning', () => {
+        const source = videoSource('coupled_source', 4, false);
+        useTimelineStore.getState().appendMixedMediaCandidate({
+            videoSources: [source],
+            videoClips: [
+                { id: 'clip_a', sourceId: source.id, sourceStart: 0, sourceEnd: 2 },
+                { id: 'clip_b', sourceId: source.id, sourceStart: 2, sourceEnd: 4 },
+            ],
+        });
+        useTimelineStore.getState().splitVideoClip('clip_a', 1, 'clip_right');
+        expect(useTimelineStore.getState().videoTracks[0].clipIds).toEqual(['clip_a', 'clip_right', 'clip_b']);
+
+        useTimelineStore.getState().addVideoTrack('Second', 'video_track_2');
+        useTimelineStore.getState().moveVideoClipToTrack('clip_b', 'video_track_2');
+        useTimelineStore.getState().reorderVideoClips(['clip_b', 'clip_a', 'clip_right']);
+        expect(useTimelineStore.getState().videoTracks).toEqual([
+            { id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a', 'clip_right'] },
+            { id: 'video_track_2', name: 'Second', clipIds: ['clip_b'] },
+        ]);
+
+        const historyCountBeforeCreateAndMove = useTimelineStore.getState().history.length;
+        const newTrackId = useTimelineStore.getState().moveVideoClipToNewTrack(
+            'clip_b',
+            2,
+            'video_track_3',
+            'Third',
+        );
+        expect(newTrackId).toBe('video_track_3');
+        expect(useTimelineStore.getState().history).toHaveLength(historyCountBeforeCreateAndMove + 1);
+        expect(useTimelineStore.getState().videoTracks.map((track) => track.id)).toEqual([
+            'video_track_1', 'video_track_3',
+        ]);
+
+        useTimelineStore.getState().deleteVideoClip('clip_b');
+        expect(useTimelineStore.getState().videoTracks).toEqual([{
+            id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a', 'clip_right'],
+        }]);
+    });
+
+    it('atomically replaces an emptied sole lane and preserves one lane after deleting its clip', () => {
+        appendVideo();
+        const before = useTimelineStore.getState();
+
+        before.moveVideoClipToNewTrack('video_clip', 1, 'replacement_lane', 'Replacement');
+        const moved = useTimelineStore.getState();
+        expect(moved.videoTracks).toEqual([{
+            id: 'replacement_lane', name: 'Replacement', clipIds: ['video_clip'],
+        }]);
+        expect(moved.videoClips).toEqual(before.videoClips);
+        expect(moved.audioGraphRevision).toBe(before.audioGraphRevision);
+        expect(moved.contentBoundaryRevision).toBe(before.contentBoundaryRevision);
+
+        moved.deleteVideoClip('video_clip');
+        expect(useTimelineStore.getState().videoTracks).toEqual([{
+            id: 'replacement_lane', name: 'Replacement', clipIds: [],
+        }]);
+    });
+
     it('detaches linked video audio atomically and undo/redo restores one complete graph step', async () => {
         appendVideo();
         useTimelineStore.setState({ history: [], redoStack: [] });

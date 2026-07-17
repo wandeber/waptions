@@ -8,6 +8,7 @@ import type { AnimationStyle } from '@/types/timeline';
 import { TIMELINE_HISTORY_ROOTS } from '@/stores/timeline-history-projection';
 import { recordTimelineHistory } from '@/stores/timeline-history';
 import {
+    EDITOR_HISTORY_STORAGE_VERSION,
     createHistoryIndex,
     getManifestSourceSignature,
     projectEditorDocumentHistory,
@@ -31,6 +32,7 @@ const document = (revision = 4): EditorDocumentV3 => ({
     }],
     videoSources: [],
     videoClips: [],
+    videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
     audioSources: [],
     audioTracks: [],
     activeSubtitleTrackId: 'captions',
@@ -73,9 +75,32 @@ const documentWithAudio = (revision = 4): EditorDocumentV3 => ({
             fadeOutFrames: 0,
         },
     }],
+    videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['video_clip'] }],
 });
 
 describe('editor history and recovery storage', () => {
+    it('discards incompatible pre-lane history storage without affecting the durable document', () => {
+        const baseline = document();
+        const manifest = createEditorManifestV3(baseline);
+        const restored = restoreEditorRuntimeState(
+            baseline,
+            manifest,
+            {
+                version: 1,
+                documentRevision: baseline.revision,
+                sourceSignature: getManifestSourceSignature(manifest),
+                historyEntryIds: ['legacy'],
+                redoEntryIds: [],
+            },
+            new Map(),
+            null,
+            new Map(),
+        );
+        expect(restored.document).toBe(baseline);
+        expect(restored.history.history).toEqual([]);
+        expect(restored.recovered).toBe(false);
+    });
+
     it('applies a complete source-stable WAL chain and restores both document revisions', () => {
         const baseline = document();
         const manifest = createEditorManifestV3(baseline);
@@ -100,13 +125,13 @@ describe('editor history and recovery storage', () => {
             null,
             new Map(),
             {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 documentRevision: 4,
                 sourceSignature: getManifestSourceSignature(manifest),
                 entryKeys: [key],
             },
             new Map([[key, {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 fromRevision: 4,
                 toRevision: 5,
                 fromAudioGraphRevision: 0,
@@ -122,6 +147,50 @@ describe('editor history and recovery storage', () => {
         expect(restored.document.audioGraphRevision).toBe(3);
         expect(restored.document.subtitleTracks[0].subtitles[0].text).toBe('Recovered');
         expect(restored.recoveryEntryKeys).toEqual([key]);
+    });
+
+    it('restores video lane membership from a complete WAL entry', () => {
+        const baseline = documentWithAudio();
+        const manifest = createEditorManifestV3(baseline);
+        const before = projectEditorDocumentHistory(baseline);
+        const after = structuredClone(before);
+        after.videoTracks = [{ id: 'recovered_lane', name: 'Recovered lane', clipIds: ['video_clip'] }];
+        const key = recoveryEntryStorageKey(5);
+
+        const restored = restoreEditorRuntimeState(
+            baseline,
+            manifest,
+            null,
+            new Map(),
+            {
+                version: EDITOR_HISTORY_STORAGE_VERSION,
+                documentRevision: 4,
+                sourceSignature: getManifestSourceSignature(manifest),
+                entryKeys: [key],
+            },
+            new Map([[key, {
+                version: EDITOR_HISTORY_STORAGE_VERSION,
+                fromRevision: 4,
+                toRevision: 5,
+                fromAudioGraphRevision: 0,
+                toAudioGraphRevision: 0,
+                patches: createSerializablePatches(
+                    before,
+                    after,
+                    TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+                ).patches,
+                historyIndex: createHistoryIndex({ ...manifest, revision: 5, videoTracks: after.videoTracks }, {
+                    history: [],
+                    redoStack: [],
+                    projection: after,
+                }),
+                historyEntries: [],
+            }]]),
+        );
+
+        expect(restored.recovered).toBe(true);
+        expect(restored.document.videoTracks).toEqual(after.videoTracks);
+        expect(restored.document.videoTracks).not.toBe(after.videoTracks);
     });
 
     it('keeps durable history separate from entries supplied only by recovery', () => {
@@ -172,13 +241,13 @@ describe('editor history and recovery storage', () => {
             durableIndex,
             new Map([[durableState.history[0].id, durableState.history[0]]]),
             {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 documentRevision: 4,
                 sourceSignature: getManifestSourceSignature(manifest),
                 entryKeys: [key],
             },
             new Map([[key, {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 fromRevision: 4,
                 toRevision: 5,
                 fromAudioGraphRevision: 0,
@@ -209,13 +278,13 @@ describe('editor history and recovery storage', () => {
             null,
             new Map(),
             {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 documentRevision: 4,
                 sourceSignature: getManifestSourceSignature(manifest),
                 entryKeys: [firstKey, secondKey],
             },
             new Map([[firstKey, {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 fromRevision: 5,
                 toRevision: 6,
                 fromAudioGraphRevision: 0,
@@ -340,6 +409,52 @@ describe('editor history and recovery storage', () => {
 
         expect(restored.durableHistory.history).toEqual([]);
         expect(restored.history.history).toEqual([]);
+    });
+
+    it('rejects history whose inverse produces malformed video lane membership', () => {
+        const baseline = documentWithAudio();
+        const manifest = createEditorManifestV3(baseline);
+        const current = projectEditorDocumentHistory(baseline);
+        const original = structuredClone(current);
+        original.videoTracks = [{ id: 'previous_lane', name: 'Previous lane', clipIds: ['video_clip'] }];
+        const recorded = recordTimelineHistory(
+            { history: [], redoStack: [], historySequence: 0, historyBytes: 0 },
+            original,
+            current,
+            {
+                metadata: { label: 'Move video clip to track' },
+                impact: 'preserve-transcription',
+                recalculatesContentBoundary: false,
+                now: 1,
+            },
+        );
+        const corruptEntry = structuredClone(recorded.history[0]);
+        corruptEntry.inversePatches = [{
+            op: 'set',
+            path: ['videoTracks'],
+            value: [
+                { id: 'lane_a', name: 'Lane A', clipIds: ['video_clip'] },
+                { id: 'lane_b', name: 'Lane B', clipIds: ['video_clip'] },
+            ],
+        }];
+        const index = createHistoryIndex(manifest, {
+            history: [corruptEntry],
+            redoStack: [],
+            projection: current,
+        });
+
+        const restored = restoreEditorRuntimeState(
+            baseline,
+            manifest,
+            index,
+            new Map([[corruptEntry.id, corruptEntry]]),
+            null,
+            new Map(),
+        );
+
+        expect(restored.durableHistory.history).toEqual([]);
+        expect(restored.history.history).toEqual([]);
+        expect(restored.document).toBe(baseline);
     });
 
     it('retains valid history across fresh transcription and a later audio graph command', () => {
@@ -471,13 +586,13 @@ describe('editor history and recovery storage', () => {
             null,
             new Map(),
             {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 documentRevision: 4,
                 sourceSignature: getManifestSourceSignature(manifest),
                 entryKeys: [key],
             },
             new Map([[key, {
-                version: 1,
+                version: EDITOR_HISTORY_STORAGE_VERSION,
                 fromRevision: 4,
                 toRevision: 5,
                 fromAudioGraphRevision: 0,

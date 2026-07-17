@@ -154,6 +154,36 @@ export function outputSampleToNearestNativeBoundary(
     return bestBoundary;
 }
 
+/**
+ * Returns the last native boundary whose rounded forward mapping does not cross an output target.
+ *
+ * Right trims use a covering output frame for their visible end. Choosing the merely nearest
+ * native sample can land one output sample after the requested frame boundary (notably when
+ * 44.1 kHz audio is edited on a 29.97-fps timeline), which makes the persisted clip occupy the
+ * following frame. The strict half-up inequality below solves the inverse exactly with BigInt and
+ * also picks the highest boundary on a resampling plateau, preserving as much source audio as the
+ * canonical frame end permits.
+ */
+export function outputSampleToFloorNativeBoundary(
+    outputSample: number,
+    nativeSampleRate: number,
+    outputSampleRate = AUDIO_OUTPUT_SAMPLE_RATE,
+): number {
+    assertNonNegativeSafeInteger(outputSample, 'outputSample');
+    assertPositiveSafeInteger(nativeSampleRate, 'nativeSampleRate');
+    assertPositiveSafeInteger(outputSampleRate, 'outputSampleRate');
+
+    // round(n * outputRate / nativeRate) <= outputSample exactly when
+    // 2 * n * outputRate < (2 * outputSample + 1) * nativeRate.
+    const exclusiveUpperNumerator = (BigInt(outputSample) * BigInt(2) + BigInt(1))
+        * BigInt(nativeSampleRate);
+    const denominator = BigInt(outputSampleRate) * BigInt(2);
+    return bigintToSafeNumber(
+        (exclusiveUpperNumerator - BigInt(1)) / denominator,
+        'native boundary',
+    );
+}
+
 function ratioToSafeNumber(numerator: bigint, denominator: bigint, name: string): number {
     return bigintToSafeNumber(roundNonNegativeRatioHalfUp(numerator, denominator), name);
 }

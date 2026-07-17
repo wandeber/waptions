@@ -956,10 +956,12 @@ function getIndependentAudioEndFrame(context: TimelineDurationAudioContext): num
 
         const source = audioSourcesById.get(clip.source.audioSourceId);
         if (!source) return clipMaximum;
-        const durationOutputSamples = nativeBoundaryToOutputSample(
-            clip.sourceEndSample,
-            source.nativeSampleRate,
-        ) - nativeBoundaryToOutputSample(clip.sourceStartSample, source.nativeSampleRate);
+        const durationOutputSamples = clip.timelineDurationSamples ?? (
+            nativeBoundaryToOutputSample(
+                clip.sourceEndSample,
+                source.nativeSampleRate,
+            ) - nativeBoundaryToOutputSample(clip.sourceStartSample, source.nativeSampleRate)
+        );
         const endOutputSample = frameToOutputSample(clip.timelineStartFrame, context.renderProfile.fps)
             + durationOutputSamples;
         return Math.max(

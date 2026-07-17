@@ -15,16 +15,16 @@ interface TabsProps {
 
 export function Tabs({ tabs, activeTab, onTabChange, className = '' }: TabsProps) {
   return (
-    <div className={`h-full flex flex-col ${className}`}>
-      {/* Tabs - pegados al panel */}
-      <div className="flex">
+    <div className={`flex h-full flex-col ${className}`}>
+      <div className="flex flex-none border-b border-slate-700 bg-slate-900 px-2">
         {tabs.map((tab) => (
           <button
+            type="button"
             key={tab.id}
-            className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${
+            className={`relative h-9 px-3 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-sky-400 ${
               activeTab === tab.id
-                ? 'bg-gray-800 text-white'
-                : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+                ? 'text-white after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-sky-400'
+                : 'text-slate-400 hover:bg-slate-800/70 hover:text-white'
             }`}
             onClick={() => onTabChange(tab.id)}
           >
@@ -33,13 +33,11 @@ export function Tabs({ tabs, activeTab, onTabChange, className = '' }: TabsProps
         ))}
       </div>
 
-      {/* Panel principal - sin redondeado arriba */}
-      <div className="flex-1 bg-gray-800 rounded-b-lg overflow-hidden">
-        {/* Panel de contenido */}
+      <div className="flex-1 overflow-hidden bg-slate-900">
         <div className="h-full overflow-y-auto">
           {tabs.find((tab) => tab.id === activeTab)?.content}
         </div>
       </div>
     </div>
   );
-} 
+}

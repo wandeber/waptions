@@ -51,6 +51,7 @@ const stateFixture = (): TimelineStore => {
                 fadeOutFrames: 0,
             },
         }],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['video_clip'] }],
     } satisfies TimelineStore;
     const signature = getEditorAudioGraphSignature(buildEditorDocumentFromState(state));
     return {

@@ -235,6 +235,7 @@ function makeDocument(): EditorDocumentV3 {
             width: 16, height: 16, bitrate: 1_000_000, hasAudio: false, file: fakeFile,
         }],
         videoClips: [{ id: 'clip', sourceId: 'video', sourceStart: 0, sourceEnd: 0.5, audio: null }],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['clip'] }],
         audioSources: [],
         audioTracks: [],
         activeSubtitleTrackId: 'subtitles',

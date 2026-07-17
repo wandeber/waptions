@@ -4,8 +4,15 @@ import { useRef, useState } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
 import type { AudioClip, RationalFrameRate } from '@/types/video';
 import type { WaveformPeaks } from '@/lib/video-waveform';
-import { framesToSeconds } from '@/lib/render-profile';
+import { framesToSeconds, secondsToFrames } from '@/lib/render-profile';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { usePlaybackStore } from '@/stores/playback-store';
+import {
+    getTimelineSnapThresholdFrames,
+    snapTimelineFrame,
+    snapTimelineVariableSpan,
+    type TimelineSnapPoint,
+} from '@/lib/timeline-snap';
 import {
     beginTimelineGesture,
     cancelTimelineGesture,
@@ -37,6 +44,8 @@ interface TimelineAudioClipProps {
     waveformSourceEnd: number;
     peaks?: WaveformPeaks;
     selected: boolean;
+    snapPoints: readonly TimelineSnapPoint[];
+    resolveDurationFrames: (candidateStartFrame: number) => number;
     validatePlacement: (clipId: string, trackId: string, startFrame: number, durationFrames: number) => boolean;
 }
 
@@ -58,6 +67,8 @@ export function TimelineAudioClip({
     waveformSourceEnd,
     peaks,
     selected,
+    snapPoints,
+    resolveDurationFrames,
     validatePlacement,
 }: TimelineAudioClipProps) {
     const transactionCoordinator = useEditorTransactionCoordinator();
@@ -90,6 +101,25 @@ export function TimelineAudioClip({
         selectAudioClip(trackId, clip.id);
 
         const startClientX = event.clientX;
+        const clipOwnerKey = `audio:${clip.id}`;
+        const timeline = useTimelineStore.getState();
+        const gestureSnapPoints = timeline.snapEnabled
+            ? [
+                ...snapPoints,
+                {
+                    frame: secondsToFrames(
+                        usePlaybackStore.getState().currentTime,
+                        frameRate,
+                        'nearest',
+                    ),
+                    ownerKey: 'playhead',
+                },
+            ]
+            : [];
+        const snapThresholdFrames = getTimelineSnapThresholdFrames(pixelsPerSecond, frameRate);
+        const publishSnapPreview = (snappedFrame: number | null) => {
+            timeline.setActiveSnapTime(snappedFrame === null ? null : framesToSeconds(snappedFrame, frameRate));
+        };
         const initial: AudioClipDraft = {
             trackId,
             startFrame: clip.timelineStartFrame,
@@ -106,15 +136,27 @@ export function TimelineAudioClip({
             window.removeEventListener('pointerup', handleUp);
             window.removeEventListener('pointercancel', handleCancel);
             window.removeEventListener('keydown', handleKeyDown);
+            publishSnapPreview(null);
         };
         const handleMove = (moveEvent: PointerEvent) => {
             const deltaFrames = Math.round((moveEvent.clientX - startClientX) / pixelsPerSecond * fps);
             let next: AudioClipDraft;
             if (kind === 'trim-left') {
-                const nextStart = Math.max(
+                const rawStart = Math.max(
                     initial.startFrame,
                     Math.min(initial.endFrame - 1, initial.startFrame + deltaFrames),
                 );
+                const trimPoints = gestureSnapPoints.filter((point) => (
+                    point.frame >= initial.startFrame && point.frame < initial.endFrame
+                ));
+                const snapped = snapTimelineFrame(
+                    rawStart,
+                    trimPoints,
+                    snapThresholdFrames,
+                    clipOwnerKey,
+                );
+                const nextStart = snapped.frame;
+                publishSnapPreview(snapped.snappedFrame);
                 const nextDuration = initial.endFrame - nextStart;
                 next = {
                     ...initial,
@@ -122,10 +164,21 @@ export function TimelineAudioClip({
                     invalid: !validatePlacement(clip.id, trackId, nextStart, nextDuration),
                 };
             } else if (kind === 'trim-right') {
-                const nextEnd = Math.max(
+                const rawEnd = Math.max(
                     initial.startFrame + 1,
                     Math.min(initial.endFrame, initial.endFrame + deltaFrames),
                 );
+                const trimPoints = gestureSnapPoints.filter((point) => (
+                    point.frame > initial.startFrame && point.frame <= initial.endFrame
+                ));
+                const snapped = snapTimelineFrame(
+                    rawEnd,
+                    trimPoints,
+                    snapThresholdFrames,
+                    clipOwnerKey,
+                );
+                const nextEnd = snapped.frame;
+                publishSnapPreview(snapped.snappedFrame);
                 const nextDuration = nextEnd - initial.startFrame;
                 next = {
                     ...initial,
@@ -136,12 +189,22 @@ export function TimelineAudioClip({
                 const hoveredTrack = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
                     ?.closest<HTMLElement>('[data-audio-track-id]')?.dataset.audioTrackId;
                 const nextTrackId = hoveredTrack ?? initial.trackId;
-                const nextStart = Math.max(0, initial.startFrame + deltaFrames);
+                const rawStart = Math.max(0, initial.startFrame + deltaFrames);
+                const snapped = snapTimelineVariableSpan(
+                    rawStart,
+                    resolveDurationFrames,
+                    gestureSnapPoints,
+                    snapThresholdFrames,
+                    clipOwnerKey,
+                );
+                const nextStart = snapped.frame;
+                const nextDuration = resolveDurationFrames(nextStart);
+                publishSnapPreview(snapped.snappedFrame);
                 next = {
                     trackId: nextTrackId,
                     startFrame: nextStart,
-                    endFrame: nextStart + durationFrames,
-                    invalid: !validatePlacement(clip.id, nextTrackId, nextStart, durationFrames),
+                    endFrame: nextStart + nextDuration,
+                    invalid: !validatePlacement(clip.id, nextTrackId, nextStart, nextDuration),
                 };
             }
             gesture = updateTimelineGesture(gesture, next);
@@ -195,12 +258,12 @@ export function TimelineAudioClip({
             aria-disabled={trackLocked}
             aria-label={`${sourceName}, audio clip`}
             title={`${sourceName} · ${framesToSeconds(previewStartFrame, frameRate).toFixed(2)}s`}
-            className={`absolute top-1 bottom-1 overflow-hidden rounded border focus:outline-none focus:ring-2 focus:ring-emerald-200 ${
+            className={`absolute bottom-1 top-1 overflow-hidden rounded border focus:outline-none focus:ring-2 focus:ring-teal-200 ${
                 draft?.invalid
                     ? 'border-red-400 bg-red-500/25'
                     : selected
-                        ? 'border-emerald-200 bg-emerald-500/30 ring-1 ring-emerald-200/50'
-                        : 'border-emerald-400/35 bg-emerald-500/15 hover:bg-emerald-500/25'
+                        ? 'border-teal-200 bg-teal-500/30 ring-1 ring-teal-200/50'
+                        : 'border-teal-400/35 bg-teal-500/15 hover:border-teal-300/60 hover:bg-teal-500/20'
             } ${trackLocked ? 'cursor-not-allowed opacity-65' : 'cursor-grab active:cursor-grabbing'}`}
             style={{ left, width: Math.max(2, width) }}
             onPointerDown={(event) => runPointerGesture(event, 'move')}
@@ -215,7 +278,9 @@ export function TimelineAudioClip({
                 const delta = event.key === 'ArrowLeft' ? -1 : 1;
                 const nextFrame = Math.max(0, clip.timelineStartFrame + delta);
                 const terminalFrame = commitTimelineKeyboardEdit(clip.timelineStartFrame, nextFrame);
-                if (terminalFrame !== null && validatePlacement(clip.id, trackId, terminalFrame, durationFrames)) {
+                const terminalDuration = terminalFrame === null ? null : resolveDurationFrames(terminalFrame);
+                if (terminalFrame !== null && terminalDuration !== null
+                    && validatePlacement(clip.id, trackId, terminalFrame, terminalDuration)) {
                     moveAudioClip(clip.id, trackId, terminalFrame);
                 }
             }}
@@ -224,24 +289,24 @@ export function TimelineAudioClip({
                 peaks={peaks}
                 sourceStart={previewWaveformStart}
                 sourceEnd={previewWaveformEnd}
-                color="#6ee7b7"
-                className="opacity-65"
+                color="#5eead4"
+                className="opacity-80"
             />
-            <div className="absolute inset-x-0 top-0 flex items-center gap-1 bg-gradient-to-b from-gray-950/80 to-transparent px-3 pt-1 pointer-events-none">
+            <div className="pointer-events-none absolute inset-x-0 top-0 flex h-5 items-center gap-1 bg-slate-950/70 px-3">
                 {clip.muted
                     ? <VolumeX className="h-3 w-3 flex-none text-gray-400" />
-                    : <Volume2 className="h-3 w-3 flex-none text-emerald-100" />}
-                <span className="truncate text-[10px] font-semibold text-emerald-50 drop-shadow">{sourceName}</span>
+                    : <Volume2 className="h-3 w-3 flex-none text-teal-100" />}
+                <span className="truncate text-[10px] font-semibold text-teal-50">{sourceName}</span>
             </div>
             <div
                 data-testid="audio-trim-left"
-                className="absolute inset-y-0 left-0 z-20 w-2 cursor-ew-resize bg-emerald-100/15 hover:bg-emerald-100/60"
+                className="absolute inset-y-0 left-0 z-20 w-2 cursor-ew-resize border-l-2 border-transparent bg-teal-100/10 hover:border-teal-100 hover:bg-teal-100/35"
                 onPointerDown={(event) => runPointerGesture(event, 'trim-left')}
                 aria-hidden="true"
             />
             <div
                 data-testid="audio-trim-right"
-                className="absolute inset-y-0 right-0 z-20 w-2 cursor-ew-resize bg-emerald-100/15 hover:bg-emerald-100/60"
+                className="absolute inset-y-0 right-0 z-20 w-2 cursor-ew-resize border-r-2 border-transparent bg-teal-100/10 hover:border-teal-100 hover:bg-teal-100/35"
                 onPointerDown={(event) => runPointerGesture(event, 'trim-right')}
                 aria-hidden="true"
             />

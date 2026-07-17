@@ -7,7 +7,11 @@ import {
   type ContinuousEditSession,
 } from '@/lib/continuous-edit-session';
 import { useEditorTransactionCoordinator } from '@/components/video-editor/EditorTransactionContext';
-import { parseNumericDraft } from './numeric-input-draft';
+import {
+  formatNumericValue,
+  normalizeNumericValue,
+  parseNumericDraft,
+} from './numeric-input-draft';
 import { ResetIcon } from '../icons/ResetIcon';
 
 interface DraggableNumberInputProps {
@@ -24,6 +28,9 @@ interface DraggableNumberInputProps {
   defaultValue?: number;
   layout?: 'stacked' | 'horizontal';
   labelWidth?: number;
+  disabled?: boolean;
+  decimalPlaces?: number;
+  normalizeValue?: (value: number) => number;
 }
 
 /**
@@ -46,9 +53,22 @@ export function DraggableNumberInput({
   defaultValue = 0,
   layout = 'stacked',
   labelWidth,
+  disabled = false,
+  decimalPlaces,
+  normalizeValue: normalizeDomainValue,
 }: DraggableNumberInputProps) {
   const transactionCoordinator = useEditorTransactionCoordinator();
-  const [inputValue, setInputValue] = useState(value.toString());
+  const normalize = useCallback((next: number) => normalizeNumericValue(next, {
+    min,
+    max,
+    decimalPlaces,
+    normalizeValue: normalizeDomainValue,
+  }), [decimalPlaces, max, min, normalizeDomainValue]);
+  const format = useCallback(
+    (next: number) => formatNumericValue(normalize(next), decimalPlaces),
+    [decimalPlaces, normalize],
+  );
+  const [inputValue, setInputValue] = useState(() => format(value));
   const [isFocused, setIsFocused] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -61,47 +81,45 @@ export function DraggableNumberInput({
     target: HTMLElement;
   } | null>(null);
 
-  const clamp = useCallback((next: number) => Math.min(max, Math.max(min, next)), [max, min]);
-
   useEffect(() => {
     // Undo/redo and other durable store changes update an idle field immediately. An active edit
     // owns its draft until commit/cancel so parent renders cannot overwrite a gesture mid-flight.
     if (sessionRef.current?.terminal === null) return;
     sessionRef.current = null;
-    setInputValue(value.toString());
-  }, [value]);
+    setInputValue(format(value));
+  }, [format, value]);
 
   const begin = useCallback(() => {
-    sessionRef.current = beginContinuousEdit(value);
-  }, [value]);
+    sessionRef.current = beginContinuousEdit(normalize(value));
+  }, [normalize, value]);
 
   const preview = useCallback((next: number, syncDraft = true) => {
-    const currentSession = sessionRef.current ?? beginContinuousEdit(value);
+    const currentSession = sessionRef.current ?? beginContinuousEdit(normalize(value));
     // Enter followed by blur, or pointerup followed by lostpointercapture, can deliver work after
     // the session already ended. Do not let that late preview reopen the parent style transaction.
     if (currentSession.terminal !== null) return currentSession.latest;
 
-    const clamped = clamp(next);
+    const normalized = normalize(next);
     sessionRef.current = previewContinuousEdit(
       currentSession,
-      clamped,
+      normalized,
     );
     // Pointer and keyboard increments own the displayed value. Typed edits keep their exact raw
     // draft so intermediate text such as `6.` is not normalized to `6` before `5` is entered.
-    if (syncDraft) setInputValue(clamped.toString());
-    onPreview(clamped);
-    return clamped;
-  }, [clamp, onPreview, value]);
+    if (syncDraft) setInputValue(format(normalized));
+    onPreview(normalized);
+    return normalized;
+  }, [format, normalize, onPreview, value]);
 
   const finish = useCallback((terminal: 'commit' | 'cancel') => {
     const session = sessionRef.current;
     if (!session || session.terminal !== null) return;
     const result = terminateContinuousEdit(session, terminal);
     sessionRef.current = result.session;
-    setInputValue(result.value.toString());
+    setInputValue(format(result.value));
     if (result.shouldCommit) onCommit(result.value);
     else if (terminal === 'cancel') onCancel(result.value);
-  }, [onCancel, onCommit]);
+  }, [format, onCancel, onCommit]);
 
   const finishPointer = useCallback((pointerId: number, terminal: 'commit' | 'cancel') => {
     const pointer = pointerRef.current;
@@ -151,12 +169,12 @@ export function DraggableNumberInput({
   }, []);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || isFocused) return;
+    if (disabled || event.button !== 0 || isFocused) return;
     begin();
     pointerRef.current = {
       id: event.pointerId,
       startX: event.clientX,
-      startValue: value,
+      startValue: normalize(value),
       moved: false,
       target: event.currentTarget,
     };
@@ -191,6 +209,7 @@ export function DraggableNumberInput({
   };
 
   const commitReset = () => {
+    if (disabled) return;
     // A reset inside an active focus session must keep that session's original durable baseline.
     // Starting again from the latest preview would make Undo restore the draft instead of the
     // value that existed before the user focused the field.
@@ -218,13 +237,13 @@ export function DraggableNumberInput({
   };
 
   const parsedProgressDraft = parseNumericDraft(inputValue);
-  const progressValue = parsedProgressDraft === null ? value : clamp(parsedProgressDraft);
+  const progressValue = normalize(parsedProgressDraft === null ? value : parsedProgressDraft);
 
   return (
-    <div className={`${layout === 'stacked' ? 'flex flex-col gap-2' : 'flex items-center gap-3'} ${className}`}>
+    <div className={`${layout === 'stacked' ? 'flex flex-col gap-2' : 'flex items-center gap-3'} ${disabled ? 'opacity-40' : ''} ${className}`}>
       {label && (
         <label
-          className={`text-sm text-gray-300 cursor-ew-resize select-none ${layout === 'horizontal' ? 'truncate' : ''}`}
+          className={`select-none text-sm text-gray-300 ${disabled ? 'cursor-not-allowed' : 'cursor-ew-resize'} ${layout === 'horizontal' ? 'truncate' : ''}`}
           style={layout === 'horizontal' && labelWidth ? { width: labelWidth } : undefined}
           {...pointerHandlers}
           onDoubleClick={(event) => {
@@ -251,6 +270,7 @@ export function DraggableNumberInput({
           <input
             ref={inputRef}
             type="text"
+            disabled={disabled}
             aria-label={label}
             value={inputValue}
             onChange={(event) => {
@@ -294,13 +314,14 @@ export function DraggableNumberInput({
             }}
             className={`relative w-full h-8 bg-transparent text-white rounded-l px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isFocused ? 'cursor-text' : 'cursor-ew-resize'}`}
           />
-          {!isFocused && <div className="absolute inset-0 cursor-ew-resize" {...pointerHandlers} />}
+          {!disabled && !isFocused && <div className="absolute inset-0 cursor-ew-resize" {...pointerHandlers} />}
           {unit && (
             <span className="absolute right-2 text-sm text-gray-400 top-1/2 -translate-y-1/2">{unit}</span>
           )}
         </div>
         <button
           type="button"
+          disabled={disabled}
           aria-label={`Reset ${label ?? 'value'} to default`}
           onPointerDown={(event) => {
             // Keep an active typed draft from blurring into its own command immediately before
@@ -308,7 +329,7 @@ export function DraggableNumberInput({
             event.preventDefault();
           }}
           onClick={commitReset}
-          className="h-8 w-8 flex items-center justify-center bg-gray-700 text-gray-400 hover:text-white rounded-r border-l border-gray-600"
+          className="h-8 w-8 flex items-center justify-center bg-gray-700 text-gray-400 hover:text-white rounded-r border-l border-gray-600 disabled:cursor-not-allowed"
           title="Reset to default"
         >
           <ResetIcon />

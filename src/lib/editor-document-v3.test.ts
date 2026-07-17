@@ -93,6 +93,7 @@ const makeDocument = (overrides: Partial<EditorDocumentV3> = {}): EditorDocument
             sourceEnd: 2,
             audio: { linkState: 'linked', muted: false, gainDb: 0, fadeInFrames: 0, fadeOutFrames: 0 },
         }],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['video_clip_a'] }],
         audioSources: [makeAudioSource()],
         audioTracks: [{
             id: 'audio_track_a',
@@ -166,11 +167,143 @@ describe('v3 editor graph validation', () => {
         ]));
     });
 
+    it('accepts a positive imported-audio render duration and rejects malformed values', () => {
+        const explicit = makeDocument();
+        const imported = explicit.audioTracks[0].clips[0];
+        if (!('sourceStartSample' in imported)) throw new Error('Expected imported audio.');
+        imported.timelineDurationSamples = 48_000;
+        expect(validateEditorDocumentV3(explicit)).toEqual({ valid: true, issues: [] });
+
+        imported.timelineDurationSamples = 0;
+        expect(validateEditorDocumentV3(explicit).issues).toContainEqual(expect.objectContaining({
+            code: 'invalid-clip-bounds',
+            path: 'audioTracks[0].clips[0].timelineDurationSamples',
+        }));
+
+        imported.timelineDurationSamples = 100_000;
+        expect(validateEditorDocumentV3(explicit).issues).toContainEqual(expect.objectContaining({
+            code: 'invalid-clip-bounds',
+            path: 'audioTracks[0].clips[0].timelineDurationSamples',
+        }));
+    });
+
+    it('accepts contiguous broadcast-rate split durations without stretching the source crop', () => {
+        const split = makeDocument();
+        split.renderProfile.fps = { numerator: 30_000, denominator: 1_001 };
+        split.audioSources[0] = makeAudioSource({
+            nativeSampleRate: 44_100,
+            nativeSampleCount: 441_000,
+            duration: 10,
+        });
+        split.audioTracks[0].clips = [
+            makeImportedClip({
+                id: 'left',
+                sourceEndSample: 5_885,
+                timelineDurationSamples: 6_406,
+            }),
+            makeImportedClip({
+                id: 'right',
+                timelineStartFrame: 4,
+                sourceStartSample: 5_885,
+                sourceEndSample: 44_100,
+                timelineDurationSamples: 41_594,
+            }),
+        ];
+
+        expect(validateEditorDocumentV3(split)).toEqual({ valid: true, issues: [] });
+
+    });
+
+    it('derives the valid split quantization margin from a 16 kHz native source', () => {
+        const split = makeDocument();
+        split.audioSources[0] = makeAudioSource({
+            nativeSampleRate: 16_000,
+            nativeSampleCount: 160_000,
+            duration: 10,
+        });
+        split.audioTracks[0].clips = [
+            makeImportedClip({
+                id: 'left',
+                sourceEndSample: 1_066,
+                timelineDurationSamples: 3_200,
+            }),
+            makeImportedClip({
+                id: 'right',
+                timelineStartFrame: 2,
+                sourceStartSample: 1_066,
+                sourceEndSample: 16_000,
+                timelineDurationSamples: 44_800,
+            }),
+        ];
+
+        expect(validateEditorDocumentV3(split)).toEqual({ valid: true, issues: [] });
+
+        split.audioTracks[0].clips = [makeImportedClip({
+            id: 'repeated_left_trim',
+            timelineStartFrame: 3,
+            sourceStartSample: 1_600,
+            sourceEndSample: 16_000,
+            timelineDurationSamples: 43_200,
+        })];
+        expect(validateEditorDocumentV3(split)).toEqual({ valid: true, issues: [] });
+
+        split.audioTracks[0].clips = [
+            makeImportedClip({
+                id: 'quantized_left',
+                sourceEndSample: 533,
+                timelineDurationSamples: 1_600,
+            }),
+            makeImportedClip({
+                id: 'quantized_right',
+                timelineStartFrame: 1,
+                sourceStartSample: 533,
+                sourceEndSample: 1_066,
+                timelineDurationSamples: 1_600,
+            }),
+        ];
+        expect(validateEditorDocumentV3(split)).toEqual({ valid: true, issues: [] });
+
+        split.audioTracks[0].clips = [
+            makeImportedClip({
+                id: 'left_trim_split_left',
+                timelineStartFrame: 2,
+                sourceStartSample: 1_066,
+                sourceEndSample: 1_600,
+                timelineDurationSamples: 1_600,
+            }),
+            makeImportedClip({
+                id: 'left_trim_split_right',
+                timelineStartFrame: 3,
+                sourceStartSample: 1_600,
+                sourceEndSample: 16_000,
+                timelineDurationSamples: 43_200,
+            }),
+        ];
+        expect(validateEditorDocumentV3(split)).toEqual({ valid: true, issues: [] });
+    });
+
+    it('rejects malformed present video lane mappings instead of repairing them', () => {
+        const missing = makeDocument();
+        missing.videoTracks[0].clipIds = [];
+        expect(validateEditorDocumentV3(missing).issues).toContainEqual(expect.objectContaining({
+            code: 'missing-clip',
+            path: 'videoClips[0].id',
+        }));
+
+        const duplicate = makeDocument();
+        duplicate.videoTracks.push({ id: 'video_track_2', name: 'Video 2', clipIds: ['video_clip_a'] });
+        expect(validateEditorDocumentV3(duplicate).issues).toContainEqual(expect.objectContaining({
+            code: 'duplicate-id',
+            path: 'videoTracks[1].clipIds[0]',
+        }));
+    });
+
     it('allows the same ID in distinct namespaces while rejecting duplicates inside one namespace', () => {
         const sameNamespaceNames = makeDocument();
         sameNamespaceNames.videoSources[0].id = 'shared';
         sameNamespaceNames.videoClips[0].sourceId = 'shared';
         sameNamespaceNames.videoClips[0].id = 'shared';
+        sameNamespaceNames.videoTracks[0].clipIds = ['shared'];
         sameNamespaceNames.audioSources[0].id = 'shared';
         const imported = sameNamespaceNames.audioTracks[0].clips[0];
         if (imported.source.kind === 'audio-source') imported.source.audioSourceId = 'shared';
@@ -247,6 +380,10 @@ describe('v3 editor graph validation', () => {
         expectChange((document) => {
             const clip = document.audioTracks[0].clips[0];
             if ('sourceStartSample' in clip) clip.sourceStartSample = 1;
+        });
+        expectChange((document) => {
+            const clip = document.audioTracks[0].clips[0];
+            if ('sourceStartSample' in clip) clip.timelineDurationSamples = 48_000;
         });
         expectChange((document) => { document.audioTracks[0].clips[0].muted = true; });
         expectChange((document) => { document.audioSources[0].fingerprint = 'different_audio'; });

@@ -26,6 +26,7 @@ function makeDocument(): EditorDocumentV3 {
                 fadeInFrames: 0, fadeOutFrames: 0,
             },
         }],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['clip'] }],
         audioSources: [], audioTracks: [], activeSubtitleTrackId: null,
         transientSelection: { kind: 'none' }, transcriptionByTrackId: {},
     };

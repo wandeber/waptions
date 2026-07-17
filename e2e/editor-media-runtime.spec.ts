@@ -76,7 +76,10 @@ test.describe('real browser media runtime', () => {
 
     // Disable magnetic snapping so this gesture exercises an ordinary seek rather than snapping
     // to the source boundary that was just crossed.
-    await page.getByTitle('Snap').click();
+    const snapButton = page.getByTitle('Disable snapping');
+    await expect(snapButton).toHaveAttribute('aria-pressed', 'true');
+    await snapButton.click();
+    await expect(page.getByTitle('Enable snapping')).toHaveAttribute('aria-pressed', 'false');
     const ruler = page.getByTestId('timeline-ruler');
     const rulerBox = await ruler.boundingBox();
     if (!rulerBox) throw new Error('The timeline ruler is not measurable.');

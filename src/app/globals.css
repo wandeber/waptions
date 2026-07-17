@@ -44,3 +44,35 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #374151 #1f2937; /* thumb track */
 }
+
+/* The editing surface uses the denser native system stack and quieter scrollbars expected in a
+   long-running desktop-style tool without changing the dashboard's established presentation. */
+.editor-shell {
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+}
+
+/* Dragging clips and resize handles should never start a native text selection. Text entry
+   surfaces opt back in so subtitle copy, selection, and inline editing retain browser behavior. */
+.editor-shell :is(input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]) {
+  user-select: text;
+}
+
+.editor-shell * {
+  scrollbar-color: #475569 #0f172a;
+}
+
+.editor-shell ::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+.editor-shell ::-webkit-scrollbar-thumb {
+  background: #475569;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+}
+
+.editor-shell ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}

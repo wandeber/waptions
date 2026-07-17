@@ -34,6 +34,7 @@ function makeDocument(sampleCount = 12): EditorDocumentV3 {
             file: makeFile('video.mp4'),
         }],
         videoClips: [],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }],
         audioSources: [{
             id: 'audio', originalName: 'audio.wav', mimeType: 'audio/wav', size: 5,
             lastModified: 1, fingerprint: 'audio-fingerprint', duration: sampleCount / 48_000,

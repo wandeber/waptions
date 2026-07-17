@@ -16,6 +16,7 @@ import {
     hydrateEditorDocumentV3,
     migrateEditorDocumentV2ToV3,
     migrateLegacyEditorDocumentToV3,
+    normalizeLegacyEditorManifestV3,
 } from './editor-document-migration';
 import { storageService, type EditorPersistentAsset } from './storage/storage-service';
 
@@ -138,16 +139,17 @@ async function restoreV3Document(
     metadata: ProjectBundleMetadataV3,
     projectId: string,
 ): Promise<void> {
-    const videoSources = await Promise.all(metadata.editorManifest.videoSourceDescriptors.map((descriptor) => (
+    const normalizedManifest = normalizeLegacyEditorManifestV3(metadata.editorManifest);
+    const videoSources = await Promise.all(normalizedManifest.videoSourceDescriptors.map((descriptor) => (
         restoreSourceFile(zip, metadata.sourceFiles.video[descriptor.id], descriptor)
     )));
-    const audioSources = await Promise.all(metadata.editorManifest.audioSourceDescriptors.map((descriptor) => (
+    const audioSources = await Promise.all(normalizedManifest.audioSourceDescriptors.map((descriptor) => (
         restoreSourceFile(zip, metadata.sourceFiles.audio[descriptor.id], descriptor)
     )));
     // Hydration validates descriptors, Files, clip references, detached-audio references, and
     // transcription freshness before the first IndexedDB transaction is allowed to begin.
-    hydrateEditorDocumentV3(metadata.editorManifest, videoSources, audioSources);
-    await storageService.saveEditorDocument(projectId, metadata.editorManifest, [
+    hydrateEditorDocumentV3(normalizedManifest, videoSources, audioSources);
+    await storageService.saveEditorDocument(projectId, normalizedManifest, [
         ...videoSources.map((asset): EditorPersistentAsset => ({ kind: 'video-source', asset })),
         ...audioSources.map((asset): EditorPersistentAsset => ({ kind: 'audio-source', asset })),
     ]);

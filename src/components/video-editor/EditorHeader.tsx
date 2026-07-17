@@ -8,8 +8,13 @@ import { RedoIcon } from '@/components/icons/RedoIcon';
 import { CopyIcon } from '@/components/icons/CopyIcon';
 import { PasteIcon } from '@/components/icons/PasteIcon';
 import { SpinnerIcon } from '@/components/icons/SpinnerIcon';
-import { HardDriveDownload, Save } from 'lucide-react';
+import {
+    ArrowLeft,
+    HardDriveDownload,
+    Save,
+} from 'lucide-react';
 import { ExportButton } from './ExportButton';
+import { formatShortcutTitle, getShortcutAriaKeys } from '@/config/shortcuts';
 
 interface EditorHeaderProps {
     projectName: string;
@@ -46,79 +51,95 @@ export function EditorHeader({
     onSave,
     isDirty,
     isSaving,
-    onExportBundle
+    onExportBundle,
 }: EditorHeaderProps) {
     return (
-        <header className="flex-none h-12 px-3 bg-gray-800 flex justify-between items-center border-b border-gray-700 gap-3">
-            {/* ... */}
-            <div className="flex items-center gap-3 min-w-0">
+        <header className="flex h-12 flex-none items-center gap-3 border-b border-slate-700 bg-slate-950 px-3 text-slate-200">
+            <div className="flex min-w-0 items-center gap-2">
                 <button
+                    type="button"
                     onClick={onClose}
-                    className="text-gray-400 hover:text-white transition-colors"
+                    className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+                    title="Back to projects"
                 >
-                    ← Volver
+                    <ArrowLeft className="h-4 w-4" />
+                    <span className="hidden sm:inline">Projects</span>
                 </button>
+                <div className="h-5 w-px bg-slate-700" />
                 <InlineEditor
                     initialValue={projectName}
                     onSave={onRename}
-                    textClassName="text-base font-semibold truncate"
-                    inputClassName="text-base font-semibold h-8"
+                    textClassName="max-w-64 truncate text-sm font-semibold text-slate-100"
+                    inputClassName="h-8 max-w-64 text-sm font-semibold"
                 />
+                <StatusBar />
             </div>
 
-            <div className="flex items-center gap-2 min-w-0">
-                <StatusBar />
-
-                <div className="flex items-center gap-2">
+            <div className="ml-auto flex min-w-0 items-center gap-1.5">
+                <div className="flex items-center gap-1" role="group" aria-label="History controls">
                     <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!canUndo ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center rounded text-slate-300 transition-colors enabled:hover:bg-slate-800 enabled:hover:text-white disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
                         onPointerDownCapture={onHistoryPointerDown}
                         onClick={onUndo}
                         disabled={!canUndo}
-                        title="Deshacer (Ctrl+Z)"
+                        title={formatShortcutTitle('Undo', 'UNDO')}
+                        aria-label="Undo"
+                        aria-keyshortcuts={getShortcutAriaKeys('UNDO')}
                     >
                         <UndoIcon width={16} height={16} />
                     </button>
                     <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!canRedo ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center rounded text-slate-300 transition-colors enabled:hover:bg-slate-800 enabled:hover:text-white disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
                         onPointerDownCapture={onHistoryPointerDown}
                         onClick={onRedo}
                         disabled={!canRedo}
-                        title="Rehacer (Ctrl+Shift+Z)"
+                        title={formatShortcutTitle('Redo', 'REDO')}
+                        aria-label="Redo"
+                        aria-keyshortcuts={getShortcutAriaKeys('REDO')}
                     >
                         <RedoIcon width={16} height={16} />
                     </button>
                 </div>
 
-                <div className="w-[1px] h-6 bg-gray-700 mx-1" />
-
-                <div className="flex items-center gap-2">
+                <div className="hidden items-center gap-1 md:flex" role="group" aria-label="Clipboard controls">
                     <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!canCopy ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center rounded text-slate-300 transition-colors enabled:hover:bg-slate-800 enabled:hover:text-white disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
                         onClick={onCopy}
                         disabled={!canCopy}
-                        title="Copiar (Cmd+C)"
+                        title={formatShortcutTitle('Copy', 'COPY')}
+                        aria-label="Copy"
+                        aria-keyshortcuts={getShortcutAriaKeys('COPY')}
                     >
                         <CopyIcon width={16} height={16} />
                     </button>
                     <button
-                        className={`h-8 px-3 bg-gray-700 enabled:hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors flex items-center justify-center ${!canPaste ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center rounded text-slate-300 transition-colors enabled:hover:bg-slate-800 enabled:hover:text-white disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
                         onClick={onPaste}
                         disabled={!canPaste}
-                        title="Pegar (Cmd+V)"
+                        title={formatShortcutTitle('Paste', 'PASTE')}
+                        aria-label="Paste"
+                        aria-keyshortcuts={getShortcutAriaKeys('PASTE')}
                     >
                         <PasteIcon width={16} height={16} />
                     </button>
                 </div>
 
                 <Button
-                    className={`h-8 px-3 rounded text-sm font-medium transition-colors flex items-center justify-center ${isDirty || isSaving
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                        : 'bg-gray-700 text-gray-400 cursor-default'
+                    variant="secondary"
+                    size="sm"
+                    className={`h-8 w-8 border p-0 ${isDirty || isSaving
+                        ? 'border-sky-500/50 bg-sky-500/20 text-sky-100 hover:bg-sky-500/30'
+                        : 'border-slate-800 bg-slate-900 text-slate-500'
                         }`}
                     onClick={onSave}
                     disabled={!isDirty || isSaving}
-                    title={isSaving ? 'Guardando...' : isDirty ? 'Guardar cambios' : 'Todo guardado'}
+                    title={formatShortcutTitle(isSaving ? 'Saving…' : isDirty ? 'Save changes' : 'All changes saved', 'SAVE')}
+                    aria-label={isSaving ? 'Saving' : 'Save changes'}
+                    aria-keyshortcuts={getShortcutAriaKeys('SAVE')}
                 >
                     {isSaving ? (
                         <SpinnerIcon className="w-4 h-4" />
@@ -129,15 +150,16 @@ export function EditorHeader({
 
                 <Button
                     variant="secondary"
-                    size="md"
-                    className="h-8 px-3 flex items-center justify-center"
+                    size="sm"
+                    className="h-8 w-8 border border-slate-800 bg-slate-900 p-0 text-slate-300 hover:bg-slate-800 hover:text-white"
                     onClick={onExportBundle}
-                    title="Exportar archivo de proyecto (.waptions)"
+                    title="Download project file (.waptions)"
+                    aria-label="Download project file"
                 >
                     <HardDriveDownload className="w-4 h-4" />
                 </Button>
 
-                <div className="w-px h-6 bg-gray-700 mx-1" />
+                <div className="mx-1 h-6 w-px bg-slate-700" />
 
                 <ExportButton />
             </div>

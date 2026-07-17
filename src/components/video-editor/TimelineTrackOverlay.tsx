@@ -3,11 +3,13 @@
 import { useState, memo } from 'react';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
-import { buildClipPlacements, getMediaDuration } from '@/lib/video-timeline';
+import { getMediaDuration } from '@/lib/video-timeline';
 import { getClampedSubtitleTrackShift } from '@/lib/editor-layout';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
 import { useShallow } from 'zustand/react/shallow';
 import { useEditorTransactionCoordinator } from './EditorTransactionContext';
+import { buildAudioClipSnapPoints, buildVideoClipSnapPoints } from '@/lib/timeline-snap';
+import { framesToSeconds } from '@/lib/render-profile';
 
 interface TimelineTrackOverlayProps {
     duration: number;
@@ -175,15 +177,23 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         if (snapEnabled) {
             const pointsMap = new Map<number, boolean>(); // time -> isInitial
 
-            const { videoClips } = useTimelineStore.getState();
-            const mediaDuration = getMediaDuration(videoClips);
+            const {
+                audioSources,
+                audioTracks,
+                renderProfile,
+                videoClips,
+                videoSources,
+            } = useTimelineStore.getState();
+            const mediaDuration = getMediaDuration(videoClips, renderProfile.fps);
 
             pointsMap.set(0, false);
             pointsMap.set(mediaDuration, false);
-            buildClipPlacements(videoClips).forEach((placement) => {
-                pointsMap.set(placement.projectStart, false);
-                pointsMap.set(placement.projectEnd, false);
-            });
+            buildVideoClipSnapPoints(videoClips, renderProfile.fps)
+                .forEach((point) => pointsMap.set(framesToSeconds(point.frame, renderProfile.fps), false));
+            // Independent audio is a first-class editing surface, so both clip edges attract
+            // subtitle moves and trims just like video and neighboring subtitle boundaries.
+            buildAudioClipSnapPoints(audioTracks, renderProfile.fps, videoSources, audioSources)
+                .forEach((point) => pointsMap.set(framesToSeconds(point.frame, renderProfile.fps), false));
 
             const playheadTime = usePlaybackStore.getState().currentTime;
             pointsMap.set(playheadTime, false);
@@ -393,9 +403,9 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
         <div
             data-testid="timeline-subtitle-clip"
             data-subtitle-id={subtitle.id}
-            className={`absolute top-2 bottom-2 rounded-md border text-[10px] flex items-center justify-center cursor-move select-none transition-shadow ${isSelected
-                ? 'bg-yellow-500/30 border-yellow-500 z-20 shadow-[0_0_10px_rgba(234,179,8,0.3)]'
-                : 'bg-blue-600/20 border-blue-500/50 hover:border-blue-400 z-10'
+            className={`absolute bottom-2 top-2 flex cursor-move select-none items-center justify-center rounded border text-[10px] transition-colors ${isSelected
+                ? 'z-20 border-violet-300 bg-violet-500/30 shadow-[0_0_0_1px_rgba(196,181,253,0.35)]'
+                : 'z-10 border-violet-400/45 bg-violet-500/15 hover:border-violet-300/70 hover:bg-violet-500/25'
                 }`}
             style={{
                 left: `${left}px`,
@@ -416,19 +426,19 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             {isSelected && (
                 <>
                     <div
-                        className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize flex items-center justify-center group/handle transition-colors ${activeHandle === 'start' ? 'bg-yellow-400/50' : 'hover:bg-yellow-400/50'
+                        className={`absolute bottom-0 left-0 top-0 flex w-2 cursor-ew-resize items-center justify-center transition-colors group/handle ${activeHandle === 'start' ? 'bg-violet-300/50' : 'hover:bg-violet-300/40'
                             }`}
                         onMouseDown={(e) => handleMouseDown(e, 'resize-start')}
                     >
-                        <div className={`w-[1px] h-3 transition-colors ${activeHandle === 'start' ? 'bg-yellow-500' : 'bg-yellow-500/50 group-hover/handle:bg-yellow-500'
+                        <div className={`h-3 w-px transition-colors ${activeHandle === 'start' ? 'bg-violet-200' : 'bg-violet-300/50 group-hover/handle:bg-violet-200'
                             }`} />
                     </div>
                     <div
-                        className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize flex items-center justify-center group/handle transition-colors ${activeHandle === 'end' ? 'bg-yellow-400/50' : 'hover:bg-yellow-400/50'
+                        className={`absolute bottom-0 right-0 top-0 flex w-2 cursor-ew-resize items-center justify-center transition-colors group/handle ${activeHandle === 'end' ? 'bg-violet-300/50' : 'hover:bg-violet-300/40'
                             }`}
                         onMouseDown={(e) => handleMouseDown(e, 'resize-end')}
                     >
-                        <div className={`w-[1px] h-3 transition-colors ${activeHandle === 'end' ? 'bg-yellow-500' : 'bg-yellow-500/50 group-hover/handle:bg-yellow-500'
+                        <div className={`h-3 w-px transition-colors ${activeHandle === 'end' ? 'bg-violet-200' : 'bg-violet-300/50 group-hover/handle:bg-violet-200'
                             }`} />
                     </div>
                 </>

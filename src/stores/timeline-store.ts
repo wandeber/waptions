@@ -15,6 +15,7 @@ import type {
     VideoClip,
     VideoClipV3,
     VideoSourceAsset,
+    VideoTrack,
 } from '@/types/video';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
 import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
@@ -94,6 +95,17 @@ import {
     TIMELINE_HISTORY_ROOTS,
 } from './timeline-history-projection';
 import type { TimelineHistoryEntry, TimelineHistoryMetadata } from './timeline-store-types';
+import {
+    addVideoTrackMembership,
+    canonicalizeVideoTrackClipOrder,
+    cloneVideoTracks,
+    createDefaultVideoTracks,
+    deleteVideoClipMembership,
+    insertSplitVideoClipMembership,
+    moveVideoClipToNewTrackMembership,
+    moveVideoClipToTrackMembership,
+    removeEmptyVideoTrackMembership,
+} from '@/lib/video-tracks';
 
 export type {
     AudioClipEditableSettings,
@@ -167,6 +179,7 @@ const audioClipsEqual = (left: AudioClip, right: AudioClip): boolean => {
         return left.source.audioSourceId === right.source.audioSourceId
             && left.sourceStartSample === right.sourceStartSample
             && left.sourceEndSample === right.sourceEndSample
+            && left.timelineDurationSamples === right.timelineDurationSamples
             && left.fadeInSamples === right.fadeInSamples
             && left.fadeOutSamples === right.fadeOutSamples;
     }
@@ -425,6 +438,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     renderProfile: createDefaultRenderProfile(),
     videoSources: [],
     videoClips: [],
+    videoTracks: createDefaultVideoTracks([]),
     audioSources: [],
     audioTracks: [],
     transientSelection: { kind: 'none' },
@@ -897,6 +911,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             tracks,
             videoSources: document.videoSources.map((source) => ({ ...source })),
             videoClips: cloneVideoClips(document.videoClips),
+            videoTracks: cloneVideoTracks(document.videoTracks),
             audioSources: document.audioSources.map((source) => ({ ...source })),
             audioTracks: cloneAudioTracks(document.audioTracks),
             // Durable manifests intentionally omit selection; direct runtime hydration accepts
@@ -937,6 +952,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             tracks: [],
             videoSources: [],
             videoClips: [],
+            videoTracks: createDefaultVideoTracks([]),
             audioSources: [],
             audioTracks: [],
             transientSelection: { kind: 'none' },
@@ -1076,6 +1092,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         });
 
         let nextVideoClips: TimelineVideoClip[] = state.videoClips;
+        let nextVideoTracks = state.videoTracks;
         let nextTracks = state.tracks;
         let nextSubtitleSelection = state.selectedSubtitleIds;
         if (videoClips.length > 0) {
@@ -1087,6 +1104,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             );
             const transformed = applyVideoEditToSubtitleDomains(state.tracks, state.selectedSubtitleIds, edit);
             nextVideoClips = cloneVideoClips(edit.videoClips);
+            const targetTrackId = state.videoTracks[0]?.id;
+            if (!targetTrackId) throw new Error('At least one video track is required before importing media.');
+            const importedIds = videoClips.map((clip) => clip.id);
+            nextVideoTracks = canonicalizeVideoTrackClipOrder(
+                state.videoTracks.map((track) => track.id === targetTrackId
+                    ? { ...track, clipIds: [...track.clipIds, ...importedIds] }
+                    : track),
+                nextVideoClips,
+            );
             nextTracks = transformed.tracks;
             nextSubtitleSelection = transformed.selectedSubtitleIds;
         }
@@ -1098,6 +1124,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const patch: Partial<TimelineStore> = {
             videoSources: nextVideoSources,
             videoClips: nextVideoClips,
+            videoTracks: nextVideoTracks,
             audioSources: nextAudioSources,
             audioTracks: nextAudioTracks,
             tracks: nextTracks,
@@ -1197,6 +1224,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         if (!splitVideoClips) return;
         commitDurableMutation(state, {
             videoClips: splitVideoClips,
+            videoTracks: insertSplitVideoClipMembership(
+                state.videoTracks,
+                splitVideoClips,
+                clipId,
+                rightClipId,
+            ),
         }, {
             history: { label: 'Split video clip' },
             impact: 'invalidate-transcription',
@@ -1267,6 +1300,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         );
         commitDurableMutation(state, {
             videoClips: cloneVideoClips(edit.videoClips),
+            videoTracks: deleteVideoClipMembership(state.videoTracks, clipId),
             tracks: transformed.tracks,
             selectedSubtitleIds: transformed.selectedSubtitleIds,
             selectedClipId: state.selectedClipId === clipId ? null : state.selectedClipId,
@@ -1302,6 +1336,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         );
         commitDurableMutation(state, {
             videoClips: cloneVideoClips(edit.videoClips),
+            videoTracks: canonicalizeVideoTrackClipOrder(state.videoTracks, edit.videoClips),
             tracks: transformed.tracks,
             selectedSubtitleIds: transformed.selectedSubtitleIds,
             transientSelection: state.transientSelection.kind === 'subtitles'
@@ -1312,6 +1347,62 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             impact: 'invalidate-transcription',
             recalculateContentBoundary: true,
         });
+    },
+
+    addVideoTrack: (name, requestedId, insertionIndex) => {
+        const state = get();
+        const id = requestedId ?? crypto.randomUUID();
+        const track: VideoTrack = {
+            id,
+            name: name?.trim() || `Video ${state.videoTracks.length + 1}`,
+            clipIds: [],
+        };
+        const result = addVideoTrackMembership(state.videoTracks, track, insertionIndex);
+        if (!result.changed) return '';
+        commitDurableMutation(state, { videoTracks: result.videoTracks }, {
+            history: { label: 'Add video track' },
+        });
+        return id;
+    },
+
+    removeVideoTrack: (trackId) => {
+        const state = get();
+        const result = removeEmptyVideoTrackMembership(state.videoTracks, trackId);
+        if (!result.changed) return;
+        commitDurableMutation(state, { videoTracks: result.videoTracks }, {
+            history: { label: 'Remove video track' },
+        });
+    },
+
+    moveVideoClipToTrack: (clipId, targetTrackId) => {
+        const state = get();
+        const result = moveVideoClipToTrackMembership(
+            state.videoTracks,
+            state.videoClips,
+            clipId,
+            targetTrackId,
+        );
+        if (!result.changed) return;
+        commitDurableMutation(state, { videoTracks: result.videoTracks }, {
+            history: { label: 'Move video clip to track' },
+        });
+    },
+
+    moveVideoClipToNewTrack: (clipId, insertionIndex, requestedId, name) => {
+        const state = get();
+        const id = requestedId ?? crypto.randomUUID();
+        const result = moveVideoClipToNewTrackMembership(
+            state.videoTracks,
+            state.videoClips,
+            clipId,
+            { id, name: name?.trim() || `Video ${state.videoTracks.length + 1}` },
+            insertionIndex,
+        );
+        if (!result.changed) return '';
+        commitDurableMutation(state, { videoTracks: result.videoTracks }, {
+            history: { label: 'Move video clip to new track' },
+        });
+        return id;
     },
 
     selectClip: (clipId) => set((state) => {

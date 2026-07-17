@@ -92,6 +92,7 @@ function document(overrides: Partial<EditorDocumentV3> = {}): EditorDocumentV3 {
         subtitleTracks: [],
         videoSources: [videoSource()],
         videoClips: [linkedVideoClip()],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['linked_video'] }],
         audioSources: [audioSource()],
         audioTracks: [importedTrack()],
         activeSubtitleTrackId: null,

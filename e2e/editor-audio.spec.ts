@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
+import { readTimelineTime } from './support/editor-helpers';
 
 const fixturePaths = [
   process.env.WAPTIONS_E2E_VIDEO_A,
@@ -8,6 +9,82 @@ const fixturePaths = [
 ];
 
 test.describe('linked and independent timeline audio', () => {
+  test('persists imported audio move and trim snaps and exposes its edges as snap targets', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    test.skip(
+      fixturePaths.some((path) => !path || !existsSync(path)),
+      'Set WAPTIONS_E2E_VIDEO_A, WAPTIONS_E2E_VIDEO_B, and WAPTIONS_E2E_AUDIO to real local media files.',
+    );
+    const [videoA, , audio] = fixturePaths as [string, string, string];
+
+    await page.goto('/');
+    await page.getByPlaceholder('Nombre del proyecto...').fill(`Audio snap ${Date.now()}`);
+    await page.getByRole('button', { name: 'Crear' }).click();
+    await expect(page).toHaveURL(/\/editor\//);
+    await page.locator('input[type="file"][accept="video/*,audio/*"]').setInputFiles([videoA, audio]);
+
+    const firstVideo = page.getByTestId('timeline-video-clip');
+    const importedAudio = page.getByTestId('timeline-audio-clip');
+    await expect(firstVideo).toHaveCount(1);
+    await expect(importedAudio).toHaveCount(1);
+    const [firstVideoBox, importedAudioBox] = await Promise.all([
+      firstVideo.boundingBox(),
+      importedAudio.boundingBox(),
+    ]);
+    if (!firstVideoBox || !importedAudioBox) throw new Error('The video or imported audio clip is not measurable.');
+    const videoEnd = await firstVideo.evaluate((element) => (
+      parseFloat(element.style.left) + parseFloat(element.style.width)
+    ));
+
+    // Release within the magnetic tolerance instead of exactly on the target. The persisted style
+    // must still land on the video boundary after pointer-up, not only during the drag preview.
+    await page.mouse.move(
+      importedAudioBox.x + importedAudioBox.width / 2,
+      importedAudioBox.y + importedAudioBox.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      importedAudioBox.x + importedAudioBox.width / 2 + firstVideoBox.width - 6,
+      importedAudioBox.y + importedAudioBox.height / 2,
+    );
+    await page.mouse.up();
+    await expect.poll(() => importedAudio.evaluate((element) => (
+      Math.round(parseFloat(element.style.left) * 1_000)
+    ))).toBe(Math.round(videoEnd * 1_000));
+
+    // Derive the scale from the canonical inline geometry. DOM bounding boxes can quantize to a
+    // nearby device-pixel fraction, while committed clip edges use the unrounded CSS value.
+    const pixelsPerSecond = videoEnd / 2;
+    const trimTargetSeconds = 3;
+    const trimTargetLeft = pixelsPerSecond * trimTargetSeconds;
+    const ruler = page.getByTestId('timeline-ruler');
+    const rulerBox = await ruler.boundingBox();
+    if (!rulerBox) throw new Error('The timeline ruler is not measurable.');
+
+    // Put the playhead inside the moved audio clip, then release the right trim handle near it.
+    // The committed clip edge must retain the snapped frame, not a nearby native-sample boundary.
+    await ruler.click({ position: { x: trimTargetLeft, y: rulerBox.height / 2 } });
+    await expect.poll(() => readTimelineTime(page)).toBeCloseTo(trimTargetSeconds, 2);
+    const trimHandle = importedAudio.getByTestId('audio-trim-right');
+    const trimBox = await trimHandle.boundingBox();
+    if (!trimBox) throw new Error('The imported audio trim handle is not measurable.');
+    await page.mouse.move(trimBox.x + trimBox.width / 2, trimBox.y + trimBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(rulerBox.x + trimTargetLeft - 6, trimBox.y + trimBox.height / 2);
+    await page.mouse.up();
+    await expect.poll(() => importedAudio.evaluate((element) => (
+      Math.round((parseFloat(element.style.left) + parseFloat(element.style.width)) * 1_000)
+    ))).toBe(Math.round(trimTargetLeft * 1_000));
+
+    // Move the playhead away, then click inside the magnetic tolerance of the isolated audio edge.
+    // With no video or subtitle boundary at three seconds, landing there proves audio is a target.
+    await ruler.click({ position: { x: pixelsPerSecond / 2, y: rulerBox.height / 2 } });
+    await expect.poll(() => readTimelineTime(page)).toBeCloseTo(0.5, 1);
+    await ruler.click({ position: { x: trimTargetLeft - 6, y: rulerBox.height / 2 } });
+    await expect.poll(() => readTimelineTime(page)).toBeCloseTo(trimTargetSeconds, 2);
+  });
+
   test('imports, separates, edits, persists, and restores a complete audio graph', async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -68,7 +145,7 @@ test.describe('linked and independent timeline audio', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('timeline-audio-clip')).toHaveCount(2);
 
-    await page.getByTitle('Deshacer (Ctrl+Z)').click();
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(page.getByTestId('timeline-audio-track')).toHaveCount(1);
     await expect(page.getByTestId('timeline-audio-clip')).toHaveCount(1);
     await expect(page.getByTestId('linked-video-waveform')).toHaveCount(2);
@@ -104,7 +181,10 @@ test.describe('linked and independent timeline audio', () => {
     // overlay; clicking it exercises the same frame-snapped seek path as a real editor gesture.
     // At fit zoom the snap threshold spans more than this short fixture, so disable magnetic snap
     // before clicking its visual center instead of letting the gesture collapse back to frame 0.
-    await page.getByTitle('Snap').click();
+    const snapButton = page.getByTitle('Disable snapping');
+    await expect(snapButton).toHaveAttribute('aria-pressed', 'true');
+    await snapButton.click();
+    await expect(page.getByTitle('Enable snapping')).toHaveAttribute('aria-pressed', 'false');
     const ruler = page.locator('#timeline-playhead-sync').locator('xpath=../following-sibling::div[1]');
     const [audioBox, rulerBox] = await Promise.all([importedAudio.boundingBox(), ruler.boundingBox()]);
     if (!audioBox || !rulerBox) throw new Error('The selected audio clip or ruler is not measurable.');
@@ -123,7 +203,7 @@ test.describe('linked and independent timeline audio', () => {
 
     await page.getByTestId('timeline-audio-clip').first().click();
     const mediaInspector = page.getByTestId('media-inspector');
-    const inspectorPanel = mediaInspector.locator('..');
+    const inspectorPanel = page.getByTestId('editor-inspector');
     await expect(mediaInspector).toBeVisible();
     await page.getByTitle('Hide inspector').click();
     await expect(inspectorPanel).toHaveAttribute('aria-hidden', 'true');
@@ -133,7 +213,7 @@ test.describe('linked and independent timeline audio', () => {
 
     // Flush the coalesced IndexedDB writer before reloading so the assertion validates the V3
     // manifest and typed audio File restoration rather than merely the current Zustand state.
-    const saveButton = page.getByTitle('Guardar cambios');
+    const saveButton = page.getByTitle('Save changes');
     if (await saveButton.isVisible().catch(() => false)) await saveButton.click();
     await page.reload();
 

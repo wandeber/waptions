@@ -8,6 +8,7 @@ import {
   terminateContinuousEdit,
   type ContinuousEditSession,
 } from '@/lib/continuous-edit-session';
+import { isTextEditingKeyboardTarget } from '@/lib/keyboard-target';
 import { useEditorTransactionCoordinator } from '@/components/video-editor/EditorTransactionContext';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { Tabs } from '../../design-system/Tabs';
@@ -312,8 +313,7 @@ export function SubtitleEditor({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (selectedSubtitleIds.length === 0 || event.key !== 'Delete' || event.isComposing) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, [contenteditable="true"], [role="textbox"]')) return;
+      if (isTextEditingKeyboardTarget(event.target)) return;
       selectedSubtitleIds.forEach((id) => onDelete?.(id));
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -447,27 +447,27 @@ export function SubtitleEditor({
         sections={[
           {
             id: 'textStyle',
-            title: 'Estilo del texto',
+            title: 'Text style',
             content: <TextStyleSection style={localAnimationStyle} {...styleHandlers} />,
           },
           {
             id: 'position',
-            title: 'Posición',
+            title: 'Position',
             content: <PositionSection style={localAnimationStyle} {...styleHandlers} />,
           },
           {
             id: 'background',
-            title: 'Fondo',
+            title: 'Background',
             content: <BackgroundSection style={localAnimationStyle} {...styleHandlers} />,
           },
           {
             id: 'entryAnimation',
-            title: 'Animación de entrada',
+            title: 'Entry animation',
             content: <AnimationSection style={localAnimationStyle} {...styleHandlers} type="entry" />,
           },
           {
             id: 'exitAnimation',
-            title: 'Animación de salida',
+            title: 'Exit animation',
             content: <AnimationSection style={localAnimationStyle} {...styleHandlers} type="exit" />,
           },
         ]}
@@ -480,7 +480,7 @@ export function SubtitleEditor({
   const tabs = [
     {
       id: 'subtitles',
-      label: 'Subtítulos',
+      label: 'Subtitles',
       content: (
         <SubtitleList
           subtitles={subtitles}
@@ -505,7 +505,7 @@ export function SubtitleEditor({
         />
       ),
     },
-    { id: 'style', label: 'Estilo', content: styleContent },
+    { id: 'style', label: 'Style', content: styleContent },
   ];
 
   return (

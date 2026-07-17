@@ -7,6 +7,7 @@ import {
     createEditorManifestV3,
     migrateEditorDocumentV2ToV3,
     migrateLegacyEditorDocumentToV3,
+    hydrateEditorDocumentV3,
 } from './editor-document-migration';
 
 const source = (hasAudio = true): VideoSourceAssetV3 => {
@@ -68,6 +69,7 @@ describe('editor document v3 migration', () => {
                 isCanvasSizeLocked: true,
             },
             videoClips: [{ audio: { linkState: 'linked', muted: false, gainDb: 0 } }],
+            videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a'] }],
             subtitleTracks: [{ timingDomain: 'video-ripple' }],
             audioSources: [],
             audioTracks: [],
@@ -80,6 +82,25 @@ describe('editor document v3 migration', () => {
         });
         expect(document.transcriptionByTrackId.track_a.sourceAudioGraphSignature).toMatch(/^fnv1a64:/);
         expect(createEditorManifestV3(document)).not.toHaveProperty('transientSelection');
+    });
+
+    it('normalizes only legacy V3 manifests that omit video tracks', () => {
+        const asset = source();
+        const migrated = migrateEditorDocumentV2ToV3({ manifest: manifest(asset), loadedVideoSources: [asset] });
+        const legacyManifest = createEditorManifestV3(migrated) as unknown as Record<string, unknown>;
+        delete legacyManifest.videoTracks;
+        const hydrated = hydrateEditorDocumentV3(
+            legacyManifest as unknown as ReturnType<typeof createEditorManifestV3>,
+            [asset],
+            [],
+        );
+        expect(hydrated.videoTracks).toEqual([{
+            id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a'],
+        }]);
+
+        const malformed = createEditorManifestV3(migrated);
+        malformed.videoTracks = [{ id: 'bad track', name: '', clipIds: [] }];
+        expect(() => hydrateEditorDocumentV3(malformed, [asset], [])).toThrow(/videoTracks/);
     });
 
     it('uses null audio for silent sources and preserves safely shaped runtime mix settings', () => {

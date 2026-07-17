@@ -13,6 +13,7 @@ import { recordTimelineHistory } from '@/stores/timeline-history';
 import { TIMELINE_HISTORY_ROOTS } from '@/stores/timeline-history-projection';
 import type { IndexedDBBatchOperation } from './indexeddb-adapter';
 import {
+    EDITOR_HISTORY_STORAGE_VERSION,
     EDITOR_RECOVERY_INDEX_KEY,
     createHistoryIndex,
     getManifestSourceSignature,
@@ -180,6 +181,7 @@ describe('v3 storage service', () => {
         const reloaded = await service.loadEditorDocument('project');
 
         expect(loaded?.audioTracks).toEqual(document.audioTracks);
+        expect(loaded?.videoTracks).toEqual(document.videoTracks);
         expect(loaded?.videoSources[0].file).toBe(document.videoSources[0].file);
         expect(loaded?.audioSources[0].file).toBe(document.audioSources[0].file);
         expect(loaded?.transientSelection).toEqual({ kind: 'none' });
@@ -191,6 +193,29 @@ describe('v3 storage service', () => {
         const persisted = adapter.values.get(EDITOR_DOCUMENT_V3_KEY) as EditorManifestV3;
         expect(persisted.videoSourceDescriptors[0].fingerprint).toBe(loaded?.videoSources[0].fingerprint);
         expect(persisted.audioSourceDescriptors[0].fingerprint).toBe(loaded?.audioSources[0].fingerprint);
+    });
+
+    it('normalizes and resaves a pre-lane V3 manifest but rejects a present malformed mapping', async () => {
+        const first = setup();
+        const document = v3Document();
+        const legacyManifest = createEditorManifestV3(document) as unknown as Record<string, unknown>;
+        delete legacyManifest.videoTracks;
+        first.adapter.values.set(EDITOR_DOCUMENT_V3_KEY, legacyManifest);
+        first.adapter.values.set('video-source:shared', document.videoSources[0].file);
+        first.adapter.values.set('audio-source:shared', document.audioSources[0].file);
+
+        const loaded = await first.service.loadEditorDocument('project');
+        expect(loaded?.videoTracks).toEqual([{
+            id: 'video_track_1', name: 'Video 1', clipIds: ['video_clip'],
+        }]);
+        expect((first.adapter.values.get(EDITOR_DOCUMENT_V3_KEY) as EditorManifestV3).videoTracks)
+            .toEqual(loaded?.videoTracks);
+
+        const second = setup();
+        const malformed = createEditorManifestV3(v3Document());
+        malformed.videoTracks = [{ id: 'video_track_1', name: 'Video 1', clipIds: [] }];
+        second.adapter.values.set(EDITOR_DOCUMENT_V3_KEY, malformed);
+        await expect(second.service.loadEditorDocument('project')).rejects.toThrow(/videoTracks|not assigned/);
     });
 
     it('isolates identical legacy source metadata across projects while keeping each upgrade stable', async () => {
@@ -331,13 +356,13 @@ describe('v3 storage service', () => {
         });
         const recoveryKey = recoveryEntryStorageKey(recoveredRevision);
         adapter.values.set(EDITOR_RECOVERY_INDEX_KEY, {
-            version: 1,
+            version: EDITOR_HISTORY_STORAGE_VERSION,
             documentRevision: baseline.revision,
             sourceSignature: getManifestSourceSignature(manifest),
             entryKeys: [recoveryKey],
         });
         adapter.values.set(recoveryKey, {
-            version: 1,
+            version: EDITOR_HISTORY_STORAGE_VERSION,
             fromRevision: baseline.revision,
             toRevision: recoveredRevision,
             fromAudioGraphRevision: baseline.audioGraphRevision,
@@ -390,7 +415,7 @@ describe('v3 storage service', () => {
         const secondKey = recoveryEntryStorageKey(6);
         adapter.values.set(EDITOR_DOCUMENT_V3_KEY, manifest);
         adapter.values.set(EDITOR_RECOVERY_INDEX_KEY, {
-            version: 1,
+            version: EDITOR_HISTORY_STORAGE_VERSION,
             documentRevision: baseline.revision,
             sourceSignature: getManifestSourceSignature(manifest),
             entryKeys: [firstKey, secondKey],
@@ -398,7 +423,7 @@ describe('v3 storage service', () => {
         // The first broken revision link rejects the entire chain; both indexed payloads still
         // remain owned garbage and must be removed together by the following checkpoint.
         adapter.values.set(firstKey, {
-            version: 1,
+            version: EDITOR_HISTORY_STORAGE_VERSION,
             fromRevision: 99,
             toRevision: 5,
             fromAudioGraphRevision: baseline.audioGraphRevision,

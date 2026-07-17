@@ -16,6 +16,7 @@ import type {
     VideoClipAudioSettings,
     VideoClipV3,
     VideoSourceAsset,
+    VideoTrack,
 } from '@/types/video';
 import type { AudioGraphMutationImpact } from '@/lib/audio-graph-signature';
 import type { SerializablePatch } from '@/lib/serializable-patch';
@@ -35,6 +36,7 @@ export type TimelineVideoClip = VideoClipV3;
 export interface TimelineHistoryProjection {
     tracks: SubtitleTrack[];
     videoClips: TimelineVideoClip[];
+    videoTracks: VideoTrack[];
     renderProfile: RenderProfile;
     audioTracks: AudioTrack[];
     transientSelection: TransientMediaSelection;
@@ -111,6 +113,7 @@ export interface TimelineStore {
     renderProfile: RenderProfile;
     videoSources: VideoSourceAsset[];
     videoClips: TimelineVideoClip[];
+    videoTracks: VideoTrack[];
     audioSources: AudioSourceAsset[];
     audioTracks: AudioTrack[];
     transientSelection: TransientMediaSelection;
@@ -164,6 +167,10 @@ export interface TimelineStore {
     trimVideoClip: (clipId: string, sourceStart: number, sourceEnd: number) => void;
     deleteVideoClip: (clipId: string) => void;
     reorderVideoClips: (orderedClipIds: string[]) => void;
+    addVideoTrack: (name?: string, id?: string, insertionIndex?: number) => string;
+    removeVideoTrack: (trackId: string) => void;
+    moveVideoClipToTrack: (clipId: string, targetTrackId: string) => void;
+    moveVideoClipToNewTrack: (clipId: string, insertionIndex: number, id?: string, name?: string) => string;
     selectClip: (clipId: string | null) => void;
     selectAudioClip: (trackId: string, clipId: string) => void;
     moveAudioClip: (clipId: string, targetTrackId: string, timelineStartFrame: number) => void;

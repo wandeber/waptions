@@ -154,6 +154,7 @@ describe('project bundle v3', () => {
 
     it('exports separate video/audio maps while detached video audio reuses the video File', async () => {
         const editorDocument = document(false);
+        editorDocument.videoTracks.push({ id: 'video_track_2', name: 'Overlay', clipIds: [] });
         vi.spyOn(storageService, 'loadProject').mockResolvedValue(project);
         vi.spyOn(storageService, 'loadEditorDocument').mockResolvedValue(editorDocument);
 
@@ -164,12 +165,14 @@ describe('project bundle v3', () => {
         expect(metadata.sourceFiles.video).toEqual({ video: 'sources/video/video.mp4' });
         expect(metadata.sourceFiles.audio).toEqual({});
         expect(metadata.editorManifest.audioTracks[0].clips[0].source.kind).toBe('video-source-audio');
+        expect(metadata.editorManifest.videoTracks).toEqual(editorDocument.videoTracks);
         expect(zip.file('sources/video/video.mp4')).toBeTruthy();
         expect(zip.file(/^sources\/audio\//)).toEqual([]);
     });
 
     it('imports v3 video and audio sources in one complete document write before publication', async () => {
         const editorDocument = document(true);
+        editorDocument.videoTracks.push({ id: 'video_track_2', name: 'Overlay', clipIds: [] });
         const metadata: ProjectBundleMetadataV3 = {
             version: '3.0',
             project: projectMetadata(),
@@ -191,8 +194,32 @@ describe('project bundle v3', () => {
 
         expect(result.versionMismatch).toBe(false);
         expect(saveDocument.mock.calls[0][1].version).toBe(3);
+        expect(saveDocument.mock.calls[0][1].videoTracks).toEqual(editorDocument.videoTracks);
         expect(saveDocument.mock.calls[0][2].map((entry) => entry.kind)).toEqual(['video-source', 'audio-source']);
         expect(saveDocument.mock.invocationCallOrder[0]).toBeLessThan(saveProject.mock.invocationCallOrder[0]);
+    });
+
+    it('normalizes a pre-lane V3 bundle when videoTracks is absent', async () => {
+        const editorDocument = document(false);
+        const legacyManifest = createEditorManifestV3(editorDocument) as unknown as Record<string, unknown>;
+        delete legacyManifest.videoTracks;
+        const metadata = {
+            version: '3.0',
+            project: projectMetadata(),
+            editorManifest: legacyManifest,
+            sourceFiles: { video: { video: 'sources/video/video.mp4' }, audio: {} },
+            presets: [],
+        };
+        const zip = new JSZip();
+        zip.file('metadata.json', JSON.stringify(metadata));
+        zip.file('sources/video/video.mp4', new Uint8Array(editorDocument.videoSources[0].file as unknown as Uint8Array));
+        const saveDocument = vi.spyOn(storageService, 'saveEditorDocument').mockResolvedValue();
+        vi.spyOn(storageService, 'saveProject').mockResolvedValue();
+
+        await importProjectBundle(await zip.generateAsync({ type: 'uint8array' }) as unknown as Blob);
+        expect(saveDocument.mock.calls[0][1].videoTracks).toEqual([{
+            id: 'video_track_1', name: 'Video 1', clipIds: ['clip'],
+        }]);
     });
 
     it('imports v2 through the pure v3 migration and reports a version mismatch', async () => {
@@ -216,6 +243,7 @@ describe('project bundle v3', () => {
         expect(saveDocument.mock.calls[0][1]).toMatchObject({
             version: 3,
             videoClips: [{ audio: { linkState: 'linked' } }],
+            videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['clip'] }],
             audioSourceDescriptors: [],
         });
     });

@@ -7,6 +7,7 @@ import type {
     VideoSourceAudioClip,
 } from '@/types/video';
 import { createDefaultRenderProfile } from './render-profile';
+import { getAudioClipDurationFrames } from './timeline-snap';
 import {
     clampSampleFades,
     findAudioClip,
@@ -189,6 +190,337 @@ describe('audio timeline editing', () => {
             expect.objectContaining({ id: 'video_left', sourceEnd: 0.5, fadeOutFrames: 0 }),
             expect.objectContaining({ id: 'video_right', sourceStart: 0.5, fadeInFrames: 0 }),
         ]);
+    });
+
+    it('keeps 44.1 kHz right trims on the requested broadcast-frame boundary', () => {
+        const broadcastProfile = {
+            ...profile,
+            fps: { numerator: 30_000, denominator: 1_001 },
+        };
+        const source44100 = {
+            ...audioSource('audio_44100'),
+            nativeSampleRate: 44_100,
+            nativeSampleCount: 441_000,
+        };
+        const broadcastSources = { videoSources: [videoSource], audioSources: [source44100] };
+        const left: ImportedAudioClip = {
+            ...importedClip('left', 0, 0, 44_100),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+        };
+        const touching: ImportedAudioClip = {
+            ...importedClip('touching', 4, 10_000, 20_000),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+        };
+        const trimmed = trimAudioClipInTracks(
+            [track('lane', [left, touching])],
+            broadcastSources,
+            broadcastProfile,
+            left.id,
+            'right',
+            4,
+        );
+        const result = trimmed?.[0].clips.find((clip) => clip.id === left.id);
+
+        expect(result).toMatchObject({
+            sourceEndSample: 5_885,
+            timelineDurationSamples: 6_406,
+        });
+        expect(result && getAudioClipDurationFrames(
+            result,
+            broadcastProfile.fps,
+            broadcastSources.videoSources,
+            broadcastSources.audioSources,
+        )).toBe(4);
+        expect(trimmed?.[0].clips.find((clip) => clip.id === touching.id)?.timelineStartFrame).toBe(4);
+    });
+
+    it('keeps a 44.1 kHz left trim from extending its canonical broadcast-frame end', () => {
+        const broadcastProfile = {
+            ...profile,
+            fps: { numerator: 30_000, denominator: 1_001 },
+        };
+        const source44100 = {
+            ...audioSource('audio_44100'),
+            nativeSampleRate: 44_100,
+            nativeSampleCount: 441_000,
+        };
+        const broadcastSources = { videoSources: [videoSource], audioSources: [source44100] };
+        const left: ImportedAudioClip = {
+            ...importedClip('left', 0, 0, 7_357),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+        };
+        const touching: ImportedAudioClip = {
+            ...importedClip('touching', 5, 10_000, 20_000),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+        };
+        const trimmed = trimAudioClipInTracks(
+            [track('lane', [left, touching])],
+            broadcastSources,
+            broadcastProfile,
+            left.id,
+            'left',
+            4,
+        );
+        const result = trimmed?.[0].clips.find((clip) => clip.id === left.id);
+
+        expect(result).toMatchObject({
+            timelineStartFrame: 4,
+            timelineDurationSamples: 1_602,
+            sourceStartSample: 5_885,
+            sourceEndSample: 7_357,
+        });
+        expect(result && getAudioClipDurationFrames(
+            result,
+            broadcastProfile.fps,
+            broadcastSources.videoSources,
+            broadcastSources.audioSources,
+        )).toBe(1);
+    });
+
+    it('uses one native boundary for both sides of a 44.1 kHz broadcast-rate split', () => {
+        const broadcastProfile = {
+            ...profile,
+            fps: { numerator: 30_000, denominator: 1_001 },
+        };
+        const source44100 = {
+            ...audioSource('audio_44100'),
+            nativeSampleRate: 44_100,
+            nativeSampleCount: 441_000,
+        };
+        const broadcastSources = { videoSources: [videoSource], audioSources: [source44100] };
+        const clip: ImportedAudioClip = {
+            ...importedClip('left', 0, 0, 44_100),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+        };
+        const split = splitAudioClipInTracks(
+            [track('lane', [clip])],
+            broadcastSources,
+            broadcastProfile,
+            clip.id,
+            4,
+            'right',
+        );
+        const [left, right] = split?.[0].clips ?? [];
+
+        expect(left).toMatchObject({
+            sourceEndSample: 5_885,
+            timelineDurationSamples: 6_406,
+        });
+        expect(right).toMatchObject({
+            timelineStartFrame: 4,
+            timelineDurationSamples: 41_594,
+            sourceStartSample: 5_885,
+        });
+        expect(left && right && 'sourceEndSample' in left && 'sourceStartSample' in right
+            ? left.sourceEndSample === right.sourceStartSample
+            : false).toBe(true);
+    });
+
+    it('recomputes exact-sample coverage when moving a broadcast-rate fragment', () => {
+        const broadcastProfile = {
+            ...profile,
+            fps: { numerator: 30_000, denominator: 1_001 },
+        };
+        const source44100 = {
+            ...audioSource('audio_44100'),
+            nativeSampleRate: 44_100,
+            nativeSampleCount: 441_000,
+        };
+        const broadcastSources = { videoSources: [videoSource], audioSources: [source44100] };
+        const moving: ImportedAudioClip = {
+            ...importedClip('moving', 4, 5_885, 7_357),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+            timelineDurationSamples: 1_602,
+        };
+        const occupied: ImportedAudioClip = {
+            ...importedClip('occupied', 2, 10, 11),
+            source: { kind: 'audio-source', audioSourceId: source44100.id },
+            timelineDurationSamples: 1,
+        };
+
+        expect(getAudioClipDurationFrames(
+            moving,
+            broadcastProfile.fps,
+            broadcastSources.videoSources,
+            broadcastSources.audioSources,
+        )).toBe(1);
+        expect(getAudioClipDurationFrames(
+            { ...moving, timelineStartFrame: 1 },
+            broadcastProfile.fps,
+            broadcastSources.videoSources,
+            broadcastSources.audioSources,
+        )).toBe(2);
+        expect(moveAudioClipInTracks(
+            [track('lane', [occupied, moving])],
+            broadcastSources,
+            broadcastProfile,
+            moving.id,
+            'lane',
+            1,
+        )).toBeNull();
+
+        const touchingAtThree = { ...occupied, timelineStartFrame: 3 };
+        const moved = moveAudioClipInTracks(
+            [track('lane', [touchingAtThree, { ...moving, timelineStartFrame: 1 }])],
+            broadcastSources,
+            broadcastProfile,
+            moving.id,
+            'lane',
+            2,
+        );
+        expect(moved?.[0].clips.find((clip) => clip.id === moving.id)?.timelineStartFrame).toBe(2);
+    });
+
+    it('keeps a contiguous output seam when splitting 16 kHz audio on a frame boundary', () => {
+        const source16000 = {
+            ...audioSource('audio_16000'),
+            nativeSampleRate: 16_000,
+            nativeSampleCount: 160_000,
+        };
+        const lowRateSources = { videoSources: [videoSource], audioSources: [source16000] };
+        const clip: ImportedAudioClip = {
+            ...importedClip('left', 0, 0, 16_000),
+            source: { kind: 'audio-source', audioSourceId: source16000.id },
+        };
+        const split = splitAudioClipInTracks(
+            [track('lane', [clip])],
+            lowRateSources,
+            profile,
+            clip.id,
+            2,
+            'right',
+        );
+        const [left, right] = split?.[0].clips ?? [];
+
+        expect(left).toMatchObject({
+            sourceEndSample: 1_066,
+            timelineDurationSamples: 3_200,
+        });
+        expect(right).toMatchObject({
+            timelineStartFrame: 2,
+            sourceStartSample: 1_066,
+            timelineDurationSamples: 44_800,
+        });
+    });
+
+    it('anchors repeated 16 kHz left trims at the unchanged source end', () => {
+        const source16000 = {
+            ...audioSource('audio_16000'),
+            nativeSampleRate: 16_000,
+            nativeSampleCount: 160_000,
+        };
+        const lowRateSources = { videoSources: [videoSource], audioSources: [source16000] };
+        const original: ImportedAudioClip = {
+            ...importedClip('clip', 0, 0, 16_000),
+            source: { kind: 'audio-source', audioSourceId: source16000.id },
+        };
+        let tracks: AudioTrack[] = [track('lane', [original])];
+        for (const frame of [1, 2, 3]) {
+            const trimmed = trimAudioClipInTracks(
+                tracks,
+                lowRateSources,
+                profile,
+                original.id,
+                'left',
+                frame,
+            );
+            if (!trimmed) throw new Error(`Expected left trim to frame ${frame} to succeed.`);
+            tracks = trimmed;
+        }
+
+        expect(tracks[0].clips[0]).toMatchObject({
+            timelineStartFrame: 3,
+            sourceStartSample: 1_600,
+            sourceEndSample: 16_000,
+            timelineDurationSamples: 43_200,
+        });
+    });
+
+    it('reuses one native seam when splitting an already-quantized 16 kHz clip', () => {
+        const source16000 = {
+            ...audioSource('audio_16000'),
+            nativeSampleRate: 16_000,
+            nativeSampleCount: 160_000,
+        };
+        const lowRateSources = { videoSources: [videoSource], audioSources: [source16000] };
+        const original: ImportedAudioClip = {
+            ...importedClip('left', 0, 0, 16_000),
+            source: { kind: 'audio-source', audioSourceId: source16000.id },
+        };
+        const trimmed = trimAudioClipInTracks(
+            [track('lane', [original])],
+            lowRateSources,
+            profile,
+            original.id,
+            'right',
+            2,
+        );
+        if (!trimmed) throw new Error('Expected the right trim to succeed.');
+        const split = splitAudioClipInTracks(
+            trimmed,
+            lowRateSources,
+            profile,
+            original.id,
+            1,
+            'right',
+        );
+        const [left, right] = split?.[0].clips ?? [];
+
+        expect(left).toMatchObject({
+            sourceStartSample: 0,
+            sourceEndSample: 533,
+            timelineDurationSamples: 1_600,
+        });
+        expect(right).toMatchObject({
+            timelineStartFrame: 1,
+            sourceStartSample: 533,
+            sourceEndSample: 1_066,
+            timelineDurationSamples: 1_600,
+        });
+    });
+
+    it('chooses the valid opposite seam after a quantized 16 kHz left trim', () => {
+        const source16000 = {
+            ...audioSource('audio_16000'),
+            nativeSampleRate: 16_000,
+            nativeSampleCount: 160_000,
+        };
+        const lowRateSources = { videoSources: [videoSource], audioSources: [source16000] };
+        const original: ImportedAudioClip = {
+            ...importedClip('left', 0, 0, 16_000),
+            source: { kind: 'audio-source', audioSourceId: source16000.id },
+        };
+        const trimmed = trimAudioClipInTracks(
+            [track('lane', [original])],
+            lowRateSources,
+            profile,
+            original.id,
+            'left',
+            2,
+        );
+        if (!trimmed) throw new Error('Expected the left trim to succeed.');
+        const split = splitAudioClipInTracks(
+            trimmed,
+            lowRateSources,
+            profile,
+            original.id,
+            3,
+            'right',
+        );
+        const [left, right] = split?.[0].clips ?? [];
+
+        expect(left).toMatchObject({
+            timelineStartFrame: 2,
+            sourceStartSample: 1_066,
+            sourceEndSample: 1_600,
+            timelineDurationSamples: 1_600,
+        });
+        expect(right).toMatchObject({
+            timelineStartFrame: 3,
+            sourceStartSample: 1_600,
+            sourceEndSample: 16_000,
+            timelineDurationSamples: 43_200,
+        });
     });
 
     it('keeps source lookup typed and clamps imported fade balance', () => {

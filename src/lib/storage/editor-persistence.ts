@@ -2,6 +2,7 @@ import type { EditorManifestV3 } from '@/types/video';
 import { storageService, type EditorPersistentAsset } from './storage-service';
 import {
     createHistoryIndex,
+    EDITOR_HISTORY_STORAGE_VERSION,
     getManifestSourceSignature,
     recoveryEntryStorageKey,
     type EditorHistoryCheckpoint,
@@ -184,7 +185,7 @@ export class EditorPersistenceCoordinator {
             if (pair.patches.length > 0) {
                 const entryKey = recoveryEntryStorageKey(manifest.revision);
                 const entry: PersistedRecoveryEntry = {
-                    version: 1,
+                    version: EDITOR_HISTORY_STORAGE_VERSION,
                     fromRevision: this.lastEnqueuedRevision,
                     toRevision: manifest.revision,
                     fromAudioGraphRevision: this.lastEnqueuedAudioGraphRevision,
@@ -195,7 +196,7 @@ export class EditorPersistenceCoordinator {
                 };
                 const entryKeys = [...this.recoveryEntryKeys, entryKey];
                 const index: PersistedRecoveryIndex = {
-                    version: 1,
+                    version: EDITOR_HISTORY_STORAGE_VERSION,
                     documentRevision: this.lastSavedRevision,
                     sourceSignature,
                     entryKeys,
@@ -580,7 +581,7 @@ export class EditorPersistenceCoordinator {
 
         const entryKey = recoveryEntryStorageKey(queued.manifest.revision);
         const entry: PersistedRecoveryEntry = {
-            version: 1,
+            version: EDITOR_HISTORY_STORAGE_VERSION,
             fromRevision: this.lastSavedRevision,
             toRevision: queued.manifest.revision,
             fromAudioGraphRevision: this.durableAudioGraphRevision,
@@ -590,7 +591,7 @@ export class EditorPersistenceCoordinator {
             historyEntries: rebasedCheckpoint.changedEntries,
         };
         const index: PersistedRecoveryIndex = {
-            version: 1,
+            version: EDITOR_HISTORY_STORAGE_VERSION,
             documentRevision: this.lastSavedRevision,
             sourceSignature,
             entryKeys: [entryKey],

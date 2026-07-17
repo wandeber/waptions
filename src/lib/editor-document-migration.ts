@@ -12,6 +12,7 @@ import type {
 } from '@/types/video';
 import { getEditorAudioGraphSignature, validateEditorDocumentV3 } from './editor-document-v3';
 import { createDefaultRenderProfile, normalizeFrameRate, secondsToFrames } from './render-profile';
+import { createDefaultVideoTracks } from './video-tracks';
 
 export interface EditorDocumentV2MigrationInput {
     manifest: EditorManifestV2;
@@ -67,6 +68,7 @@ export function migrateEditorDocumentV2ToV3(input: EditorDocumentV2MigrationInpu
         subtitleTracks,
         videoSources,
         videoClips,
+        videoTracks: createDefaultVideoTracks(videoClips),
         audioSources: [],
         audioTracks: [],
         activeSubtitleTrackId: manifest.activeTrackId,
@@ -125,6 +127,7 @@ export function createEditorManifestV3(document: EditorDocumentV3): EditorManife
         subtitleTracks: document.subtitleTracks,
         videoSourceDescriptors: document.videoSources.map(withoutFile),
         videoClips: document.videoClips,
+        videoTracks: document.videoTracks,
         audioSourceDescriptors: document.audioSources.map(withoutFile),
         audioTracks: document.audioTracks,
         activeSubtitleTrackId: document.activeSubtitleTrackId,
@@ -137,22 +140,39 @@ export function hydrateEditorDocumentV3(
     videoSources: readonly VideoSourceAssetV3[],
     audioSources: readonly AudioSourceAsset[],
 ): EditorDocumentV3 {
+    const normalizedManifest = normalizeLegacyEditorManifestV3(manifest);
     const document: EditorDocumentV3 = {
         version: 3,
-        revision: manifest.revision,
-        audioGraphRevision: manifest.audioGraphRevision,
-        renderProfile: manifest.renderProfile,
-        subtitleTracks: manifest.subtitleTracks,
+        revision: normalizedManifest.revision,
+        audioGraphRevision: normalizedManifest.audioGraphRevision,
+        renderProfile: normalizedManifest.renderProfile,
+        subtitleTracks: normalizedManifest.subtitleTracks,
         videoSources: [...videoSources],
-        videoClips: manifest.videoClips,
+        videoClips: normalizedManifest.videoClips,
+        videoTracks: normalizedManifest.videoTracks,
         audioSources: [...audioSources],
-        audioTracks: manifest.audioTracks,
-        activeSubtitleTrackId: manifest.activeSubtitleTrackId,
+        audioTracks: normalizedManifest.audioTracks,
+        activeSubtitleTrackId: normalizedManifest.activeSubtitleTrackId,
         transientSelection: { kind: 'none' },
-        transcriptionByTrackId: manifest.transcriptionByTrackId,
+        transcriptionByTrackId: normalizedManifest.transcriptionByTrackId,
     };
     assertValidMigration(document, 'v3');
     return document;
+}
+
+/**
+ * Adds the deterministic first video lane only when the field is absent from an older V3 graph.
+ *
+ * Keeping document/bundle version 3 avoids a media migration for a presentation-only concept.
+ * Older Waptions builds do not understand lanes and may flatten membership if they reopen and
+ * resave a newer file; that compatibility boundary is accepted until a future major format bump.
+ */
+export function normalizeLegacyEditorManifestV3(manifest: EditorManifestV3): EditorManifestV3 {
+    if (Object.prototype.hasOwnProperty.call(manifest, 'videoTracks')) return manifest;
+    return {
+        ...manifest,
+        videoTracks: createDefaultVideoTracks(manifest.videoClips),
+    };
 }
 
 function migrateTranscriptionState(
