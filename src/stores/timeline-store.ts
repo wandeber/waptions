@@ -26,6 +26,13 @@ import {
     type AudioGraphMutationImpact,
 } from '@/lib/audio-graph-signature';
 import {
+    createDiarizationProvenanceV1,
+    DIARIZATION_PROVENANCE_EXTENSION_KEY,
+    getDiarizationProvenanceV1,
+    inspectDiarizationProvenance,
+    isDiarizationJobGuardCurrent,
+} from '@/lib/diarization-provenance';
+import {
     createDefaultRenderProfile,
     frameRateToNumber,
     framesToSeconds,
@@ -61,6 +68,7 @@ import {
     updateSubtitleCommand,
 } from '@/lib/editor-commands';
 import type {
+    DiarizedSpeakerTrackInput,
     TimelinePersistenceBinding,
     TimelineStore,
     TimelineVideoClip,
@@ -109,11 +117,13 @@ import {
 
 export type {
     AudioClipEditableSettings,
+    DiarizedSpeakerTrackInput,
     MixedMediaCandidate,
     TimelinePersistenceBinding,
     TimelineStore,
     TimelineVideoClip,
 } from './timeline-store-types';
+export type { DiarizedTranscriptionMetadata } from './timeline-store-types';
 
 let timelinePersistenceBinding: TimelinePersistenceBinding | null = null;
 
@@ -337,6 +347,25 @@ const subtitleUpdatesTiming = (updates: Partial<Subtitle>): boolean => (
     Object.prototype.hasOwnProperty.call(updates, 'startTime')
     || Object.prototype.hasOwnProperty.call(updates, 'endTime')
 );
+
+const isValidDiarizedSpeakerTrackInput = (speaker: DiarizedSpeakerTrackInput): boolean => (
+    typeof speaker.sourceSpeakerLabel === 'string'
+    && speaker.sourceSpeakerLabel.trim().length > 0
+    && Array.isArray(speaker.subtitles)
+    && Array.isArray(speaker.transcription.raw)
+    && Array.isArray(speaker.transcription.containerIds)
+    && typeof speaker.transcription.groups === 'object'
+    && speaker.transcription.groups !== null
+);
+
+/** UUID collisions are vanishingly rare, but deterministic test doubles can intentionally expose them. */
+const allocateUniqueEditorId = (reservedIds: ReadonlySet<string>): string => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+        const candidate = crypto.randomUUID();
+        if (!reservedIds.has(candidate)) return candidate;
+    }
+    throw new Error('Unable to allocate a unique subtitle track ID.');
+};
 
 export const useTimelineStore = create<TimelineStore>((set, get) => {
     let subtitleDragPreview: SubtitleDragPreviewSession | null = null;
@@ -1744,6 +1773,148 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             recalculateContentBoundary: true,
         });
         return true;
+    },
+
+    replaceTrackSetWithDiarizedTranscription: (targetTrackId, speakers, metadata, guard) => {
+        const state = get();
+        if (guard.targetTrackId !== targetTrackId
+            || state.activeTrackId !== targetTrackId
+            || speakers.length === 0
+            || !metadata.provider.trim()
+            || Number.isNaN(Date.parse(metadata.generatedAt))
+            || speakers.some((speaker) => !isValidDiarizedSpeakerTrackInput(speaker))) {
+            return false;
+        }
+
+        const currentDocument = buildEditorDocumentFromState(state);
+        if (!isDiarizationJobGuardCurrent(guard, currentDocument)) return false;
+
+        const targetTrack = state.tracks.find((track) => track.id === targetTrackId);
+        if (!targetTrack) return false;
+        const targetInspection = inspectDiarizationProvenance(state.transcriptionByTrackId[targetTrackId]);
+        // The guard normally rejects this state before the command starts. Keep a second explicit
+        // check at the mutation boundary so direct callers can never overwrite future metadata.
+        if (targetInspection.kind === 'unsupported') return false;
+
+        const previousIdentity = targetInspection.kind === 'v1'
+            ? {
+                setId: targetInspection.value.setId,
+                targetTrackId: targetInspection.value.targetTrackId,
+            }
+            : null;
+        const trackIndex = new Map(state.tracks.map((track, index) => [track.id, index]));
+        const previousSiblings = previousIdentity
+            ? state.tracks
+                .filter((track) => {
+                    if (track.id === targetTrackId) return false;
+                    const extension = getDiarizationProvenanceV1(state.transcriptionByTrackId[track.id]);
+                    return extension?.setId === previousIdentity.setId
+                        && extension.targetTrackId === previousIdentity.targetTrackId;
+                })
+                .sort((left, right) => {
+                    const leftOrdinal = getDiarizationProvenanceV1(
+                        state.transcriptionByTrackId[left.id],
+                    )?.speakerOrdinal ?? Number.MAX_SAFE_INTEGER;
+                    const rightOrdinal = getDiarizationProvenanceV1(
+                        state.transcriptionByTrackId[right.id],
+                    )?.speakerOrdinal ?? Number.MAX_SAFE_INTEGER;
+                    return leftOrdinal - rightOrdinal
+                        || (trackIndex.get(left.id) ?? 0) - (trackIndex.get(right.id) ?? 0);
+                })
+            : [];
+
+        // Identity allocation happens only after the complete async guard is known to be current.
+        // This prevents a stale result from consuming IDs or exposing a partial generated set.
+        const setId = previousIdentity?.setId ?? crypto.randomUUID();
+        const reusableSiblings = previousSiblings.slice(0, Math.max(0, speakers.length - 1));
+        const surplusSiblings = previousSiblings.slice(Math.max(0, speakers.length - 1));
+        const usedTrackIds = new Set(state.tracks.map((track) => track.id));
+        const memberTracks: SubtitleTrack[] = [targetTrack, ...reusableSiblings];
+        while (memberTracks.length < speakers.length) {
+            const ordinal = memberTracks.length;
+            const id = allocateUniqueEditorId(usedTrackIds);
+            usedTrackIds.add(id);
+            const clonedTarget = cloneTracks([targetTrack])[0];
+            memberTracks.push({
+                ...clonedTarget,
+                id,
+                name: `Speaker ${ordinal + 1}`,
+                subtitles: [],
+            });
+        }
+
+        const previousMemberIds = new Set([targetTrackId, ...previousSiblings.map((track) => track.id)]);
+        const unrelatedTracks = state.tracks.filter((track) => !previousMemberIds.has(track.id));
+        const targetIndex = state.tracks.findIndex((track) => track.id === targetTrackId);
+        const insertionIndex = state.tracks
+            .slice(0, targetIndex)
+            .filter((track) => !previousMemberIds.has(track.id))
+            .length;
+        const regeneratedTracks = memberTracks.map((track, ordinal) => ({
+            ...track,
+            subtitles: cloneSubtitles(speakers[ordinal].subtitles) ?? [],
+        }));
+        const tracks = [
+            ...unrelatedTracks.slice(0, insertionIndex),
+            ...regeneratedTracks,
+            ...unrelatedTracks.slice(insertionIndex),
+        ];
+
+        const nextRevision = state.revision + 1;
+        const sourceAudioGraphSignature = getEditorAudioGraphSignature(currentDocument);
+        const transcriptionByTrackId = cloneTranscriptionByTrackId(state.transcriptionByTrackId);
+        surplusSiblings.forEach((track) => delete transcriptionByTrackId[track.id]);
+        regeneratedTracks.forEach((track, ordinal) => {
+            const existing = transcriptionByTrackId[track.id];
+            const extensions = {
+                ...(existing?.extensions ?? {}),
+                [DIARIZATION_PROVENANCE_EXTENSION_KEY]: createDiarizationProvenanceV1({
+                    setId,
+                    targetTrackId,
+                    speakerOrdinal: ordinal,
+                    sourceSpeakerLabel: speakers[ordinal].sourceSpeakerLabel,
+                }),
+            };
+            transcriptionByTrackId[track.id] = cloneTranscriptionByTrackId({
+                value: {
+                    ...existing,
+                    ...speakers[ordinal].transcription,
+                    provider: metadata.provider,
+                    // Assigning undefined intentionally clears a model retained by a previous run;
+                    // the JSON clone below then omits that optional field from persisted metadata.
+                    model: metadata.model,
+                    generatedAt: metadata.generatedAt,
+                    sourceDocumentRevision: nextRevision,
+                    sourceAudioGraphRevision: state.audioGraphRevision,
+                    sourceAudioGraphSignature,
+                    stale: false,
+                    extensions,
+                },
+            }).value;
+        });
+
+        const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, targetTrackId);
+        const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, tracks);
+        const validSubtitleIds = new Set(tracks.flatMap((track) => track.subtitles.map((subtitle) => subtitle.id)));
+        const lastSelectedId = state.lastSelectedId && validSubtitleIds.has(state.lastSelectedId)
+            ? state.lastSelectedId
+            : null;
+        return commitDurableMutation(state, {
+            tracks,
+            activeTrackId: targetTrackId,
+            transcriptionByTrackId,
+            rawTranscription: cloneSubtitles(legacy?.raw ?? null),
+            transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
+            transcriptionContainerIds: cloneContainerIds(legacy?.containerIds ?? null),
+            selectedSubtitleIds,
+            lastSelectedId,
+            transientSelection: state.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(tracks, selectedSubtitleIds, targetTrackId)
+                : state.transientSelection,
+        }, {
+            history: { label: 'Replace subtitles with diarized transcription' },
+            recalculateContentBoundary: true,
+        });
     },
 
     getTrackTranscriptionState: (trackId) => {

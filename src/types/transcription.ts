@@ -1,6 +1,8 @@
 import { shouldShowPaidTranscriptionModels } from "@/lib/config/feature-flags";
 
 export type TranscriptionModelId = 'whisper-1' | 'deepgram-nova-2' | 'premium-whisper-gpt4o' | 'local-browser';
+export type BuiltInTranscriptionRouteId = Exclude<TranscriptionModelId, 'local-browser'>;
+export type TranscriptionRouteId = 'local-browser' | 'custom-openai-compatible' | BuiltInTranscriptionRouteId;
 export type OpenAICompatibleTranscriptionRequestMode = 'browser' | 'server';
 export type LocalBrowserTranscriptionDevice = 'webgpu' | 'wasm';
 export type LocalBrowserTranscriptionEngine = 'whisper-webgpu' | 'qwen3-asr-aligner';
@@ -22,6 +24,25 @@ export interface LocalBrowserTranscriptionSettings {
     language?: LocalBrowserTranscriptionLanguage;
     allowWasmFallback?: boolean;
 }
+
+/**
+ * Keeps custom endpoint data out of built-in and local-browser submissions by construction.
+ * In particular, `whisper-1` remains a built-in route and can never be mistaken for the custom
+ * OpenAI-compatible endpoint merely because both services may accept that model name.
+ */
+export type TranscriptionSubmission =
+    | {
+        routeId: 'local-browser';
+        localBrowserTranscription: LocalBrowserTranscriptionSettings;
+    }
+    | {
+        routeId: 'custom-openai-compatible';
+        customOpenAITranscription: OpenAICompatibleTranscriptionSettings;
+        diarizationEnabled: boolean;
+    }
+    | {
+        routeId: BuiltInTranscriptionRouteId;
+    };
 
 export interface TranscriptionModel {
     id: TranscriptionModelId;

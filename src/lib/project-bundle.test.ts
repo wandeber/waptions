@@ -6,8 +6,10 @@ import type {
     EditorManifestV2,
     VideoSourceAssetV3,
 } from '@/types/video';
+import type { AnimationStyle } from '@/types/timeline';
 import { storageService } from './storage/storage-service';
 import { createVideoSourceFingerprint } from './video-timeline';
+import { getEditorAudioGraphSignature } from './editor-document-v3';
 import { migrateEditorDocumentV2ToV3, createEditorManifestV3 } from './editor-document-migration';
 import * as mediaUtils from './mediabunny-utils';
 import {
@@ -168,6 +170,72 @@ describe('project bundle v3', () => {
         expect(metadata.editorManifest.videoTracks).toEqual(editorDocument.videoTracks);
         expect(zip.file('sources/video/video.mp4')).toBeTruthy();
         expect(zip.file(/^sources\/audio\//)).toEqual([]);
+    });
+
+    it('round-trips anchored speaker tracks without leaking browser transcription preferences', async () => {
+        const editorDocument = document(false);
+        editorDocument.subtitleTracks = ['speaker_track_1', 'speaker_track_2'].map((id, ordinal) => ({
+            id,
+            name: ordinal === 0 ? 'Captions' : 'Speaker 2',
+            style: {} as AnimationStyle,
+            subtitles: [{ id: `speaker_subtitle_${ordinal}`, startTime: ordinal, endTime: ordinal + 1, text: `S${ordinal}` }],
+            isVisible: true,
+            isLocked: false,
+            timingDomain: 'absolute' as const,
+        }));
+        editorDocument.activeSubtitleTrackId = 'speaker_track_1';
+        const signature = getEditorAudioGraphSignature(editorDocument);
+        editorDocument.transcriptionByTrackId = Object.fromEntries(editorDocument.subtitleTracks.map((track, ordinal) => {
+            const subtitle = track.subtitles[0];
+            const groupId = `speaker_group_${ordinal}`;
+            return [track.id, {
+                raw: [subtitle],
+                groups: { [groupId]: [subtitle] },
+                containerIds: [groupId],
+                provider: 'custom-openai-compatible',
+                model: 'whisper-1',
+                generatedAt: '2026-07-17T20:00:00.000Z',
+                sourceDocumentRevision: editorDocument.revision,
+                sourceAudioGraphRevision: editorDocument.audioGraphRevision,
+                sourceAudioGraphSignature: signature,
+                stale: false,
+                extensions: {
+                    'waptions.transcription.diarization': {
+                        version: 1,
+                        setId: 'bundle_speaker_set',
+                        targetTrackId: 'speaker_track_1',
+                        speakerOrdinal: ordinal,
+                        sourceSpeakerLabel: `SPEAKER_0${ordinal}`,
+                        audioScope: 'audible-project-mix',
+                    },
+                },
+            }];
+        }));
+        vi.spyOn(storageService, 'loadProject').mockResolvedValue(project);
+        vi.spyOn(storageService, 'loadEditorDocument').mockResolvedValue(editorDocument);
+
+        const bundle = await exportProjectBundle('project');
+        const zip = await JSZip.loadAsync(await bundle.arrayBuffer());
+        const serializedMetadata = await zip.file('metadata.json')!.async('text');
+        const metadata = JSON.parse(serializedMetadata) as ProjectBundleMetadataV3;
+        expect(metadata.editorManifest.transcriptionByTrackId.speaker_track_2.extensions).toMatchObject({
+            'waptions.transcription.diarization': {
+                setId: 'bundle_speaker_set', targetTrackId: 'speaker_track_1', speakerOrdinal: 1,
+            },
+        });
+        ['apiKey', 'endpoint', 'requestMode', 'selectedRouteId', 'diarizationEnabled'].forEach((field) => {
+            expect(serializedMetadata).not.toContain(`"${field}"`);
+        });
+
+        const saveDocument = vi.spyOn(storageService, 'saveEditorDocument').mockResolvedValue();
+        vi.spyOn(storageService, 'saveProject').mockResolvedValue();
+        await importProjectBundle(new Uint8Array(await bundle.arrayBuffer()) as unknown as Blob);
+        expect(saveDocument.mock.calls[0][1].transcriptionByTrackId).toEqual(
+            editorDocument.transcriptionByTrackId,
+        );
+        expect(saveDocument.mock.calls[0][1].subtitleTracks.map((track) => track.id)).toEqual([
+            'speaker_track_1', 'speaker_track_2',
+        ]);
     });
 
     it('imports v3 video and audio sources in one complete document write before publication', async () => {

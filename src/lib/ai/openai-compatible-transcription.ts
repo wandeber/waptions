@@ -116,7 +116,10 @@ export async function transcribeWithOpenAICompatibleEndpoint({
     const responseBody = parseJsonResponse(responseText);
 
     if (!response.ok) {
-        throw new Error(`Custom transcription endpoint error (${response.status}): ${extractErrorMessage(responseBody, responseText)}`);
+        const responseMessage = extractErrorMessage(responseBody, responseText);
+        throw new Error(
+            `Custom transcription endpoint error (${response.status}): ${redactConfiguredApiKey(responseMessage, settings.apiKey)}`
+        );
     }
 
     return responseBody;
@@ -176,6 +179,20 @@ function extractErrorMessage(responseBody: unknown, fallback: string): string {
     }
 
     return fallback.trim() || "No error body returned.";
+}
+
+/**
+ * Custom services sometimes echo request credentials in their response errors.
+ * Only the configured key is redacted so useful provider diagnostics remain
+ * available without putting that browser-local secret into UI errors or logs.
+ */
+function redactConfiguredApiKey(message: string, configuredApiKey: string | undefined): string {
+    const candidates = Array.from(new Set([configuredApiKey, configuredApiKey?.trim()]))
+        .filter((candidate): candidate is string => Boolean(candidate));
+
+    return candidates
+        .sort((left, right) => right.length - left.length)
+        .reduce((redacted, candidate) => redacted.split(candidate).join("[REDACTED]"), message);
 }
 
 function hasExplicitProtocol(value: string): boolean {

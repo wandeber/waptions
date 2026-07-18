@@ -22,7 +22,7 @@
     "cf-deploy-production": "opennextjs-cloudflare build -e production && opennextjs-cloudflare deploy -e production",
     "upload-env": "node --env-file .env scripts/upload-env-to-cloudflare.mjs",
     "test:unit": "vitest run",
-    "test:tooling": "node --test scripts/check-coverage-baseline.test.mjs scripts/media-tooling.test.mjs scripts/next-config.test.mjs scripts/process-lifecycle.test.mjs",
+    "test:tooling": "node --test scripts/check-coverage-baseline.test.mjs scripts/media-tooling.test.mjs scripts/next-config.test.mjs scripts/process-lifecycle.test.mjs scripts/e2e/diarization-secret-artifacts.test.mjs",
     "test:coverage": "vitest run --coverage && node scripts/check-coverage-baseline.mjs --profile wider",
     "test:coverage:update": "vitest run --coverage && node scripts/check-coverage-baseline.mjs --profile wider --update",
     "test:coverage:critical": "vitest run --config vitest.critical.config.ts --coverage && node scripts/check-coverage-baseline.mjs --profile critical-runtime",
@@ -31,9 +31,11 @@
     "test:e2e:ui": "node scripts/e2e/run-playwright.mjs --ui",
     "test:e2e:debug": "node scripts/e2e/run-playwright.mjs --debug",
     "test:e2e:verify": "node scripts/e2e/run-playwright.mjs --reporter=line",
+    "test:e2e:diarization": "node scripts/e2e/run-diarization-live.mjs",
+    "test:e2e:diarization-security": "node scripts/e2e/run-diarization-secret-regression.mjs",
     "test:report": "node scripts/e2e/show-latest-report.mjs",
     "test:e2e:full": "pnpm run test:e2e && pnpm run test:report",
-    "test:verify": "pnpm run fixtures:media:verify && pnpm run test:tooling && pnpm run test:coverage && pnpm run test:coverage:critical && pnpm exec tsc --noEmit && pnpm run lint && pnpm run build:verify && pnpm run test:e2e:verify",
+    "test:verify": "pnpm run fixtures:media:verify && pnpm run test:tooling && pnpm run test:coverage && pnpm run test:coverage:critical && pnpm exec tsc --noEmit && pnpm run lint && pnpm run build:verify && pnpm run test:e2e:diarization-security && pnpm run test:e2e:verify",
     "fixtures:media:verify": "node scripts/e2e/verify-media-fixtures.mjs"
   },
   "dependencies": {

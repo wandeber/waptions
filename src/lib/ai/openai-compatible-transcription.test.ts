@@ -84,8 +84,11 @@ describe('transcribeWithOpenAICompatibleEndpoint', () => {
                 ['model', 'faster-whisper'],
                 ['response_format', 'verbose_json'],
                 ['timestamp_granularities[]', 'word'],
+                ['prompt', 'Use correct punctuation.'],
                 ['temperature', '0'],
             ]);
+            expect(formData.has('diarize')).toBe(false);
+            expect(formData.has('stream')).toBe(false);
 
             return new Response(JSON.stringify({ words: [{ word: 'hola', start: 0, end: 1 }] }), { status: 200 });
         }) as unknown as typeof fetch;
@@ -102,6 +105,7 @@ describe('transcribeWithOpenAICompatibleEndpoint', () => {
             options: {
                 response_format: 'verbose_json',
                 timestamp_granularities: ['word'],
+                prompt: 'Use correct punctuation.',
                 temperature: 0,
             },
             fetchImpl,
@@ -128,5 +132,33 @@ describe('transcribeWithOpenAICompatibleEndpoint', () => {
             fallbackModel: 'whisper-1',
             fetchImpl,
         })).rejects.toThrow('model not found');
+    });
+
+    it('redacts an API key echoed by the endpoint error', async () => {
+        const sentinelKey = 'sentinel-local-api-key';
+        const fetchImpl = vi.fn(async () => new Response(
+            JSON.stringify({ error: { message: `Authentication failed for ${sentinelKey}; retry with ${sentinelKey}.` } }),
+            { status: 401 }
+        )) as unknown as typeof fetch;
+
+        let thrown: unknown;
+        try {
+            await transcribeWithOpenAICompatibleEndpoint({
+                settings: {
+                    enabled: true,
+                    endpoint: 'http://localhost:8000/v1',
+                    apiKey: sentinelKey,
+                },
+                audioFile: new Blob(['audio'], { type: 'audio/mpeg' }),
+                fallbackModel: 'whisper-1',
+                fetchImpl,
+            });
+        } catch (error) {
+            thrown = error;
+        }
+
+        expect(thrown).toBeInstanceOf(Error);
+        expect((thrown as Error).message).toContain('[REDACTED]');
+        expect((thrown as Error).message).not.toContain(sentinelKey);
     });
 });

@@ -99,6 +99,41 @@ by revision while preserving the latest complete document.
 `.waptions` bundle format 3 stores the V3 manifest and both typed asset catalogs. Import accepts
 bundle versions 1, 2, and 3 and rejects unknown newer versions.
 
+Transcription-modal preferences are intentionally outside this contract. The selected route,
+custom endpoint/model/request mode/API key/diarization toggle, and local-browser choices are
+browser-global `localStorage` values. They never enter the manifest, project history, IndexedDB
+project records or bundle metadata. Storing an API key there is a local convenience, not protected
+credential storage: same-origin scripts and browser extensions may read it. Storage failures leave
+the mounted editor session usable and produce a generic modal warning rather than serializing or
+logging the failed record.
+
+## Diarized speaker-track sets
+
+Whole-project diarization is custom-OpenAI-compatible-only. The ordinary per-source transcription
+path is unchanged when it is disabled. A successful diarized result writes one
+`TrackTranscriptionProvenanceV3` entry per speaker track and identifies the generated set under the
+versioned `waptions.transcription.diarization` extension. Every member shares a random `setId` and
+an explicit `targetTrackId`; zero-based `speakerOrdinal` values record first-appearance order, while
+the provider's speaker label remains descriptive rather than acting as identity.
+
+The active target track is ordinal zero. Generated siblings are contiguous after it. A rerun uses
+the anchored set identity to reuse existing member IDs, creates only missing siblings, and removes
+only surplus members of that set. Existing names, styles, visibility, locks and timing domains on
+reused tracks survive. Unknown extension keys survive replacement, and an unsupported future
+version in the selected diarization namespace blocks replacement instead of being overwritten.
+
+One store command publishes the complete tracks/provenance map, selection repair, revision,
+content-boundary invalidation, history entry and persistence enqueue. Undo restores the exact
+pre-command speaker-track projection; Redo restores the exact generated projection with the same
+IDs. An empty speech response is a no-op. A malformed response or failed/cancelled request never
+invokes the command.
+
+Asynchronous application is guarded by the audible graph revision/signature and an exact
+projection of the anchored target set: relative member order, track data, recognized set metadata
+and complete provenance. Unrelated subtitle edits may advance the global document revision without
+discarding a valid result. Audio changes or target-set edits make the result stale and leave the
+current document untouched.
+
 ## Migration
 
 V2 projects migrate their ordered video sources, clips, subtitles, active track, and transcription

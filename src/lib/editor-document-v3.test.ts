@@ -329,8 +329,20 @@ describe('v3 editor graph validation', () => {
             sourceAudioGraphRevision: 1,
             sourceAudioGraphSignature: signature,
             stale: false,
+            extensions: {
+                'waptions.transcription.diarization': {
+                    version: 1,
+                    setId: 'speaker_set',
+                    targetTrackId: 'subtitle_track_a',
+                    speakerOrdinal: 0,
+                    sourceSpeakerLabel: 'SPEAKER_00',
+                    audioScope: 'audible-project-mix',
+                },
+                'future.extension': { nested: ['retained'] },
+            },
         };
         expect(validateEditorDocumentV3(document)).toEqual({ valid: true, issues: [] });
+        expect(getEditorAudioGraphSignature(document)).toBe(signature);
 
         document.transcriptionByTrackId.subtitle_track_a.sourceAudioGraphSignature = 'outdated';
         expect(validateEditorDocumentV3(document).issues).toContainEqual(expect.objectContaining({

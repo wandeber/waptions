@@ -20,6 +20,7 @@ Production: [https://waptions.wande.dev](https://waptions.wande.dev)
 - Browser-local transcription with WebGPU-first execution and optional WASM fallback.
 - User-configured OpenAI-compatible transcription endpoints.
 - Optional browser-direct or server-proxied transcription requests.
+- Optional whole-project speaker diarization with one reusable subtitle track per detected speaker.
 
 ## Public Defaults
 
@@ -74,7 +75,20 @@ run alongside the normal development server and other verification processes. Se
 
 Waptions supports two public transcription routes: a browser-local model and a user-configured OpenAI-compatible endpoint.
 
-Waptions derives transcription work from the same audible graph used by preview and export. Each linked-video or imported-audio source is transcribed once and its retained words are remapped through every audible crop and placement. Muted and solo-suppressed clips are skipped.
+Waptions derives transcription work from the same audible graph used by preview and export. For
+ordinary transcription, each linked-video or imported-audio source is transcribed once and its
+retained words are remapped through every audible crop and placement. Muted and solo-suppressed
+clips are skipped.
+
+The modal remembers the selected route and every route-specific choice in browser-global
+`localStorage`: custom enabled state, endpoint, model, request mode, API key and diarization toggle,
+plus the local browser model, runtime, language and WASM-fallback choice. The additive records keep
+the keys `waptions-custom-openai-compatible-transcription` and
+`waptions-local-browser-transcription` for compatibility. These preferences do not enter project
+IndexedDB manifests, history or `.waptions` bundles. Persisting an API key is convenient for a
+local transcriber, but it is not secret storage: scripts on the same Waptions origin and browser
+extensions may read it. If browser policy blocks preference storage, the current session remains
+usable and the modal displays a generic warning without exposing the stored values.
 
 ### Local Browser Mode
 
@@ -96,6 +110,29 @@ The editor lets users configure:
 - Optional model name.
 - Optional API key.
 - Request mode: browser or server.
+- Optional speaker diarization.
+
+The custom endpoint has its own `custom-openai-compatible` route identity. It is distinct from the
+built-in `whisper-1` identifier, including when paid providers are enabled.
+
+### Speaker Diarization
+
+Diarization is available only for the custom OpenAI-compatible route. When enabled, Waptions
+renders one compact audio-only file from project time zero through the last audible contributor and
+sends exactly one non-streaming request. This preserves leading and internal silence, so returned
+speaker timestamps already use project time. Muted and solo-suppressed media does not contribute.
+
+Speakers are ordered by their first chronological appearance. The first speaker reuses the active
+subtitle track; later speakers reuse or create adjacent tracks. Running diarization again replaces
+that anchored generated set, preserving track IDs where possible, adding only missing members and
+removing only surplus generated members. The complete replacement is one Undo/Redo action. Empty
+speech results leave existing tracks untouched; malformed responses, cancellation, network or
+encoding failures, and edits to the audible graph or generated target set while the request is in
+flight are rejected without partially applying tracks.
+
+The mixed encoded file is held in browser memory and uploaded as multipart data. Long projects can
+therefore hit browser codec, memory, upload or server-body limits; Waptions reports the failing
+stage and does not impose a separate arbitrary duration limit.
 
 ### Browser Mode
 
@@ -132,7 +169,9 @@ When authentication is enabled, store `AUTHORIZED_EMAILS` as a Cloudflare secret
 - User-provided transcription hosts are a potential server-side request forgery vector when proxied by the backend.
 - Browser mode keeps the request in the user's browser and relies on the transcriber's CORS configuration.
 - Server mode must keep host allowlisting strict in production.
-- Optional user API keys are stored client-side for the configured transcriber flow; treat that as a convenience for local use, not as shared secret storage.
+- Optional user API keys are stored in browser `localStorage` for the configured transcriber flow;
+  treat that as a convenience for local use, not as shared secret storage. They are excluded from
+  project manifests, history, bundles and application logs.
 
 ## Video Timeline and Export
 

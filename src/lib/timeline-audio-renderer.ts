@@ -111,6 +111,10 @@ export class TimelineAudioRenderer {
                 // stale window can be emitted after cancellation has been observed.
                 this.throwIfCancelled(options);
                 await this.addRenderedWindow(rendered);
+                // The final source.add() may be the last awaited boundary in the loop. Observe an
+                // abort that fires while the encoder owns that sample before reporting completion
+                // or letting the caller finalize an output that it already cancelled.
+                this.throwIfCancelled(options);
                 options.onProgress?.(endSample / Math.max(1, options.outputEndSample));
             }
             if (options.outputEndSample === 0) options.onProgress?.(1);

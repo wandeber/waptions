@@ -19,6 +19,7 @@ import type {
     VideoTrack,
 } from '@/types/video';
 import type { AudioGraphMutationImpact } from '@/lib/audio-graph-signature';
+import type { DiarizationJobGuard } from '@/lib/diarization-provenance';
 import type { SerializablePatch } from '@/lib/serializable-patch';
 
 export interface TimelinePersistenceBinding {
@@ -96,6 +97,19 @@ export type AudioClipEditableSettings = Partial<AudioClipMixSettings> & {
     fadeInFrames?: number;
     fadeOutFrames?: number;
 };
+
+/** Network-independent normalized input consumed by the atomic diarization store command. */
+export interface DiarizedSpeakerTrackInput {
+    sourceSpeakerLabel: string;
+    subtitles: Subtitle[];
+    transcription: TrackTranscriptionState;
+}
+
+export interface DiarizedTranscriptionMetadata {
+    provider: string;
+    model?: string;
+    generatedAt: string;
+}
 
 export interface TimelineStore {
     zoomLevel: number;
@@ -192,6 +206,12 @@ export interface TimelineStore {
         subtitles: Subtitle[],
         provenance: TrackTranscriptionState,
         expectedRevision: number | TranscriptionJobGuard,
+    ) => boolean;
+    replaceTrackSetWithDiarizedTranscription: (
+        targetTrackId: string,
+        speakers: readonly DiarizedSpeakerTrackInput[],
+        metadata: DiarizedTranscriptionMetadata,
+        guard: DiarizationJobGuard,
     ) => boolean;
     getTrackTranscriptionState: (trackId: string) => TrackTranscriptionProvenanceV3 | null;
     buildEditorDocument: () => EditorDocumentV3;

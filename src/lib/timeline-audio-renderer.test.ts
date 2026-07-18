@@ -212,4 +212,34 @@ describe('TimelineAudioRenderer', () => {
             frameCount: 1,
         })).toThrow();
     });
+
+    it('closes the final sample and decoder when abort fires during encoder backpressure', async () => {
+        const document = makeDocument(2);
+        const decoder = makeDecoder(new Float32Array([0.25, 0.5]));
+        const controller = new AbortController();
+        let heldSample: AudioSample | null = null;
+        const source = {
+            add: vi.fn(async (sample: AudioSample) => {
+                heldSample = sample;
+                controller.abort();
+            }),
+        };
+        const renderer = new TimelineAudioRenderer(document, source, {
+            createDecoder: () => decoder,
+        });
+
+        await expect(renderer.render({
+            outputEndSample: 2,
+            signal: controller.signal,
+        })).rejects.toMatchObject({ name: 'AbortError' });
+
+        expect(source.add).toHaveBeenCalledTimes(1);
+        expect(decoder.dispose).toHaveBeenCalledTimes(1);
+        expect(heldSample).not.toBeNull();
+        expect(() => heldSample!.copyTo(new Float32Array(1), {
+            planeIndex: 0,
+            format: 'f32-planar',
+            frameCount: 1,
+        })).toThrow();
+    });
 });

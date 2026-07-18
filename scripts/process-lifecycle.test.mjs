@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import process from 'node:process';
 import test from 'node:test';
 import {
@@ -53,4 +54,52 @@ test('build-style cleanup preserves SIGINT status received after the child exits
       await Promise.resolve();
     },
   });
+});
+
+class ControlledChild extends EventEmitter {
+  constructor() {
+    super();
+    this.pid = 42_424;
+    this.signals = [];
+  }
+
+  kill(signal) {
+    this.signals.push(signal);
+    return true;
+  }
+}
+
+async function exercisePendingOrActiveSignal(phase) {
+  const previousHandlers = process.listeners('SIGTERM');
+  const controller = createTerminationController();
+  const signalHandler = findInstalledSignalHandler('SIGTERM', previousHandlers);
+  const child = new ControlledChild();
+
+  try {
+    if (phase === 'pre-spawn') signalHandler();
+    if (phase === 'preparation') {
+      await Promise.resolve();
+      signalHandler();
+      await Promise.resolve();
+    }
+    const childResult = controller.waitForChild(child);
+    if (phase === 'active-child') signalHandler();
+    assert.deepEqual(child.signals, ['SIGTERM']);
+    child.emit('close', null, 'SIGTERM');
+    assert.deepEqual(await childResult, { code: null, signal: 'SIGTERM' });
+  } finally {
+    controller.dispose();
+  }
+}
+
+test('forwards a termination requested before child spawn when the child becomes owned', async () => {
+  await exercisePendingOrActiveSignal('pre-spawn');
+});
+
+test('forwards a termination requested during preparation when the child becomes owned', async () => {
+  await exercisePendingOrActiveSignal('preparation');
+});
+
+test('forwards termination immediately while a child is active', async () => {
+  await exercisePendingOrActiveSignal('active-child');
 });

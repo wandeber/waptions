@@ -531,6 +531,100 @@ describe('editor history and recovery storage', () => {
         ]);
     });
 
+    it('round-trips an anchored diarization set as one persisted history command', () => {
+        const baseline = document();
+        const before = projectEditorDocumentHistory(baseline);
+        const after = structuredClone(before);
+        after.tracks = [
+            { ...after.tracks[0], subtitles: [{ id: 'speaker_a', startTime: 0, endTime: 1, text: 'A' }] },
+            {
+                ...after.tracks[0],
+                id: 'speaker_track_2',
+                name: 'Speaker 2',
+                subtitles: [{ id: 'speaker_b', startTime: 1, endTime: 2, text: 'B' }],
+            },
+        ];
+        const signature = getEditorAudioGraphSignature(baseline);
+        const makeProvenance = (trackId: string, ordinal: number, subtitleId: string) => ({
+            raw: [{ id: subtitleId, startTime: ordinal, endTime: ordinal + 1, text: ordinal ? 'B' : 'A' }],
+            groups: {
+                [`group_${ordinal}`]: [{
+                    id: subtitleId, startTime: ordinal, endTime: ordinal + 1, text: ordinal ? 'B' : 'A',
+                }],
+            },
+            containerIds: [`group_${ordinal}`],
+            provider: 'custom-openai-compatible',
+            model: 'whisper-1',
+            generatedAt: '2026-07-17T20:00:00.000Z',
+            sourceDocumentRevision: 5,
+            sourceAudioGraphRevision: 0,
+            sourceAudioGraphSignature: signature,
+            stale: false,
+            extensions: {
+                'waptions.transcription.diarization': {
+                    version: 1,
+                    setId: 'persisted_set',
+                    targetTrackId: 'captions',
+                    speakerOrdinal: ordinal,
+                    sourceSpeakerLabel: `SPEAKER_0${ordinal}`,
+                    audioScope: 'audible-project-mix',
+                },
+                retained: { trackId },
+            },
+        });
+        after.transcriptionByTrackId = {
+            captions: makeProvenance('captions', 0, 'speaker_a'),
+            speaker_track_2: makeProvenance('speaker_track_2', 1, 'speaker_b'),
+        };
+        after.rawTranscription = after.transcriptionByTrackId.captions.raw;
+        after.transcriptionGroups = after.transcriptionByTrackId.captions.groups;
+        after.transcriptionContainerIds = after.transcriptionByTrackId.captions.containerIds;
+        const history = recordTimelineHistory(
+            { history: [], redoStack: [], historySequence: 0, historyBytes: 0 },
+            before,
+            after,
+            {
+                metadata: { label: 'Replace subtitles with diarized transcription' },
+                impact: 'preserve-transcription',
+                recalculatesContentBoundary: true,
+                now: 1,
+            },
+        );
+        const currentDocument = structuredClone(baseline);
+        currentDocument.revision = 5;
+        currentDocument.subtitleTracks = after.tracks.map((track) => ({
+            ...track,
+            timingDomain: 'absolute' as const,
+        }));
+        currentDocument.transcriptionByTrackId = after.transcriptionByTrackId;
+        const manifest = createEditorManifestV3(currentDocument);
+        const index = createHistoryIndex(manifest, {
+            history: history.history,
+            redoStack: [],
+            projection: after,
+        });
+
+        const restored = restoreEditorRuntimeState(
+            currentDocument,
+            manifest,
+            index,
+            new Map(history.history.map((entry) => [entry.id, entry])),
+            null,
+            new Map(),
+        );
+
+        expect(restored.durableHistory.history).toHaveLength(1);
+        expect(restored.document.subtitleTracks.map((track) => track.id)).toEqual([
+            'captions', 'speaker_track_2',
+        ]);
+        expect(restored.document.transcriptionByTrackId.speaker_track_2.extensions).toMatchObject({
+            'waptions.transcription.diarization': {
+                setId: 'persisted_set', targetTrackId: 'captions', speakerOrdinal: 1,
+            },
+            retained: { trackId: 'speaker_track_2' },
+        });
+    });
+
     it('discards history when an intermediate Undo state is semantically invalid', () => {
         const baseline = document();
         const manifest = createEditorManifestV3(baseline);

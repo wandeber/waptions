@@ -88,7 +88,18 @@ export function isTranscriptionJobGuardCurrent(
 
 /** The target signature is separate from the canonical audio graph and includes lane subtitles. */
 export function getSubtitleTrackSignature(track: SubtitleTrack): string {
-    return hashStablePayload(JSON.stringify(track));
+    return getStableValueSignature(track);
+}
+
+/**
+ * Canonical signature for JSON-compatible editor metadata.
+ *
+ * Object keys are sorted recursively so extension insertion order cannot make an asynchronous
+ * guard stale. Arrays deliberately retain order because subtitle, track, and container ordering
+ * is semantic throughout the editor document.
+ */
+export function getStableValueSignature(value: unknown): string {
+    return hashStablePayload(stableSerialize(value));
 }
 
 function mapProvenance(
@@ -105,4 +116,24 @@ function hashStablePayload(payload: string): string {
         hash = Math.imul(hash, 0x01000193) >>> 0;
     }
     return `fnv1a32:${hash.toString(16).padStart(8, '0')}`;
+}
+
+function stableSerialize(value: unknown): string {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+        return JSON.stringify(value);
+    }
+    if (typeof value === 'number') return Number.isFinite(value) ? JSON.stringify(value) : 'null';
+    if (Array.isArray(value)) return `[${value.map((entry) => stableSerialize(entry)).join(',')}]`;
+    if (typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        const properties = Object.keys(record)
+            .filter((key) => record[key] !== undefined)
+            .sort()
+            .map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key])}`);
+        return `{${properties.join(',')}}`;
+    }
+    // JSON persistence drops unsupported object fields and represents unsupported array values as
+    // null. At the signature boundary a stable explicit marker avoids throwing on partial legacy
+    // metadata while still making a type change observable.
+    return JSON.stringify(`[${typeof value}]`);
 }

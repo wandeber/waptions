@@ -10,7 +10,12 @@ import type {
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
 import { createDefaultRenderProfile } from '@/lib/render-profile';
 import { createVideoSourceFingerprint } from '@/lib/video-timeline';
-import { validateEditorManifestV3 } from '@/lib/editor-document-v3';
+import { getEditorAudioGraphSignature, validateEditorManifestV3 } from '@/lib/editor-document-v3';
+import {
+    createDiarizationJobGuard,
+    DIARIZATION_PROVENANCE_EXTENSION_KEY,
+    getDiarizationProvenanceV1,
+} from '@/lib/diarization-provenance';
 import {
     createTimelinePersistencePayload,
     setTimelinePersistenceBinding,
@@ -97,6 +102,26 @@ const audioTrack = (id: string, clips: AudioClip[] = [], locked = false): AudioT
     gainDb: 0,
     clips,
 });
+
+const diarizedSpeaker = (sourceSpeakerLabel: string, id: string) => {
+    const subtitle = { id, startTime: 0, endTime: 1, text: sourceSpeakerLabel };
+    const containerId = `${id}-group`;
+    return {
+        sourceSpeakerLabel,
+        subtitles: [subtitle],
+        transcription: {
+            raw: [subtitle],
+            groups: { [containerId]: [subtitle] },
+            containerIds: [containerId],
+        },
+    };
+};
+
+const diarizationMetadata = {
+    provider: 'custom-openai-compatible',
+    model: 'whisper-1',
+    generatedAt: '2026-07-17T20:00:00.000Z',
+};
 
 const appendVideo = () => {
     const source = videoSource();
@@ -609,6 +634,331 @@ describe('canonical V3 timeline state', () => {
         expect(useTimelineStore.getState().replaceTrackWithTranscription(
             'target', [], transcription, graphGuard,
         )).toBe(false);
+    });
+
+    it('creates a diarized speaker set as one durable history and persistence transaction', async () => {
+        const originalTarget = {
+            ...subtitleTrack('target'),
+            name: 'Interview captions',
+            timingDomain: 'absolute' as const,
+            isVisible: false,
+            isLocked: true,
+            subtitles: [{ id: 'old-subtitle', startTime: 0, endTime: 2, text: 'Old' }],
+        };
+        useTimelineStore.getState().setTracks([
+            originalTarget,
+            subtitleTrack('unrelated'),
+        ], { resetHistory: true, skipSave: true });
+        useTimelineStore.setState({
+            selectedSubtitleIds: ['old-subtitle'],
+            lastSelectedId: 'old-subtitle',
+            transientSelection: { kind: 'subtitles', trackId: 'target', subtitleIds: ['old-subtitle'] },
+        });
+        const beforeTracks = structuredClone(useTimelineStore.getState().tracks);
+        const before = useTimelineStore.getState().buildEditorDocument();
+        const guard = createDiarizationJobGuard(before, 'target')!;
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        const randomUUID = vi.spyOn(crypto, 'randomUUID')
+            .mockReturnValueOnce('set-generated')
+            .mockReturnValueOnce('speaker-track-2')
+            .mockReturnValueOnce('speaker-track-3');
+
+        expect(useTimelineStore.getState().replaceTrackSetWithDiarizedTranscription(
+            'target',
+            [
+                diarizedSpeaker('SPEAKER_00', 'speaker-a'),
+                diarizedSpeaker('SPEAKER_01', 'speaker-b'),
+                diarizedSpeaker('SPEAKER_02', 'speaker-c'),
+            ],
+            diarizationMetadata,
+            guard,
+        )).toBe(true);
+        randomUUID.mockRestore();
+
+        const applied = useTimelineStore.getState();
+        expect(applied.tracks.map((track) => track.id)).toEqual([
+            'target', 'speaker-track-2', 'speaker-track-3', 'unrelated',
+        ]);
+        expect(applied.tracks.slice(0, 3).map((track) => track.subtitles[0].text)).toEqual([
+            'SPEAKER_00', 'SPEAKER_01', 'SPEAKER_02',
+        ]);
+        expect(applied.tracks[0]).toMatchObject({
+            id: 'target', name: 'Interview captions', isVisible: false, isLocked: true, timingDomain: 'absolute',
+        });
+        expect(applied.tracks[1]).toMatchObject({
+            id: 'speaker-track-2', name: 'Speaker 2', isVisible: false, isLocked: true, timingDomain: 'absolute',
+        });
+        const extensions = applied.tracks.slice(0, 3).map((track) => (
+            getDiarizationProvenanceV1(applied.transcriptionByTrackId[track.id])
+        ));
+        expect(extensions).toEqual([
+            expect.objectContaining({ setId: 'set-generated', targetTrackId: 'target', speakerOrdinal: 0 }),
+            expect.objectContaining({ setId: 'set-generated', targetTrackId: 'target', speakerOrdinal: 1 }),
+            expect.objectContaining({ setId: 'set-generated', targetTrackId: 'target', speakerOrdinal: 2 }),
+        ]);
+        expect(Object.values(applied.transcriptionByTrackId).every((entry) => entry.stale === false)).toBe(true);
+        expect(applied.selectedSubtitleIds).toEqual([]);
+        expect(applied.lastSelectedId).toBeNull();
+        expect(applied.transientSelection).toEqual({ kind: 'none' });
+        expect(applied.history).toHaveLength(1);
+        expect(applied.history[0].label).toBe('Replace subtitles with diarized transcription');
+        expect(enqueue).toHaveBeenCalledTimes(1);
+        expect(validateEditorManifestV3(applied.buildEditorManifest())).toEqual({ valid: true, issues: [] });
+        const appliedTracks = structuredClone(applied.tracks);
+        const appliedProvenance = structuredClone(applied.transcriptionByTrackId);
+
+        await applied.undo();
+        expect(useTimelineStore.getState().tracks).toEqual(beforeTracks);
+        expect(useTimelineStore.getState().transcriptionByTrackId).toEqual({});
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState().tracks).toEqual(appliedTracks);
+        expect(useTimelineStore.getState().transcriptionByTrackId).toEqual(appliedProvenance);
+    });
+
+    it('reuses speaker track identities across same-size, grow, and shrink reruns', () => {
+        useTimelineStore.getState().setTracks([
+            subtitleTrack('target'),
+            subtitleTrack('unrelated'),
+        ], { resetHistory: true, skipSave: true });
+        const randomUUID = vi.spyOn(crypto, 'randomUUID')
+            .mockReturnValueOnce('stable-set')
+            .mockReturnValueOnce('stable-speaker-2')
+            .mockReturnValueOnce('stable-speaker-3');
+
+        const run = (speakers: ReturnType<typeof diarizedSpeaker>[]) => {
+            const state = useTimelineStore.getState();
+            const guard = createDiarizationJobGuard(state.buildEditorDocument(), state.activeTrackId!)!;
+            return state.replaceTrackSetWithDiarizedTranscription(
+                state.activeTrackId!, speakers, diarizationMetadata, guard,
+            );
+        };
+        expect(run([
+            diarizedSpeaker('A', 'first-a'),
+            diarizedSpeaker('B', 'first-b'),
+        ])).toBe(true);
+        const firstIds = useTimelineStore.getState().tracks.slice(0, 2).map((track) => track.id);
+
+        const provenanceWithUnknownExtension = structuredClone(
+            useTimelineStore.getState().transcriptionByTrackId,
+        );
+        provenanceWithUnknownExtension.target.extensions!.futureProviderData = { retained: ['yes'] };
+        provenanceWithUnknownExtension.target.stale = true;
+        useTimelineStore.setState({ transcriptionByTrackId: provenanceWithUnknownExtension });
+        expect(run([
+            diarizedSpeaker('RENAMED_A', 'second-a'),
+            diarizedSpeaker('RENAMED_B', 'second-b'),
+        ])).toBe(true);
+        expect(useTimelineStore.getState().tracks.slice(0, 2).map((track) => track.id)).toEqual(firstIds);
+        expect(useTimelineStore.getState().transcriptionByTrackId.target.extensions?.futureProviderData)
+            .toEqual({ retained: ['yes'] });
+        expect(useTimelineStore.getState().transcriptionByTrackId.target.stale).toBe(false);
+
+        expect(run([
+            diarizedSpeaker('A', 'third-a'),
+            diarizedSpeaker('B', 'third-b'),
+            diarizedSpeaker('C', 'third-c'),
+        ])).toBe(true);
+        expect(useTimelineStore.getState().tracks.slice(0, 3).map((track) => track.id)).toEqual([
+            ...firstIds, 'stable-speaker-3',
+        ]);
+
+        expect(run([diarizedSpeaker('A', 'fourth-a')])).toBe(true);
+        const shrunk = useTimelineStore.getState();
+        expect(shrunk.tracks.map((track) => track.id)).toEqual(['target', 'unrelated']);
+        expect(Object.keys(shrunk.transcriptionByTrackId)).toEqual(['target']);
+        expect(getDiarizationProvenanceV1(shrunk.transcriptionByTrackId.target)).toMatchObject({
+            setId: 'stable-set', targetTrackId: 'target', speakerOrdinal: 0,
+        });
+        randomUUID.mockRestore();
+    });
+
+    it('promotes a selected nonzero member to the anchor without duplicates or orphan provenance', () => {
+        useTimelineStore.getState().setTracks([
+            subtitleTrack('target'),
+            subtitleTrack('unrelated'),
+        ], { resetHistory: true, skipSave: true });
+        const randomUUID = vi.spyOn(crypto, 'randomUUID')
+            .mockReturnValueOnce('promoted-set')
+            .mockReturnValueOnce('member-two')
+            .mockReturnValueOnce('member-three');
+        const initialState = useTimelineStore.getState();
+        const initialGuard = createDiarizationJobGuard(initialState.buildEditorDocument(), 'target')!;
+        expect(initialState.replaceTrackSetWithDiarizedTranscription(
+            'target',
+            [
+                diarizedSpeaker('A', 'initial-a'),
+                diarizedSpeaker('B', 'initial-b'),
+                diarizedSpeaker('C', 'initial-c'),
+            ],
+            diarizationMetadata,
+            initialGuard,
+        )).toBe(true);
+        useTimelineStore.getState().setActiveTrackId('member-two');
+        const rerunState = useTimelineStore.getState();
+        const rerunGuard = createDiarizationJobGuard(rerunState.buildEditorDocument(), 'member-two')!;
+        expect(rerunState.replaceTrackSetWithDiarizedTranscription(
+            'member-two',
+            [diarizedSpeaker('B', 'rerun-b'), diarizedSpeaker('A', 'rerun-a')],
+            diarizationMetadata,
+            rerunGuard,
+        )).toBe(true);
+        randomUUID.mockRestore();
+
+        const promoted = useTimelineStore.getState();
+        expect(promoted.activeTrackId).toBe('member-two');
+        expect(promoted.tracks.map((track) => track.id)).toEqual(['member-two', 'target', 'unrelated']);
+        expect(new Set(promoted.tracks.map((track) => track.id)).size).toBe(promoted.tracks.length);
+        expect(Object.keys(promoted.transcriptionByTrackId).sort()).toEqual(['member-two', 'target']);
+        expect(Object.entries(promoted.transcriptionByTrackId).map(([trackId, entry]) => ({
+            trackId,
+            extension: getDiarizationProvenanceV1(entry),
+        }))).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                trackId: 'member-two',
+                extension: expect.objectContaining({ targetTrackId: 'member-two', speakerOrdinal: 0 }),
+            }),
+            expect.objectContaining({
+                trackId: 'target',
+                extension: expect.objectContaining({ targetTrackId: 'member-two', speakerOrdinal: 1 }),
+            }),
+        ]));
+    });
+
+    it('rejects stale diarization guards before allocating IDs or publishing partial state', () => {
+        useTimelineStore.getState().setTracks([
+            subtitleTrack('target'),
+            subtitleTrack('unrelated'),
+        ], { resetHistory: true, skipSave: true });
+        const guard = createDiarizationJobGuard(
+            useTimelineStore.getState().buildEditorDocument(),
+            'target',
+        )!;
+        useTimelineStore.getState().updateTrackName('target', 'Changed during request');
+        const before = useTimelineStore.getState();
+        const randomUUID = vi.spyOn(crypto, 'randomUUID');
+
+        expect(before.replaceTrackSetWithDiarizedTranscription(
+            'target',
+            [diarizedSpeaker('A', 'stale-a'), diarizedSpeaker('B', 'stale-b')],
+            diarizationMetadata,
+            guard,
+        )).toBe(false);
+        expect(randomUUID).not.toHaveBeenCalled();
+        expect(useTimelineStore.getState().revision).toBe(before.revision);
+        expect(useTimelineStore.getState().history).toHaveLength(before.history.length);
+        expect(useTimelineStore.getState().transcriptionByTrackId).toEqual(before.transcriptionByTrackId);
+        randomUUID.mockRestore();
+    });
+
+    it('applies around an unrelated durable edit without relying on the global revision', () => {
+        useTimelineStore.getState().setTracks([
+            subtitleTrack('target'),
+            subtitleTrack('unrelated'),
+        ], { resetHistory: true, skipSave: true });
+        const guard = createDiarizationJobGuard(
+            useTimelineStore.getState().buildEditorDocument(),
+            'target',
+        )!;
+        useTimelineStore.getState().updateTrackName('unrelated', 'Edited during request');
+        const unrelatedId = vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce('added-during-request');
+        useTimelineStore.getState().addTrack('Added during request');
+        unrelatedId.mockRestore();
+        // Adding a lane makes it active; returning to the original target keeps this an unrelated
+        // graph change while still satisfying the explicit active-track publication guard.
+        useTimelineStore.getState().setActiveTrackId('target');
+        const afterUnrelatedRevision = useTimelineStore.getState().revision;
+        const randomUUID = vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce('unrelated-safe-set');
+
+        expect(useTimelineStore.getState().replaceTrackSetWithDiarizedTranscription(
+            'target',
+            [diarizedSpeaker('A', 'unrelated-safe-a')],
+            diarizationMetadata,
+            guard,
+        )).toBe(true);
+        randomUUID.mockRestore();
+        expect(useTimelineStore.getState().revision).toBe(afterUnrelatedRevision + 1);
+        expect(useTimelineStore.getState().tracks.find((track) => track.id === 'unrelated')?.name)
+            .toBe('Edited during request');
+        expect(useTimelineStore.getState().tracks.some((track) => track.id === 'added-during-request'))
+            .toBe(true);
+        expect(useTimelineStore.getState().activeTrackId).toBe('target');
+    });
+
+    it('rejects publication after the active subtitle track changes without any durable side effect', () => {
+        useTimelineStore.getState().setTracks([
+            subtitleTrack('target'),
+            subtitleTrack('other'),
+        ], { resetHistory: true, skipSave: true });
+        const guard = createDiarizationJobGuard(
+            useTimelineStore.getState().buildEditorDocument(),
+            'target',
+        )!;
+        useTimelineStore.getState().setActiveTrackId('other');
+        const before = useTimelineStore.getState();
+        const beforeTracks = structuredClone(before.tracks);
+        const beforeHistory = structuredClone(before.history);
+        const beforeRedo = structuredClone(before.redoStack);
+        const beforeProvenance = structuredClone(before.transcriptionByTrackId);
+        const enqueue = vi.fn();
+        setTimelinePersistenceBinding({ projectId: 'project', generation: 1, enqueue });
+        const randomUUID = vi.spyOn(crypto, 'randomUUID');
+
+        expect(before.replaceTrackSetWithDiarizedTranscription(
+            'target',
+            [diarizedSpeaker('A', 'active-changed-a')],
+            diarizationMetadata,
+            guard,
+        )).toBe(false);
+        randomUUID.mockRestore();
+
+        const rejected = useTimelineStore.getState();
+        expect(rejected.tracks).toEqual(beforeTracks);
+        expect(rejected.activeTrackId).toBe('other');
+        expect(rejected.revision).toBe(before.revision);
+        expect(rejected.history).toEqual(beforeHistory);
+        expect(rejected.redoStack).toEqual(beforeRedo);
+        expect(rejected.transcriptionByTrackId).toEqual(beforeProvenance);
+        expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not overwrite an unknown future diarization extension on the selected target', () => {
+        useTimelineStore.getState().setTracks([
+            subtitleTrack('target'),
+        ], { resetHistory: true, skipSave: true });
+        const guard = createDiarizationJobGuard(
+            useTimelineStore.getState().buildEditorDocument(),
+            'target',
+        )!;
+        const current = useTimelineStore.getState();
+        useTimelineStore.setState({
+            transcriptionByTrackId: {
+                target: {
+                    raw: [],
+                    groups: {},
+                    containerIds: [],
+                    sourceDocumentRevision: current.revision,
+                    sourceAudioGraphRevision: current.audioGraphRevision,
+                    sourceAudioGraphSignature: getEditorAudioGraphSignature(current.buildEditorDocument()),
+                    stale: false,
+                    extensions: {
+                        [DIARIZATION_PROVENANCE_EXTENSION_KEY]: { version: 2, opaque: 'retain-me' },
+                    },
+                },
+            },
+        });
+        const before = useTimelineStore.getState();
+        const randomUUID = vi.spyOn(crypto, 'randomUUID');
+
+        expect(before.replaceTrackSetWithDiarizedTranscription(
+            'target',
+            [diarizedSpeaker('A', 'future-a')],
+            diarizationMetadata,
+            guard,
+        )).toBe(false);
+        expect(randomUUID).not.toHaveBeenCalled();
+        expect(useTimelineStore.getState().transcriptionByTrackId).toEqual(before.transcriptionByTrackId);
+        randomUUID.mockRestore();
     });
 
     it('builds and enqueues a typed V3 manifest with both source kinds', () => {

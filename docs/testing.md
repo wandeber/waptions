@@ -105,6 +105,90 @@ for its linked waveform, and plays from its audio clock. The persistence scenari
 transaction failure through the native IndexedDB prototype, restores it, retries from the status
 bar, and reloads the durably recovered edit.
 
+## Optional live speaker-diarization E2E
+
+`e2e/transcription-diarization.live.spec.ts` verifies the real public editor workflow against one
+fresh, runner-owned reference-service process. Run the containment regression first:
+
+```bash
+pnpm run test:e2e:diarization-security
+```
+
+This command deliberately produces a generic Playwright assertion failure after placing a random
+sentinel in a password input and localStorage. The command itself succeeds only when trace, video
+and screenshots are disabled, Playwright's AI copy-prompt capture is disabled, every retained raw
+or nested-ZIP artifact is clean, and an independently injected ZIP leak causes complete
+fail-closed purge. An exact non-secret completion marker distinguishes that intentional post-storage
+failure from an earlier setup/browser failure. Pure sanitizer, streaming-redactor, signal-lifecycle
+and artifact-guard tests also run through `pnpm run test:tooling`.
+
+The live runner accepts three required, non-secret inputs:
+
+- `WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO`: an absolute path to a clean
+  `lazy-whisper-api` checkout;
+- `WAPTIONS_E2E_DIARIZATION_MODEL`: a timestamp-capable alias exposed by that checkout; and
+- `WAPTIONS_E2E_DIARIZATION_MEDIA`: an absolute readable two-speaker media path outside both
+  repositories.
+
+Then run:
+
+```bash
+WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO="${LOCAL_LAZY_WHISPER_REPOSITORY}" \
+WAPTIONS_E2E_DIARIZATION_MODEL="${LOCAL_TIMESTAMP_MODEL}" \
+WAPTIONS_E2E_DIARIZATION_MEDIA="${LOCAL_TWO_SPEAKER_MEDIA}" \
+pnpm run test:e2e:diarization
+```
+
+Do not export or pass `WAPTIONS_E2E_DIARIZATION_ENDPOINT`,
+`WAPTIONS_E2E_DIARIZATION_API_KEY`, `ASR_API_KEY`, `WHISPER_API_KEY`, an Authorization header or
+any persistent credential. The old endpoint/key inputs are rejected. The runner generates a
+256-bit base64url credential and its SHA-256 digest in memory, reserves a free localhost port, and
+derives the endpoint itself. The raw key is installed only in the fresh API and Playwright child
+environments and is absent from both the runner and isolated Next.js process environments. In
+server mode, Next.js necessarily receives it transiently inside the editor's multipart proxy
+request, parses it with the custom transcriber settings, and forwards it to the upstream service.
+
+By default the runner parses the git-tracked, public `.env.apple.example` template and uses the
+reference checkout's `.venv` Python. It never reads, sources, copies or displays the ignored
+`.env`. For a documented alternative platform, the optional
+`WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE` may name an absolute git-tracked public template
+inside the checkout, and `WAPTIONS_E2E_DIARIZATION_REFERENCE_PYTHON` may name an absolute
+interpreter. A template named `.env`, an untracked/out-of-checkout template, an unavailable
+interpreter, a dirty reference checkout or media inside either repository fails before spawning.
+
+The runner launches `python -m uvicorn whisper_api:app` directly with `shell: false`. This is
+required because the reference shell launcher sources its persistent `.env` after inherited
+variables and could replace an ephemeral key. The runner authenticates `/healthz`, requires ready
+local diarization runtime/model state, verifies the requested `/v1/models` alias, and never reuses
+or stops a pre-existing service.
+
+The editor scenario deliberately uses server mode because the reference local service has no
+browser CORS contract. Here localhost resolves on the machine running the isolated Waptions server.
+A deployed Waptions server resolves its own localhost instead, and production hosts still have to
+pass `OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS`.
+
+The test proves preference reload, stable active/sibling track IDs, chronological non-empty
+speaker content, anchored provenance, exact atomic Undo/Redo, rerun reuse without duplicates or
+orphans, explicit `stale: false`, and IndexedDB persistence after reload. It reads the durable V3
+manifest directly because visible speaker names are editable and cannot prove identity. Preference
+key checks hash the browser value with Web Crypto and compare only the runner-provided digest; the
+raw key is never an evaluator parameter, assertion expectation, log or complete preference record.
+
+Every live output/report lands first under one operating-system temporary root. The ephemeral key
+and absolute, canonical, relative, or separator-normalized spellings of that root are hidden
+chunk-safely in child output before inspection. Every raw file and decompressed nested ZIP entry is
+then scanned for the exact key. A match, symlink, unreadable file, malformed/over-limit archive or
+incomplete scan purges the entire root and fails generically. Clean success also removes the root.
+Only the runner may print the real root, once, after a clean failed-run scan retains it for explicit
+inspection and caller deletion. The secure isolated Next server also replaces request-handler
+exceptions with a generic diagnostic; ordinary E2E runs retain their full Error-object logging.
+
+Cleanup stops only the invocation-owned Playwright, Next.js and fresh reference-service processes,
+removes isolated compiler state, waits a bounded time for `active_runs` to reach zero, and rechecks
+that the reference checkout stayed clean. Do not immediately retry a `429`. Long projects create an
+in-memory encoded mix and multipart upload, so use a small stable external two-speaker fixture for
+this acceptance test.
+
 ## Optional stress media
 
 `e2e/editor-audio.spec.ts` remains an optional stress test for longer or unusual local media. It is

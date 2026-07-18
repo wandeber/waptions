@@ -19,6 +19,9 @@ Every expensive browser resource has one explicit owner:
   and current pooled canvas. Disposal closes the input first, then awaits iterator cleanup.
 - Export owns an immutable document snapshot, a separate sequential video session, audio renderer,
   encoders, and destination. It never inserts frames into the preview cache.
+- Whole-project diarization owns a detached frozen document snapshot, a bounded timeline audio
+  renderer, one audio encoder/output, and the resulting compact in-memory Blob until its single
+  transcription request settles.
 - `WaveformRepository` owns extraction deduplication, subscriber cancellation, the memory LRU, and
   the best-effort derived IndexedDB cache.
 
@@ -54,6 +57,29 @@ sample arrays or filtering contributor lists for every render quantum.
 Preview and export call the same audio mix-plan and DSP modules. This preserves linked-video audio,
 detached video audio, imported audio, mute/solo, clip and track gain, fades, silence tails, and exact
 exclusive sample boundaries.
+
+## Whole-project diarization mix
+
+Custom OpenAI-compatible diarization also consumes `buildAudioMixPlan()`, but it renders a bounded
+audio-only artifact rather than a video export. A detached recursively frozen document snapshot is
+captured before asynchronous work. Rendering begins at project sample zero and ends at the last
+exclusive sample of an audible contributor, preserving leading and internal silence while omitting
+silent or muted tails. A project with no audible contributors makes no network request.
+
+The renderer feeds a Mediabunny audio sample source and prefers AAC in MP4, falling back to Opus in
+WebM only when AAC cannot be encoded. It never creates a whole-project WAV. Samples, decoder
+sessions, source and output are closed exactly once; cancellation crosses rendering, encoding and
+upload, and a failed finalization cancels the output instead of exposing a partial Blob.
+
+Browser mode uploads the Blob directly and therefore needs endpoint CORS. Server mode posts it once
+through Waptions, so localhost resolves on the Waptions server and production endpoints remain
+subject to the existing allowlist. Both modes request non-streaming verbose JSON with diarization
+enabled. Response validation uses only readable `diarization.speaker_segments`; empty speech is a
+no-op, while malformed timing or speaker data fails before any editor mutation.
+
+The complete compressed artifact and multipart request live in memory. Large projects may exhaust
+browser codec/memory capacity or server upload limits. There is no separate diarization duration
+cap; stage-specific errors release owned resources and leave tracks/history/persistence untouched.
 
 ## Video preview and cache budgets
 
@@ -129,6 +155,13 @@ idempotently. A direct-to-disk streamed export does not allocate a downloadable 
 Durable timeline mutations pass through one finalizer that owns no-op detection, history,
 revision/audio impact, and persistence enqueue. Transient drag previews do not consume durable
 history or write IndexedDB.
+
+A diarized speaker set uses one such durable mutation and therefore one history entry, revision and
+persistence enqueue. Before applying a late network result, its guard compares the audible graph
+and the exact anchored target-set projection, including relative member order, track signatures,
+provenance and extension metadata. It deliberately ignores unrelated tracks and the global document
+revision, but rejects audio edits or any mutation of a generated member. A stale result never
+publishes a partial set.
 
 The persistence coordinator keeps the newest failed V3 manifest and the exact typed `File` assets
 needed by it. The status bar keeps `Changes not saved` visible after a transaction error. `Retry`

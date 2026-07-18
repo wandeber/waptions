@@ -4,13 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/design-system/Button';
 import { Select } from '@/components/design-system/Select';
 import {
+    BuiltInTranscriptionRouteId,
     getVisibleTranscriptionModels,
     LocalBrowserTranscriptionDevice,
     LocalBrowserTranscriptionLanguage,
     LocalBrowserTranscriptionSettings,
     OpenAICompatibleTranscriptionSettings,
     TranscriptionModel,
-    TranscriptionModelId
+    TranscriptionRouteId,
+    TranscriptionSubmission,
 } from '@/types/transcription';
 import { Sparkles, Bot, Check, Server, KeyRound, Monitor, Cpu, AlertTriangle } from 'lucide-react';
 import { shouldShowPaidTranscriptionModels } from '@/lib/config/feature-flags';
@@ -21,26 +23,18 @@ import {
     isLocalBrowserWebGpuReady,
     LocalBrowserModelManifest,
 } from '@/lib/ai/local-browser-transcription';
-
-const CUSTOM_TRANSCRIPTION_SETTINGS_KEY = 'waptions-custom-openai-compatible-transcription';
-const LOCAL_BROWSER_TRANSCRIPTION_SETTINGS_KEY = 'waptions-local-browser-transcription';
-
-const DEFAULT_CUSTOM_TRANSCRIPTION_SETTINGS: OpenAICompatibleTranscriptionSettings = {
-    enabled: false,
-    requestMode: 'browser',
-    endpoint: 'http://localhost:8000/v1',
-    apiKey: '',
-    model: 'faster-whisper',
-};
+import {
+    createDefaultTranscriptionPreferences,
+    DEFAULT_CUSTOM_TRANSCRIPTION_SETTINGS,
+    loadTranscriptionPreferences,
+    saveTranscriptionPreferences,
+    TranscriptionPreferenceCodecOptions,
+} from '@/lib/ai/transcription-preferences';
 
 interface TranscriptionModalProps {
     isOpen: boolean;
     onClose: () => void;
-    onConfirm: (
-        modelId: TranscriptionModelId,
-        customOpenAITranscription?: OpenAICompatibleTranscriptionSettings | null,
-        localBrowserTranscription?: LocalBrowserTranscriptionSettings | null
-    ) => void;
+    onConfirm: (submission: TranscriptionSubmission) => void;
     isProcessing?: boolean;
     status?: string | null;
     onCancelProcessing?: () => void;
@@ -69,14 +63,25 @@ export function TranscriptionModal({
     onCancelProcessing
 }: TranscriptionModalProps) {
     const paidModelsVisible = shouldShowPaidTranscriptionModels();
-    const visibleModels = getVisibleTranscriptionModels();
+    const visibleModels = useMemo(() => getVisibleTranscriptionModels(), []);
     const localManifests = useMemo(() => getVisibleLocalBrowserModelManifests(), []);
-    const [selectedId, setSelectedId] = useState<TranscriptionModelId>('local-browser');
-    const [customSettings, setCustomSettings] = useState<OpenAICompatibleTranscriptionSettings>(DEFAULT_CUSTOM_TRANSCRIPTION_SETTINGS);
-    const [localSettings, setLocalSettings] = useState<LocalBrowserTranscriptionSettings>(DEFAULT_LOCAL_BROWSER_TRANSCRIPTION_SETTINGS);
+    const preferenceCodecOptions = useMemo<TranscriptionPreferenceCodecOptions>(() => ({
+        visibleBuiltInRouteIds: visibleModels.map(model => model.id as BuiltInTranscriptionRouteId),
+        visibleLocalManifests: localManifests,
+        defaultLocalBrowserTranscription: DEFAULT_LOCAL_BROWSER_TRANSCRIPTION_SETTINGS,
+    }), [localManifests, visibleModels]);
+    const initialPreferences = useMemo(
+        () => createDefaultTranscriptionPreferences(preferenceCodecOptions),
+        [preferenceCodecOptions],
+    );
+    const [selectedRouteId, setSelectedRouteId] = useState<TranscriptionRouteId>(initialPreferences.selectedRouteId);
+    const [customSettings, setCustomSettings] = useState<OpenAICompatibleTranscriptionSettings>(initialPreferences.customOpenAITranscription);
+    const [diarizationEnabled, setDiarizationEnabled] = useState(initialPreferences.diarizationEnabled);
+    const [localSettings, setLocalSettings] = useState<LocalBrowserTranscriptionSettings>(initialPreferences.localBrowserTranscription);
     const [capabilities, setCapabilities] = useState<LocalBrowserCapabilities>(DEFAULT_LOCAL_BROWSER_CAPABILITIES);
-    const [hasLoadedCustomSettings, setHasLoadedCustomSettings] = useState(false);
-    const [hasLoadedLocalSettings, setHasLoadedLocalSettings] = useState(false);
+    const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
+    const [storageLoadFailed, setStorageLoadFailed] = useState(false);
+    const [storageWriteFailed, setStorageWriteFailed] = useState(false);
     const [endpointError, setEndpointError] = useState<string | null>(null);
     const [localBrowserError, setLocalBrowserError] = useState<string | null>(null);
 
@@ -84,9 +89,9 @@ export function TranscriptionModal({
     const requestedLocalDevice = localSettings.device || capabilities.recommendedDevice;
     const localNeedsWasmFallback = !capabilities.webgpuAvailable
         && (requestedLocalDevice === 'webgpu' || selectedLocalManifest.requiresWebGpu);
-    const localSelectionBlocked = selectedId === 'local-browser'
+    const localSelectionBlocked = selectedRouteId === 'local-browser'
         && (!capabilities.browserSupported || (localNeedsWasmFallback && !localSettings.allowWasmFallback));
-    const customEndpointSelected = selectedId === 'whisper-1' && customSettings.enabled;
+    const customEndpointSelected = selectedRouteId === 'custom-openai-compatible';
     const canUseCustomEndpoint = customEndpointSelected;
 
     useEffect(() => {
@@ -112,68 +117,47 @@ export function TranscriptionModal({
     }, []);
 
     useEffect(() => {
-        const storedSettings = window.localStorage.getItem(CUSTOM_TRANSCRIPTION_SETTINGS_KEY);
-
-        if (storedSettings) {
-            try {
-                const parsed = JSON.parse(storedSettings) as Partial<OpenAICompatibleTranscriptionSettings>;
-                setCustomSettings({
-                    ...DEFAULT_CUSTOM_TRANSCRIPTION_SETTINGS,
-                    ...parsed,
-                    enabled: parsed.enabled === true,
-                    requestMode: parsed.requestMode === 'server' ? 'server' : 'browser',
-                    endpoint: typeof parsed.endpoint === 'string' ? parsed.endpoint : DEFAULT_CUSTOM_TRANSCRIPTION_SETTINGS.endpoint,
-                    apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
-                    model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_CUSTOM_TRANSCRIPTION_SETTINGS.model,
-                });
-            } catch {
-                window.localStorage.removeItem(CUSTOM_TRANSCRIPTION_SETTINGS_KEY);
-            }
+        try {
+            const loaded = loadTranscriptionPreferences(window.localStorage, preferenceCodecOptions);
+            setSelectedRouteId(loaded.preferences.selectedRouteId);
+            setCustomSettings(loaded.preferences.customOpenAITranscription);
+            setDiarizationEnabled(loaded.preferences.diarizationEnabled);
+            setLocalSettings(loaded.preferences.localBrowserTranscription);
+            setStorageLoadFailed(!loaded.storageHealthy);
+        } catch {
+            // Some browser policies can reject access to the localStorage object itself before the
+            // adapter can guard its methods. Session defaults remain usable in that environment.
+            setStorageLoadFailed(true);
+        } finally {
+            setHasLoadedPreferences(true);
         }
-
-        setHasLoadedCustomSettings(true);
-    }, []);
+    }, [preferenceCodecOptions]);
 
     useEffect(() => {
-        const storedSettings = window.localStorage.getItem(LOCAL_BROWSER_TRANSCRIPTION_SETTINGS_KEY);
-
-        if (storedSettings) {
-            try {
-                const parsed = JSON.parse(storedSettings) as Partial<LocalBrowserTranscriptionSettings>;
-                const manifest = getVisibleLocalManifest(localManifests, parsed.manifestId);
-                setLocalSettings({
-                    ...DEFAULT_LOCAL_BROWSER_TRANSCRIPTION_SETTINGS,
-                    ...parsed,
-                    enabled: true,
-                    engine: manifest.engine,
-                    manifestId: manifest.id,
-                    device: parsed.device === 'wasm' ? 'wasm' : 'webgpu',
-                    language: normalizeLocalLanguage(parsed.language),
-                    allowWasmFallback: parsed.allowWasmFallback === true,
-                });
-            } catch {
-                window.localStorage.removeItem(LOCAL_BROWSER_TRANSCRIPTION_SETTINGS_KEY);
-            }
-        }
-
-        setHasLoadedLocalSettings(true);
-    }, [localManifests]);
-
-    useEffect(() => {
-        if (!hasLoadedCustomSettings) {
+        if (!hasLoadedPreferences) {
             return;
         }
 
-        window.localStorage.setItem(CUSTOM_TRANSCRIPTION_SETTINGS_KEY, JSON.stringify(customSettings));
-    }, [customSettings, hasLoadedCustomSettings]);
-
-    useEffect(() => {
-        if (!hasLoadedLocalSettings) {
-            return;
+        try {
+            const saved = saveTranscriptionPreferences(window.localStorage, {
+                selectedRouteId,
+                customOpenAITranscription: customSettings,
+                diarizationEnabled,
+                localBrowserTranscription: localSettings,
+            });
+            // A later successful write can recover a write-only failure. A failed initial read is
+            // kept separately because that mounted session never had trustworthy persisted state.
+            setStorageWriteFailed(!saved.storageHealthy);
+        } catch {
+            setStorageWriteFailed(true);
         }
-
-        window.localStorage.setItem(LOCAL_BROWSER_TRANSCRIPTION_SETTINGS_KEY, JSON.stringify(localSettings));
-    }, [localSettings, hasLoadedLocalSettings]);
+    }, [
+        customSettings,
+        diarizationEnabled,
+        hasLoadedPreferences,
+        localSettings,
+        selectedRouteId,
+    ]);
 
     if (!isOpen) return null;
 
@@ -211,18 +195,14 @@ export function TranscriptionModal({
     };
 
     const selectCustomEndpoint = () => {
-        setSelectedId('whisper-1');
+        setSelectedRouteId('custom-openai-compatible');
         updateCustomSettings({ enabled: true });
     };
 
-    const getCustomSettingsForSubmit = (): OpenAICompatibleTranscriptionSettings | null | undefined => {
-        if (!canUseCustomEndpoint) {
-            return null;
-        }
-
+    const getCustomSettingsForSubmit = (): OpenAICompatibleTranscriptionSettings | undefined => {
         const endpoint = customSettings.endpoint.trim();
         if (!endpoint) {
-            setEndpointError('El endpoint es obligatorio.');
+            setEndpointError('The endpoint is required.');
             return undefined;
         }
 
@@ -235,11 +215,7 @@ export function TranscriptionModal({
         };
     };
 
-    const getLocalBrowserSettingsForSubmit = (): LocalBrowserTranscriptionSettings | null | undefined => {
-        if (selectedId !== 'local-browser') {
-            return null;
-        }
-
+    const getLocalBrowserSettingsForSubmit = (): LocalBrowserTranscriptionSettings | undefined => {
         if (!capabilities.browserSupported) {
             setLocalBrowserError('This browser cannot run local transcription workers.');
             return undefined;
@@ -261,14 +237,29 @@ export function TranscriptionModal({
     };
 
     const handleConfirm = () => {
-        const customOpenAITranscription = getCustomSettingsForSubmit();
-        const localBrowserTranscription = getLocalBrowserSettingsForSubmit();
-
-        if (customOpenAITranscription === undefined || localBrowserTranscription === undefined) {
+        if (selectedRouteId === 'local-browser') {
+            const localBrowserTranscription = getLocalBrowserSettingsForSubmit();
+            if (!localBrowserTranscription) {
+                return;
+            }
+            onConfirm({ routeId: 'local-browser', localBrowserTranscription });
             return;
         }
 
-        onConfirm(selectedId, customOpenAITranscription, localBrowserTranscription);
+        if (selectedRouteId === 'custom-openai-compatible') {
+            const customOpenAITranscription = getCustomSettingsForSubmit();
+            if (!customOpenAITranscription) {
+                return;
+            }
+            onConfirm({
+                routeId: 'custom-openai-compatible',
+                customOpenAITranscription,
+                diarizationEnabled,
+            });
+            return;
+        }
+
+        onConfirm({ routeId: selectedRouteId });
     };
 
     return (
@@ -296,11 +287,26 @@ export function TranscriptionModal({
 
                 {/* Body */}
                 <div className="p-6 space-y-3 overflow-y-auto">
+                    {(storageLoadFailed || storageWriteFailed) && (
+                        <div
+                            role="alert"
+                            aria-live="polite"
+                            data-testid="transcription-preferences-storage-warning"
+                            className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
+                        >
+                            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                            <span>
+                                Transcription preferences could not be read or saved in this browser. Your current choices will work for this session only.
+                            </span>
+                        </div>
+                    )}
                     <div
-                        onClick={() => setSelectedId('local-browser')}
+                        onClick={() => setSelectedRouteId('local-browser')}
+                        data-testid="transcription-route-local-browser"
+                        data-selected={selectedRouteId === 'local-browser'}
                         className={`
                             relative rounded-lg border p-4 cursor-pointer transition-all duration-200
-                            ${selectedId === 'local-browser'
+                            ${selectedRouteId === 'local-browser'
                                 ? 'bg-emerald-500/10 border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.14)]'
                                 : 'bg-gray-800/50 border-gray-700 hover:bg-gray-800 hover:border-gray-600'
                             }
@@ -309,14 +315,14 @@ export function TranscriptionModal({
                         <div className="flex items-center gap-4">
                             <div className={`
                                 flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors
-                                ${selectedId === 'local-browser' ? 'bg-emerald-500 text-white' : 'bg-gray-700 text-gray-400'}
+                                ${selectedRouteId === 'local-browser' ? 'bg-emerald-500 text-white' : 'bg-gray-700 text-gray-400'}
                             `}>
                                 <Cpu className="w-5 h-5" />
                             </div>
 
                             <div className="flex-1 min-w-0">
                                 <div className="flex flex-wrap items-center gap-2 mb-0.5">
-                                    <h3 className={`font-semibold text-sm ${selectedId === 'local-browser' ? 'text-white' : 'text-gray-200'}`}>
+                                    <h3 className={`font-semibold text-sm ${selectedRouteId === 'local-browser' ? 'text-white' : 'text-gray-200'}`}>
                                         Local browser transcription
                                     </h3>
                                     <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium tracking-wide border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
@@ -330,7 +336,7 @@ export function TranscriptionModal({
 
                             <div className={`
                                 w-5 h-5 rounded-full border flex items-center justify-center transition-all
-                                ${selectedId === 'local-browser'
+                                ${selectedRouteId === 'local-browser'
                                     ? 'border-emerald-500 bg-emerald-500 text-white scale-100'
                                     : 'border-gray-600 bg-transparent text-transparent scale-90 opacity-50'
                                 }
@@ -339,7 +345,7 @@ export function TranscriptionModal({
                             </div>
                         </div>
 
-                        {selectedId === 'local-browser' && (
+                        {selectedRouteId === 'local-browser' && (
                             <div className="mt-4 grid gap-3" onClick={(event) => event.stopPropagation()}>
                                 <div className="grid gap-3 sm:grid-cols-[1.3fr_1fr_0.8fr]">
                                     <label className="grid gap-1 text-xs text-gray-400">
@@ -430,17 +436,16 @@ export function TranscriptionModal({
                     </div>
 
                     {visibleModels.map((model) => {
-                        const isSelected = selectedId === model.id && !customEndpointSelected;
+                        const isSelected = selectedRouteId === model.id;
 
                         return (
                             <div
                                 key={model.id}
                                 onClick={() => {
-                                    setSelectedId(model.id);
-                                    if (model.id === 'whisper-1') {
-                                        updateCustomSettings({ enabled: false });
-                                    }
+                                    setSelectedRouteId(model.id);
                                 }}
+                                data-testid={`transcription-route-${model.id}`}
+                                data-selected={isSelected}
                                 className={`
                                     relative flex items-center gap-4 p-4 rounded-lg cursor-pointer transition-all duration-200 border
                                     ${isSelected
@@ -497,24 +502,26 @@ export function TranscriptionModal({
 
                     <div
                         onClick={selectCustomEndpoint}
+                        data-testid="transcription-route-custom-openai-compatible"
+                        data-selected={customEndpointSelected}
                         className={`rounded-lg border p-4 cursor-pointer transition-colors ${customEndpointSelected ? 'border-blue-500 bg-blue-500/10' : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}`}
                     >
                         <div className="flex items-center gap-3 text-sm text-gray-200">
                             <input
                                 type="checkbox"
-                                checked={customSettings.enabled}
+                                checked={customEndpointSelected}
                                 onChange={(event) => {
                                     event.stopPropagation();
                                     const enabled = event.target.checked;
                                     updateCustomSettings({ enabled });
-                                    setSelectedId(enabled ? 'whisper-1' : 'local-browser');
+                                    setSelectedRouteId(enabled ? 'custom-openai-compatible' : 'local-browser');
                                 }}
                                 disabled={isProcessing}
                                 className="h-4 w-4 accent-blue-500"
                             />
                             <span className="flex items-center gap-2 font-medium">
                                 <Server className="h-4 w-4 text-blue-400" />
-                                Transcriptor OpenAI-compatible
+                                OpenAI-compatible transcriber
                             </span>
                             {customEndpointSelected && (
                                 <Check className="ml-auto h-4 w-4 text-blue-400" />
@@ -524,7 +531,7 @@ export function TranscriptionModal({
                         {canUseCustomEndpoint && (
                             <div className="mt-4 grid gap-3" onClick={(event) => event.stopPropagation()}>
                                 <div className="grid gap-2 text-xs text-gray-400">
-                                    <span>Modo de llamada</span>
+                                    <span>Request mode</span>
                                     <div className="grid gap-2 sm:grid-cols-2">
                                         <button
                                             type="button"
@@ -537,10 +544,10 @@ export function TranscriptionModal({
                                         >
                                             <span className="flex items-center gap-2 text-sm font-medium">
                                                 <Monitor className="h-4 w-4" />
-                                                Navegador
+                                                Browser
                                             </span>
                                             <span className="mt-1 block text-xs text-gray-400">
-                                                Usa el localhost del usuario.
+                                                Uses localhost on this device.
                                             </span>
                                         </button>
 
@@ -555,10 +562,10 @@ export function TranscriptionModal({
                                         >
                                             <span className="flex items-center gap-2 text-sm font-medium">
                                                 <Server className="h-4 w-4" />
-                                                Servidor
+                                                Server
                                             </span>
                                             <span className="mt-1 block text-xs text-gray-400">
-                                                Evita CORS; localhost es el servidor de Waptions.
+                                                Avoids browser CORS; localhost is the Waptions server.
                                             </span>
                                         </button>
                                     </div>
@@ -582,18 +589,18 @@ export function TranscriptionModal({
                                 <div className="rounded border border-gray-700 bg-gray-950/70 p-3 text-xs leading-relaxed text-gray-400">
                                     {customSettings.requestMode === 'server' ? (
                                         <span>
-                                            La llamada saldrá del servidor de Waptions, no del navegador. No requiere CORS y la API key no se expone al cliente, pero localhost apunta al servidor donde corre Waptions. En producción, el host debe estar permitido por el servidor.
+                                            Waptions sends the request from its server, so browser CORS does not apply. localhost resolves on the Waptions server, and production hosts must be explicitly allowed there.
                                         </span>
                                     ) : (
                                         <span>
-                                            La llamada saldrá directamente desde este navegador. localhost apunta a este equipo, pero el transcriptor debe permitir CORS desde {typeof window !== 'undefined' ? window.location.origin : 'Waptions'}; si usas API key, también debe permitir Authorization en CORS.
+                                            This browser sends the request directly. localhost resolves on this device, and the transcriber must allow CORS from {typeof window !== 'undefined' ? window.location.origin : 'Waptions'}, including Authorization when an API key is used.
                                         </span>
                                     )}
                                 </div>
 
                                 <div className="grid gap-3 sm:grid-cols-2">
                                     <label className="grid gap-1 text-xs text-gray-400">
-                                        <span>Modelo</span>
+                                        <span>Model</span>
                                         <input
                                             type="text"
                                             value={customSettings.model || ''}
@@ -607,7 +614,7 @@ export function TranscriptionModal({
                                     <label className="grid gap-1 text-xs text-gray-400">
                                         <span className="flex items-center gap-1">
                                             <KeyRound className="h-3.5 w-3.5" />
-                                            API key opcional
+                                            Optional API key
                                         </span>
                                         <input
                                             type="password"
@@ -620,8 +627,24 @@ export function TranscriptionModal({
                                     </label>
                                 </div>
 
-                                <p className="text-xs text-gray-500">
-                                    Guardado sólo en este navegador.
+                                <label className="flex items-start gap-2 rounded border border-gray-700 bg-gray-950/70 p-3 text-xs text-gray-300">
+                                    <input
+                                        type="checkbox"
+                                        checked={diarizationEnabled}
+                                        onChange={(event) => setDiarizationEnabled(event.target.checked)}
+                                        disabled={isProcessing}
+                                        className="mt-0.5 h-4 w-4 accent-blue-500"
+                                    />
+                                    <span>
+                                        <span className="block font-medium text-gray-100">Speaker diarization</span>
+                                        <span className="mt-1 block text-gray-400">
+                                            Render the audible project mix and create one subtitle track per detected speaker.
+                                        </span>
+                                    </span>
+                                </label>
+
+                                <p className="text-xs leading-relaxed text-gray-500">
+                                    These settings, including the API key, are stored in this browser&apos;s localStorage. They can be read by scripts running on this Waptions origin and by browser extensions, and are never added to the project.
                                 </p>
                             </div>
                         )}
@@ -664,8 +687,4 @@ export function TranscriptionModal({
 
 function getVisibleLocalManifest(manifests: LocalBrowserModelManifest[], manifestId: string | undefined): LocalBrowserModelManifest {
     return manifests.find(manifest => manifest.id === manifestId) ?? manifests[0];
-}
-
-function normalizeLocalLanguage(language: unknown): LocalBrowserTranscriptionLanguage {
-    return language === 'en' || language === 'es' ? language : 'auto';
 }

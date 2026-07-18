@@ -4,6 +4,11 @@ import {
   type LocalBrowserTranscriptionProgress,
   transcribeWithLocalBrowserModel,
 } from '@/lib/ai/local-browser-transcription';
+import {
+  resolveEditorTranscriptionRoute,
+  resolvePerSourceTranscriptionRequest,
+  runDiarizedEditorTranscription,
+} from '@/hooks/editor-transcription-orchestration';
 import { buildAudioTranscriptionPlan } from '@/lib/audio-transcription-plan';
 import { resolveAudioMediaAsset, type AudioMediaCacheKey } from '@/lib/media-asset-ref';
 import { extractAudio } from '@/lib/mediabunny-utils';
@@ -15,9 +20,7 @@ import {
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { Subtitle } from '@/types/timeline';
 import type {
-  LocalBrowserTranscriptionSettings,
-  OpenAICompatibleTranscriptionSettings,
-  TranscriptionModelId,
+  TranscriptionSubmission,
 } from '@/types/transcription';
 
 interface GenerateSubtitlesResponse {
@@ -78,15 +81,53 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
     setStatus('Cancelling transcription…');
   }, []);
 
-  const confirm = useCallback(async (
-    modelId: TranscriptionModelId,
-    customOpenAITranscription?: OpenAICompatibleTranscriptionSettings | null,
-    localBrowserTranscription?: LocalBrowserTranscriptionSettings | null,
-  ) => {
+  const confirm = useCallback(async (submission: TranscriptionSubmission) => {
     if (!targetTrackId) return;
 
     const timeline = useTimelineStore.getState();
     const document = timeline.buildEditorDocument();
+    const route = resolveEditorTranscriptionRoute(submission);
+
+    if (route.kind === 'diarized-custom') {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      try {
+        setIsGenerating(true);
+        const result = await runDiarizedEditorTranscription({
+          document,
+          targetTrackId,
+          settings: route.settings,
+          signal: abortController.signal,
+          browserOrigin: window.location.origin,
+          onStatus: setStatus,
+          apply: (trackId, speakers, metadata, guard) => (
+            useTimelineStore.getState().replaceTrackSetWithDiarizedTranscription(
+              trackId,
+              speakers,
+              metadata,
+              guard,
+            )
+          ),
+        });
+        if (result === 'stale') {
+          throw new Error('The timeline changed while diarization was running. Run transcription again on the current edit.');
+        }
+        setIsModalOpen(false);
+      } catch (error) {
+        if (abortController.signal.aborted || isAbortLikeError(error)) return;
+        console.error('Failed to generate diarized subtitles:', error);
+        alert(error instanceof Error ? error.message : 'Speaker diarization failed. Please try again.');
+      } finally {
+        if (abortControllerRef.current === abortController) abortControllerRef.current = null;
+        setIsGenerating(false);
+        setStatus(null);
+      }
+      return;
+    }
+
+    const requestRoute = resolvePerSourceTranscriptionRequest(route);
+    const isPremiumBuiltIn = route.kind === 'per-source-built-in'
+      && route.modelId === 'premium-whisper-gpt4o';
     const transcriptionPlan = buildAudioTranscriptionPlan(document);
     const targetGuard = timeline.createTranscriptionGuard(targetTrackId);
     if (!targetGuard || transcriptionPlan.sourceJobs.length === 0) return;
@@ -115,23 +156,19 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
           throw new DOMException('Transcription cancelled.', 'AbortError');
         }
 
-        if (modelId === 'local-browser' && localBrowserTranscription?.enabled) {
+        if (requestRoute.kind === 'local-browser') {
           const transcription = await transcribeWithLocalBrowserModel({
             audioBlob,
-            settings: localBrowserTranscription,
+            settings: requestRoute.settings,
             signal: abortController.signal,
             onProgress: (progress) => setStatus(`${sourceNumber} · ${formatLocalProgress(progress)}`),
           });
           data = { subtitles: buildSubtitlesFromTimedWords(transcription) };
-        } else if (
-          modelId === 'whisper-1'
-          && customOpenAITranscription?.enabled
-          && customOpenAITranscription.requestMode === 'browser'
-        ) {
+        } else if (requestRoute.kind === 'custom-browser') {
           try {
             setStatus(`Transcribing ${sourceNumber} in this browser…`);
             const transcription = await transcribeWithOpenAICompatibleEndpoint({
-              settings: customOpenAITranscription,
+              settings: requestRoute.settings,
               audioFile: audioBlob,
               fallbackModel: 'faster-whisper',
               options: {
@@ -154,9 +191,9 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
           setStatus(`Transcribing ${sourceNumber} on the server…`);
           const formData = new FormData();
           formData.append('audio', audioBlob, `${media.asset.id}.mp4`);
-          formData.append('model', modelId);
-          if (customOpenAITranscription?.enabled) {
-            formData.append('customOpenAITranscription', JSON.stringify(customOpenAITranscription));
+          formData.append('model', requestRoute.transportModelId);
+          if (requestRoute.customOpenAITranscription?.enabled) {
+            formData.append('customOpenAITranscription', JSON.stringify(requestRoute.customOpenAITranscription));
           }
           const response = await fetch('/api/generate-subtitles', {
             method: 'POST',
@@ -169,7 +206,7 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
           }
         }
 
-        if (modelId === 'premium-whisper-gpt4o') {
+        if (isPremiumBuiltIn) {
           premiumBySource.set(sourceJob.sourceKey, {
             raw: data.raw ?? data.subtitles ?? [],
             groups: data.groups ?? [],
@@ -180,7 +217,7 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
       }
 
       setStatus('Mapping source words onto the edited timeline…');
-      if (modelId === 'premium-whisper-gpt4o') {
+      if (isPremiumBuiltIn) {
         const mapped = mapPremiumAudioTranscriptionPlanToProject(transcriptionPlan, premiumBySource);
         if (mapped.raw.length === 0) {
           setIsModalOpen(false);
