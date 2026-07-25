@@ -8,6 +8,7 @@ export * from './managed-web-transport';
 export * from './mcp-app-lifecycle';
 export * from './mcp-app-transport';
 export * from './mcp-envelope';
+export * from './mcp-projection-contract';
 export * from './model-context';
 export * from './rpc-bridge';
 export * from './standalone-controller';

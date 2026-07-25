@@ -29,6 +29,7 @@ import type {
   EditorUiClip,
   EditorUiAudioSourceRange,
   EditorUiController,
+  EditorUiDurableCommand,
   EditorUiSnapshot,
   EditorUiTrack,
   EditorUiTrackKind,
@@ -115,12 +116,26 @@ export function ManagedTimeline() {
   const snapshot = useEditorUiSnapshot();
   const { controller } = useEditorSurfaceHost();
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const viewSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleViewSync = (patch: Extract<
+    Parameters<EditorUiController['dispatch']>[0],
+    { type: 'view.update' }
+  >['patch']) => {
+    if (viewSyncTimer.current) clearTimeout(viewSyncTimer.current);
+    viewSyncTimer.current = setTimeout(() => {
+      viewSyncTimer.current = null;
+      void controller.dispatch({ type: 'view.update', patch });
+    }, 120);
+  };
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (scroller && Math.abs(scroller.scrollLeft - snapshot.view.scrollLeft) > 0.5) {
       scroller.scrollLeft = snapshot.view.scrollLeft;
     }
   }, [snapshot.view.scrollLeft]);
+  useEffect(() => () => {
+    if (viewSyncTimer.current) clearTimeout(viewSyncTimer.current);
+  }, []);
   const pixelsPerSecond = Math.max(24, 72 * snapshot.view.zoom);
   const timelineWidth = Math.max(
     720,
@@ -167,9 +182,8 @@ export function ManagedTimeline() {
     if (movingClips.length === 0) return;
     const earliestStart = Math.min(...movingClips.map((clip) => clip.startSeconds));
     const movingIds = movingClips.map((clip) => clip.id);
-    void (async () => {
-      for (let index = 0; index < movingClips.length; index += 1) {
-        const clip = movingClips[index];
+    const commands: EditorUiDurableCommand[] = movingClips.flatMap(
+      (clip): EditorUiDurableCommand[] => {
         const clipId = clip.id;
         const targetSeconds = Math.max(
           0,
@@ -177,26 +191,16 @@ export function ManagedTimeline() {
         );
         if (clip.kind === 'video') {
           const timelineFrame = secondsToProjectFrame(targetSeconds, snapshot.project.fps);
-          await controller.dispatch(
-            { type: 'video-clip.move', clipId, trackId: track.id, timelineFrame },
-            index === 0
-              ? { optimistic: (current) => optimisticMove(current, movingIds, track.id, startSeconds) }
-              : undefined,
-          );
+          return [{ type: 'video-clip.move', clipId, trackId: track.id, timelineFrame }];
         } else if (clip.kind === 'audio') {
-          await controller.dispatch(
-            {
-              type: 'audio-clip.move',
-              clipId,
-              trackId: track.id,
-              timelineFrame: secondsToProjectFrame(targetSeconds, snapshot.project.fps),
-            },
-            index === 0
-              ? { optimistic: (current) => optimisticMove(current, movingIds, track.id, startSeconds) }
-              : undefined,
-          );
+          return [{
+            type: 'audio-clip.move',
+            clipId,
+            trackId: track.id,
+            timelineFrame: secondsToProjectFrame(targetSeconds, snapshot.project.fps),
+          }];
         } else if (clip.kind === 'subtitle') {
-          await controller.dispatch({
+          return [{
             type: 'subtitle.move',
             trackId: clip.trackId,
             targetTrackId: track.id,
@@ -204,10 +208,22 @@ export function ManagedTimeline() {
             startOutputSample: secondsToOutputSample(targetSeconds),
             endOutputSample: secondsToOutputSample(targetSeconds + clip.durationSeconds),
             text: clip.text ?? clip.label,
-          });
+          }];
         }
-      }
-    })();
+        return [];
+      },
+    );
+    if (commands.length === 0) return;
+    void controller.dispatch({
+      type: 'edit.batch',
+      commands,
+      history: {
+        label: movingClips.length === 1 ? 'Move clip' : `Move ${movingClips.length} clips`,
+        category: 'timeline.move',
+      },
+    }, {
+      optimistic: (current) => optimisticMove(current, movingIds, track.id, startSeconds),
+    });
   };
   const resizeTrack = (event: PointerEvent<HTMLDivElement>, track: EditorUiTrack) => {
     if (event.button !== 0) return;
@@ -272,7 +288,8 @@ export function ManagedTimeline() {
           label="Split selected clips at playhead"
           disabled={selectedClips.length === 0}
           onClick={() => {
-            for (const clip of selectedClips) {
+            const commands: EditorUiDurableCommand[] = selectedClips.flatMap(
+              (clip): EditorUiDurableCommand[] => {
               if (snapshot.view.playheadSeconds > clip.startSeconds
                 && snapshot.view.playheadSeconds < clip.startSeconds + clip.durationSeconds) {
                 const timelineFrame = secondsToProjectFrame(
@@ -280,22 +297,34 @@ export function ManagedTimeline() {
                   snapshot.project.fps,
                 );
                 if (clip.kind === 'video') {
-                  void controller.dispatch({ type: 'video-clip.split', clipId: clip.id, timelineFrame });
+                  return [{ type: 'video-clip.split', clipId: clip.id, timelineFrame }];
                 } else if (clip.kind === 'audio') {
-                  void controller.dispatch({
+                  return [{
                     type: 'audio-clip.split',
                     clipId: clip.id,
                     timelineOutputSample: secondsToOutputSample(snapshot.view.playheadSeconds),
-                  });
+                  }];
                 } else if (clip.kind === 'subtitle') {
-                  void controller.dispatch({
+                  return [{
                     type: 'subtitle.split',
                     trackId: clip.trackId,
                     subtitleId: clip.id,
                     outputSample: secondsToOutputSample(snapshot.view.playheadSeconds),
-                  });
+                  }];
                 }
               }
+              return [];
+              },
+            );
+            if (commands.length > 0) {
+              void controller.dispatch({
+                type: 'edit.batch',
+                commands,
+                history: {
+                  label: commands.length === 1 ? 'Split clip' : `Split ${commands.length} clips`,
+                  category: 'timeline.split',
+                },
+              });
             }
           }}
         />
@@ -305,14 +334,29 @@ export function ManagedTimeline() {
           disabled={!firstAudioTrackId
             || !selectedClips.some((clip) => clip.kind === 'video' && clip.hasLinkedAudio)}
           onClick={() => {
-            for (const clip of selectedClips) {
-              if (clip.kind === 'video' && clip.hasLinkedAudio && firstAudioTrackId) {
-                void controller.dispatch({
+            if (!firstAudioTrackId) return;
+            const commands: EditorUiDurableCommand[] = selectedClips.flatMap(
+              (clip): EditorUiDurableCommand[] => (
+              clip.kind === 'video' && clip.hasLinkedAudio
+                ? [{
                   type: 'video-clip.detach-audio',
                   clipId: clip.id,
                   audioTrackId: firstAudioTrackId,
-                });
-              }
+                }]
+                : []
+              ),
+            );
+            if (commands.length > 0) {
+              void controller.dispatch({
+                type: 'edit.batch',
+                commands,
+                history: {
+                  label: commands.length === 1
+                    ? 'Detach clip audio'
+                    : `Detach audio from ${commands.length} clips`,
+                  category: 'audio.detach',
+                },
+              });
             }
           }}
         />
@@ -330,7 +374,11 @@ export function ManagedTimeline() {
             max={4}
             step={0.25}
             value={snapshot.view.zoom}
-            onChange={(event) => controller.updateView({ zoom: Number(event.currentTarget.value) })}
+            onChange={(event) => {
+              const zoom = Number(event.currentTarget.value);
+              controller.updateView({ zoom });
+              scheduleViewSync({ zoom });
+            }}
             className="w-24 accent-sky-400"
             aria-label="Timeline zoom"
           />
@@ -340,7 +388,11 @@ export function ManagedTimeline() {
       <div
         ref={scrollerRef}
         className="min-h-0 flex-1 overflow-auto"
-        onScroll={(event) => controller.updateView({ scrollLeft: event.currentTarget.scrollLeft })}
+        onScroll={(event) => {
+          const scrollLeft = event.currentTarget.scrollLeft;
+          controller.updateView({ scrollLeft });
+          scheduleViewSync({ scrollLeft });
+        }}
       >
         <div className="sticky top-0 z-30 flex h-7 min-w-max border-b border-slate-800 bg-slate-950">
           <div
@@ -441,18 +493,31 @@ async function deleteClips(
   controller: EditorUiController,
   clips: readonly EditorUiClip[],
 ): Promise<void> {
-  for (const clip of clips) {
+  const commands: EditorUiDurableCommand[] = clips.flatMap(
+    (clip): EditorUiDurableCommand[] => {
     if (clip.kind === 'video') {
-      await controller.dispatch({ type: 'video-clip.delete', clipId: clip.id });
+      return [{ type: 'video-clip.delete', clipId: clip.id }];
     } else if (clip.kind === 'audio') {
-      await controller.dispatch({ type: 'audio-clip.delete', clipId: clip.id });
+      return [{ type: 'audio-clip.delete', clipId: clip.id }];
     } else if (clip.kind === 'subtitle') {
-      await controller.dispatch({
+      return [{
         type: 'subtitle.delete',
         trackId: clip.trackId,
         subtitleId: clip.id,
-      });
+      }];
     }
+    return [];
+    },
+  );
+  if (commands.length > 0) {
+    await controller.dispatch({
+      type: 'edit.batch',
+      commands,
+      history: {
+        label: commands.length === 1 ? 'Delete clip' : `Delete ${commands.length} clips`,
+        category: 'timeline.delete',
+      },
+    });
   }
 }
 
@@ -481,10 +546,10 @@ function TrackHeader({ track }: { track: EditorUiTrack }) {
   const snapshot = useEditorUiSnapshot();
   const { controller, services } = useEditorSurfaceHost();
   const Icon = trackIcon(track.kind);
-  const trackIndex = snapshot.project.tracks.findIndex((candidate) => candidate.id === track.id);
   const sameKindTracks = snapshot.project.tracks.filter((candidate) => (
     candidate.kind === track.kind
   ));
+  const kindIndex = sameKindTracks.findIndex((candidate) => candidate.id === track.id);
   const rehome = sameKindTracks.find((candidate) => candidate.id !== track.id);
   const canRemove = !(track.kind === 'video' && sameKindTracks.length === 1)
     && (track.clips.length === 0 || Boolean(rehome));
@@ -519,12 +584,12 @@ function TrackHeader({ track }: { track: EditorUiTrack }) {
       <button
         type="button"
         className="rounded p-0.5 text-slate-600 hover:bg-slate-800 hover:text-white disabled:opacity-20"
-        disabled={trackIndex === 0}
+        disabled={kindIndex === 0}
         onClick={() => void controller.dispatch({
           type: 'track.reorder',
           trackKind: track.kind,
           trackId: track.id,
-          beforeTrackId: snapshot.project.tracks[trackIndex - 1]?.id ?? null,
+          beforeTrackId: sameKindTracks[kindIndex - 1].id,
         })}
         aria-label={`Move ${track.name} up`}
       >
@@ -533,12 +598,12 @@ function TrackHeader({ track }: { track: EditorUiTrack }) {
       <button
         type="button"
         className="rounded p-0.5 text-slate-600 hover:bg-slate-800 hover:text-white disabled:opacity-20"
-        disabled={trackIndex === snapshot.project.tracks.length - 1}
+        disabled={kindIndex === sameKindTracks.length - 1}
         onClick={() => void controller.dispatch({
           type: 'track.reorder',
           trackKind: track.kind,
           trackId: track.id,
-          beforeTrackId: snapshot.project.tracks[trackIndex + 2]?.id ?? null,
+          afterTrackId: sameKindTracks[kindIndex + 1].id,
         })}
         aria-label={`Move ${track.name} down`}
       >

@@ -1,61 +1,19 @@
-import type { EditorUiCommand, EditorUiTrackKind } from './contracts';
+import type {
+  EditorUiCommand,
+  EditorUiDurableCommand,
+  EditorUiLinkedAudio,
+  EditorUiRenderProfile,
+  EditorUiSubtitleCue,
+  EditorUiSubtitleStyle,
+  EditorUiTrackKind,
+} from './contracts';
 
 export const EDITOR_UI_API_VERSION = '2026-07-25' as const;
 export const OUTPUT_AUDIO_SAMPLE_RATE = 48_000 as const;
 export const NARRATIVE_SAMPLE_RATE = 16_000 as const;
+export const EDITOR_UI_MAX_BATCH_BYTES = 512 * 1024;
 
-type DurableEditorUiCommand = Extract<
-  EditorUiCommand,
-  {
-    type:
-      | 'project.set-name'
-      | 'track.add'
-      | 'track.rename'
-      | 'track.delete'
-      | 'track.reorder'
-      | 'track.set-state'
-      | 'audio-track.set-gain'
-      | 'subtitle-track.set-unlinked-video-policy'
-      | 'video-clip.move'
-      | 'video-clip.trim'
-      | 'video-clip.split'
-      | 'video-clip.delete'
-      | 'video-clip.detach-audio'
-      | 'video-clip.relink-audio'
-      | 'video-clip.set-audio'
-      | 'audio-clip.move'
-      | 'audio-clip.trim'
-      | 'audio-clip.split'
-      | 'audio-clip.delete'
-      | 'audio-clip.set-gain'
-      | 'audio-clip.set-fades'
-      | 'subtitle.insert'
-      | 'subtitle.update'
-      | 'subtitle.move'
-      | 'subtitle.trim'
-      | 'subtitle.split'
-      | 'subtitle.delete'
-      | 'subtitle.set-order'
-      | 'subtitle.set-track-style'
-      | 'narrative.activate'
-      | 'narrative.release-tracks'
-      | 'narrative.set-editing-mode'
-      | 'narrative.reorder-blocks'
-      | 'narrative.split-block'
-      | 'narrative.merge-blocks'
-      | 'narrative.delete-range'
-      | 'narrative.delete-all-silences'
-      | 'narrative.change-block-margin'
-      | 'narrative.change-global-margins'
-      | 'narrative.refine-boundary'
-      | 'narrative.set-speaker-visibility'
-      | 'link.discover-overlaps'
-      | 'link.create-overlap'
-      | 'link.unlink-target'
-      | 'link.reanchor'
-      | 'link.set-follow-policy';
-  }
->;
+type DurableEditorUiCommand = EditorUiDurableCommand;
 
 type UiPayload<Type extends DurableEditorUiCommand['type']> = Omit<
   Extract<DurableEditorUiCommand, { type: Type }>,
@@ -64,8 +22,11 @@ type UiPayload<Type extends DurableEditorUiCommand['type']> = Omit<
 
 type CoreSemanticPayloadByType = {
   'project.set-name': UiPayload<'project.set-name'>;
+  'render.set-profile': { profile: EditorUiRenderProfile };
+  'render.set-background': UiPayload<'render.set-background'>;
   'track.add': {
     trackKind: EditorUiTrackKind;
+    trackId?: string;
     name: string;
     beforeTrackId?: string;
   };
@@ -73,38 +34,51 @@ type CoreSemanticPayloadByType = {
   'track.delete': {
     trackKind: EditorUiTrackKind;
     trackId: string;
-    policy: 'empty-only' | 'rehome';
+    policy: 'empty-only' | 'delete-contents' | 'rehome';
     rehomeTrackId?: string;
   };
   'track.reorder': {
     trackKind: EditorUiTrackKind;
     trackId: string;
     beforeId?: string;
+    afterId?: string;
   };
+  'track.reorder-clips': UiPayload<'track.reorder-clips'>;
   'track.set-state': UiPayload<'track.set-state'>;
   'audio-track.set-gain': UiPayload<'audio-track.set-gain'>;
   'subtitle-track.set-unlinked-video-policy':
     UiPayload<'subtitle-track.set-unlinked-video-policy'>;
+  'video-clip.insert': {
+    clipId?: string;
+    sourceId: string;
+    trackId: string;
+    timelineStartFrame: number;
+    sourceStartSeconds: number;
+    sourceEndSeconds: number;
+    audio: CoreVideoClipAudio | null;
+  };
   'video-clip.move': {
     clipId: string;
     targetTrackId: string;
     timelineStartFrame: number;
   };
   'video-clip.trim': UiPayload<'video-clip.trim'>;
-  'video-clip.split': { clipId: string; atFrame: number };
+  'video-clip.split': { clipId: string; atFrame: number; rightClipId?: string };
   'video-clip.delete': UiPayload<'video-clip.delete'>;
+  'video-clip.duplicate': {
+    clipId: string;
+    duplicateId?: string;
+    targetTrackId?: string;
+    timelineStartFrame?: number;
+  };
+  'video-clip.set-order': UiPayload<'video-clip.set-order'>;
   'video-clip.detach-audio': UiPayload<'video-clip.detach-audio'>;
   'video-clip.relink-audio': UiPayload<'video-clip.relink-audio'>;
   'video-clip.set-audio': {
     clipId: string;
-    audio: {
-      linkState: 'linked';
-      muted: boolean;
-      gainDb: number;
-      fadeInFrames: number;
-      fadeOutFrames: number;
-    };
+    audio: CoreVideoClipAudio | null;
   };
+  'audio-clip.insert': { trackId: string; clip: CoreAudioClip };
   'audio-clip.move': {
     clipId: string;
     targetTrackId: string;
@@ -127,8 +101,15 @@ type CoreSemanticPayloadByType = {
           endSeconds: number;
         };
   };
-  'audio-clip.split': { clipId: string; atOutputSample: number };
+  'audio-clip.split': { clipId: string; atOutputSample: number; rightClipId?: string };
   'audio-clip.delete': UiPayload<'audio-clip.delete'>;
+  'audio-clip.duplicate': {
+    clipId: string;
+    duplicateId?: string;
+    targetTrackId?: string;
+    timelineStartFrame?: number;
+  };
+  'audio-clip.set-order': UiPayload<'audio-clip.set-order'>;
   'audio-clip.set-gain': UiPayload<'audio-clip.set-gain'>;
   'audio-clip.set-fades': UiPayload<'audio-clip.set-fades'>;
   'subtitle.insert': {
@@ -151,32 +132,49 @@ type CoreSemanticPayloadByType = {
     trackId: string;
     subtitleId: string;
     atOutputSample: number;
+    rightSubtitleId?: string;
   };
   'subtitle.delete': UiPayload<'subtitle.delete'>;
   'subtitle.set-order': {
     trackId: string;
     subtitleId: string;
     beforeId?: string;
+    afterId?: string;
   };
-  'subtitle.set-track-style': UiPayload<'subtitle.set-track-style'>;
+  'subtitle.bulk-replace': { trackId: string; subtitles: EditorUiSubtitleCue[] };
+  'subtitle.set-track-style': { trackId: string; style: EditorUiSubtitleStyle };
   'narrative.activate': UiPayload<'narrative.activate'>;
   'narrative.release-tracks': UiPayload<'narrative.release-tracks'>;
   'narrative.set-editing-mode': UiPayload<'narrative.set-editing-mode'>;
   'narrative.reorder-blocks': UiPayload<'narrative.reorder-blocks'>;
   'narrative.split-block': UiPayload<'narrative.split-block'>;
   'narrative.merge-blocks': UiPayload<'narrative.merge-blocks'>;
+  'narrative.delete-words': UiPayload<'narrative.delete-words'>;
   'narrative.delete-range': UiPayload<'narrative.delete-range'>;
+  'narrative.trim-block': UiPayload<'narrative.trim-block'>;
+  'narrative.insert-source-range': CoreNarrativeSourceRangePayload;
+  'narrative.recover-source-range': CoreNarrativeSourceRangePayload;
+  'narrative.extend-block': UiPayload<'narrative.extend-block'>;
+  'narrative.set-word-text': UiPayload<'narrative.set-word-text'>;
+  'narrative.set-word-speaker': UiPayload<'narrative.set-word-speaker'>;
   'narrative.delete-all-silences': {
     scope?: { kind: 'document' } | { kind: 'track'; trackId: string };
+    currentPlayheadFrame?: number;
   };
   'narrative.change-block-margin': {
     blockId: string;
     side: 'pre' | 'post';
-    policy: {
-      kind: 'margin';
-      mode: 'explicit';
-      requestedSamples16k: number;
-    };
+    policy:
+      | {
+          kind: 'margin';
+          mode: 'explicit';
+          requestedSamples16k: number;
+        }
+      | {
+          kind: 'margin';
+          mode: 'inherit-global';
+          requestedSamples16k: null;
+        };
   };
   'narrative.change-global-margins': {
     preSamples16k: number;
@@ -186,10 +184,130 @@ type CoreSemanticPayloadByType = {
   'narrative.set-speaker-visibility': { showSpeakers: boolean };
   'link.discover-overlaps': Record<string, never>;
   'link.create-overlap': UiPayload<'link.create-overlap'>;
+  'link.bind-target': UiPayload<'link.bind-target'>;
   'link.unlink-target': UiPayload<'link.unlink-target'>;
+  'link.unbind-target': UiPayload<'link.unbind-target'>;
   'link.reanchor': UiPayload<'link.reanchor'>;
   'link.set-follow-policy': UiPayload<'link.set-follow-policy'>;
 };
+
+export type CoreSemanticOperationType = keyof CoreSemanticPayloadByType;
+
+// The closed record makes an added/removed Core operation a compile error at this UI boundary.
+const CORE_SEMANTIC_OPERATION_COVERAGE: Record<CoreSemanticOperationType, true> = {
+  'project.set-name': true,
+  'render.set-profile': true,
+  'render.set-background': true,
+  'track.add': true,
+  'track.rename': true,
+  'track.delete': true,
+  'track.reorder': true,
+  'track.reorder-clips': true,
+  'track.set-state': true,
+  'audio-track.set-gain': true,
+  'subtitle-track.set-unlinked-video-policy': true,
+  'video-clip.insert': true,
+  'video-clip.move': true,
+  'video-clip.trim': true,
+  'video-clip.split': true,
+  'video-clip.delete': true,
+  'video-clip.duplicate': true,
+  'video-clip.set-order': true,
+  'video-clip.detach-audio': true,
+  'video-clip.relink-audio': true,
+  'video-clip.set-audio': true,
+  'audio-clip.insert': true,
+  'audio-clip.move': true,
+  'audio-clip.trim': true,
+  'audio-clip.split': true,
+  'audio-clip.delete': true,
+  'audio-clip.duplicate': true,
+  'audio-clip.set-order': true,
+  'audio-clip.set-gain': true,
+  'audio-clip.set-fades': true,
+  'subtitle.insert': true,
+  'subtitle.update': true,
+  'subtitle.move': true,
+  'subtitle.trim': true,
+  'subtitle.split': true,
+  'subtitle.delete': true,
+  'subtitle.set-order': true,
+  'subtitle.bulk-replace': true,
+  'subtitle.set-track-style': true,
+  'narrative.activate': true,
+  'narrative.release-tracks': true,
+  'narrative.set-editing-mode': true,
+  'narrative.reorder-blocks': true,
+  'narrative.split-block': true,
+  'narrative.merge-blocks': true,
+  'narrative.delete-words': true,
+  'narrative.delete-range': true,
+  'narrative.trim-block': true,
+  'narrative.insert-source-range': true,
+  'narrative.recover-source-range': true,
+  'narrative.extend-block': true,
+  'narrative.set-word-text': true,
+  'narrative.set-word-speaker': true,
+  'narrative.delete-all-silences': true,
+  'narrative.change-block-margin': true,
+  'narrative.change-global-margins': true,
+  'narrative.refine-boundary': true,
+  'narrative.set-speaker-visibility': true,
+  'link.discover-overlaps': true,
+  'link.create-overlap': true,
+  'link.bind-target': true,
+  'link.unlink-target': true,
+  'link.unbind-target': true,
+  'link.reanchor': true,
+  'link.set-follow-policy': true,
+};
+
+export const CORE_SEMANTIC_OPERATION_TYPES = Object.freeze(
+  Object.keys(CORE_SEMANTIC_OPERATION_COVERAGE) as CoreSemanticOperationType[],
+);
+
+interface CoreVideoClipAudio {
+  linkState: 'linked';
+  muted: boolean;
+  gainDb: number;
+  fadeInFrames: number;
+  fadeOutFrames: number;
+}
+
+type CoreAudioClip =
+  | {
+      id: string;
+      timelineStartFrame: number;
+      muted: boolean;
+      gainDb: number;
+      source: { kind: 'audio-source'; audioSourceId: string };
+      sourceStartSample: number;
+      sourceEndSample: number;
+      timelineDurationSamples?: number;
+      fadeInSamples: number;
+      fadeOutSamples: number;
+    }
+  | {
+      id: string;
+      timelineStartFrame: number;
+      muted: boolean;
+      gainDb: number;
+      source: { kind: 'video-source-audio'; videoSourceId: string };
+      sourceStart: number;
+      sourceEnd: number;
+      fadeInFrames: number;
+      fadeOutFrames: number;
+    };
+
+interface CoreNarrativeSourceRangePayload {
+  recordId: string;
+  sourceId: string;
+  sourceRange: { startSample16k: number; endSample16k: number };
+  destinationTrackId: string;
+  targetIndex?: number;
+  timelineStartFrame?: number;
+  clipAudio: CoreVideoClipAudio | null;
+}
 
 export type CoreSemanticOperation = {
   [Type in keyof CoreSemanticPayloadByType]: {
@@ -200,7 +318,11 @@ export type CoreSemanticOperation = {
 }[keyof CoreSemanticPayloadByType];
 
 export type EditorUiCommandRoute =
-  | { tool: 'edit'; operations: readonly CoreSemanticOperation[] }
+  | {
+      tool: 'edit';
+      operations: readonly CoreSemanticOperation[];
+      history?: { label: string; category: string };
+    }
   | { tool: 'history'; action: 'undo' | 'redo' | 'jump'; entryId?: string | null }
   | {
       tool: 'playback';
@@ -225,7 +347,17 @@ export type EditorUiCommandRoute =
       tool: 'view';
       patch:
         | { selectionIds: string[] }
-        | { rowHeights: Record<string, number> };
+        | { rowHeights: Record<string, number> }
+        | {
+            selectionIds?: string[];
+            playheadFrame?: number;
+            zoom?: number;
+            scrollX?: number;
+            rowHeights?: Record<string, number>;
+            layout?: 'timeline' | 'text' | 'split';
+            focusedPanel?: string;
+            presentation?: 'inline' | 'fullscreen' | 'pip';
+          };
     }
   | {
       tool: 'media-import';
@@ -255,12 +387,80 @@ const assertPositiveInteger = (value: number, field: string): void => {
   }
 };
 
+const requireProjectFps = (fps: number | undefined, operation: string): number => {
+  if (!Number.isFinite(fps) || (fps ?? 0) <= 0) {
+    throw new Error(`${operation} requires the explicit project frame rate.`);
+  }
+  return fps as number;
+};
+
+const mapLinkedAudio = (
+  audio: EditorUiLinkedAudio,
+  projectFps: number | undefined,
+  operation: string,
+): CoreVideoClipAudio => {
+  assertInteger(audio.fadeInOutputSamples48k, `${operation}.fadeInOutputSamples48k`);
+  assertInteger(audio.fadeOutOutputSamples48k, `${operation}.fadeOutOutputSamples48k`);
+  const fps = requireProjectFps(projectFps, operation);
+  return {
+    linkState: 'linked',
+    muted: audio.muted,
+    gainDb: audio.gainDb,
+    fadeInFrames: Math.round(audio.fadeInOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps),
+    fadeOutFrames: Math.round(audio.fadeOutOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps),
+  };
+};
+
 const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
   switch (operation.type) {
+    case 'render.set-profile':
+      assertPositiveInteger(operation.profile.fps.numerator, 'render.set-profile.fps.numerator');
+      assertPositiveInteger(operation.profile.fps.denominator, 'render.set-profile.fps.denominator');
+      assertPositiveInteger(operation.profile.width, 'render.set-profile.width');
+      assertPositiveInteger(operation.profile.height, 'render.set-profile.height');
+      return;
+    case 'render.set-background':
+      if (!/^#[0-9A-Fa-f]{6}$/.test(operation.color)) {
+        throw new Error('render.set-background.color must use #RRGGBB.');
+      }
+      return;
+    case 'track.set-state':
+      if (operation.visible === undefined
+        && operation.muted === undefined
+        && operation.solo === undefined
+        && operation.locked === undefined) {
+        throw new Error('track.set-state requires at least one state field.');
+      }
+      return;
+    case 'track.delete':
+      if (operation.policy === 'rehome' && !operation.rehomeTrackId) {
+        throw new Error('track.delete rehome requires rehomeTrackId.');
+      }
+      return;
+    case 'track.reorder':
+      if (Boolean(operation.beforeTrackId) === Boolean(operation.afterTrackId)) {
+        throw new Error('track.reorder requires exactly one order anchor.');
+      }
+      return;
+    case 'track.reorder-clips':
+    case 'video-clip.set-order':
+    case 'audio-clip.set-order':
+    case 'subtitle.set-order':
+      if (Boolean(operation.beforeId) === Boolean(operation.afterId)) {
+        throw new Error(`${operation.type} requires exactly one order anchor.`);
+      }
+      return;
+    case 'video-clip.insert':
     case 'video-clip.move':
     case 'video-clip.split':
+    case 'audio-clip.insert':
     case 'audio-clip.move':
       assertInteger(operation.timelineFrame, `${operation.type}.timelineFrame`);
+      if (operation.type === 'video-clip.insert'
+        && (operation.sourceStartSeconds < 0
+          || operation.sourceEndSeconds <= operation.sourceStartSeconds)) {
+        throw new Error('video-clip.insert source timing must be a positive range.');
+      }
       return;
     case 'video-clip.trim':
       if (!Number.isFinite(operation.sourceStartSeconds)
@@ -273,15 +473,23 @@ const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
         assertInteger(operation.timelineStartFrame, 'video-clip.trim.timelineStartFrame');
       }
       return;
+    case 'video-clip.duplicate':
+    case 'audio-clip.duplicate':
+      if (operation.timelineFrame !== undefined) {
+        assertInteger(operation.timelineFrame, `${operation.type}.timelineFrame`);
+      }
+      return;
     case 'video-clip.set-audio':
-      assertInteger(
-        operation.fadeInOutputSamples48k,
-        'video-clip.set-audio.fadeInOutputSamples48k',
-      );
-      assertInteger(
-        operation.fadeOutOutputSamples48k,
-        'video-clip.set-audio.fadeOutOutputSamples48k',
-      );
+      if (operation.audio) {
+        assertInteger(
+          operation.audio.fadeInOutputSamples48k,
+          'video-clip.set-audio.audio.fadeInOutputSamples48k',
+        );
+        assertInteger(
+          operation.audio.fadeOutOutputSamples48k,
+          'video-clip.set-audio.audio.fadeOutOutputSamples48k',
+        );
+      }
       return;
     case 'audio-clip.trim':
       if (operation.sourceRange.domain === 'audio-source-native-samples') {
@@ -307,6 +515,30 @@ const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
         throw new Error('audio-clip.trim.sourceRange seconds must be a positive finite range.');
       }
       return;
+    case 'narrative.insert-source-range':
+    case 'narrative.recover-source-range':
+      assertInteger(operation.startSample16k, `${operation.type}.startSample16k`);
+      assertInteger(operation.endSample16k, `${operation.type}.endSample16k`);
+      if (operation.endSample16k <= operation.startSample16k) {
+        throw new Error(`${operation.type} source samples must be a positive range.`);
+      }
+      if (operation.targetIndex !== undefined) {
+        assertInteger(operation.targetIndex, `${operation.type}.targetIndex`);
+      }
+      if (operation.timelineStartFrame !== undefined) {
+        assertInteger(operation.timelineStartFrame, `${operation.type}.timelineStartFrame`);
+      }
+      if ((operation.targetIndex === undefined) === (operation.timelineStartFrame === undefined)) {
+        throw new Error(`${operation.type} requires exactly one destination coordinate.`);
+      }
+      return;
+    case 'narrative.extend-block':
+      assertInteger(operation.newStartSample16k, 'narrative.extend-block.newStartSample16k');
+      assertInteger(operation.newEndSample16k, 'narrative.extend-block.newEndSample16k');
+      if (operation.newEndSample16k <= operation.newStartSample16k) {
+        throw new Error('narrative.extend-block source samples must be a positive range.');
+      }
+      return;
     case 'audio-clip.split':
       assertInteger(operation.timelineOutputSample, `${operation.type}.timelineOutputSample`);
       return;
@@ -327,6 +559,22 @@ const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
         throw new Error('subtitle.insert timing must be a positive half-open range.');
       }
       return;
+    case 'subtitle.bulk-replace':
+      for (let index = 0; index < operation.subtitles.length; index += 1) {
+        const subtitle = operation.subtitles[index];
+        assertInteger(
+          subtitle.startOutputSample,
+          `subtitle.bulk-replace.subtitles[${index}].startOutputSample`,
+        );
+        assertInteger(
+          subtitle.endOutputSample,
+          `subtitle.bulk-replace.subtitles[${index}].endOutputSample`,
+        );
+        if (subtitle.endOutputSample <= subtitle.startOutputSample) {
+          throw new Error('subtitle.bulk-replace cues must use positive half-open ranges.');
+        }
+      }
+      return;
     case 'subtitle.move':
       assertInteger(operation.startOutputSample, 'subtitle.move.startOutputSample');
       assertInteger(operation.endOutputSample, 'subtitle.move.endOutputSample');
@@ -345,14 +593,27 @@ const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
       assertInteger(operation.outputSample, `${operation.type}.outputSample`);
       return;
     case 'narrative.change-block-margin':
-      assertInteger(operation.marginSamples16k, 'narrative.change-block-margin.marginSamples16k');
+      if (operation.policy.mode === 'explicit') {
+        assertInteger(
+          operation.policy.marginSamples16k,
+          'narrative.change-block-margin.policy.marginSamples16k',
+        );
+      }
       return;
     case 'narrative.change-global-margins':
       assertInteger(operation.preMarginSamples16k, 'narrative.change-global-margins.preMarginSamples16k');
       assertInteger(operation.postMarginSamples16k, 'narrative.change-global-margins.postMarginSamples16k');
       return;
     case 'narrative.reorder-blocks':
-      assertInteger(operation.targetIndex, 'narrative.reorder-blocks.targetIndex');
+      if ((operation.targetIndex === undefined) === (operation.targetStartFrame === undefined)) {
+        throw new Error('narrative.reorder-blocks requires exactly one destination coordinate.');
+      }
+      if (operation.targetIndex !== undefined) {
+        assertInteger(operation.targetIndex, 'narrative.reorder-blocks.targetIndex');
+      }
+      if (operation.targetStartFrame !== undefined) {
+        assertInteger(operation.targetStartFrame, 'narrative.reorder-blocks.targetStartFrame');
+      }
       return;
     case 'narrative.split-block':
       assertInteger(operation.splitSample16k, 'narrative.split-block.splitSample16k');
@@ -360,6 +621,39 @@ const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
     case 'narrative.delete-range':
       assertInteger(operation.start.sample16k, 'narrative.delete-range.start.sample16k');
       assertInteger(operation.end.sample16k, 'narrative.delete-range.end.sample16k');
+      if (operation.currentPlayheadFrame !== undefined) {
+        assertInteger(operation.currentPlayheadFrame, 'narrative.delete-range.currentPlayheadFrame');
+      }
+      return;
+    case 'narrative.activate':
+      for (const recordId of Object.values(operation.recordIdBySourceId)) {
+        if (!/^sha256:[0-9a-f]{64}$/.test(recordId)) {
+          throw new Error('narrative.activate record IDs must be canonical sha256 digests.');
+        }
+      }
+      return;
+    case 'narrative.trim-block':
+      assertInteger(operation.sample16k, 'narrative.trim-block.sample16k');
+      return;
+    case 'narrative.delete-words':
+      if (operation.currentPlayheadFrame !== undefined) {
+        assertInteger(operation.currentPlayheadFrame, 'narrative.delete-words.currentPlayheadFrame');
+      }
+      return;
+    case 'narrative.delete-all-silences':
+      if (operation.currentPlayheadFrame !== undefined) {
+        assertInteger(
+          operation.currentPlayheadFrame,
+          'narrative.delete-all-silences.currentPlayheadFrame',
+        );
+      }
+      return;
+    case 'link.bind-target':
+      assertInteger(operation.activeStartSample16k, 'link.bind-target.activeStartSample16k');
+      assertInteger(operation.activeEndSample16k, 'link.bind-target.activeEndSample16k');
+      if (operation.activeEndSample16k <= operation.activeStartSample16k) {
+        throw new Error('link.bind-target active samples must be a positive range.');
+      }
       return;
     case 'narrative.refine-boundary':
       assertInteger(operation.chosenSample16k, 'narrative.refine-boundary.chosenSample16k');
@@ -385,6 +679,34 @@ export function mapEditorUiCommand(
   command: EditorUiCommand,
   context: { operationId?: string; projectFps?: number } = {},
 ): EditorUiCommandRoute {
+  if (command.type === 'edit.batch') {
+    if (!context.operationId) {
+      throw new Error('Durable editor command batches require a stable operationId.');
+    }
+    if (command.commands.length === 0 || command.commands.length > 256) {
+      throw new Error('Editor command batches require between 1 and 256 operations.');
+    }
+    if (new TextEncoder().encode(JSON.stringify(command)).byteLength > EDITOR_UI_MAX_BATCH_BYTES) {
+      throw new Error('Editor command batches cannot exceed 512 KiB.');
+    }
+    const operations = command.commands.flatMap((operation, index) => {
+      const mapped = mapEditorUiCommand(operation, {
+        ...context,
+        operationId: `${context.operationId}:${index}`,
+      });
+      if (mapped.tool !== 'edit') {
+        throw new Error('Editor command batches may contain durable operations only.');
+      }
+      return mapped.operations;
+    });
+    if (operations.length > 256) {
+      throw new Error('Expanded editor command batches cannot exceed 256 Core operations.');
+    }
+    if (new TextEncoder().encode(JSON.stringify(operations)).byteLength > EDITOR_UI_MAX_BATCH_BYTES) {
+      throw new Error('Expanded editor command batches cannot exceed 512 KiB.');
+    }
+    return { tool: 'edit', operations, history: command.history };
+  }
   if (command.type === 'history.undo') return { tool: 'history', action: 'undo' };
   if (command.type === 'history.redo') return { tool: 'history', action: 'redo' };
   if (command.type === 'history.jump') {
@@ -397,12 +719,18 @@ export function mapEditorUiCommand(
     return { tool: 'playback', action: 'seek', frame: command.timelineFrame };
   }
   if (command.type === 'playback.set-volume') {
+    if (!Number.isFinite(command.volume) || command.volume < 0 || command.volume > 1) {
+      throw new Error('playback.set-volume.volume must be between 0 and 1.');
+    }
     return { tool: 'playback', action: 'set-master-volume', volume: command.volume };
   }
   if (command.type === 'playback.set-muted') {
     return { tool: 'playback', action: 'set-master-mute', muted: command.muted };
   }
   if (command.type === 'playback.set-rate') {
+    if (!Number.isFinite(command.rate) || command.rate < 0.1 || command.rate > 16) {
+      throw new Error('playback.set-rate.rate must be between 0.1 and 16.');
+    }
     return { tool: 'playback', action: 'set-rate', rate: command.rate };
   }
   if (command.type === 'playback.presenter.claim') {
@@ -423,6 +751,43 @@ export function mapEditorUiCommand(
       tool: 'view',
       patch: { rowHeights: { [command.trackId]: command.height } },
     };
+  }
+  if (command.type === 'view.update') {
+    const projectFps = context.projectFps;
+    const patch: Extract<EditorUiCommandRoute, { tool: 'view' }>['patch'] = {
+      ...(command.patch.selectedIds === undefined
+        ? {}
+        : { selectionIds: command.patch.selectedIds }),
+      ...(command.patch.playheadSeconds === undefined
+        ? {}
+        : {
+            playheadFrame: secondsToProjectFrame(
+              command.patch.playheadSeconds,
+              requireProjectFps(projectFps, 'view.update.playheadSeconds'),
+            ),
+          }),
+      ...(command.patch.zoom === undefined ? {} : { zoom: command.patch.zoom }),
+      ...(command.patch.scrollLeft === undefined
+        ? {}
+        : { scrollX: command.patch.scrollLeft }),
+      ...(command.patch.trackHeights === undefined
+        ? {}
+        : { rowHeights: command.patch.trackHeights }),
+      ...(command.patch.activePane === undefined
+        ? {}
+        : { layout: command.patch.activePane }),
+      ...(command.patch.focusedTrackId === undefined
+        ? {}
+        : { focusedPanel: command.patch.focusedTrackId ?? undefined }),
+      ...(command.patch.presentation === undefined
+        ? {}
+        : {
+            presentation: command.patch.presentation === 'picture-in-picture'
+              ? 'pip'
+              : command.patch.presentation,
+          }),
+    };
+    return { tool: 'view', patch };
   }
   if (command.type === 'media.import') {
     return {
@@ -502,10 +867,15 @@ export function mapEditorUiCommand(
   const { type, ...uiPayload } = durableCommand;
   let payload: Record<string, unknown> = uiPayload;
   switch (durableCommand.type) {
+    case 'render.set-profile':
+      payload = { profile: durableCommand.profile };
+      break;
     case 'track.add':
       payload = {
         trackKind: durableCommand.kind,
-        name: `${durableCommand.kind[0].toUpperCase()}${durableCommand.kind.slice(1)} track`,
+        ...(durableCommand.trackId ? { trackId: durableCommand.trackId } : {}),
+        name: durableCommand.name
+          ?? `${durableCommand.kind[0].toUpperCase()}${durableCommand.kind.slice(1)} track`,
         ...(durableCommand.beforeTrackId ? { beforeTrackId: durableCommand.beforeTrackId } : {}),
       };
       break;
@@ -534,6 +904,35 @@ export function mapEditorUiCommand(
         ...(durableCommand.beforeTrackId
           ? { beforeId: durableCommand.beforeTrackId }
           : {}),
+        ...(durableCommand.afterTrackId
+          ? { afterId: durableCommand.afterTrackId }
+          : {}),
+      };
+      break;
+    case 'track.reorder-clips':
+    case 'video-clip.set-order':
+    case 'audio-clip.set-order':
+    case 'subtitle.set-order': {
+      const { beforeId, afterId, ...identity } = durableCommand;
+      payload = {
+        ...identity,
+        ...(beforeId ? { beforeId } : {}),
+        ...(afterId ? { afterId } : {}),
+      };
+      delete payload.type;
+      break;
+    }
+    case 'video-clip.insert':
+      payload = {
+        ...(durableCommand.clipId ? { clipId: durableCommand.clipId } : {}),
+        sourceId: durableCommand.sourceId,
+        trackId: durableCommand.trackId,
+        timelineStartFrame: durableCommand.timelineFrame,
+        sourceStartSeconds: durableCommand.sourceStartSeconds,
+        sourceEndSeconds: durableCommand.sourceEndSeconds,
+        audio: durableCommand.audio
+          ? mapLinkedAudio(durableCommand.audio, context.projectFps, durableCommand.type)
+          : null,
       };
       break;
     case 'video-clip.move':
@@ -554,12 +953,29 @@ export function mapEditorUiCommand(
       };
       break;
     case 'video-clip.split':
-      payload = { clipId: durableCommand.clipId, atFrame: durableCommand.timelineFrame };
+      payload = {
+        clipId: durableCommand.clipId,
+        atFrame: durableCommand.timelineFrame,
+        ...(durableCommand.rightClipId ? { rightClipId: durableCommand.rightClipId } : {}),
+      };
+      break;
+    case 'video-clip.duplicate':
+      payload = {
+        clipId: durableCommand.clipId,
+        ...(durableCommand.duplicateId ? { duplicateId: durableCommand.duplicateId } : {}),
+        ...(durableCommand.targetTrackId ? { targetTrackId: durableCommand.targetTrackId } : {}),
+        ...(durableCommand.timelineFrame === undefined
+          ? {}
+          : { timelineStartFrame: durableCommand.timelineFrame }),
+      };
       break;
     case 'video-clip.detach-audio':
       payload = {
         clipId: durableCommand.clipId,
         audioTrackId: durableCommand.audioTrackId,
+        ...(durableCommand.detachedClipId
+          ? { detachedClipId: durableCommand.detachedClipId }
+          : {}),
       };
       break;
     case 'video-clip.relink-audio':
@@ -570,24 +986,79 @@ export function mapEditorUiCommand(
       };
       break;
     case 'video-clip.set-audio': {
-      if (!Number.isFinite(context.projectFps) || (context.projectFps ?? 0) <= 0) {
-        throw new Error('video-clip.set-audio requires the explicit project frame rate.');
-      }
-      const projectFps = context.projectFps as number;
       payload = {
         clipId: durableCommand.clipId,
-        audio: {
-          linkState: 'linked',
-          muted: durableCommand.muted,
-          gainDb: durableCommand.gainDb,
-          fadeInFrames: Math.round(
-            durableCommand.fadeInOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * projectFps,
-          ),
-          fadeOutFrames: Math.round(
-            durableCommand.fadeOutOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * projectFps,
-          ),
-        },
+        audio: durableCommand.audio
+          ? mapLinkedAudio(durableCommand.audio, context.projectFps, durableCommand.type)
+          : null,
       };
+      break;
+    }
+    case 'audio-clip.insert': {
+      const id = durableCommand.clipId ?? `${context.operationId}:clip`;
+      const source = durableCommand.source;
+      assertInteger(durableCommand.fadeInOutputSamples48k, 'audio-clip.insert.fadeInOutputSamples48k');
+      assertInteger(durableCommand.fadeOutOutputSamples48k, 'audio-clip.insert.fadeOutOutputSamples48k');
+      if (source.domain === 'audio-source-native-samples') {
+        assertPositiveInteger(source.nativeSampleRateHz, 'audio-clip.insert.source.nativeSampleRateHz');
+        assertInteger(source.startNativeSample, 'audio-clip.insert.source.startNativeSample');
+        assertInteger(source.endNativeSample, 'audio-clip.insert.source.endNativeSample');
+        if (source.timelineDurationOutputSamples48k !== undefined) {
+          assertPositiveInteger(
+            source.timelineDurationOutputSamples48k,
+            'audio-clip.insert.source.timelineDurationOutputSamples48k',
+          );
+        }
+        if (source.endNativeSample <= source.startNativeSample) {
+          throw new Error('audio-clip.insert native source samples must be a positive range.');
+        }
+        payload = {
+          trackId: durableCommand.trackId,
+          clip: {
+            id,
+            timelineStartFrame: durableCommand.timelineFrame,
+            muted: durableCommand.muted,
+            gainDb: durableCommand.gainDb,
+            source: { kind: 'audio-source', audioSourceId: source.audioSourceId },
+            sourceStartSample: source.startNativeSample,
+            sourceEndSample: source.endNativeSample,
+            ...(source.timelineDurationOutputSamples48k === undefined
+              ? {}
+              : { timelineDurationSamples: source.timelineDurationOutputSamples48k }),
+            fadeInSamples: Math.round(
+              durableCommand.fadeInOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE
+              * source.nativeSampleRateHz,
+            ),
+            fadeOutSamples: Math.round(
+              durableCommand.fadeOutOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE
+              * source.nativeSampleRateHz,
+            ),
+          },
+        };
+      } else {
+        const fps = requireProjectFps(context.projectFps, durableCommand.type);
+        if (source.startSeconds < 0 || source.endSeconds <= source.startSeconds) {
+          throw new Error('audio-clip.insert video source seconds must be a positive range.');
+        }
+        payload = {
+          trackId: durableCommand.trackId,
+          clip: {
+            id,
+            timelineStartFrame: durableCommand.timelineFrame,
+            muted: durableCommand.muted,
+            gainDb: durableCommand.gainDb,
+            source: { kind: 'video-source-audio', videoSourceId: source.videoSourceId },
+            sourceStart: source.startSeconds,
+            sourceEnd: source.endSeconds,
+            fadeInFrames: Math.round(
+              durableCommand.fadeInOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps,
+            ),
+            fadeOutFrames: Math.round(
+              durableCommand.fadeOutOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps,
+            ),
+          },
+        };
+      }
       break;
     }
     case 'audio-clip.move':
@@ -622,6 +1093,17 @@ export function mapEditorUiCommand(
       payload = {
         clipId: durableCommand.clipId,
         atOutputSample: durableCommand.timelineOutputSample,
+        ...(durableCommand.rightClipId ? { rightClipId: durableCommand.rightClipId } : {}),
+      };
+      break;
+    case 'audio-clip.duplicate':
+      payload = {
+        clipId: durableCommand.clipId,
+        ...(durableCommand.duplicateId ? { duplicateId: durableCommand.duplicateId } : {}),
+        ...(durableCommand.targetTrackId ? { targetTrackId: durableCommand.targetTrackId } : {}),
+        ...(durableCommand.timelineFrame === undefined
+          ? {}
+          : { timelineStartFrame: durableCommand.timelineFrame }),
       };
       break;
     case 'subtitle.insert':
@@ -655,14 +1137,8 @@ export function mapEditorUiCommand(
         trackId: durableCommand.trackId,
         subtitleId: durableCommand.subtitleId,
         atOutputSample: durableCommand.outputSample,
-      };
-      break;
-    case 'subtitle.set-order':
-      payload = {
-        trackId: durableCommand.trackId,
-        subtitleId: durableCommand.subtitleId,
-        ...(durableCommand.beforeSubtitleId
-          ? { beforeId: durableCommand.beforeSubtitleId }
+        ...(durableCommand.rightSubtitleId
+          ? { rightSubtitleId: durableCommand.rightSubtitleId }
           : {}),
       };
       break;
@@ -673,11 +1149,17 @@ export function mapEditorUiCommand(
       payload = {
         blockId: durableCommand.blockId,
         side: durableCommand.side === 'start' ? 'pre' : 'post',
-        policy: {
-          kind: 'margin',
-          mode: 'explicit',
-          requestedSamples16k: durableCommand.marginSamples16k,
-        },
+        policy: durableCommand.policy.mode === 'explicit'
+          ? {
+              kind: 'margin',
+              mode: 'explicit',
+              requestedSamples16k: durableCommand.policy.marginSamples16k,
+            }
+          : {
+              kind: 'margin',
+              mode: 'inherit-global',
+              requestedSamples16k: null,
+            },
       };
       break;
     case 'narrative.change-global-margins':
@@ -687,9 +1169,35 @@ export function mapEditorUiCommand(
       };
       break;
     case 'narrative.delete-all-silences':
-      payload = durableCommand.trackId
-        ? { scope: { kind: 'track', trackId: durableCommand.trackId } }
-        : { scope: { kind: 'document' } };
+      payload = {
+        ...(durableCommand.trackId
+          ? { scope: { kind: 'track', trackId: durableCommand.trackId } }
+          : { scope: { kind: 'document' } }),
+        ...(durableCommand.currentPlayheadFrame === undefined
+          ? {}
+          : { currentPlayheadFrame: durableCommand.currentPlayheadFrame }),
+      };
+      break;
+    case 'narrative.insert-source-range':
+    case 'narrative.recover-source-range':
+      payload = {
+        recordId: durableCommand.recordId,
+        sourceId: durableCommand.sourceId,
+        sourceRange: {
+          startSample16k: durableCommand.startSample16k,
+          endSample16k: durableCommand.endSample16k,
+        },
+        destinationTrackId: durableCommand.destinationTrackId,
+        ...(durableCommand.targetIndex === undefined
+          ? {}
+          : { targetIndex: durableCommand.targetIndex }),
+        ...(durableCommand.timelineStartFrame === undefined
+          ? {}
+          : { timelineStartFrame: durableCommand.timelineStartFrame }),
+        clipAudio: durableCommand.clipAudio
+          ? mapLinkedAudio(durableCommand.clipAudio, context.projectFps, durableCommand.type)
+          : null,
+      };
       break;
     default:
       break;

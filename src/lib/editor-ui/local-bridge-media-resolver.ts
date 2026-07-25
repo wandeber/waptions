@@ -34,7 +34,7 @@ export function createLocalBridgeMediaResolver(
 
   const pair = (): Promise<string> => {
     if (resourceCapabilityPromise) return resourceCapabilityPromise;
-    resourceCapabilityPromise = request(`${bridgeOrigin}/v1/pair`, {
+    resourceCapabilityPromise = request(`${bridgeOrigin}/v1/pair/exchange`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pairingCapability: options.pairingCapability }),

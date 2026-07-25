@@ -81,4 +81,19 @@ describe('MCP editor envelope normalization', () => {
     });
     expect(normalized.jobs[0]?.state).toBe('completed');
   });
+
+  it('rejects job states outside the normalized runtime and MCP vocabulary', () => {
+    expect(() => normalizeMcpJobState('done' as McpJobState)).toThrow(/Unsupported/);
+  });
+
+  it('rejects unknown event vocabulary so the controller refreshes authoritatively', () => {
+    const state = createEmptyEditorUiSnapshot({ sessionId: 'session' }).stateToken;
+    expect(() => normalizeMcpEvent({
+      eventId: 'event',
+      previousCursor: 'before',
+      cursor: 'after',
+      type: 'project.magic',
+      state,
+    })).toThrow(/unsupported/);
+  });
 });

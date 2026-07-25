@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CORE_SEMANTIC_OPERATION_TYPES,
   mapEditorUiCommand,
   secondsToNarrativeSample,
   secondsToOutputSample,
@@ -7,6 +8,135 @@ import {
 } from './core-operation-mapper';
 
 describe('mapEditorUiCommand', () => {
+  it('covers the complete closed Core semantic vocabulary', () => {
+    expect(CORE_SEMANTIC_OPERATION_TYPES).toHaveLength(65);
+    expect(new Set(CORE_SEMANTIC_OPERATION_TYPES).size).toBe(65);
+    expect(CORE_SEMANTIC_OPERATION_TYPES).toContain('narrative.recover-source-range');
+    expect(CORE_SEMANTIC_OPERATION_TYPES).toContain('link.unbind-target');
+  });
+
+  it('maps one multi-selection gesture to one atomic edit request and history entry', () => {
+    expect(mapEditorUiCommand({
+      type: 'edit.batch',
+      commands: [
+        { type: 'video-clip.delete', clipId: 'video-a' },
+        { type: 'audio-clip.delete', clipId: 'audio-a' },
+        {
+          type: 'subtitle.delete',
+          trackId: 'subtitle-track',
+          subtitleId: 'subtitle-a',
+        },
+      ],
+      history: { label: 'Delete 3 clips', category: 'timeline.delete' },
+    }, { operationId: 'batch:0', projectFps: 30 })).toEqual({
+      tool: 'edit',
+      operations: [
+        {
+          operationId: 'batch:0:0',
+          type: 'video-clip.delete',
+          payload: { clipId: 'video-a' },
+        },
+        {
+          operationId: 'batch:0:1',
+          type: 'audio-clip.delete',
+          payload: { clipId: 'audio-a' },
+        },
+        {
+          operationId: 'batch:0:2',
+          type: 'subtitle.delete',
+          payload: { trackId: 'subtitle-track', subtitleId: 'subtitle-a' },
+        },
+      ],
+      history: { label: 'Delete 3 clips', category: 'timeline.delete' },
+    });
+  });
+
+  it('enforces batch limits after compound UI commands expand to Core operations', () => {
+    const commands = Array.from({ length: 129 }, (_, index) => ({
+      type: 'subtitle.move' as const,
+      trackId: 'subtitle-a',
+      targetTrackId: 'subtitle-b',
+      subtitleId: `subtitle-${index}`,
+      startOutputSample: index * 48_000,
+      endOutputSample: (index + 1) * 48_000,
+      text: `Subtitle ${index}`,
+    }));
+    expect(() => mapEditorUiCommand({
+      type: 'edit.batch',
+      commands,
+      history: { label: 'Move subtitles', category: 'timeline.move' },
+    }, { operationId: 'expanded-batch:0', projectFps: 30 })).toThrow(
+      /cannot exceed 256 Core operations/,
+    );
+  });
+
+  it('maps canonical 48 kHz audio insertion fields to each exact Core subtype', () => {
+    expect(mapEditorUiCommand({
+      type: 'audio-clip.insert',
+      clipId: 'native-a',
+      trackId: 'audio-track',
+      timelineFrame: 30,
+      source: {
+        domain: 'audio-source-native-samples',
+        audioSourceId: 'source-a',
+        nativeSampleRateHz: 44_100,
+        startNativeSample: 4_410,
+        endNativeSample: 48_510,
+        timelineDurationOutputSamples48k: 48_000,
+      },
+      muted: false,
+      gainDb: -3,
+      fadeInOutputSamples48k: 4_800,
+      fadeOutOutputSamples48k: 9_600,
+    }, { operationId: 'insert-native:0', projectFps: 30 })).toMatchObject({
+      tool: 'edit',
+      operations: [{
+        type: 'audio-clip.insert',
+        payload: {
+          trackId: 'audio-track',
+          clip: {
+            id: 'native-a',
+            source: { kind: 'audio-source', audioSourceId: 'source-a' },
+            sourceStartSample: 4_410,
+            sourceEndSample: 48_510,
+            timelineDurationSamples: 48_000,
+            fadeInSamples: 4_410,
+            fadeOutSamples: 8_820,
+          },
+        },
+      }],
+    });
+    expect(mapEditorUiCommand({
+      type: 'audio-clip.insert',
+      clipId: 'detached-a',
+      trackId: 'audio-track',
+      timelineFrame: 60,
+      source: {
+        domain: 'video-source-seconds',
+        videoSourceId: 'video-source-a',
+        startSeconds: 1,
+        endSeconds: 4,
+      },
+      muted: false,
+      gainDb: 0,
+      fadeInOutputSamples48k: 24_000,
+      fadeOutOutputSamples48k: 48_000,
+    }, { operationId: 'insert-video-audio:0', projectFps: 30 })).toMatchObject({
+      tool: 'edit',
+      operations: [{
+        payload: {
+          clip: {
+            source: { kind: 'video-source-audio', videoSourceId: 'video-source-a' },
+            sourceStart: 1,
+            sourceEnd: 4,
+            fadeInFrames: 15,
+            fadeOutFrames: 30,
+          },
+        },
+      }],
+    });
+  });
+
   it('keeps exact Core operation names and integer timing domains', () => {
     expect(mapEditorUiCommand({
       type: 'project.set-name',
@@ -103,10 +233,12 @@ describe('mapEditorUiCommand', () => {
     expect(mapEditorUiCommand({
       type: 'video-clip.set-audio',
       clipId: 'video-a',
-      muted: false,
-      gainDb: -2,
-      fadeInOutputSamples48k: 24_000,
-      fadeOutOutputSamples48k: 48_000,
+      audio: {
+        muted: false,
+        gainDb: -2,
+        fadeInOutputSamples48k: 24_000,
+        fadeOutOutputSamples48k: 48_000,
+      },
     }, { operationId: 'fade-video:0', projectFps: 30 })).toMatchObject({
       tool: 'edit',
       operations: [{
@@ -145,6 +277,27 @@ describe('mapEditorUiCommand', () => {
     expect(mapEditorUiCommand({ type: 'view.select', ids: ['clip'] })).toEqual({
       tool: 'view',
       patch: { selectionIds: ['clip'] },
+    });
+    expect(mapEditorUiCommand({
+      type: 'view.update',
+      patch: {
+        playheadSeconds: 2,
+        zoom: 1.5,
+        scrollLeft: 320,
+        activePane: 'text',
+        focusedTrackId: 'video-1',
+        presentation: 'picture-in-picture',
+      },
+    }, { projectFps: 30 })).toEqual({
+      tool: 'view',
+      patch: {
+        playheadFrame: 60,
+        zoom: 1.5,
+        scrollX: 320,
+        layout: 'text',
+        focusedPanel: 'video-1',
+        presentation: 'pip',
+      },
     });
     expect(mapEditorUiCommand({ type: 'playback.seek', timelineFrame: 90 })).toEqual({
       tool: 'playback',
@@ -194,7 +347,7 @@ describe('mapEditorUiCommand', () => {
       type: 'narrative.change-block-margin',
       blockId: 'block',
       side: 'start',
-      marginSamples16k: -1,
+      policy: { mode: 'explicit', marginSamples16k: -1 },
     }, { operationId: 'invalid:0' })).toThrow(/non-negative/);
     expect(() => mapEditorUiCommand({
       type: 'audio-clip.trim',
@@ -210,10 +363,12 @@ describe('mapEditorUiCommand', () => {
     expect(() => mapEditorUiCommand({
       type: 'video-clip.set-audio',
       clipId: 'video-a',
-      muted: false,
-      gainDb: 0,
-      fadeInOutputSamples48k: 12.5,
-      fadeOutOutputSamples48k: 0,
+      audio: {
+        muted: false,
+        gainDb: 0,
+        fadeInOutputSamples48k: 12.5,
+        fadeOutOutputSamples48k: 0,
+      },
     }, { operationId: 'invalid:0' })).toThrow(/safe integer/);
     expect(() => mapEditorUiCommand({
       type: 'audio-clip.move',

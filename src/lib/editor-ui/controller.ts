@@ -249,6 +249,7 @@ export class ExternalEditorUiController implements EditorUiController {
       ? await this.transport.requestPresentation(mode)
       : mode;
     this.updateView({ presentation: accepted });
+    await this.dispatch({ type: 'view.update', patch: { presentation: accepted } });
     return accepted;
   }
 

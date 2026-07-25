@@ -21,6 +21,15 @@ families to the focused Waptions tools (`waptions_edit_apply`, `waptions_history
 `waptions_playback_control`, transcription/export tools, and `waptions_view_update`) without
 redeclaring their protocol schemas.
 
+The union covers all 65 operations in the closed Core vocabulary. `CORE_SEMANTIC_OPERATION_TYPES`
+is backed by a compile-time exhaustive record, so adding or removing a Core operation forces this
+boundary to be reviewed. Multi-selection gestures use `edit.batch`: up to 256 durable UI commands
+are converted to stable per-operation IDs and submitted in one `waptions_edit_apply` call with one
+history label/category. The final expanded operation array is independently capped at 256 operations
+and 512 KiB because one UI command may expand to multiple Core operations. A drop, split, delete,
+gain, or fade gesture therefore cannot publish a partially applied selection or create one history
+entry per clip.
+
 `mapEditorUiCommand` is the only UI-to-Core vocabulary boundary. UI controls must dispatch the
 canonical operation names (`project.set-name`, `track.delete`, the discriminated
 `video-clip.*`/`audio-clip.*` families, `subtitle.*`, `narrative.*`, and `link.*`) rather than
@@ -47,6 +56,14 @@ audio forwards those values as `fadeInOutputSamples48k`/`fadeOutOutputSamples48k
 audio is converted in this one mapper to Core's explicit frame fields using the snapshot's project
 frame rate. No subtype-dependent `fadeIn`, `sourceStart`, or unitless timing key crosses the
 boundary.
+
+Audio insertion is equally explicit. The UI accepts either native samples plus their native sample
+rate, or a discriminated video-source seconds range. It keeps all fade inputs in 48 kHz output
+samples; the mapper converts them to native samples for imported audio and project frames for
+detached video audio. Narrative source insertion/recovery accepts one 16 kHz range and exactly one
+destination coordinate (`targetIndex` or `timelineStartFrame`). Render background uses `#RRGGBB`;
+reorder operations require exactly one `before`/`after` anchor; playback rate and volume are
+validated before tool invocation.
 
 ## Synchronization contract
 
@@ -86,12 +103,12 @@ created it.
 
 The App consumes the render result's host-only `_meta.bridge.capabilityToken` separately from
 `structuredContent`. `createLocalBridgeMediaResolver` exchanges it once with
-`http://localhost:59941/v1/pair`, then resolves opaque source/artifact IDs to scoped, expiring HTTP
-range URLs. The resolver accepts only the CSP-approved bridge origin, URL-encodes IDs, omits
-credentials, and never publishes the pairing token, resource capability, or signed URL to model
-context. Managed-web containers may inject the same `EditorUiMediaResolver` contract after their
-own pairing exchange through `window.__WAPTIONS_MANAGED_EDITOR_MEDIA_RESOLVER__`; the route never
-stores or reconstructs media capability URLs. The preview resolves each active video layer
+`http://localhost:59941/v1/pair/exchange`, then resolves opaque source/artifact IDs to scoped,
+expiring HTTP range URLs. The resolver accepts only the CSP-approved bridge origin, URL-encodes IDs,
+omits credentials, and never publishes the pairing token, resource capability, or signed URL to
+model context. Managed-web containers may inject the same `EditorUiMediaResolver` contract after
+their own pairing exchange through `window.__WAPTIONS_MANAGED_EDITOR_MEDIA_RESOLVER__`; the route
+never stores or reconstructs media capability URLs. The preview resolves each active video layer
 independently, composites the visible layers, overlays active subtitle cues, and releases every
 resolved resource when its source leaves the playhead. A single visible layer owns temporary
 linked-audio playback until the host supplies the authoritative mixed audio stream.
@@ -108,6 +125,24 @@ adapter reads only the typed `data.editorUiSnapshot`, `data.editorUiCommandResul
 `narrativeRevision`. Event names and job states are normalized in one place; both `succeeded` and
 `completed` become a completed UI job, while cursor expiry, an event gap, an epoch change, or an
 unknown/incomplete projection causes a snapshot refresh.
+
+### Required P5A projection
+
+`src/lib/editor-ui/mcp-projection-contract.ts` is the typed integration dependency for the MCP
+owner. It does not implement a second server protocol. P5A must extend `waptions_project_get` with
+the closed request
+`{ apiVersion, sessionId, viewId, projection: "editor-ui" }` and return
+`data.editorUiSnapshot`. Mutations must return `data.editorUiCommandResult` and may return the same
+snapshot; event reads return `data.editorUiEvents`. Every successful envelope carries the
+authoritative `state`, including `narrativeRevision`, and warnings. Until P5A implements this
+projection, the MCP App can bootstrap from `waptions_editor_render` but cannot reconnect without
+an incompatible set of ad hoc multi-reads. This dependency is deliberate and testable rather than
+an implicit cast.
+
+The edit tool's public adapter receives `historyLabel` and `semanticCategory` beside `operations`.
+View updates use the frozen `patch` vocabulary (`playheadFrame`, `scrollX`, `layout`, `focusedPanel`,
+and MCP `pip`); event reads use the frozen session/cursor arguments and reject unknown event names
+so the controller performs a coherent refresh.
 
 The only model context payload is produced by `buildEditorUiModelContext`. It contains the bounded
 project identity/name, selected IDs and types, timecode, revision numbers, up to eight active jobs,

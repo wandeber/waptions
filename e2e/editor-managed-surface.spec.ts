@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
+  DEFAULT_EDITOR_UI_SUBTITLE_STYLE,
   createEmptyEditorUiSnapshot,
   type EditorUiSnapshot,
 } from '../src/lib/editor-ui/contracts';
@@ -26,12 +27,37 @@ const createManagedFixture = (): EditorUiSnapshot => {
     name: 'Managed fixture',
     durationSeconds: 16,
     fps: 30,
+    renderProfile: {
+      fps: { numerator: 30, denominator: 1 },
+      width: 1920,
+      height: 1080,
+      audioSampleRate: 48_000,
+      isFrameRateLocked: false,
+      isCanvasSizeLocked: false,
+    },
+    backgroundColor: '#000000',
+    mediaSources: [{
+      id: 'source-1',
+      kind: 'video',
+      label: 'Opening.mov',
+      durationSeconds: 30,
+    }, {
+      id: 'source-music',
+      kind: 'audio',
+      label: 'Score.wav',
+      durationSeconds: 16,
+      nativeSampleRateHz: 48_000,
+    }],
+    artifacts: [],
+    links: [],
     tracks: [{
       id: 'video-1',
       kind: 'video',
       name: 'Video 1',
       locked: false,
       visible: true,
+      subtitleStyle: DEFAULT_EDITOR_UI_SUBTITLE_STYLE,
+      unlinkedVideoPolicy: 'preserve-absolute',
       height: 96,
       clips: [{
         id: 'clip-1',
@@ -95,6 +121,13 @@ const createManagedFixture = (): EditorUiSnapshot => {
       startSeconds: 0,
       durationSeconds: 8,
       linkedTargetIds: ['subtitle-1', 'music-1'],
+      words: [{
+        id: 'word-1',
+        text: 'Welcome',
+        speakerId: 'speaker-1',
+        startSample16k: 0,
+        endSample16k: 8_000,
+      }],
     }, {
       id: 'silence-1',
       clipId: 'clip-1',
@@ -144,6 +177,7 @@ const installManagedBridge = async (
     const snapshot = initial;
     let cursor = 1;
     let activeViewId = '';
+    const commands: Array<{ type: string; [key: string]: unknown }> = [];
     const listeners = new Map<string, Set<(params: unknown) => void>>();
     const clone = <Value,>(value: Value): Value => JSON.parse(JSON.stringify(value)) as Value;
     const advance = (action: string) => {
@@ -157,6 +191,13 @@ const installManagedBridge = async (
       type: string;
       [key: string]: unknown;
     }) => {
+      commands.push(clone(command));
+      if (command.type === 'edit.batch' && Array.isArray(command.commands)) {
+        for (const child of command.commands) {
+          applyCommand(child as { type: string; [key: string]: unknown });
+        }
+        return;
+      }
       if (command.type === 'track.add') {
         const kind = String(command.kind);
         const index = snapshot.project.tracks.filter((track) => track.kind === kind).length + 1;
@@ -264,6 +305,9 @@ const installManagedBridge = async (
       };
       listeners.get('waptions/editor/event')?.forEach((listener) => listener(params));
     };
+    (window as typeof window & { getManagedCommands(): typeof commands }).getManagedCommands = () => (
+      clone(commands)
+    );
   }, { initial: fixture });
 };
 
@@ -288,6 +332,11 @@ test.describe('managed editor surface', () => {
     await editor.getByLabel('video clip Opening shot').click();
     await editor.getByRole('button', { name: 'Split selected clips at playhead' }).click();
     await expect(editor.getByLabel('video clip Opening shot')).toHaveCount(2);
+    await expect.poll(() => page.evaluate(() => (
+      (window as typeof window & { getManagedCommands(): Array<{ type: string }> })
+        .getManagedCommands()
+        .some((command) => command.type === 'edit.batch')
+    ))).toBe(true);
 
     await editor.locator('button[title="Hide inspector"]').click();
     await editor.getByRole('tab', { name: 'Text' }).click();
@@ -321,5 +370,6 @@ test.describe('managed editor surface', () => {
     await expect(surface).toHaveAttribute('data-editor-presentation', 'fullscreen');
     expect(await surfaceHandle?.evaluate((node) => node.isConnected)).toBe(true);
     await expect(editor.getByTestId('managed-editor-timeline')).toBeVisible();
+    await expect(editor.getByTestId('managed-editor-text')).toBeVisible();
   });
 });

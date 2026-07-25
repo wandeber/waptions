@@ -110,6 +110,7 @@ const buildStandaloneSnapshot = (
     locked: track.locked,
     muted: track.muted,
     solo: track.solo,
+    gainDb: track.gainDb,
     height: 84,
     clips: track.clips.map((clip): EditorUiClip => ({
       id: clip.id,
@@ -161,6 +162,10 @@ const buildStandaloneSnapshot = (
     name: track.name,
     locked: track.isLocked,
     visible: track.isVisible,
+    subtitleStyle: track.style,
+    unlinkedVideoPolicy: track.unlinkedVideoEditResponse === 'follow-project-ripple'
+      ? 'ripple-with-video-edit' as const
+      : 'preserve-absolute' as const,
     height: 72,
     clips: track.subtitles.map((subtitle): EditorUiClip => ({
       id: subtitle.id,
@@ -217,6 +222,30 @@ const buildStandaloneSnapshot = (
       name: project.activeProject?.name ?? 'Untitled project',
       durationSeconds: playback.contentDuration,
       fps,
+      renderProfile: timeline.renderProfile,
+      mediaSources: [
+        ...timeline.videoSources.map((source) => ({
+          id: source.id,
+          kind: 'video' as const,
+          label: source.originalName,
+          durationSeconds: source.duration,
+        })),
+        ...timeline.audioSources.map((source) => ({
+          id: source.id,
+          kind: 'audio' as const,
+          label: source.originalName,
+          durationSeconds: source.duration,
+          nativeSampleRateHz: source.nativeSampleRate,
+        })),
+      ],
+      artifacts: [],
+      links: timeline.dependentLinks.map((link) => ({
+        id: link.id,
+        kind: link.association.kind === 'transcript-bound' ? 'binding' as const : 'overlap' as const,
+        anchorBlockId: link.anchorBlockId,
+        target: link.target,
+        followPolicy: link.followPolicy,
+      })),
       tracks: [
         ...timeline.videoTracks.map((track) => ({
           id: track.id,
@@ -305,6 +334,12 @@ const executeStandaloneCommand = async (
   const project = useProjectStore.getState();
   const fps = frameRateToNumber(timeline.renderProfile.fps);
   const command = request.command;
+  if (command.type === 'edit.batch') {
+    for (const durableCommand of command.commands) {
+      await executeStandaloneCommand({ ...request, command: durableCommand });
+    }
+    return;
+  }
   switch (command.type) {
     case 'project.set-name':
       await project.updateProjectName(command.name);
@@ -316,8 +351,7 @@ const executeStandaloneCommand = async (
       return;
     case 'track.rename':
       if (timeline.videoTracks.some((track) => track.id === command.trackId)) {
-        // V4 exposes rename through the ordinary document adapter only in managed mode for now.
-        return;
+        throw new Error('Video track rename is not available through the standalone adapter.');
       }
       if (timeline.audioTracks.some((track) => track.id === command.trackId)) {
         timeline.renameAudioTrack(command.trackId, command.name);
@@ -343,10 +377,32 @@ const executeStandaloneCommand = async (
           ...(command.muted === undefined ? {} : { muted: command.muted }),
           ...(command.solo === undefined ? {} : { solo: command.solo }),
         });
+        return;
       }
-      return;
+      if (timeline.tracks.some((track) => track.id === command.trackId)) {
+        timeline.setTracks(timeline.tracks.map((track) => (
+          track.id === command.trackId
+            ? {
+                ...track,
+                ...(command.visible === undefined ? {} : { isVisible: command.visible }),
+                ...(command.locked === undefined ? {} : { isLocked: command.locked }),
+              }
+            : track
+        )));
+        return;
+      }
+      throw new Error('Video track state is not available through the standalone adapter.');
     case 'audio-track.set-gain':
       timeline.updateAudioTrackMix(command.trackId, { gainDb: command.gainDb });
+      return;
+    case 'subtitle-track.set-unlinked-video-policy':
+      if (command.policy === 'remove-with-deleted-video-range') {
+        throw new Error('Remove-with-range policy requires the managed V4 adapter.');
+      }
+      timeline.setSubtitleTrackUnlinkedVideoEditResponse(
+        command.trackId,
+        command.policy === 'preserve-absolute' ? 'stay-absolute' : 'follow-project-ripple',
+      );
       return;
     case 'view.select': {
       const clipId = command.ids[0] ?? null;
@@ -358,6 +414,7 @@ const executeStandaloneCommand = async (
       return;
     }
     case 'view.set-track-height':
+    case 'view.update':
       return;
     case 'video-clip.move':
       timeline.moveVideoClip(command.clipId, command.trackId, command.timelineFrame);
@@ -431,24 +488,18 @@ const executeStandaloneCommand = async (
       timeline.detachVideoClipAudio(command.clipId);
       return;
     case 'video-clip.set-audio':
-      timeline.updateVideoClipAudio(command.clipId, {
-        ...(command.muted === undefined ? {} : { muted: command.muted }),
-        ...(command.gainDb === undefined ? {} : { gainDb: command.gainDb }),
-        ...(command.fadeInOutputSamples48k === undefined
-          ? {}
-          : {
-              fadeInFrames: Math.round(
-                command.fadeInOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps,
-              ),
-            }),
-        ...(command.fadeOutOutputSamples48k === undefined
-          ? {}
-          : {
-              fadeOutFrames: Math.round(
-                command.fadeOutOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps,
-              ),
-            }),
-      });
+      timeline.updateVideoClipAudio(command.clipId, command.audio
+        ? {
+            muted: command.audio.muted,
+            gainDb: command.audio.gainDb,
+            fadeInFrames: Math.round(
+              command.audio.fadeInOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps,
+            ),
+            fadeOutFrames: Math.round(
+              command.audio.fadeOutOutputSamples48k / OUTPUT_AUDIO_SAMPLE_RATE * fps,
+            ),
+          }
+        : { muted: true });
       return;
     case 'audio-clip.set-gain':
       timeline.updateAudioClipMix(command.clipId, { gainDb: command.gainDb });

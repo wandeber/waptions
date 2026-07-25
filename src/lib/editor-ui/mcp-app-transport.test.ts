@@ -105,6 +105,8 @@ describe('createMcpAppTransport', () => {
     expect(editArguments).toMatchObject({
       apiVersion: '2026-07-25',
       idempotencyKey: 'command-1',
+      historyLabel: 'video-clip.split',
+      semanticCategory: 'editor-ui',
       operations: [{
         operationId: 'command-1:0',
         type: 'video-clip.split',
@@ -117,6 +119,57 @@ describe('createMcpAppTransport', () => {
     expect(JSON.stringify(bridge.requests)).not.toContain('_meta');
     transport.close?.();
     expect(bridge.closed).toBe(false);
+  });
+
+  it('sends an atomic UI batch as one MCP edit with one semantic history entry', async () => {
+    const bridge = new MockBridge();
+    const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
+    bridge.responses.push({
+      structuredContent: {
+        ok: true,
+        data: { editorUiCommandResult: { ok: true, commandId: 'batch' } },
+        state: snapshot.stateToken,
+        warnings: [],
+      },
+    });
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+      initialSnapshot: snapshot,
+    });
+    await transport.readSnapshot();
+    await transport.execute({
+      commandId: 'batch',
+      command: {
+        type: 'edit.batch',
+        commands: [
+          { type: 'video-clip.delete', clipId: 'video' },
+          { type: 'audio-clip.delete', clipId: 'audio' },
+        ],
+        history: { label: 'Delete selection', category: 'selection.delete' },
+      },
+      expected: {
+        sessionEpoch: snapshot.stateToken.sessionEpoch,
+        sessionRevision: snapshot.stateToken.sessionRevision,
+        documentRevision: snapshot.stateToken.documentRevision,
+        audioGraphRevision: snapshot.stateToken.audioGraphRevision,
+      },
+    });
+    expect(bridge.requests).toMatchObject([{
+      method: 'tools/call',
+      params: {
+        name: 'waptions_edit_apply',
+        arguments: {
+          historyLabel: 'Delete selection',
+          semanticCategory: 'selection.delete',
+          operations: [
+            { operationId: 'batch:0:0', type: 'video-clip.delete' },
+            { operationId: 'batch:0:1', type: 'audio-clip.delete' },
+          ],
+        },
+      },
+    }]);
   });
 
   it('maps authoritative failure envelopes and narrative revisions', async () => {

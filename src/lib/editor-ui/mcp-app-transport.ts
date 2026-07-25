@@ -21,6 +21,7 @@ import {
   type McpToolEnvelope,
 } from './mcp-envelope';
 import { createWindowRpcBridge, type EditorUiRpcBridge } from './rpc-bridge';
+import type { EditorUiSnapshotProjectionRequest } from './mcp-projection-contract';
 
 interface McpToolResult {
   structuredContent?: unknown;
@@ -162,7 +163,19 @@ export function createMcpAppTransport(
     const common = mutationEnvelope(request);
     switch (route.tool) {
       case 'edit':
-        return { ...common, operations: route.operations };
+        return {
+          ...common,
+          operations: route.operations,
+          ...(route.history
+            ? {
+                historyLabel: route.history.label,
+                semanticCategory: route.history.category,
+              }
+            : {
+                historyLabel: request.command.type,
+                semanticCategory: 'editor-ui',
+              }),
+        };
       case 'history':
         return {
           ...common,
@@ -209,12 +222,13 @@ export function createMcpAppTransport(
         latestSnapshot = snapshot;
         return snapshot;
       }
-      const result = await callTool(mapping.snapshot, {
+      const projectionRequest: EditorUiSnapshotProjectionRequest = {
         apiVersion: EDITOR_UI_API_VERSION,
         sessionId: options.sessionId,
         viewId: options.viewId,
         projection: 'editor-ui',
-      }, signal);
+      };
+      const result = await callTool(mapping.snapshot, { ...projectionRequest }, signal);
       const envelope = requiredEnvelope<McpEditorSnapshotData>(result);
       if (!envelope.ok) throw new Error(envelope.error.message);
       latestSnapshot = normalizeMcpSnapshot(envelope.data.editorUiSnapshot, envelope.state);
@@ -266,7 +280,6 @@ export function createMcpAppTransport(
       const result = await callTool(mapping.events, {
         apiVersion: EDITOR_UI_API_VERSION,
         sessionId: options.sessionId,
-        viewId: options.viewId,
         afterCursor: cursor,
         limit,
       }, signal);

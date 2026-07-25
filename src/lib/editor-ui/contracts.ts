@@ -44,6 +44,110 @@ export type EditorUiAudioSourceRange =
       endSeconds: number;
     };
 
+export interface EditorUiRenderProfile {
+  fps: { numerator: number; denominator: number };
+  width: number;
+  height: number;
+  audioSampleRate: 48_000;
+  isFrameRateLocked: boolean;
+  isCanvasSizeLocked: boolean;
+}
+
+export interface EditorUiLinkedAudio {
+  muted: boolean;
+  gainDb: number;
+  fadeInOutputSamples48k: number;
+  fadeOutOutputSamples48k: number;
+}
+
+export type EditorUiOrderAnchor =
+  | { beforeId: string; afterId?: never }
+  | { beforeId?: never; afterId: string }
+  | { beforeId?: never; afterId?: never };
+
+export interface EditorUiSubtitleCue {
+  id: string;
+  startOutputSample: number;
+  endOutputSample: number;
+  text: string;
+}
+
+export interface EditorUiSubtitleStyle {
+  fadeInDuration: number;
+  fadeOutDuration: number;
+  initialScale: number;
+  bounceStrength: number;
+  useElasticEffect: boolean;
+  fontSize: number;
+  textColor: string;
+  strokeWidth: number;
+  strokeColor: string;
+  fontWeight: number;
+  textCase: 'normal' | 'uppercase' | 'lowercase';
+  textAlign: 'left' | 'center' | 'right';
+  hidePunctuation: boolean;
+  punctuationChars: string;
+  removeAccents: boolean;
+  fontFamily: string;
+  numberOfLines: number;
+  position: { x: number; y: number };
+  backgroundColor: string;
+  backgroundOpacity: number;
+  backgroundBorderColor: string;
+  backgroundBorderWidth: number;
+  backgroundMarginVertical: number;
+  backgroundMarginHorizontal: number;
+  backgroundBorderRadius: number;
+  backgroundOffsetX: number;
+  backgroundOffsetY: number;
+}
+
+export const DEFAULT_EDITOR_UI_SUBTITLE_STYLE: EditorUiSubtitleStyle = {
+  fadeInDuration: 0.2,
+  fadeOutDuration: 0.2,
+  initialScale: 1.5,
+  bounceStrength: 1.7,
+  useElasticEffect: true,
+  fontSize: 48,
+  textColor: '#FFF50B',
+  strokeWidth: 6,
+  strokeColor: '#000000',
+  fontWeight: 800,
+  textCase: 'uppercase',
+  textAlign: 'center',
+  hidePunctuation: false,
+  punctuationChars: '¿?:-,.;¡!',
+  removeAccents: false,
+  fontFamily: 'Arial',
+  numberOfLines: 1,
+  position: { x: 50, y: 80 },
+  backgroundColor: '#000000',
+  backgroundOpacity: 0.5,
+  backgroundBorderColor: '#FFF50B',
+  backgroundBorderWidth: 2,
+  backgroundMarginVertical: 8,
+  backgroundMarginHorizontal: 16,
+  backgroundBorderRadius: 8,
+  backgroundOffsetX: 0,
+  backgroundOffsetY: 0,
+};
+
+export type EditorUiAudioInsertSource =
+  | {
+      domain: 'audio-source-native-samples';
+      audioSourceId: string;
+      nativeSampleRateHz: number;
+      startNativeSample: number;
+      endNativeSample: number;
+      timelineDurationOutputSamples48k?: number;
+    }
+  | {
+      domain: 'video-source-seconds';
+      videoSourceId: string;
+      startSeconds: number;
+      endSeconds: number;
+    };
+
 export interface EditorUiHostCapabilities {
   canEdit: boolean;
   canImportMedia: boolean;
@@ -101,6 +205,9 @@ export interface EditorUiTrack {
   visible?: boolean;
   muted?: boolean;
   solo?: boolean;
+  gainDb?: number;
+  unlinkedVideoPolicy?: 'preserve-absolute' | 'ripple-with-video-edit' | 'remove-with-deleted-video-range';
+  subtitleStyle?: EditorUiSubtitleStyle;
   height: number;
 }
 
@@ -117,6 +224,18 @@ export interface EditorUiNarrativeBlock {
   speaker?: string;
   preMarginSamples16k?: number;
   postMarginSamples16k?: number;
+  recordId?: string;
+  sourceId?: string;
+  destinationTrackId?: string;
+  words?: EditorUiNarrativeWord[];
+}
+
+export interface EditorUiNarrativeWord {
+  id: string;
+  text: string | null;
+  speakerId: string | null;
+  startSample16k: number;
+  endSample16k: number;
 }
 
 export interface EditorUiHistoryEntry {
@@ -134,6 +253,32 @@ export interface EditorUiJob {
   state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number | null;
   message?: string;
+  artifactId?: string;
+}
+
+export interface EditorUiMediaSource {
+  id: string;
+  kind: 'video' | 'audio';
+  label: string;
+  durationSeconds: number;
+  nativeSampleRateHz?: number;
+  narrativeRecordId?: string;
+}
+
+export interface EditorUiArtifact {
+  id: string;
+  kind: 'export' | 'transcript' | 'proof' | 'bundle';
+  label: string;
+}
+
+export interface EditorUiLink {
+  id: string;
+  kind: 'overlap' | 'binding';
+  anchorBlockId: string;
+  target: EditorUiDependentTarget;
+  followPolicy: 'none' | 'follow';
+  activeStartSample16k?: number;
+  activeEndSample16k?: number;
 }
 
 export interface EditorUiPresence {
@@ -151,6 +296,11 @@ export interface EditorUiProject {
   name: string;
   durationSeconds: number;
   fps: number;
+  renderProfile?: EditorUiRenderProfile;
+  backgroundColor?: string;
+  mediaSources?: EditorUiMediaSource[];
+  artifacts?: EditorUiArtifact[];
+  links?: EditorUiLink[];
   tracks: EditorUiTrack[];
   narrativeBlocks: EditorUiNarrativeBlock[];
   history: EditorUiHistoryEntry[];
@@ -201,31 +351,27 @@ export type EditorUiDependentTarget =
   | { kind: 'audio-clip'; trackId: string; clipId: string }
   | { kind: 'subtitle'; trackId: string; subtitleId: string };
 
-export type EditorUiCommand =
+export type EditorUiDurableCommand =
   | { type: 'project.set-name'; name: string }
-  | {
-      type: 'media.import';
-      grantId: string;
-      sources: Array<{ path: string; expectedSha256?: string }>;
-      placement: 'register-only' | 'append-natural-order';
-      videoTrackId?: string;
-      audioTrackId?: string;
-    }
-  | { type: 'track.add'; kind: EditorUiTrackKind; beforeTrackId?: string }
+  | { type: 'render.set-profile'; profile: EditorUiRenderProfile }
+  | { type: 'render.set-background'; color: string }
+  | { type: 'track.add'; kind: EditorUiTrackKind; trackId?: string; name?: string; beforeTrackId?: string }
   | { type: 'track.rename'; trackKind: EditorUiTrackKind; trackId: string; name: string }
   | {
       type: 'track.delete';
       trackKind: EditorUiTrackKind;
       trackId: string;
-      policy: 'require-empty' | 'rehome';
+      policy: 'require-empty' | 'delete-contents' | 'rehome';
       rehomeTrackId?: string;
     }
   | {
       type: 'track.reorder';
       trackKind: EditorUiTrackKind;
       trackId: string;
-      beforeTrackId: string | null;
+      beforeTrackId?: string;
+      afterTrackId?: string;
     }
+  | ({ type: 'track.reorder-clips'; trackKind: 'audio' | 'subtitle'; trackId: string; clipId: string } & EditorUiOrderAnchor)
   | {
       type: 'track.set-state';
       trackKind: EditorUiTrackKind;
@@ -237,8 +383,16 @@ export type EditorUiCommand =
     }
   | { type: 'audio-track.set-gain'; trackId: string; gainDb: number }
   | { type: 'subtitle-track.set-unlinked-video-policy'; trackId: string; policy: 'preserve-absolute' | 'ripple-with-video-edit' | 'remove-with-deleted-video-range' }
-  | { type: 'view.select'; ids: string[] }
-  | { type: 'view.set-track-height'; trackId: string; height: number }
+  | {
+      type: 'video-clip.insert';
+      clipId?: string;
+      sourceId: string;
+      trackId: string;
+      timelineFrame: number;
+      sourceStartSeconds: number;
+      sourceEndSeconds: number;
+      audio: EditorUiLinkedAudio | null;
+    }
   | { type: 'video-clip.move'; clipId: string; trackId: string; timelineFrame: number }
   | {
       type: 'video-clip.trim';
@@ -247,9 +401,11 @@ export type EditorUiCommand =
       sourceEndSeconds: number;
       timelineStartFrame?: number;
     }
-  | { type: 'video-clip.split'; clipId: string; timelineFrame: number }
+  | { type: 'video-clip.split'; clipId: string; timelineFrame: number; rightClipId?: string }
   | { type: 'video-clip.delete'; clipId: string }
-  | { type: 'video-clip.detach-audio'; clipId: string; audioTrackId: string }
+  | { type: 'video-clip.duplicate'; clipId: string; duplicateId?: string; targetTrackId?: string; timelineFrame?: number }
+  | ({ type: 'video-clip.set-order'; clipId: string } & EditorUiOrderAnchor)
+  | { type: 'video-clip.detach-audio'; clipId: string; audioTrackId: string; detachedClipId?: string }
   | {
       type: 'video-clip.relink-audio';
       videoClipId: string;
@@ -259,6 +415,14 @@ export type EditorUiCommand =
   | {
       type: 'video-clip.set-audio';
       clipId: string;
+      audio: EditorUiLinkedAudio | null;
+    }
+  | {
+      type: 'audio-clip.insert';
+      trackId: string;
+      clipId?: string;
+      timelineFrame: number;
+      source: EditorUiAudioInsertSource;
       muted: boolean;
       gainDb: number;
       fadeInOutputSamples48k: number;
@@ -266,8 +430,10 @@ export type EditorUiCommand =
     }
   | { type: 'audio-clip.move'; clipId: string; trackId: string; timelineFrame: number }
   | { type: 'audio-clip.trim'; clipId: string; sourceRange: EditorUiAudioSourceRange }
-  | { type: 'audio-clip.split'; clipId: string; timelineOutputSample: number }
+  | { type: 'audio-clip.split'; clipId: string; timelineOutputSample: number; rightClipId?: string }
   | { type: 'audio-clip.delete'; clipId: string }
+  | { type: 'audio-clip.duplicate'; clipId: string; duplicateId?: string; targetTrackId?: string; timelineFrame?: number }
+  | ({ type: 'audio-clip.set-order'; trackId: string; clipId: string } & EditorUiOrderAnchor)
   | { type: 'audio-clip.set-gain'; clipId: string; gainDb: number }
   | {
       type: 'audio-clip.set-fades';
@@ -300,10 +466,11 @@ export type EditorUiCommand =
       startOutputSample: number;
       endOutputSample: number;
     }
-  | { type: 'subtitle.split'; trackId: string; subtitleId: string; outputSample: number }
+  | { type: 'subtitle.split'; trackId: string; subtitleId: string; outputSample: number; rightSubtitleId?: string }
   | { type: 'subtitle.delete'; trackId: string; subtitleId: string }
-  | { type: 'subtitle.set-order'; trackId: string; subtitleId: string; beforeSubtitleId: string | null }
-  | { type: 'subtitle.set-track-style'; trackId: string; style: Record<string, string | number | boolean> }
+  | ({ type: 'subtitle.set-order'; trackId: string; subtitleId: string } & EditorUiOrderAnchor)
+  | { type: 'subtitle.bulk-replace'; trackId: string; subtitles: EditorUiSubtitleCue[] }
+  | { type: 'subtitle.set-track-style'; trackId: string; style: EditorUiSubtitleStyle }
   | {
       type: 'narrative.activate';
       selectedTrackIds: string[];
@@ -312,16 +479,47 @@ export type EditorUiCommand =
     }
   | { type: 'narrative.release-tracks'; trackIds: string[] }
   | { type: 'narrative.set-editing-mode'; mode: 'ripple' | 'absolute' }
-  | { type: 'narrative.reorder-blocks'; blockIds: string[]; targetIndex: number }
+  | { type: 'narrative.reorder-blocks'; blockIds: string[]; targetIndex?: number; targetStartFrame?: number }
   | { type: 'narrative.split-block'; blockId: string; splitSample16k: number }
   | { type: 'narrative.merge-blocks'; leftBlockId: string; rightBlockId: string }
+  | {
+      type: 'narrative.delete-words';
+      firstBlockId: string;
+      firstWordId: string;
+      lastBlockId: string;
+      lastWordId: string;
+      currentPlayheadFrame?: number;
+    }
   | {
       type: 'narrative.delete-range';
       start: { blockId: string; sample16k: number };
       end: { blockId: string; sample16k: number };
+      currentPlayheadFrame?: number;
     }
-  | { type: 'narrative.delete-all-silences'; trackId?: string }
-  | { type: 'narrative.change-block-margin'; blockId: string; side: 'start' | 'end'; marginSamples16k: number }
+  | { type: 'narrative.trim-block'; blockId: string; side: 'start' | 'end'; sample16k: number }
+  | {
+      type: 'narrative.insert-source-range' | 'narrative.recover-source-range';
+      recordId: string;
+      sourceId: string;
+      startSample16k: number;
+      endSample16k: number;
+      destinationTrackId: string;
+      targetIndex?: number;
+      timelineStartFrame?: number;
+      clipAudio: EditorUiLinkedAudio | null;
+    }
+  | { type: 'narrative.extend-block'; blockId: string; newStartSample16k: number; newEndSample16k: number }
+  | { type: 'narrative.set-word-text'; blockId: string; wordId: string; text: string | null }
+  | { type: 'narrative.set-word-speaker'; blockId: string; wordId: string; speakerId: string | null }
+  | { type: 'narrative.delete-all-silences'; trackId?: string; currentPlayheadFrame?: number }
+  | {
+      type: 'narrative.change-block-margin';
+      blockId: string;
+      side: 'start' | 'end';
+      policy:
+        | { mode: 'explicit'; marginSamples16k: number }
+        | { mode: 'inherit-global' };
+    }
   | { type: 'narrative.change-global-margins'; preMarginSamples16k: number; postMarginSamples16k: number }
   | {
       type: 'narrative.refine-boundary';
@@ -333,10 +531,45 @@ export type EditorUiCommand =
     }
   | { type: 'narrative.set-speaker-visibility'; visible: boolean }
   | { type: 'link.discover-overlaps' }
-  | { type: 'link.create-overlap'; anchorBlockId: string; target: EditorUiDependentTarget; followPolicy: 'none' | 'follow' }
+  | { type: 'link.create-overlap'; anchorBlockId: string; target: EditorUiDependentTarget; followPolicy?: 'none' | 'follow' }
+  | {
+      type: 'link.bind-target';
+      anchorBlockId: string;
+      target: EditorUiDependentTarget;
+      activeStartSample16k: number;
+      activeEndSample16k: number;
+      followPolicy?: 'none' | 'follow';
+    }
   | { type: 'link.unlink-target'; target: EditorUiDependentTarget }
+  | { type: 'link.unbind-target'; target: EditorUiDependentTarget }
   | { type: 'link.reanchor'; target: EditorUiDependentTarget; anchorBlockId: string }
-  | { type: 'link.set-follow-policy'; target: EditorUiDependentTarget; followPolicy: 'none' | 'follow' }
+  | { type: 'link.set-follow-policy'; target: EditorUiDependentTarget; followPolicy: 'none' | 'follow' };
+
+export type EditorUiCommand =
+  | EditorUiDurableCommand
+  | {
+      type: 'edit.batch';
+      commands: EditorUiDurableCommand[];
+      history: { label: string; category: string };
+    }
+  | {
+      type: 'media.import';
+      grantId: string;
+      sources: Array<{ path: string; expectedSha256?: string }>;
+      placement: 'register-only' | 'append-natural-order';
+      videoTrackId?: string;
+      audioTrackId?: string;
+    }
+  | { type: 'view.select'; ids: string[] }
+  | { type: 'view.set-track-height'; trackId: string; height: number }
+  | {
+      type: 'view.update';
+      patch: Partial<Pick<
+        EditorUiViewState,
+        'selectedIds' | 'playheadSeconds' | 'zoom' | 'scrollLeft' | 'trackHeights'
+        | 'activePane' | 'focusedTrackId' | 'presentation'
+      >>;
+    }
   | { type: 'history.undo' }
   | { type: 'history.redo' }
   | { type: 'history.jump'; entryId: string | null }

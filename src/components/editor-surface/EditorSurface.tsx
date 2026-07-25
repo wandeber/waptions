@@ -31,6 +31,7 @@ import {
   buildManagedExportCommand,
   buildManagedMediaImportCommand,
   type EditorUiController,
+  type EditorUiDurableCommand,
   type EditorUiSnapshot,
 } from '@/lib/editor-ui';
 
@@ -44,6 +45,7 @@ export function EditorSurface({ nativeContent }: { nativeContent?: ReactNode }) 
   const { controller, services } = useEditorSurfaceHost();
   const rootRef = useRef<HTMLDivElement>(null);
   const isPictureInPicture = snapshot.view.presentation === 'picture-in-picture';
+  const isFullscreen = snapshot.view.presentation === 'fullscreen';
 
   useEffect(() => {
     if (!snapshot.conflict) return;
@@ -196,30 +198,32 @@ export function EditorSurface({ nativeContent }: { nativeContent?: ReactNode }) 
             aria-hidden={isPictureInPicture}
             inert={isPictureInPicture}
           >
-            <LowerPaneSelector />
-            <div
-              id="managed-timeline-panel"
-              role="tabpanel"
-              aria-labelledby="managed-timeline-tab"
-              className={snapshot.view.activePane === 'timeline'
-                ? 'flex min-h-0 flex-1'
-                : 'hidden'}
-              aria-hidden={snapshot.view.activePane !== 'timeline'}
-              inert={snapshot.view.activePane !== 'timeline'}
-            >
-              <ManagedTimeline />
-            </div>
-            <div
-              id="managed-text-panel"
-              role="tabpanel"
-              aria-labelledby="managed-text-tab"
-              className={snapshot.view.activePane === 'text'
-                ? 'flex min-h-0 flex-1'
-                : 'hidden'}
-              aria-hidden={snapshot.view.activePane !== 'text'}
-              inert={snapshot.view.activePane !== 'text'}
-            >
-              <ManagedTextWorkspace />
+            <LowerPaneSelector split={isFullscreen} />
+            <div className={isFullscreen ? 'flex min-h-0 flex-1' : 'contents'}>
+              <div
+                id="managed-timeline-panel"
+                role="tabpanel"
+                aria-labelledby="managed-timeline-tab"
+                className={isFullscreen || snapshot.view.activePane === 'timeline'
+                  ? `flex min-h-0 ${isFullscreen ? 'w-3/5 flex-none border-r border-slate-800' : 'flex-1'}`
+                  : 'hidden'}
+                aria-hidden={!isFullscreen && snapshot.view.activePane !== 'timeline'}
+                inert={!isFullscreen && snapshot.view.activePane !== 'timeline'}
+              >
+                <ManagedTimeline />
+              </div>
+              <div
+                id="managed-text-panel"
+                role="tabpanel"
+                aria-labelledby="managed-text-tab"
+                className={isFullscreen || snapshot.view.activePane === 'text'
+                  ? 'flex min-h-0 flex-1'
+                  : 'hidden'}
+                aria-hidden={!isFullscreen && snapshot.view.activePane !== 'text'}
+                inert={!isFullscreen && snapshot.view.activePane !== 'text'}
+              >
+                <ManagedTextWorkspace />
+              </div>
             </div>
           </div>
           <div
@@ -455,9 +459,13 @@ function EditorStatusBanners() {
   );
 }
 
-function LowerPaneSelector() {
+function LowerPaneSelector({ split }: { split: boolean }) {
   const snapshot = useEditorUiSnapshot();
   const { controller } = useEditorSurfaceHost();
+  const selectPane = (activePane: 'timeline' | 'text') => {
+    controller.updateView({ activePane });
+    void controller.dispatch({ type: 'view.update', patch: { activePane } });
+  };
   return (
     <div className="flex h-9 flex-none items-center border-b border-slate-800 bg-slate-950 px-2">
       <div
@@ -470,7 +478,7 @@ function LowerPaneSelector() {
           const pane = event.key === 'ArrowLeft' || event.key === 'Home'
             ? 'timeline'
             : 'text';
-          controller.updateView({ activePane: pane });
+          selectPane(pane);
           requestAnimationFrame(() => {
             document.getElementById(`managed-${pane}-tab`)?.focus();
           });
@@ -482,7 +490,7 @@ function LowerPaneSelector() {
           active={snapshot.view.activePane === 'timeline'}
           label="Timeline"
           icon={Workflow}
-          onClick={() => controller.updateView({ activePane: 'timeline' })}
+          onClick={() => selectPane('timeline')}
         />
         <PaneTab
           id="managed-text-tab"
@@ -490,9 +498,14 @@ function LowerPaneSelector() {
           active={snapshot.view.activePane === 'text'}
           label="Text"
           icon={AlignLeft}
-          onClick={() => controller.updateView({ activePane: 'text' })}
+          onClick={() => selectPane('text')}
         />
       </div>
+      {split && (
+        <span className="ml-2 text-[9px] uppercase tracking-wide text-slate-600">
+          Fullscreen split view
+        </span>
+      )}
       <button
         type="button"
         className="ml-auto flex items-center gap-1 rounded px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-900 hover:text-white"
@@ -524,33 +537,45 @@ async function deleteSelected(
   snapshot: EditorUiSnapshot,
 ): Promise<void> {
   const selected = new Set(snapshot.view.selectedIds);
+  const commands: EditorUiDurableCommand[] = [];
   const blocks = snapshot.project.narrativeBlocks
     .filter((block) => selected.has(block.id))
     .sort((left, right) => left.startSeconds - right.startSeconds);
   if (blocks.length > 0) {
     const first = blocks[0];
     const last = blocks[blocks.length - 1];
-    await controller.dispatch({
+    commands.push({
       type: 'narrative.delete-range',
       start: { blockId: first.id, sample16k: first.sourceStartSample16k },
       end: { blockId: last.id, sample16k: last.sourceEndSample16k },
+      currentPlayheadFrame: Math.round(snapshot.view.playheadSeconds * snapshot.project.fps),
     });
   }
   for (const track of snapshot.project.tracks) {
     for (const clip of track.clips) {
       if (!selected.has(clip.id)) continue;
       if (clip.kind === 'video') {
-        await controller.dispatch({ type: 'video-clip.delete', clipId: clip.id });
+        commands.push({ type: 'video-clip.delete', clipId: clip.id });
       } else if (clip.kind === 'audio') {
-        await controller.dispatch({ type: 'audio-clip.delete', clipId: clip.id });
+        commands.push({ type: 'audio-clip.delete', clipId: clip.id });
       } else if (clip.kind === 'subtitle') {
-        await controller.dispatch({
+        commands.push({
           type: 'subtitle.delete',
           trackId: track.id,
           subtitleId: clip.id,
         });
       }
     }
+  }
+  if (commands.length > 0) {
+    await controller.dispatch({
+      type: 'edit.batch',
+      commands,
+      history: {
+        label: commands.length === 1 ? 'Delete selection' : `Delete ${commands.length} items`,
+        category: 'selection.delete',
+      },
+    });
   }
 }
 

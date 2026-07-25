@@ -3,10 +3,12 @@
 import {
   ArrowDown,
   ArrowUp,
+  GitMerge,
   Link2,
   Scissors,
   Sparkles,
   Trash2,
+  Unlink,
   VolumeX,
 } from 'lucide-react';
 import type { EditorUiNarrativeBlock } from '@/lib/editor-ui';
@@ -21,6 +23,13 @@ export function ManagedTextWorkspace() {
   const { controller, services } = useEditorSurfaceHost();
   const blocks = snapshot.project.narrativeBlocks;
   const selected = new Set(snapshot.view.selectedIds);
+  const selectedBlocks = blocks.filter((block) => selected.has(block.id));
+  const narrativeSources = (snapshot.project.mediaSources ?? []).filter((source) => (
+    source.kind === 'video' && source.narrativeRecordId
+  ));
+  const controlledTrackIds = Array.from(new Set(blocks.map((block) => (
+    block.destinationTrackId
+  )).filter((id): id is string => Boolean(id))));
   const moveBlock = (blockId: string, direction: -1 | 1) => {
     const index = blocks.findIndex((block) => block.id === blockId);
     const targetIndex = index + direction;
@@ -88,6 +97,53 @@ export function ManagedTextWorkspace() {
         </button>
         <button
           type="button"
+          className="flex h-7 items-center gap-1 rounded px-2 text-[10px] text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+          disabled={narrativeSources.length === 0}
+          onClick={() => void controller.dispatch({
+            type: 'narrative.activate',
+            selectedTrackIds: snapshot.project.tracks
+              .filter((track) => track.kind === 'video')
+              .map((track) => track.id),
+            recordIdBySourceId: Object.fromEntries(narrativeSources.map((source) => (
+              [source.id, source.narrativeRecordId!]
+            ))),
+            splitOnSpeakerChange: true,
+          })}
+        >
+          <Link2 className="h-3.5 w-3.5" /> Control tracks
+        </button>
+        <button
+          type="button"
+          className="flex h-7 items-center gap-1 rounded px-2 text-[10px] text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+          disabled={controlledTrackIds.length === 0}
+          onClick={() => void controller.dispatch({
+            type: 'narrative.release-tracks',
+            trackIds: controlledTrackIds,
+          })}
+        >
+          <Unlink className="h-3.5 w-3.5" /> Release
+        </button>
+        <button
+          type="button"
+          className="flex h-7 items-center gap-1 rounded px-2 text-[10px] text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+          disabled={selectedBlocks.length !== 2}
+          onClick={() => {
+            const ordered = [...selectedBlocks].sort((left, right) => (
+              left.startSeconds - right.startSeconds
+            ));
+            if (ordered.length === 2) {
+              void controller.dispatch({
+                type: 'narrative.merge-blocks',
+                leftBlockId: ordered[0].id,
+                rightBlockId: ordered[1].id,
+              });
+            }
+          }}
+        >
+          <GitMerge className="h-3.5 w-3.5" /> Merge
+        </button>
+        <button
+          type="button"
           className="ml-auto flex h-7 items-center gap-1.5 rounded px-2 text-[11px] text-slate-400 hover:bg-rose-500/15 hover:text-rose-200 disabled:opacity-40"
           onClick={() => void controller.dispatch({ type: 'narrative.delete-all-silences' })}
           disabled={!blocks.some((block) => block.kind === 'silence')}
@@ -145,6 +201,67 @@ export function ManagedTextWorkspace() {
                     </span>
                   )}
                 </button>
+                {block.kind === 'speech' && block.words && block.words.length > 0 && (
+                  <div className="flex max-w-[48%] flex-wrap gap-1" aria-label="Editable transcript words">
+                    {block.words.map((word) => (
+                      <input
+                        key={`${word.id}:${word.text ?? ''}:${word.speakerId ?? ''}`}
+                        defaultValue={word.text ?? ''}
+                        aria-label={`Edit word ${word.text ?? word.id}`}
+                        title="Edit word; double-click to change speaker"
+                        onBlur={(event) => {
+                          const text = event.currentTarget.value.trim() || null;
+                          if (text !== word.text) {
+                            void controller.dispatch({
+                              type: 'narrative.set-word-text',
+                              blockId: block.id,
+                              wordId: word.id,
+                              text,
+                            });
+                          }
+                        }}
+                        onDoubleClick={async () => {
+                          const speakerId = await services.requestText({
+                            title: 'Change word speaker',
+                            label: 'Speaker ID (empty clears it)',
+                            initialValue: word.speakerId ?? '',
+                          });
+                          if (speakerId !== null) {
+                            void controller.dispatch({
+                              type: 'narrative.set-word-speaker',
+                              blockId: block.id,
+                              wordId: word.id,
+                              speakerId: speakerId.trim() || null,
+                            });
+                          }
+                        }}
+                        className="w-auto min-w-10 max-w-28 select-text rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-200 outline-none focus:border-violet-400"
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      className="rounded px-1.5 text-[9px] text-rose-300 hover:bg-rose-500/15"
+                      onClick={() => {
+                        const first = block.words?.[0];
+                        const last = block.words?.[block.words.length - 1];
+                        if (first && last) {
+                          void controller.dispatch({
+                            type: 'narrative.delete-words',
+                            firstBlockId: block.id,
+                            firstWordId: first.id,
+                            lastBlockId: block.id,
+                            lastWordId: last.id,
+                            currentPlayheadFrame: Math.round(
+                              snapshot.view.playheadSeconds * snapshot.project.fps,
+                            ),
+                          });
+                        }
+                      }}
+                    >
+                      Delete words
+                    </button>
+                  </div>
+                )}
                 <div className="flex flex-none items-center gap-0.5 opacity-70 group-hover:opacity-100">
                   <BlockAction
                     label="Move block earlier"

@@ -23,7 +23,7 @@ describe('createLocalBridgeMediaResolver', () => {
     );
     expect(fetchImplementation).toHaveBeenCalledOnce();
     expect(fetchImplementation).toHaveBeenCalledWith(
-      'http://localhost:59941/v1/pair',
+      'http://localhost:59941/v1/pair/exchange',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ pairingCapability: 'one-shot-pairing' }),

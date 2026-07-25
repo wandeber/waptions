@@ -8,6 +8,7 @@ import {
   createLocalBridgeMediaResolver,
   fromMcpDisplayMode,
   initializeMcpAppBridge,
+  isEditorUiSnapshotProjection,
   readMcpUiHostContext,
   type EditorUiPresentationMode,
   type EditorUiRpcBridge,
@@ -41,8 +42,8 @@ const readInitialSnapshot = (value: unknown): EditorUiSnapshot | null => {
   if (!isRecord(value)) return null;
   const structured = isRecord(value.structuredContent) ? value.structuredContent : value;
   if (structured.ok !== true || !isRecord(structured.data)) return null;
-  return isRecord(structured.data.editorUiSnapshot)
-    ? structured.data.editorUiSnapshot as unknown as EditorUiSnapshot
+  return isEditorUiSnapshotProjection(structured.data.editorUiSnapshot)
+    ? structured.data.editorUiSnapshot
     : null;
 };
 
