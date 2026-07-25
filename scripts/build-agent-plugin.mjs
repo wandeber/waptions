@@ -57,6 +57,7 @@ const [nodeBundle, appBundle, cssBundle] = await Promise.all([
   buildAppCss(),
 ]);
 assertNodeBundleGraph(nodeBundle.metafile, nodeFirstPartyAllowlist);
+assertNoDynamicImportEdges(nodeBundle.metafile);
 assertBrowserBundleGraph(appBundle.metafile);
 
 const serverBytes = singleOutput(nodeBundle, ".mjs");
@@ -231,7 +232,15 @@ async function buildNodeBundle() {
     metafile: true,
     tsconfig: resolve(SOURCE_ROOT, "tsconfig.json"),
     external: ["node:*"],
-    banner: { js: "#!/usr/bin/env node" },
+    // Undici is bundled statically from CommonJS. Its Node built-in requires need
+    // an ESM-local require without making any package dependency runtime-resolvable.
+    banner: {
+      js: [
+        "#!/usr/bin/env node",
+        'import { createRequire as __waptionsCreateRequire } from "node:module";',
+        "const require = __waptionsCreateRequire(import.meta.url);",
+      ].join("\n"),
+    },
     logLevel: "warning",
   });
 }
@@ -432,9 +441,20 @@ function assertStaticNodeRuntime(serverBytes) {
       );
     }
   }
-  if (/\bimport\s*\(/u.test(source)) {
+}
+
+function assertNoDynamicImportEdges(metafile) {
+  const dynamicImports = [];
+  for (const [outputPath, output] of Object.entries(metafile.outputs)) {
+    for (const imported of output.imports ?? []) {
+      if (imported.kind === "dynamic-import") {
+        dynamicImports.push(`${normalizeMetafileInput(outputPath)} -> ${imported.path}`);
+      }
+    }
+  }
+  if (dynamicImports.length > 0) {
     throw new Error(
-      "The packaged Node runtime must not retain dynamic import expressions.",
+      `The packaged Node runtime contains dynamic imports: ${dynamicImports.sort().join(", ")}`,
     );
   }
 }

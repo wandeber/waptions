@@ -59,6 +59,8 @@ export interface RestoreDurableManagedMediaCatalogInput {
     readonly grants: readonly SessionPathGrantRecord[];
     readonly catalog: DurableManagedMediaCatalog;
     readonly pathGrants: PathGrantAuthority;
+    /** Shared process catalog used by production review/render/transcription. */
+    readonly media?: PathGrantMediaAdapter;
 }
 
 export interface RestoredDurableManagedMediaCatalog {
@@ -125,7 +127,7 @@ export function restoreDurableManagedMediaCatalog(
     input: RestoreDurableManagedMediaCatalogInput,
 ): RestoredDurableManagedMediaCatalog {
     assertRestoreInput(input);
-    const media = new PathGrantMediaAdapter(input.pathGrants);
+    const media = input.media ?? new PathGrantMediaAdapter(input.pathGrants);
     const registry = activeRegistryBySource(input.sourceRegistry);
     const grants = grantsById(input.grants, input.scope);
     const durable = createDurableManagedMediaCatalog(input.catalog.records);

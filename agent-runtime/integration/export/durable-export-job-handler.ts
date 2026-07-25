@@ -81,14 +81,10 @@ export interface ManagedExportDurableHandlerDependencies {
 /**
  * Adapts an export proposal into the scheduler's atomic artifact/output terminal publication.
  *
- * Runtime composition seam (intentionally not wired here): register these handlers before
- * `scheduler.recover()`, restore and reconcile output staging first, and make the material
- * factory recreate its material reference after restart. The current scheduler does not expose
- * its generated record ID to handlers, so composition must bind `input.jobId` to that durable ID
- * before enqueueing. It also must extend its terminal transaction to persist `result.events` in
- * order with the artifact/output/job writes: `DurableJobTerminalPublication` currently carries
- * artifacts and outputs only. This module preserves those events without pretending to publish
- * them outside that missing composition seam.
+ * Runtime composition registers these handlers before `scheduler.recover()`,
+ * recreates material from the opaque reference and pre-binds `input.jobId` to
+ * the durable record ID. The coordinator consumes `exportEvents` beside the
+ * artifact, output and terminal job writes in one transaction.
  */
 export class ManagedExportDurableJobHandler implements DurableJobHandler<
     ManagedExportDurableJobInputV1,
@@ -157,6 +153,7 @@ export class ManagedExportDurableJobHandler implements DurableJobHandler<
             const terminalPublication: DurableJobTerminalPublication = Object.freeze({
                 artifacts: proposal.artifacts,
                 outputs: Object.freeze([...publications]),
+                exportEvents: result.events,
             });
             transferred = true;
             return { result, artifactIds, terminalPublication };
@@ -392,7 +389,7 @@ function isOpaqueId(value: unknown, maximumLength: number): value is string {
     return typeof value === 'string'
         && value.length > 0
         && value.length <= maximumLength
-        && /^[A-Za-z0-9:_-]+$/.test(value);
+        && /^[^\u0000-\u001f\u007f]+$/.test(value);
 }
 
 function nonNegativeSafeInteger(value: unknown): value is number {

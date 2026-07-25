@@ -5,7 +5,9 @@ import {
     assertServerTranscriptionEndpointNetworkAllowedWithResolver,
     isBlockedNetworkAddress,
     isIpAddress,
-    type ServerTranscriptionTransport,
+} from '../../../src/lib/ai/openai-compatible-transcription-policy';
+import type {
+    ServerTranscriptionTransport,
 } from '../../../src/lib/ai/openai-compatible-transcription-server';
 import { resolveOpenAICompatibleTranscriptionUrl } from '../../../src/lib/ai/openai-compatible-transcription';
 import { parseEditMaxEditorialTranscript } from '../../../src/lib/editorial-transcription/edit-max-parser';

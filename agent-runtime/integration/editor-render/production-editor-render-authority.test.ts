@@ -72,10 +72,10 @@ describe("ProductionEditorRenderAuthority", () => {
         replayed: result.replayed,
       },
     )).toBe(true);
-    const secret = result.privateMeta?.bridge as { pairingCapability: string };
-    expect(secret.pairingCapability).toMatch(/^pairing-secret-/);
+    const secret = result.privateMeta?.bridge as { capabilityToken: string };
+    expect(secret.capabilityToken).toMatch(/^pairing-secret-/);
     expect(JSON.stringify({ data: result.data, state: result.state })).not.toContain(
-      secret.pairingCapability,
+      secret.capabilityToken,
     );
   });
 
@@ -324,6 +324,6 @@ function pairingSecret(result: Extract<Awaited<ReturnType<
   ReturnType<typeof authorityFor>["renderEditorReceiptFirst"]
 >>, { ok: true }>): string {
   return ((result.privateMeta?.bridge as {
-    pairingCapability: string;
-  }).pairingCapability);
+    capabilityToken: string;
+  }).capabilityToken);
 }

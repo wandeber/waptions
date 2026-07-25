@@ -79,6 +79,11 @@ export class PathGrantOutputAuthority implements NodeStagedOutputHandleResolverP
         });
     }
 
+    hasDestination(stagingHandleId: string): boolean {
+        const bound = this.destinations.get(stagingHandleId);
+        return Boolean(bound && !bound.settled);
+    }
+
     acquireDestination(
         capability: StagedOutputDestinationCapabilityV1,
     ): ManagedOutputLease {

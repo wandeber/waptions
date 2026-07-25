@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type { Readable } from 'node:stream';
 import { managedError } from '../coordinator/errors';
@@ -198,7 +198,6 @@ export class ArtifactRegistry {
                 assertNotCancelled(options.signal, deadlineAt);
             } catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-                const { rename } = await import('node:fs/promises');
                 await rename(temporary, finalPath);
                 this.retainStagedBlob(finalPath);
                 retainedBlob = true;

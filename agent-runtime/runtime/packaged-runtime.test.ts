@@ -5,6 +5,7 @@ import {
     mkdtemp,
     readFile,
     rm,
+    stat,
     writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,6 +15,10 @@ import { promisify } from 'node:util';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import {
+    getDefaultEnvironment,
+    StdioClientTransport,
+} from '@modelcontextprotocol/sdk/client/stdio.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -30,6 +35,7 @@ import { loadVerifiedPackagedRuntime } from './packaged-runtime';
 const execFileAsync = promisify(execFile);
 const checkoutRoot = resolve(import.meta.dirname, '..', '..');
 let fixtureRoot = '';
+const authorityPids = new Set<number>();
 
 beforeAll(async () => {
     fixtureRoot = await mkdtemp(join(tmpdir(), 'waptions-package-fixture-'));
@@ -44,9 +50,16 @@ beforeAll(async () => {
         },
         maxBuffer: 10 * 1024 * 1024,
     });
-}, 30_000);
+}, 90_000);
 
 afterAll(async () => {
+    for (const pid of authorityPids) {
+        try {
+            process.kill(pid, 'SIGTERM');
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+    }
     if (fixtureRoot) {
         await rm(fixtureRoot, { recursive: true, force: true });
     }
@@ -208,6 +221,104 @@ describe('static packaged plugin server', () => {
             await rm(dataRoot, { recursive: true, force: true });
         }
     });
+
+    it('launches once, attaches another installed CLI, and keeps the private authority alive', async () => {
+        const dataRoot = await mkdtemp(join(tmpdir(), 'waptions-installed-data-'));
+        const serverParameters = {
+            command: process.execPath,
+            args: [join(fixtureRoot, 'mcp', 'server.mjs')],
+            cwd: fixtureRoot,
+            env: {
+                ...getDefaultEnvironment(),
+                WAPTIONS_AGENT_DATA_DIR: dataRoot,
+                WAPTIONS_PLUGIN_ROOT: fixtureRoot,
+                WAPTIONS_RUNTIME_MANIFEST: join(
+                    fixtureRoot,
+                    'build-manifest.json',
+                ),
+            },
+            stderr: 'pipe' as const,
+        };
+        const firstTransport = new StdioClientTransport(serverParameters);
+        let firstStderr = '';
+        firstTransport.stderr?.on('data', (chunk: Buffer) => {
+            firstStderr += chunk.toString('utf8');
+        });
+        const firstClient = new Client(
+            { name: 'installed-runtime-test', version: '1.0.0' },
+            { capabilities: {} },
+        );
+        const secondTransport = new StdioClientTransport(serverParameters);
+        const secondClient = new Client(
+            { name: 'installed-runtime-test-2', version: '1.0.0' },
+            { capabilities: {} },
+        );
+        let authorityPid: number | undefined;
+        try {
+            try {
+                await firstClient.connect(firstTransport);
+            } catch (error) {
+                throw new Error(
+                    `Packaged runtime failed to connect: ${firstStderr.trim()}`,
+                    { cause: error },
+                );
+            }
+            expect((await firstClient.listTools()).tools).toHaveLength(29);
+            const discovery = JSON.parse(
+                await readFile(
+                    join(dataRoot, 'coordinator', 'service.json'),
+                    'utf8',
+                ),
+            ) as {
+                pid: number;
+                controlEndpoint: { kind: string; path: string };
+            };
+            authorityPid = discovery.pid;
+            authorityPids.add(authorityPid);
+            if (discovery.controlEndpoint.kind === 'unix-socket') {
+                expect(
+                    (await stat(discovery.controlEndpoint.path)).mode & 0o777,
+                ).toBe(0o600);
+            }
+
+            await secondClient.connect(secondTransport);
+            expect((await secondClient.listTools()).tools).toHaveLength(29);
+            const attachedDiscovery = JSON.parse(
+                await readFile(
+                    join(dataRoot, 'coordinator', 'service.json'),
+                    'utf8',
+                ),
+            ) as { pid: number };
+            expect(attachedDiscovery.pid).toBe(authorityPid);
+
+            await firstClient.close();
+            process.kill(authorityPid, 0);
+            await secondClient.close();
+            process.kill(authorityPid, 0);
+        } finally {
+            await firstClient.close().catch(() => undefined);
+            await secondClient.close().catch(() => undefined);
+            if (authorityPid === undefined) {
+                authorityPid = await readAuthorityPid(dataRoot);
+                if (authorityPid !== undefined) {
+                    authorityPids.add(authorityPid);
+                }
+            }
+            if (authorityPid !== undefined) {
+                try {
+                    process.kill(authorityPid, 'SIGTERM');
+                    await waitForProcessExit(authorityPid);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+                        throw error;
+                    }
+                } finally {
+                    authorityPids.delete(authorityPid);
+                }
+            }
+            await rm(dataRoot, { recursive: true, force: true });
+        }
+    }, 30_000);
 });
 
 class NoopCoordinatorAdapter implements ManagedCoordinatorAdapter {
@@ -248,4 +359,39 @@ async function packageCopy(): Promise<string> {
     );
     await cp(fixtureRoot, destination, { recursive: true, force: false });
     return destination;
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+        try {
+            process.kill(pid, 0);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+            throw error;
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    }
+    throw new Error(`Packaged authority process ${pid} did not stop.`);
+}
+
+async function readAuthorityPid(dataRoot: string): Promise<number | undefined> {
+    const deadline = Date.now() + 1_000;
+    while (Date.now() < deadline) {
+        try {
+            const discovery = JSON.parse(
+                await readFile(
+                    join(dataRoot, 'coordinator', 'service.json'),
+                    'utf8',
+                ),
+            ) as { pid?: unknown };
+            return Number.isSafeInteger(discovery.pid)
+                ? discovery.pid as number
+                : undefined;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    }
+    return undefined;
 }

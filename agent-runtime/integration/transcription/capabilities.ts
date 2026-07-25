@@ -3,7 +3,7 @@ import { lookup, resolve4, resolve6 } from 'node:dns/promises';
 import {
     assertServerTranscriptionEndpointNetworkAllowedWithResolver,
     isBlockedNetworkAddress,
-} from '../../../src/lib/ai/openai-compatible-transcription-server';
+} from '../../../src/lib/ai/openai-compatible-transcription-policy';
 import {
     createEditorialEndpointIdentityDigest,
     normalizeEditorialTranscriptionEndpoint,

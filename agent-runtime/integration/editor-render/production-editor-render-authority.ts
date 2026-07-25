@@ -122,8 +122,7 @@ export class ProductionEditorRenderAuthority
         // The MCP dispatcher exposes this only as host metadata for this tool.
         privateMeta: {
           bridge: {
-            pairingCapability: issued.pairingCapability,
-            expiresAt: receipt.capabilityExpiresAt,
+            capabilityToken: issued.pairingCapability,
           },
         },
       };

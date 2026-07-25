@@ -71,6 +71,15 @@ export interface VerifiedReadHandle {
     close(): Promise<void>;
 }
 
+export interface PreparedRetainedSource {
+    readonly digest: string;
+    readonly byteLength: number;
+    readonly identity: FileIdentity;
+    readonly created: boolean;
+    accept(): void;
+    reject(): Promise<void>;
+}
+
 export interface StagedDestination {
     capabilityType: 'validated-staged-destination';
     grantId: string;
@@ -386,6 +395,187 @@ export class PathGrantAuthority {
             if (paths.has(materialized.path)) this.materialized.delete(cacheKey);
         }
         await fsyncDirectory(sessionRoot).catch(() => undefined);
+    }
+
+    /**
+     * Stages an already verified, bounded project-bundle source directly into
+     * the immutable private source namespace. The caller publishes its source
+     * registry and catalog in one WAL transaction before accepting this lease.
+     */
+    async retainVerifiedSourceStream(input: {
+        readonly sessionId: string;
+        readonly sourceId: string;
+        readonly expectedDigest: string;
+        readonly expectedBytes: number;
+        readonly stream: AsyncIterable<Uint8Array>;
+        readonly signal?: AbortSignal;
+    }): Promise<PreparedRetainedSource> {
+        if (
+            !input.sessionId
+            || !input.sourceId
+            || input.sourceId.length > 200
+            || !/^sha256:[a-f0-9]{64}$/.test(input.expectedDigest)
+            || !Number.isSafeInteger(input.expectedBytes)
+            || input.expectedBytes < 0
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The retained source stream identity is invalid.',
+            );
+        }
+        const deadline = deadlineFrom(undefined, 30 * 60 * 1000);
+        const reservation = await this.reserveSourceCopy(
+            input.sessionId,
+            input.expectedBytes,
+        );
+        const copyRoot = sourceCopySessionRoot(
+            this.options.privateCopyRoot,
+            input.sessionId,
+        );
+        await ensurePrivateDirectory(copyRoot);
+        const finalPath = join(
+            copyRoot,
+            `${input.expectedDigest.slice(7)}.source`,
+        );
+        const temporary = join(copyRoot, `.${randomUUID()}.partial`);
+        let output: FileHandle | undefined;
+        let created = false;
+        try {
+            const existing = await lstatOrNull(finalPath);
+            if (existing) {
+                validateRegularFile(existing);
+                if (
+                    toSafeNumber(existing.size, 'file size')
+                    !== input.expectedBytes
+                ) {
+                    throw managedError(
+                        'SOURCE_CHANGED',
+                        'The immutable source cache is corrupt.',
+                    );
+                }
+            } else {
+                output = await open(
+                    temporary,
+                    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+                    0o600,
+                );
+                const hash = createHash('sha256');
+                let position = 0;
+                for await (const value of input.stream) {
+                    assertNotCancelled(input.signal, deadline);
+                    if (
+                        !(value instanceof Uint8Array)
+                        || value.byteLength === 0
+                        || value.byteLength > 8 * 1024 * 1024
+                    ) {
+                        throw managedError(
+                            'INVALID_REQUEST',
+                            'The retained source stream yielded an invalid chunk.',
+                        );
+                    }
+                    const chunk = Buffer.from(
+                        value.buffer,
+                        value.byteOffset,
+                        value.byteLength,
+                    );
+                    position += chunk.byteLength;
+                    if (
+                        !Number.isSafeInteger(position)
+                        || position > input.expectedBytes
+                    ) {
+                        throw managedError(
+                            'SOURCE_CHANGED',
+                            'The retained source stream exceeded its declared length.',
+                        );
+                    }
+                    await writeBufferAt(
+                        output,
+                        chunk,
+                        position - chunk.byteLength,
+                    );
+                    hash.update(chunk);
+                }
+                if (
+                    position !== input.expectedBytes
+                    || `sha256:${hash.digest('hex')}`
+                        !== input.expectedDigest
+                ) {
+                    throw managedError(
+                        'SOURCE_CHANGED',
+                        'The retained source stream changed during import.',
+                    );
+                }
+                await output.sync();
+                await output.close();
+                output = undefined;
+                try {
+                    await link(temporary, finalPath);
+                    created = true;
+                    await fsyncDirectory(copyRoot);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+                        throw error;
+                    }
+                    const raced = await lstatOrNull(finalPath);
+                    if (
+                        !raced
+                        || toSafeNumber(raced.size, 'file size')
+                            !== input.expectedBytes
+                    ) {
+                        throw managedError(
+                            'SOURCE_CHANGED',
+                            'A concurrent immutable source publication disagreed.',
+                        );
+                    }
+                }
+            }
+            const handle = await openNoFollow(
+                finalPath,
+                constants.O_RDONLY | constants.O_NONBLOCK,
+            );
+            let identity: FileIdentity;
+            try {
+                const metadata = await handle.stat({ bigint: true });
+                validateRegularFile(metadata);
+                identity = fileIdentity(metadata);
+                const verified = await digestHandle(
+                    handle,
+                    input.signal,
+                    deadline,
+                );
+                if (
+                    verified.digest !== input.expectedDigest
+                    || verified.bytes !== input.expectedBytes
+                ) {
+                    throw managedError(
+                        'SOURCE_CHANGED',
+                        'The retained source publication failed verification.',
+                    );
+                }
+            } finally {
+                await handle.close().catch(() => undefined);
+            }
+            let settled = false;
+            return {
+                digest: input.expectedDigest,
+                byteLength: input.expectedBytes,
+                identity,
+                created,
+                accept: () => {
+                    settled = true;
+                },
+                reject: async () => {
+                    if (settled || !created) return;
+                    settled = true;
+                    await rm(finalPath, { force: true });
+                    await fsyncDirectory(copyRoot).catch(() => undefined);
+                },
+            };
+        } finally {
+            await output?.close().catch(() => undefined);
+            await rm(temporary, { force: true }).catch(() => undefined);
+            reservation.release();
+        }
     }
 
     async openRetainedSource(

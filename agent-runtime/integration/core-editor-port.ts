@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
+    appendEditorHistory,
     createEditorEngine,
+    createEditorHistoryEntry,
     EditorCommandError,
     type EditorCommandErrorCode,
     type EditorAssetHydration,
@@ -21,6 +23,7 @@ import {
     type HistoryMutationRequest,
     type SubtitleTranscriptionPublicationRequest,
 } from '../../src/lib/editor-engine';
+import { validateEditorManifestV4 } from '../../src/lib/editor-document-v4';
 import type { ResolvedEditorialTranscriptMapV1 } from '../../src/types/editorial';
 import type { EditorManifestV4 } from '../../src/types/video';
 import type {
@@ -119,6 +122,150 @@ export function createEmptyManagedCoreSnapshot(
         sourcePins: {
             current: { videoSourceIds: [], audioSourceIds: [] },
             history: { videoSourceIds: [], audioSourceIds: [] },
+            redo: { videoSourceIds: [], audioSourceIds: [] },
+        },
+    });
+}
+
+/**
+ * Builds the one trusted Core head used by managed project import. The
+ * imported document becomes one undoable history entry and all revisions
+ * remain monotonic relative to the live project it replaces.
+ */
+export function createImportedManagedCoreSnapshot(input: {
+    readonly current: ManagedEditorSnapshot<ManagedCoreEditorState>;
+    readonly manifest: EditorManifestV4;
+    readonly projectName: string;
+    readonly occurredAt?: string;
+}): ManagedEditorSnapshot<ManagedCoreEditorState> {
+    const validation = validateEditorManifestV4(input.manifest);
+    if (!validation.valid) {
+        throw new EditorCommandError(
+            'INVALID_DOCUMENT',
+            'The managed project import manifest is invalid.',
+        );
+    }
+    const before = input.current.state.snapshot;
+    const manifest = structuredClone(input.manifest);
+    manifest.revision = before.revisions.documentRevision + 1;
+    manifest.audioGraphRevision = before.revisions.audioGraphRevision + 1;
+    const occurredAt = input.occurredAt ?? new Date().toISOString();
+    const revisions = {
+        sessionEpoch: before.revisions.sessionEpoch,
+        sessionRevision: before.revisions.sessionRevision + 1,
+        documentRevision: manifest.revision,
+        audioGraphRevision: manifest.audioGraphRevision,
+        ...(manifest.narrative
+            ? {
+                narrativeRevision:
+                    (before.revisions.narrativeRevision ?? 0) + 1,
+            }
+            : {}),
+    };
+    const project = {
+        name: input.projectName.trim().slice(0, 200) || before.project.name,
+    };
+    const historyEntry = createEditorHistoryEntry({
+        before: before.manifest,
+        after: manifest,
+        beforeProject: before.project,
+        afterProject: project,
+        summary: {
+            id: `managed-project-import-${canonicalDigest({
+                projectId: before.projectId,
+                sessionRevision: revisions.sessionRevision,
+            }).slice(7, 31)}`,
+            label: 'Import project',
+            category: 'project-import',
+            occurredAt,
+            operationIds: ['project.import'],
+            from: omitEpoch(before.revisions),
+            to: omitEpoch(revisions),
+        },
+    });
+    const history = appendEditorHistory(
+        input.current.state.history,
+        historyEntry,
+    );
+    const videoSourceIds = manifest.videoSourceDescriptors.map(
+        (source) => source.id,
+    );
+    const audioSourceIds = manifest.audioSourceDescriptors.map(
+        (source) => source.id,
+    );
+    const transcriptRecordIds = Array.from(new Set(
+        manifest.editorialTranscriptDescriptors.map(
+            (descriptor) => descriptor.recordId,
+        ),
+    ));
+    const historyVideoSourceIds = unique([
+        ...input.current.state.sourcePins.current.videoSourceIds,
+        ...input.current.state.sourcePins.history.videoSourceIds,
+        ...historyEntry.sourceReferences.videoSourceIds,
+    ]);
+    const historyAudioSourceIds = unique([
+        ...input.current.state.sourcePins.current.audioSourceIds,
+        ...input.current.state.sourcePins.history.audioSourceIds,
+        ...historyEntry.sourceReferences.audioSourceIds,
+    ]);
+    const historyTranscriptRecordIds = unique([
+        ...input.current.state.transcriptPins.durableRecordIds,
+        ...input.current.state.transcriptPins.historyRecordIds,
+        ...historyEntry.transcriptRecordIds,
+    ]);
+    const snapshot: EditorEngineSnapshot = {
+        projectId: before.projectId,
+        project,
+        manifest,
+        revisions,
+        history: {
+            past: history.past.map((entry) => structuredClone(entry.summary)),
+            future: [],
+            currentIndex: history.past.length,
+        },
+        assetReferences: {
+            videoSourceIds,
+            audioSourceIds,
+            transcriptRecordIds,
+        },
+    };
+    return wrapManagedSnapshot({
+        schemaVersion: MANAGED_CORE_STATE_VERSION,
+        snapshot,
+        history,
+        sessionState: {
+            sessionEpoch: revisions.sessionEpoch,
+            sessionRevision: revisions.sessionRevision,
+            eventSequence:
+                input.current.state.sessionState.eventSequence + 1,
+            projectName: project.name,
+            documentRevision: revisions.documentRevision,
+            audioGraphRevision: revisions.audioGraphRevision,
+            ...(revisions.narrativeRevision === undefined
+                ? {}
+                : { narrativeRevision: revisions.narrativeRevision }),
+        },
+        transaction: {
+            walTransactionId: `managed-project-import-${randomDigestId({
+                projectId: before.projectId,
+                sessionRevision: revisions.sessionRevision,
+            })}`,
+            preparedAt: occurredAt,
+            operationIds: ['project.import'],
+            fromDocumentRevision: before.revisions.documentRevision,
+            toDocumentRevision: revisions.documentRevision,
+        },
+        transcriptPins: {
+            durableRecordIds: transcriptRecordIds,
+            historyRecordIds: historyTranscriptRecordIds,
+            redoRecordIds: [],
+        },
+        sourcePins: {
+            current: { videoSourceIds, audioSourceIds },
+            history: {
+                videoSourceIds: historyVideoSourceIds,
+                audioSourceIds: historyAudioSourceIds,
+            },
             redo: { videoSourceIds: [], audioSourceIds: [] },
         },
     });
@@ -486,6 +633,25 @@ function validateManagedCoreState(state: ManagedCoreEditorState): void {
     ) {
         throw new Error('Managed Core editor state is invalid.');
     }
+}
+
+function omitEpoch(
+    revisions: EditorEngineSnapshot['revisions'],
+): Omit<EditorEngineSnapshot['revisions'], 'sessionEpoch'> {
+    const {
+        sessionEpoch: _sessionEpoch,
+        ...withoutEpoch
+    } = revisions;
+    void _sessionEpoch;
+    return withoutEpoch;
+}
+
+function unique(values: readonly string[]): string[] {
+    return Array.from(new Set(values));
+}
+
+function randomDigestId(value: unknown): string {
+    return canonicalDigest(value).slice(7, 39);
 }
 
 export function managedCoreStateDigest(state: ManagedCoreEditorState): string {

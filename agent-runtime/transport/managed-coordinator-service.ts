@@ -21,6 +21,7 @@ import {
 export interface ManagedCoordinatorServiceAuthority {
     readonly epoch: string;
     readonly diagnostics?: RuntimeDiagnostics;
+    readonly httpBridgeEndpoint?: { host: 'localhost'; port: 59941 };
     canGracefullyShutdown(): boolean;
     close(): Promise<void>;
 }
@@ -114,6 +115,9 @@ export class ManagedCoordinatorService {
                     pid: process.pid,
                     epoch: authority.epoch,
                     controlEndpoint: service.transport.endpoint,
+                    ...(authority.httpBridgeEndpoint
+                        ? { httpBridgeEndpoint: authority.httpBridgeEndpoint }
+                        : {}),
                     startedAt: new Date().toISOString(),
                 };
                 const path = discoveryPath(dataRoot);

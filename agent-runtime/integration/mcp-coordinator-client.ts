@@ -426,9 +426,11 @@ async function waitForAttachment(
             lastError = error;
             if (!isRetryableTransportFailure(error)) throw error;
         }
+        // This is the only live wait after the detached authority is unrefed.
+        // Keeping it referenced prevents a fresh stdio client from exiting
+        // before the private endpoint has been published.
         await new Promise((resolveDelay) => {
-            const timer = setTimeout(resolveDelay, delay);
-            timer.unref?.();
+            setTimeout(resolveDelay, delay);
         });
         delay = Math.min(250, delay * 2);
     }

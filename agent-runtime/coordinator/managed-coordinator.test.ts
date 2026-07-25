@@ -26,6 +26,14 @@ import type {
 } from './types';
 import type { EditorCommandFailure } from '../../src/lib/editor-engine';
 import { DurableJobScheduler } from '../jobs/durable-job-scheduler';
+import {
+    CoreEditorPortFactory,
+    createEmptyManagedCoreSnapshot,
+    createImportedManagedCoreSnapshot,
+    type ManagedCoreCommand,
+    type ManagedCoreEditorState,
+    type ManagedCoreResult,
+} from '../integration/core-editor-port';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
@@ -200,6 +208,113 @@ describe('ManagedCoordinator', () => {
             },
         });
         await recovered.close();
+    });
+
+    it('replays an atomically committed project import when recovery and post-commit adoption fail', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        let fired = false;
+        const coordinator = await ManagedCoordinator.start<
+            ManagedCoreEditorState,
+            ManagedCoreCommand,
+            ManagedCoreResult
+        >(runtime.path, new CoreEditorPortFactory(), {
+            persistenceFaultInjector: {
+                hit: (point) => {
+                    if (!fired && point === 'transaction:cleaned') {
+                        fired = true;
+                        throw new Error('lost project import response');
+                    }
+                },
+            },
+        });
+        const initial = createEmptyManagedCoreSnapshot(
+            'import-replay-project',
+            coordinator.epoch,
+            'Before import',
+        );
+        const created = await coordinator.createSession(
+            'Before import',
+            initial,
+            {
+                projectId: 'import-replay-project',
+                sessionId: 'import-replay-session',
+            },
+        );
+        const requestBody = {
+            apiVersion: '2026-07-25' as const,
+            sessionId: created.state.sessionId,
+            sessionEpoch: created.state.sessionEpoch,
+            expected: {
+                sessionRevision: created.state.sessionRevision,
+                documentRevision: created.state.documentRevision,
+                audioGraphRevision: created.state.audioGraphRevision,
+            },
+            idempotencyKey: 'import-replay-key',
+            toolName: 'waptions_project_import',
+        };
+        const request: ManagedMutationEnvelope = {
+            ...requestBody,
+            command: {},
+            canonicalRequestHash: canonicalDigest(requestBody),
+        };
+        const next = createImportedManagedCoreSnapshot({
+            current: initial,
+            manifest: initial.state.snapshot.manifest,
+            projectName: 'Imported project',
+        });
+        const accept = vi.fn(async () => {
+            throw new Error('process-local adoption failed');
+        });
+        const reject = vi.fn(async () => undefined);
+        const publication = {
+            nextEditor: next,
+            nextName: 'Imported project',
+            sourceRegistryAdditions: [],
+            writes: [{
+                relativePath: 'import-evidence/staged-source.json',
+                value: { retained: true },
+            }],
+            jobId: 'bundle-import:replay-test',
+            formatVersion: 4,
+            verify: vi.fn(async () => undefined),
+            accept,
+            reject,
+        };
+
+        const recovered =
+            await coordinator.publishProjectImportReceiptFirst(
+                'import-replay-project',
+                request,
+                publication,
+            );
+        expect(recovered).toMatchObject({
+            ok: true,
+            replayed: true,
+            warnings: expect.arrayContaining([
+                expect.stringMatching(/media authority needs recovery/u),
+            ]),
+        });
+        const replay = await coordinator.publishProjectImportReceiptFirst(
+            'import-replay-project',
+            request,
+            publication,
+        );
+        expect(replay).toMatchObject({
+            ok: true,
+            replayed: true,
+            data: recovered.ok ? recovered.data : undefined,
+        });
+        expect(accept).toHaveBeenCalledOnce();
+        expect(reject).not.toHaveBeenCalled();
+        expect(coordinator.jobs.get('bundle-import:replay-test')).toMatchObject({
+            state: 'succeeded',
+        });
+        expect(await coordinator.store.readNamespace(
+            'import-replay-project',
+            'import-evidence',
+        )).toEqual([{ retained: true }]);
+        await coordinator.close();
     });
 
     it('publishes a post-marker recovered event before any later event to active long-polls', async () => {

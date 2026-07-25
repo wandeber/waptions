@@ -112,14 +112,36 @@ test("managed runtime entries retain no dynamic imports", async () => {
       charset: "utf8",
       tsconfig: resolve(PROJECT_ROOT, "tsconfig.json"),
       external: ["node:*"],
+      metafile: true,
       logLevel: "silent",
     });
     const output = result.outputFiles.find((file) =>
       file.path.endsWith("static-node-runtime-entry.mjs"),
     );
     assert.ok(output, `${entryPoint} bundle was not emitted`);
-    assert.doesNotMatch(output.text, /\bimport\s*\(/u);
+    assert.deepEqual(dynamicImportEdges(result.metafile), []);
   }
+});
+
+test("static runtime detection rejects a real dynamic import edge", async () => {
+  const result = await build({
+    stdin: {
+      contents: 'await import("node:fs");',
+      resolveDir: PROJECT_ROOT,
+      sourcefile: "dynamic-import-fixture.ts",
+    },
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    write: false,
+    metafile: true,
+    external: ["node:*"],
+    logLevel: "silent",
+  });
+  assert.deepEqual(dynamicImportEdges(result.metafile), [
+    "stdin.js -> node:fs",
+  ]);
 });
 
 test("agent plugin build is deterministic and retains a static offline server graph", async () => {
@@ -134,13 +156,18 @@ test("agent plugin build is deterministic and retains a static offline server gr
     assert.deepEqual(await hashTree(first), await hashTree(second));
 
     const server = await readFile(resolve(first, "mcp/server.mjs"), "utf8");
-    assert.doesNotMatch(server, /\bimport\s*\(/u);
     assert.doesNotMatch(server, /WAPTIONS_RUNTIME_ADAPTER_MODULE/u);
     assert.doesNotMatch(server, /agent-runtime\/server\/stdio\.ts/u);
     assert.doesNotMatch(server, /CONTRACT_APP_RESOURCE/u);
     assert.doesNotMatch(
       server,
       /The Waptions editor UI package is not integrated/u,
+    );
+    assert.match(server, /--waptions-authority/u);
+    assert.match(server, /WAPTIONS_AGENT_DATA_DIR/u);
+    assert.match(
+      server,
+      /A native Windows named-pipe DACL verifier is required/u,
     );
 
     const manifest = JSON.parse(
@@ -217,4 +244,16 @@ function normalizeBuildInput(input) {
   return normalized.startsWith(rootPrefix)
     ? normalized.slice(rootPrefix.length)
     : normalized;
+}
+
+function dynamicImportEdges(metafile) {
+  const edges = [];
+  for (const [outputPath, output] of Object.entries(metafile.outputs)) {
+    for (const imported of output.imports ?? []) {
+      if (imported.kind === "dynamic-import") {
+        edges.push(`${normalizeBuildInput(outputPath)} -> ${imported.path}`);
+      }
+    }
+  }
+  return edges.sort();
 }

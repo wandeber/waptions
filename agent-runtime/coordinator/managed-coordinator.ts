@@ -205,12 +205,34 @@ export interface ManagedCoordinatorOptions<
      * `start()` can strand an interrupted job indefinitely.
      */
     registerJobHandlers?(scheduler: DurableJobScheduler): void | Promise<void>;
+    /**
+     * Runs after project WAL/grants are recovered but before any durable job
+     * can resume. Production uses it to restore path-free media catalogs.
+     */
+    beforeJobRecovery?(
+        coordinator: ManagedCoordinator<State, Command, Result>,
+        projectIds: readonly string[],
+    ): void | Promise<void>;
     persistenceFaultInjector?: PersistenceFaultInjector;
     decodedMemoryLimitBytes?: number;
     artifactQuotas?: ArtifactQuotaPolicy;
     sourceCopyQuotas?: SourceCopyQuotaPolicy;
     renderStagingQuotas?: RenderStagingQuotaPolicy;
     transcriptionPublicationAuthority?: ManagedTranscriptionPublicationAuthority<State>;
+    mediaCatalogPublicationAuthority?: ManagedMediaCatalogPublicationAuthority;
+}
+
+export interface ManagedMediaCatalogPublicationAuthority {
+    prepare(input: {
+        readonly projectId: string;
+        readonly sessionId: string;
+        readonly sessionEpoch: string;
+        readonly additions: readonly ManagedSourceRegistryRecord[];
+    }): Promise<{
+        readonly writes: readonly DurableWrite[];
+        accept?(): void | Promise<void>;
+        reject?(): void | Promise<void>;
+    }>;
 }
 
 export interface ManagedSessionOpenInput<State> {
@@ -239,6 +261,18 @@ export interface RegistryMutation<State, Result extends Record<string, unknown>>
     eventData?: ManagedEventData;
     afterCommit?(): void | Promise<void>;
     onReject?(): void | Promise<void>;
+}
+
+export interface ManagedProjectImportPublication<State> {
+    readonly nextEditor: ManagedEditorSnapshot<State>;
+    readonly nextName: string;
+    readonly sourceRegistryAdditions: readonly ManagedSourceRegistryRecord[];
+    readonly writes: readonly DurableWrite[];
+    readonly jobId: string;
+    readonly formatVersion: number;
+    verify(): void | Promise<void>;
+    accept?(): void | Promise<void>;
+    reject?(): void | Promise<void>;
 }
 
 type RegistryMutationFactory<State, Result extends Record<string, unknown>> = (
@@ -282,6 +316,8 @@ export class ManagedCoordinator<
     private readonly participantsByConnection = new Map<string, Set<string>>();
     private readonly connectionsByParticipant = new Map<string, Set<string>>();
     private transcriptionPublicationAuthority?: ManagedTranscriptionPublicationAuthority<State>;
+    private readonly mediaCatalogPublicationAuthority?:
+        ManagedMediaCatalogPublicationAuthority;
     private closed = false;
     private closing = false;
 
@@ -319,6 +355,8 @@ export class ManagedCoordinator<
             renderStagingQuotas: options.renderStagingQuotas,
         });
         this.transcriptionPublicationAuthority = options.transcriptionPublicationAuthority;
+        this.mediaCatalogPublicationAuthority =
+            options.mediaCatalogPublicationAuthority;
         this.decodedMemoryBudget = getProcessDecodedMemoryBudget(options.decodedMemoryLimitBytes);
         const externalTransition = options.scheduler?.onTransition;
         this.jobs = new DurableJobScheduler(store, this.diagnostics, {
@@ -377,6 +415,7 @@ export class ManagedCoordinator<
                         .map((source) => source.digest),
                 })),
             );
+            await options.beforeJobRecovery?.(coordinator, projectIds);
             await coordinator.jobs.recover(projectIds);
             return coordinator;
         } catch (error) {
@@ -1152,6 +1191,249 @@ export class ManagedCoordinator<
         });
     }
 
+    /**
+     * Receipt lookup used by capability-consuming adapters. It intentionally
+     * runs before the adapter opens any path or endpoint authority.
+     */
+    async replayMutationReceipt<ReceiptResult extends object>(
+        projectId: string,
+        request: ManagedMutationEnvelope,
+    ): Promise<ManagedMutationResult<ReceiptResult> | null> {
+        return this.serialized(projectId, () => (
+            this.resolveReceipt<ReceiptResult>(projectId, request)
+        ));
+    }
+
+    /**
+     * Publishes a fully validated project import as one Core head, source
+     * registry, completed durable job, receipt and ordered event transaction.
+     * Imported byte streams must already be staged behind `publication.writes`.
+     */
+    async publishProjectImportReceiptFirst(
+        projectId: string,
+        request: ManagedMutationEnvelope,
+        publication: ManagedProjectImportPublication<State>,
+    ): Promise<ManagedMutationResult<{ readonly job: DurableJobRecord }>> {
+        return this.serialized(projectId, async () => {
+            let loaded = this.requireProject(projectId);
+            let committed = false;
+            try {
+                const replay = await this.resolveReceipt<{
+                    readonly job: DurableJobRecord;
+                }>(projectId, request);
+                if (replay) return replay;
+                loaded = this.requireProject(projectId);
+                this.validateNewMutation(loaded.envelope, request);
+                validateEditorSnapshot(publication.nextEditor);
+                const importedHead = embeddedCoreHead(publication.nextEditor);
+                if (
+                    !importedHead
+                    || importedHead.projectId !== projectId
+                    || importedHead.revisions.sessionEpoch !== this.epoch
+                    || importedHead.revisions.sessionRevision
+                        !== loaded.envelope.sessionRevision + 1
+                ) {
+                    throw managedError(
+                        'INVALID_REQUEST',
+                        'The imported Core head does not extend the live project.',
+                    );
+                }
+                const sourceRegistry = mergeImportedSourceRegistry(
+                    loaded.envelope.sourceRegistry,
+                    publication.sourceRegistryAdditions,
+                );
+                if (
+                    publication.nextEditor.reachableSourceIds.some(
+                        (sourceId) => !sourceRegistry.some((source) => (
+                            source.sourceId === sourceId
+                            && source.releasedAt === undefined
+                        )),
+                    )
+                ) {
+                    throw managedError(
+                        'SOURCE_CHANGED',
+                        'The imported Core head has no retained source authority.',
+                        true,
+                    );
+                }
+                await publication.verify();
+                const now = new Date().toISOString();
+                const capturedState = this.stateToken(loaded.envelope);
+                const job: DurableJobRecord = {
+                    schemaVersion: 1,
+                    jobId: publication.jobId,
+                    projectId,
+                    kind: 'bundle-import',
+                    input: {
+                        schemaVersion: 1,
+                        formatVersion: publication.formatVersion,
+                        sourceIds: publication.sourceRegistryAdditions.map(
+                            (source) => source.sourceId,
+                        ),
+                    },
+                    inputDigest: request.canonicalRequestHash,
+                    capturedState,
+                    sequence: 1,
+                    state: 'succeeded',
+                    stage: 'complete',
+                    fraction: 1,
+                    result: {
+                        schemaVersion: 1,
+                        formatVersion: publication.formatVersion,
+                        sourceIds: publication.sourceRegistryAdditions.map(
+                            (source) => source.sourceId,
+                        ),
+                    },
+                    resultArtifactIds: [],
+                    cancellable: false,
+                    resumable: false,
+                    createdAt: now,
+                    startedAt: now,
+                    updatedAt: now,
+                    finishedAt: now,
+                };
+                const result = { job };
+                const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
+                    ...loaded.envelope,
+                    name:
+                        publication.nextName.trim().slice(0, 200)
+                        || loaded.envelope.name,
+                    sessionRevision: importedHead.revisions.sessionRevision,
+                    editor: structuredClone(publication.nextEditor),
+                    sourceRegistry,
+                    sourceRegistryRevision:
+                        loaded.envelope.sourceRegistryRevision
+                        + (publication.sourceRegistryAdditions.length > 0 ? 1 : 0),
+                    receiptRevision: loaded.envelope.receiptRevision + 1,
+                    jobRevision: loaded.envelope.jobRevision + 1,
+                    eventSequence: loaded.envelope.eventSequence + 2,
+                    updatedAt: now,
+                    lastCoordinatorEpoch: this.epoch,
+                };
+                const projectEvent = this.createEvent(
+                    {
+                        ...nextEnvelope,
+                        eventSequence: loaded.envelope.eventSequence + 1,
+                    },
+                    'project.mutated',
+                    {
+                        commandId: publication.jobId,
+                        historyEntryId:
+                            importedHead.history.past.at(-1)?.id,
+                        operationIds: ['project.import'],
+                        affectedIds: uniqueImportedGraphIds(
+                            loaded.envelope.editor,
+                            publication.nextEditor,
+                        ),
+                    },
+                );
+                const jobEvent = this.createEvent(
+                    nextEnvelope,
+                    'job.changed',
+                    jobEventData(job),
+                );
+                const receipt = this.createReceipt(
+                    projectId,
+                    request,
+                    result,
+                    nextEnvelope.sessionRevision,
+                    nextEnvelope.editor.reachableSourceIds,
+                );
+                await this.commit(loaded, nextEnvelope, [
+                    ...publication.writes,
+                    {
+                        relativePath: `jobs/${job.jobId}.json`,
+                        value: job,
+                    },
+                    this.store.receiptWrite(receipt),
+                    this.events.write(projectEvent),
+                    this.events.write(jobEvent),
+                    ...await this.store.receiptRetentionDeletes(projectId),
+                    ...await this.events.retentionDeletes(projectId),
+                ]);
+                committed = true;
+                try {
+                    await loaded.port.hydrate(publication.nextEditor);
+                } catch {
+                    loaded.poisoned = true;
+                }
+                this.events.publish(projectEvent);
+                this.events.publish(jobEvent);
+                const warnings = loaded.poisoned
+                    ? [
+                        'The live editor requires recovery after the imported head committed.',
+                    ]
+                    : [];
+                try {
+                    this.jobs.acceptPublishedTerminal(job);
+                } catch {
+                    warnings.push(
+                        'The project import is durable but its in-memory job projection needs recovery.',
+                    );
+                }
+                try {
+                    await Promise.resolve(publication.accept?.());
+                } catch {
+                    warnings.push(
+                        'The project import is durable but its process-local media authority needs recovery.',
+                    );
+                }
+                return {
+                    ok: true,
+                    data: result,
+                    state: this.stateToken(nextEnvelope),
+                    committedState: this.stateToken(nextEnvelope),
+                    warnings,
+                    replayed: false,
+                };
+            } catch (error) {
+                if (!committed && loaded.poisoned) {
+                    await this.recoverPoisonedProject(projectId, loaded)
+                        .catch(() => undefined);
+                    const recovered = await this.resolveReceipt<{
+                        readonly job: DurableJobRecord;
+                    }>(projectId, request).catch(() => null);
+                    if (recovered) {
+                        if (recovered.ok) {
+                            try {
+                                this.jobs.acceptPublishedTerminal(
+                                    recovered.data.job,
+                                );
+                            } catch {
+                                recovered.warnings = [
+                                    ...recovered.warnings,
+                                    'The project import is durable but its in-memory job projection needs recovery.',
+                                ];
+                            }
+                        }
+                        try {
+                            await Promise.resolve(publication.accept?.());
+                        } catch {
+                            if (recovered.ok) {
+                                recovered.warnings = [
+                                    ...recovered.warnings,
+                                    'The project import is durable but its process-local media authority needs recovery.',
+                                ];
+                            }
+                        }
+                        return recovered;
+                    }
+                }
+                if (!committed) {
+                    await Promise.resolve(publication.reject?.())
+                        .catch(() => undefined);
+                }
+                return {
+                    ok: false,
+                    error: asManagedRuntimeError(error).toJSON(),
+                    ...(loaded
+                        ? { state: this.stateToken(loaded.envelope) }
+                        : {}),
+                };
+            }
+        });
+    }
+
     async grantPath(
         projectId: string,
         request: ManagedMutationEnvelope,
@@ -1742,6 +2024,31 @@ export class ManagedCoordinator<
                 input,
             )
             : null;
+        const preparedMediaCatalog = additions.length > 0
+            ? await this.mediaCatalogPublicationAuthority?.prepare({
+                projectId,
+                sessionId: loaded.envelope.sessionId,
+                sessionEpoch: this.epoch,
+                additions,
+            })
+            : undefined;
+        if (preparedMediaCatalog) {
+            const paths = new Set<string>();
+            for (const write of preparedMediaCatalog.writes) {
+                if (
+                    !write.relativePath.startsWith('media/catalog/')
+                    || paths.has(write.relativePath)
+                ) {
+                    await Promise.resolve(preparedMediaCatalog.reject?.())
+                        .catch(() => undefined);
+                    throw managedError(
+                        'INVALID_REQUEST',
+                        'Managed media publication produced an invalid durable write set.',
+                    );
+                }
+                paths.add(write.relativePath);
+            }
+        }
         // The probe handle is not durable authority. Reopen each retained private source copy and
         // verify its immutable digest immediately before the single Core WAL transaction.
         const retainedHandles: VerifiedReadHandle[] = [];
@@ -1771,6 +2078,7 @@ export class ManagedCoordinator<
             }
             await this.commit(loaded, nextEnvelope, [
                 ...(preparedTranscription?.writes ?? []),
+                ...(preparedMediaCatalog?.writes ?? []),
                 {
                     relativePath: `core/commit-evidence/${
                         (nextEnvelope.receiptRevision % CORE_COMMIT_EVIDENCE_SLOTS)
@@ -1792,6 +2100,10 @@ export class ManagedCoordinator<
                 this.pendingTranscriptionPublications.delete(projectId);
                 await Promise.resolve(preparedTranscription.reject?.()).catch(() => undefined);
             }
+            if (preparedMediaCatalog && !loaded.poisoned) {
+                await Promise.resolve(preparedMediaCatalog.reject?.())
+                    .catch(() => undefined);
+            }
             throw error;
         } finally {
             await Promise.allSettled(retainedHandles.map((handle) => handle.close()));
@@ -1803,6 +2115,8 @@ export class ManagedCoordinator<
             this.pendingTranscriptionPublications.delete(projectId);
             await Promise.resolve(preparedTranscription.accept?.()).catch(() => undefined);
         }
+        await Promise.resolve(preparedMediaCatalog?.accept?.())
+            .catch(() => undefined);
         if (event && input.event) {
             this.pendingCoreEvents.set(projectId, {
                 coreEventId: input.event.id,
@@ -1883,6 +2197,7 @@ export class ManagedCoordinator<
             const artifacts = terminalPublication?.artifacts ?? [];
             const outputs = terminalPublication?.outputs ?? [];
             const transcription = terminalPublication?.transcription;
+            const exportEvents = terminalPublication?.exportEvents ?? [];
             const transcriptionArtifacts = transcription?.stagedArtifacts ?? [];
             const allArtifacts = [...artifacts, ...transcriptionArtifacts];
             let preparedManagedTranscription: PreparedManagedTranscriptionPublication | null = null;
@@ -1954,6 +2269,12 @@ export class ManagedCoordinator<
                     'Terminal publications do not belong to the durable job project.',
                 );
             }
+            validateTerminalExportEvents(
+                record,
+                exportEvents,
+                artifacts,
+                outputs,
+            );
             const coverageWrites = transcription
                 ? transcription.preparedCoverageUpdates.flatMap(
                     (coverage) => coverage.durableWrites(),
@@ -2056,6 +2377,7 @@ export class ManagedCoordinator<
                 ...coverageWrites,
             ];
             const coreEventCount = coreCommit?.event ? 1 : 0;
+            const exportArtifactEventCount = exportEvents.length > 0 ? 1 : 0;
             const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
                 ...loaded.envelope,
                 name: coreCommit?.sessionState.projectName ?? loaded.envelope.name,
@@ -2065,7 +2387,10 @@ export class ManagedCoordinator<
                 jobRevision: loaded.envelope.jobRevision + 1,
                 artifactRevision: loaded.envelope.artifactRevision
                     + (allArtifacts.length > 0 ? 1 : 0),
-                eventSequence: loaded.envelope.eventSequence + coreEventCount + 1,
+                eventSequence: loaded.envelope.eventSequence
+                    + coreEventCount
+                    + exportArtifactEventCount
+                    + 1,
                 editor: nextEditorSnapshot ?? loaded.envelope.editor,
                 updatedAt: new Date().toISOString(),
             };
@@ -2077,6 +2402,20 @@ export class ManagedCoordinator<
                     eventSequence: loaded.envelope.eventSequence + 1,
                 }, coreCommit);
             }
+            const exportArtifactEvent = exportEvents.length > 0
+                ? this.createEvent({
+                    ...nextEnvelope,
+                    eventSequence: loaded.envelope.eventSequence
+                        + coreEventCount
+                        + 1,
+                }, 'artifact.created', {
+                    artifactId: artifacts[0]!.record.artifactId,
+                    jobId: record.jobId,
+                    kind: artifacts[0]!.record.kind,
+                    contentDigest: artifacts[0]!.record.digest,
+                    byteLength: artifacts[0]!.record.byteLength,
+                })
+                : null;
             const event = this.createEvent(nextEnvelope, 'job.changed', jobEventData(record));
             let committed = false;
             try {
@@ -2103,6 +2442,9 @@ export class ManagedCoordinator<
                         value: record,
                     },
                     ...(coreEvent ? [this.events.write(coreEvent)] : []),
+                    ...(exportArtifactEvent
+                        ? [this.events.write(exportArtifactEvent)]
+                        : []),
                     this.events.write(event),
                     ...(coreReceipt
                         ? await this.store.receiptRetentionDeletes(record.projectId)
@@ -2118,11 +2460,17 @@ export class ManagedCoordinator<
                     }
                 }
                 if (coreEvent) this.events.publish(coreEvent);
+                if (exportArtifactEvent) {
+                    this.events.publish(exportArtifactEvent);
+                }
                 this.events.publish(event);
                 await acceptPublications();
             } catch (error) {
                 if (committed) {
                     if (coreEvent) this.events.publish(coreEvent);
+                    if (exportArtifactEvent) {
+                        this.events.publish(exportArtifactEvent);
+                    }
                     this.events.publish(event);
                     await acceptPublications();
                     return;
@@ -3243,6 +3591,62 @@ function affectedGraphIds(
         .slice(0, 1_024);
 }
 
+function mergeImportedSourceRegistry(
+    current: readonly ManagedSourceRegistryRecord[],
+    additions: readonly ManagedSourceRegistryRecord[],
+): ManagedSourceRegistryRecord[] {
+    const merged = current.map((source) => structuredClone(source));
+    const byId = new Map(merged.map((source) => [source.sourceId, source]));
+    const additionsSeen = new Set<string>();
+    for (const addition of additions) {
+        if (additionsSeen.has(addition.sourceId)) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The imported source registry contains a duplicate source.',
+            );
+        }
+        additionsSeen.add(addition.sourceId);
+        const existing = byId.get(addition.sourceId);
+        if (existing) {
+            if (
+                existing.releasedAt !== undefined
+                || existing.digest !== addition.digest
+                || existing.byteLength !== addition.byteLength
+                || existing.immutableVersion !== addition.immutableVersion
+                || existing.streamSignature !== addition.streamSignature
+            ) {
+                throw managedError(
+                    'SOURCE_CHANGED',
+                    'An imported source conflicts with retained project authority.',
+                    true,
+                );
+            }
+            continue;
+        }
+        const cloned = structuredClone(addition);
+        merged.push(cloned);
+        byId.set(cloned.sourceId, cloned);
+    }
+    return merged;
+}
+
+function uniqueImportedGraphIds<State>(
+    previous: ManagedEditorSnapshot<State>,
+    next: ManagedEditorSnapshot<State>,
+): string[] {
+    const previousHead = embeddedCoreHead(previous);
+    const nextHead = embeddedCoreHead(next);
+    if (previousHead && nextHead) {
+        return affectedGraphIds(previousHead, nextHead);
+    }
+    return Array.from(new Set([
+        ...previous.reachableSourceIds,
+        ...next.reachableSourceIds,
+        ...previous.transcriptRecordIds,
+        ...next.transcriptRecordIds,
+    ])).sort();
+}
+
 function isCoreFailure(value: unknown): value is {
     ok: false;
     error: {
@@ -3350,6 +3754,47 @@ function validateStringSet(values: readonly string[], label: string): void {
     }
     if (values.some((value) => !value || value.length > 200)) {
         throw managedError('INVALID_REQUEST', `An editor ${label} identifier is invalid.`);
+    }
+}
+
+function validateTerminalExportEvents(
+    record: DurableJobRecord,
+    events: readonly {
+        readonly type: 'artifact.created' | 'job.changed';
+        readonly data: Readonly<Record<string, unknown>>;
+    }[],
+    artifacts: readonly { readonly record: ArtifactRecord }[],
+    outputs: readonly { readonly record: OutputPublicationRecord }[],
+): void {
+    if (events.length === 0) return;
+    const artifact = artifacts[0]?.record;
+    const output = outputs[0]?.record;
+    const created = events[0];
+    const changed = events[1];
+    if (
+        record.state !== 'succeeded'
+        || events.length !== 2
+        || artifacts.length !== 1
+        || outputs.length !== 1
+        || !artifact
+        || !output
+        || created?.type !== 'artifact.created'
+        || changed?.type !== 'job.changed'
+        || created.data.artifactId !== artifact.artifactId
+        || created.data.contentDigest !== artifact.digest
+        || created.data.byteLength !== artifact.byteLength
+        || changed.data.jobId !== record.jobId
+        || changed.data.artifactId !== artifact.artifactId
+        || changed.data.contentDigest !== artifact.digest
+        || changed.data.byteLength !== artifact.byteLength
+        || created.data.outputId !== changed.data.outputId
+        || output.digest !== artifact.digest
+        || output.byteLength !== artifact.byteLength
+    ) {
+        throw managedError(
+            'INVALID_REQUEST',
+            'Terminal export event evidence does not match its job publication.',
+        );
     }
 }
 

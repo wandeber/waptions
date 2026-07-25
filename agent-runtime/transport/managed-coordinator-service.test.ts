@@ -15,6 +15,34 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
 
 describe('ManagedCoordinatorService', () => {
+    it('publishes the private HTTP bridge endpoint from the authority', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(
+            runtime.path,
+            fakeEditorPortFactory,
+        );
+        const authority = Object.assign(coordinator, {
+            httpBridgeEndpoint: {
+                host: 'localhost' as const,
+                port: 59941 as const,
+            },
+        });
+        const service = await ManagedCoordinatorService.start(
+            runtime.path,
+            authority,
+            async () => ({ ok: true }),
+        );
+
+        const attachment = await attachManagedCoordinator(runtime.path);
+        expect(attachment.discovery.httpBridgeEndpoint).toEqual({
+            host: 'localhost',
+            port: 59941,
+        });
+        attachment.client.close();
+        await service.close();
+    });
+
     it('remains authoritative after an stdio-style client disconnect and accepts a reconnect', async () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);

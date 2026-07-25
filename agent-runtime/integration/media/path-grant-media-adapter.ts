@@ -137,6 +137,24 @@ export class PathGrantMediaAdapter implements
         return value ? structuredClone(value) : undefined;
     }
 
+    getCatalogRecord(
+        sourceId: string,
+    ): ManagedMediaCatalogRecord | undefined {
+        const value = this.catalogBySource.get(sourceId);
+        return value ? structuredClone(value) : undefined;
+    }
+
+    grantIdForSource(sourceId: string): string {
+        const record = this.catalogBySource.get(sourceId);
+        if (!record) {
+            throw new ManagedMediaError(
+                'SOURCE_UNREADABLE',
+                'Managed media source was not found in the capability catalog.',
+            );
+        }
+        return this.requireCapability(record.handle.capabilityId).grantId;
+    }
+
     markCommitted(sourceIds: readonly string[]): void {
         if (sourceIds.length === 0 || new Set(sourceIds).size !== sourceIds.length) {
             throw new ManagedMediaError(

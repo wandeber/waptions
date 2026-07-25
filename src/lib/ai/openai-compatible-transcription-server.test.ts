@@ -3,7 +3,7 @@ import {
     assertServerTranscriptionEndpointAllowed,
     assertServerTranscriptionEndpointNetworkAllowedWithResolver,
     isBlockedNetworkAddress,
-} from './openai-compatible-transcription-server';
+} from './openai-compatible-transcription-policy';
 
 const ALLOWLIST_ENV = 'OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS';
 

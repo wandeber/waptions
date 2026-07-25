@@ -62,7 +62,13 @@ export type DurableJobEnqueueInput<Input = unknown> = Omit<
     DurableJobRecord<Input>,
     'schemaVersion' | 'jobId' | 'sequence' | 'state' | 'stage' | 'resultArtifactIds'
     | 'createdAt' | 'updatedAt'
->;
+> & {
+    /**
+     * Composition may pre-bind an opaque ID when the durable input and output
+     * protocol must reference the scheduler record itself.
+     */
+    jobId?: string;
+};
 
 export interface DurableJobTerminalCommitCapability {
     readonly capabilityId: string;
@@ -110,6 +116,15 @@ export interface DurableJobTerminalPublication {
     artifacts: readonly StagedArtifact[];
     outputs?: readonly StagedOutputPublication[];
     transcription?: DurableJobTerminalTranscriptionPublication;
+    /**
+     * Internal export evidence. The coordinator validates and projects these
+     * records into canonical artifact.created/job.changed events in the same
+     * terminal transaction; they are never published verbatim.
+     */
+    exportEvents?: readonly {
+        readonly type: 'artifact.created' | 'job.changed';
+        readonly data: Readonly<Record<string, unknown>>;
+    }[];
 }
 
 export interface JobExecutionContext<Checkpoint> {
@@ -229,11 +244,27 @@ export class DurableJobScheduler {
         }
         this.handlers.get(record.kind)?.validateInput?.(record.input);
         validateJobValue(record.input, 'job input', 512 * 1024);
+        const requestedJobId = record.jobId;
+        if (
+            requestedJobId !== undefined
+            && (
+                requestedJobId.length === 0
+                || requestedJobId.length > 128
+                || !/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(requestedJobId)
+            )
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The requested durable job identifier is invalid.',
+            );
+        }
+        const { jobId: _requestedJobId, ...durableRecord } = record;
+        void _requestedJobId;
         const now = new Date().toISOString();
         const job: DurableJobRecord<Input> = {
-            ...record,
+            ...durableRecord,
             schemaVersion: 1,
-            jobId: randomUUID(),
+            jobId: requestedJobId ?? randomUUID(),
             sequence: 1,
             state: 'queued',
             stage: 'queued',
@@ -262,6 +293,35 @@ export class DurableJobScheduler {
         await this.notify(job);
         this.refreshDiagnostics();
         void this.drain();
+    }
+
+    /**
+     * Adopts a terminal record that was already persisted by a wider atomic
+     * coordinator transaction. This deliberately emits no transition and
+     * performs no write: the owning transaction published both already.
+     */
+    acceptPublishedTerminal(job: DurableJobRecord): void {
+        if (this.closed) throw new Error('The job scheduler is closed.');
+        if (!TERMINAL.has(job.state)) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'Only terminal jobs can be adopted after atomic publication.',
+            );
+        }
+        validateJobValue(job, 'job record', MANAGED_JOB_JSON_MAX_BYTES);
+        const existing = this.jobs.get(job.jobId);
+        if (
+            existing
+            && canonicalJson(existing, MANAGED_JOB_JSON_MAX_BYTES)
+                !== canonicalJson(job, MANAGED_JOB_JSON_MAX_BYTES)
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The published durable job conflicts with the live scheduler.',
+            );
+        }
+        this.jobs.set(job.jobId, job);
+        this.refreshDiagnostics();
     }
 
     get(jobId: string): DurableJobRecord | null {
@@ -628,6 +688,7 @@ function validateTerminalPublication(
             publication.artifacts.length === 0
             && (publication.outputs?.length ?? 0) === 0
             && publication.transcription === undefined
+            && (publication.exportEvents?.length ?? 0) === 0
         )
         || publication.artifacts.length > 64
         || (publication.outputs?.length ?? 0) > 16
@@ -639,6 +700,7 @@ function validateTerminalPublication(
             !output.record.publicationId
             || !output.record.sessionId
         ))
+        || (publication.exportEvents?.length ?? 0) > 2
     ) {
         throw managedError('INVALID_REQUEST', 'The terminal publication is invalid.');
     }
@@ -652,6 +714,19 @@ function validateTerminalPublication(
             'INVALID_REQUEST',
             'Terminal artifact identifiers do not match the staged publication.',
         );
+    }
+    if (publication.exportEvents) {
+        canonicalJson(publication.exportEvents, 64 * 1024);
+        if (
+            publication.exportEvents.length !== 2
+            || publication.exportEvents[0]?.type !== 'artifact.created'
+            || publication.exportEvents[1]?.type !== 'job.changed'
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'Terminal export events are invalid or out of order.',
+            );
+        }
     }
     validateTerminalTranscriptionPublication(publication.transcription);
 }
