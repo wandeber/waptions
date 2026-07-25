@@ -32,6 +32,50 @@ afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())
 type FakeCoreFailure = EditorCommandFailure & Record<string, unknown>;
 
 describe('ManagedCoordinator', () => {
+    it('creates and replays session_open from the durable receipt before project guards', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const first = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
+        const input = {
+            apiVersion: '2026-07-25' as const,
+            action: 'create' as const,
+            projectId: 'bootstrap-project',
+            idempotencyKey: 'bootstrap-request',
+            canonicalRequestHash: `sha256:${'b'.repeat(64)}`,
+            name: 'Bootstrap project',
+            initialSnapshot: fakeProjectSnapshot('bootstrap-project'),
+        };
+
+        const created = await first.openSessionReceiptFirst(input);
+        expect(created).toMatchObject({
+            ok: true,
+            replayed: false,
+            data: { action: 'create', created: true, recovered: false },
+        });
+        if (!created.ok) throw new Error('Session creation failed.');
+        await first.close();
+
+        const restarted = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
+        const replay = await restarted.openSessionReceiptFirst(input);
+        expect(replay).toMatchObject({
+            ok: true,
+            replayed: true,
+            data: {
+                participantId: created.data.participantId,
+                project: { projectId: 'bootstrap-project' },
+            },
+        });
+        const conflict = await restarted.openSessionReceiptFirst({
+            ...input,
+            canonicalRequestHash: `sha256:${'c'.repeat(64)}`,
+        });
+        expect(conflict).toMatchObject({
+            ok: false,
+            error: { code: 'IDEMPOTENCY_KEY_CONFLICT' },
+        });
+        await restarted.close();
+    });
+
     it('enforces one coordinator authority per data root', async () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
