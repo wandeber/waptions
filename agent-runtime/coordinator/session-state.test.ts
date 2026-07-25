@@ -56,7 +56,6 @@ describe('managed session state', () => {
                 (sourceId) => ({
                     sourceId,
                     immutableVersion: 'v1',
-                    readGrantId: `grant-${sourceId}`,
                     byteLength: 1,
                     digest: `sha256:${sourceId}`,
                     streamSignature: `stream:${sourceId}`,
