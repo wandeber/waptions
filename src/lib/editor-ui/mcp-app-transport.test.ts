@@ -421,6 +421,58 @@ describe('createMcpAppTransport', () => {
     expect(bridge.requests).toEqual([]);
   });
 
+  it('learns the playback revision from a typed conflict and retries once', async () => {
+    const bridge = new MockBridge();
+    const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
+    snapshot.stateToken = state;
+    bridge.responses.push(
+      {
+        structuredContent: {
+          ok: false,
+          error: {
+            code: 'REVISION_CONFLICT',
+            message: 'Playback changed.',
+            retryable: true,
+            details: {
+              domain: 'playback',
+              expectedRevision: 0,
+              actualRevision: 7,
+            },
+          },
+          state,
+        },
+      },
+      success({
+        playbackRevision: 8,
+        playing: true,
+        playheadFrame: 0,
+        rate: 1,
+        masterVolume: 1,
+        masterMuted: false,
+        followingPresenter: false,
+      }),
+    );
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+      initialSnapshot: snapshot,
+    });
+
+    await expect(transport.execute({
+      commandId: 'play-after-attach',
+      command: { type: 'playback.play' },
+      expected,
+    })).resolves.toMatchObject({
+      ok: true,
+      stateToken: state,
+    });
+    expect(bridge.requests.map((request) => (
+      request.params as { arguments: Record<string, unknown> }
+    ).arguments.expectedPlaybackRevision)).toEqual([0, 7]);
+    expectCanonicalToolInputs(bridge.requests);
+  });
+
   it('maps canonical failures and event pages', async () => {
     const bridge = new MockBridge();
     const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });

@@ -145,6 +145,20 @@ const isPlaybackData = (value: unknown): value is McpPlaybackData => (
   && typeof value.followingPresenter === 'boolean'
 );
 
+const playbackConflictRevision = (
+  envelope: McpToolEnvelope<Record<string, unknown>>,
+): number | null => {
+  if (envelope.ok
+    || envelope.error.code !== 'REVISION_CONFLICT'
+    || envelope.error.details?.domain !== 'playback') return null;
+  const revision = envelope.error.details.actualRevision;
+  return typeof revision === 'number'
+    && Number.isSafeInteger(revision)
+    && revision >= 0
+    ? revision
+    : null;
+};
+
 const coreOperationId = (commandId: string): string => {
   const encoded = Array.from(commandId, (character) => (
     /^[A-Za-z0-9_-]$/.test(character)
@@ -477,12 +491,34 @@ export function createMcpAppTransport(
           stateToken: latestSnapshot.stateToken,
         };
       }
-      const result = await callTool(
-        commandTool(route, mapping),
+      const toolName = commandTool(route, mapping);
+      let result = await callTool(
+        toolName,
         routeArguments(request, route),
         signal,
       );
-      const envelope = requiredEnvelope<Record<string, unknown>>(result);
+      let envelope = requiredEnvelope<Record<string, unknown>>(result);
+      const actualPlaybackRevision = route.tool === 'playback'
+        ? playbackConflictRevision(envelope)
+        : null;
+      if (route.tool === 'playback' && actualPlaybackRevision !== null) {
+        // Playback has no read tool in the frozen protocol. A freshly attached App learns the
+        // current independent revision from the typed conflict and retries the same semantic
+        // command once; failed guards have not created a durable receipt.
+        latestSnapshot = {
+          ...latestSnapshot,
+          playback: {
+            ...latestSnapshot.playback,
+            revision: actualPlaybackRevision,
+          },
+        };
+        result = await callTool(
+          toolName,
+          routeArguments(request, route),
+          signal,
+        );
+        envelope = requiredEnvelope<Record<string, unknown>>(result);
+      }
       if (!envelope.ok) return normalizeMcpFailure(envelope, request.commandId);
       const stateToken = envelope.committedState ?? envelope.state;
       const viewData = route.tool === 'view' && isRecord(envelope.data.view)
