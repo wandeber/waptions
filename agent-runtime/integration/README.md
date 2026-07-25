@@ -119,6 +119,16 @@ reference snapshots and proof records are canonical, digested, path-free project
 Reference manifests omit provider extension records, and proof evidence records use versioned
 closed field allowlists so an innocent-looking extension key cannot carry endpoint or secret data.
 
+### Project import
+
+`project-import/ManagedProjectImportService` is an unbound delegated handler for
+`waptions_project_import`. It resolves `bundle-path` and `manifest-path` only through a verified
+read grant, accepts descriptor-only `inline-manifest` input, and keeps source paths inside a
+lease-backed ZIP reader. The injected receipt authority checks replay before opening a grant, then
+publishes only a fully verified proposal through Core's receipt-first transaction. See
+[`project-import/README.md`](./project-import/README.md) for its bounded container and provenance
+rules.
+
 ### Artifact access
 
 `ManagedArtifactAccessAdapter` exposes metadata and bounded ranges. The HTTP bridge capability
