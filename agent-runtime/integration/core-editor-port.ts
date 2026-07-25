@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
     createEditorEngine,
+    EditorCommandError,
     type EditorAssetHydration,
     type EditorCommandBatchRequest,
     type EditorCommandPlan,
@@ -50,6 +51,21 @@ export type ManagedCoreResult =
     | EditorCommandPlan
     | EditorCommandResult
     | EditorMediaImportResult;
+
+export interface ManagedCoreAssetAuthorityRequest {
+    readonly projectId: string;
+    readonly head: ManagedEditorSnapshot<ManagedCoreEditorState>;
+    readonly videoSourceIds: readonly string[];
+    readonly audioSourceIds: readonly string[];
+}
+
+/**
+ * Resolves retained media from the exact durable authority for the current managed project head.
+ * Implementations must reject missing or changed immutable identities instead of synthesizing one.
+ */
+export interface ManagedCoreAssetAuthority {
+    resolve(request: ManagedCoreAssetAuthorityRequest): Promise<EditorAssetHydration>;
+}
 
 export function createEmptyManagedCoreSnapshot(
     projectId: string,
@@ -109,12 +125,14 @@ export class CoreEditorPortFactory implements ManagedEditorPortFactory<
     ManagedCoreCommand,
     ManagedCoreResult
 > {
+    constructor(private readonly assetAuthority?: ManagedCoreAssetAuthority) {}
+
     async create(
         snapshot: ManagedEditorSnapshot<ManagedCoreEditorState>,
         persistence: EditorPersistencePort,
         publication: ManagedEditorPublicationPort,
     ): Promise<ManagedEditorPort<ManagedCoreEditorState, ManagedCoreCommand, ManagedCoreResult>> {
-        return new CoreEditorPort(snapshot, persistence, publication);
+        return new CoreEditorPort(snapshot, persistence, publication, this.assetAuthority);
     }
 }
 
@@ -131,6 +149,7 @@ class CoreEditorPort implements ManagedEditorPort<
         initial: ManagedEditorSnapshot<ManagedCoreEditorState>,
         private readonly persistence: EditorPersistencePort,
         private readonly publication: ManagedEditorPublicationPort,
+        private readonly assetAuthority?: ManagedCoreAssetAuthority,
     ) {
         this.managed = structuredClone(initial);
         this.engine = this.createEngine(initial.state);
@@ -201,7 +220,7 @@ class CoreEditorPort implements ManagedEditorPort<
             transaction: structuredClone(commit.transaction),
             transcriptPins: structuredClone(commit.transcriptPins),
             sourcePins: structuredClone(commit.sourcePins),
-        }, commit);
+        });
     }
 
     resultFromReceipt(
@@ -256,10 +275,7 @@ class CoreEditorPort implements ManagedEditorPort<
                     commit: (commit) => this.commitFromCore(commit),
                 },
                 assets: {
-                    hydrate: async (request) => syntheticAssetHydration(
-                        state.snapshot.manifest,
-                        request,
-                    ),
+                    hydrate: (request) => this.resolveAssetHydration(request),
                 },
                 transcripts: {
                     hydrate: async () => ({} as ResolvedEditorialTranscriptMapV1),
@@ -273,6 +289,25 @@ class CoreEditorPort implements ManagedEditorPort<
                 ids: new StableManagedEditorIdGenerator(`managed-${projectId}`),
                 events: { emit: (event) => this.publication.publish(event) },
             },
+        });
+    }
+
+    private async resolveAssetHydration(request: {
+        videoSourceIds: readonly string[];
+        audioSourceIds: readonly string[];
+    }): Promise<EditorAssetHydration> {
+        if (!this.assetAuthority) {
+            throw new EditorCommandError(
+                'COORDINATOR_UNAVAILABLE',
+                'Managed media hydration requires a project-scoped source authority.',
+            );
+        }
+        const head = this.snapshot();
+        return this.assetAuthority.resolve({
+            projectId: head.state.snapshot.projectId,
+            head,
+            videoSourceIds: [...request.videoSourceIds],
+            audioSourceIds: [...request.audioSourceIds],
         });
     }
 
@@ -335,28 +370,23 @@ function createEmptyManifest(): EditorManifestV4 {
 
 function wrapManagedSnapshot(
     state: ManagedCoreEditorState,
-    commit?: EditorPersistenceCommit,
 ): ManagedEditorSnapshot<ManagedCoreEditorState> {
-    const reachableSourceIds = commit
-        ? Array.from(new Set([
-            ...commit.sourcePins.current.videoSourceIds,
-            ...commit.sourcePins.current.audioSourceIds,
-            ...commit.sourcePins.history.videoSourceIds,
-            ...commit.sourcePins.history.audioSourceIds,
-            ...commit.sourcePins.redo.videoSourceIds,
-            ...commit.sourcePins.redo.audioSourceIds,
-        ]))
-        : [
-            ...state.snapshot.assetReferences.videoSourceIds,
-            ...state.snapshot.assetReferences.audioSourceIds,
-        ];
-    const transcriptRecordIds = commit
-        ? Array.from(new Set([
-            ...commit.transcriptPins.durableRecordIds,
-            ...commit.transcriptPins.historyRecordIds,
-            ...commit.transcriptPins.redoRecordIds,
-        ]))
-        : [...state.snapshot.assetReferences.transcriptRecordIds];
+    const reachableSourceIds = Array.from(new Set([
+        ...state.snapshot.assetReferences.videoSourceIds,
+        ...state.snapshot.assetReferences.audioSourceIds,
+        ...state.sourcePins.current.videoSourceIds,
+        ...state.sourcePins.current.audioSourceIds,
+        ...state.sourcePins.history.videoSourceIds,
+        ...state.sourcePins.history.audioSourceIds,
+        ...state.sourcePins.redo.videoSourceIds,
+        ...state.sourcePins.redo.audioSourceIds,
+    ]));
+    const transcriptRecordIds = Array.from(new Set([
+        ...state.snapshot.assetReferences.transcriptRecordIds,
+        ...state.transcriptPins.durableRecordIds,
+        ...state.transcriptPins.historyRecordIds,
+        ...state.transcriptPins.redoRecordIds,
+    ]));
     return {
         state: structuredClone(state),
         documentRevision: state.snapshot.revisions.documentRevision,
@@ -368,75 +398,6 @@ function wrapManagedSnapshot(
         historyRevision: state.snapshot.revisions.sessionRevision,
         reachableSourceIds,
         transcriptRecordIds,
-    };
-}
-
-function syntheticAssetHydration(
-    manifest: EditorManifestV4,
-    request: {
-        videoSourceIds: readonly string[];
-        audioSourceIds: readonly string[];
-    },
-): EditorAssetHydration {
-    const video = new Set(request.videoSourceIds);
-    const audio = new Set(request.audioSourceIds);
-    return {
-        videoSources: manifest.videoSourceDescriptors
-            .filter((source) => video.has(source.id))
-            .map((source) => syntheticVideoHydration(source)),
-        audioSources: manifest.audioSourceDescriptors
-            .filter((source) => audio.has(source.id))
-            .map((source) => syntheticAudioHydration(source)),
-    };
-}
-
-function syntheticVideoHydration(
-    source: EditorManifestV4['videoSourceDescriptors'][number],
-): EditorAssetHydration['videoSources'][number] {
-    return {
-        ...structuredClone(source),
-        handle: syntheticVerifiedHandle(source.id, source.fingerprint, source.size),
-        fileMetadata: {
-            name: source.originalName,
-            type: source.mimeType,
-            size: source.size,
-            lastModified: source.lastModified,
-        },
-    };
-}
-
-function syntheticAudioHydration(
-    source: EditorManifestV4['audioSourceDescriptors'][number],
-): EditorAssetHydration['audioSources'][number] {
-    return {
-        ...structuredClone(source),
-        handle: syntheticVerifiedHandle(source.id, source.fingerprint, source.size),
-        fileMetadata: {
-            name: source.originalName,
-            type: source.mimeType,
-            size: source.size,
-            lastModified: source.lastModified,
-        },
-    };
-}
-
-function syntheticVerifiedHandle(sourceId: string, fingerprint: string, byteLength: number) {
-    const digest = /^sha256:[a-f0-9]{64}$/.test(fingerprint)
-        ? fingerprint
-        : `sha256:${createHash('sha256').update(fingerprint).digest('hex')}`;
-    return {
-        schemaVersion: 1 as const,
-        handleId: `retained-${sourceId}`,
-        capabilityId: `retained-${sourceId}`,
-        identity: {
-            schemaVersion: 1 as const,
-            contentDigest: digest as `sha256:${string}`,
-            descriptorFingerprint: fingerprint,
-            byteLength,
-            immutableVersion: digest,
-            streamMetadataRefs: [],
-        },
-        verifiedAt: new Date(0).toISOString(),
     };
 }
 
