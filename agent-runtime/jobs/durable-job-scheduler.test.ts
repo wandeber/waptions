@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { atomicWriteJson } from '../persistence/fs-durable';
 import { ManagedFilesystemStore } from '../persistence/managed-filesystem-store';
 import { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
@@ -15,6 +15,53 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
 
 describe('DurableJobScheduler', () => {
+    it('persists exactly one transition when cancelling a queued job', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const store = new ManagedFilesystemStore(runtime.path);
+        await store.initialize();
+        const envelope = testEnvelope('single-cancel-transition-project');
+        await store.createProject(envelope);
+        const persistTransition = vi.fn(async (record: DurableJobRecord) => {
+            await atomicWriteJson(
+                store.projectPath(record.projectId, 'jobs', `${record.jobId}.json`),
+                record,
+            );
+        });
+        const scheduler = new DurableJobScheduler(
+            store,
+            new RuntimeDiagnostics(),
+            { persistTransition, globalConcurrency: 0 },
+        );
+        scheduler.register('unregistered', {
+            run: async () => ({ result: {} }),
+        });
+        const job = await scheduler.enqueue({
+            projectId: envelope.projectId,
+            kind: 'unregistered',
+            input: {},
+            inputDigest: 'sha256:single-cancel-transition',
+            capturedState: stateToken(envelope.projectId),
+            cancellable: true,
+            resumable: false,
+        });
+        persistTransition.mockClear();
+
+        await expect(scheduler.cancel(job.jobId)).resolves.toMatchObject({
+            state: 'cancelled',
+            sequence: job.sequence + 1,
+        });
+        expect(persistTransition).toHaveBeenCalledTimes(1);
+        expect(persistTransition).toHaveBeenCalledWith(
+            expect.objectContaining({
+                jobId: job.jobId,
+                state: 'cancelled',
+            }),
+            undefined,
+        );
+        await scheduler.close();
+    });
+
     it('cancels at a checked boundary and runs handler cleanup', async () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
