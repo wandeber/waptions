@@ -2,9 +2,12 @@ import {
     assertEditorialDescriptorMatchesBody,
     createEditorialTranscriptRequestKey,
 } from '../../../src/lib/editorial-transcription/identity';
+import { sha256CanonicalJson } from '../../../src/lib/editorial-transcription/canonical-json';
+import { verifyTranscriptionCoverageRecordV2 } from '../../../src/lib/editorial-transcription/range-coverage';
 import { verifyCanonicalEditorialTranscriptRecord } from '../../../src/lib/editorial-transcription/transcript-body';
 import { validateEditorManifestV4 } from '../../../src/lib/editor-document-v4';
 import { migrateEditorManifestV3ToV4 } from '../../../src/lib/editor-document-v4-migration';
+import type { TranscriptionCoverageRecordV2 } from '../../../src/types/editorial';
 import type { EditorManifestV3, EditorManifestV4 } from '../../../src/types/video';
 import type { JsonObject, ScopedMutationToolCall } from '../../mcp/contracts';
 import {
@@ -37,6 +40,9 @@ const COVERAGE_KEYS = new Set([
 const CHUNK_KEYS = new Set([
     'version', 'recordId', 'sourceFingerprint', 'acquisitionProfileDigest', 'windowId', 'decoded', 'words',
 ]);
+const RANGE_KEYS = new Set(['startSample', 'endSample']);
+const CHUNK_WORD_KEYS = new Set(['text', 'startSample', 'endSample', 'probability', 'speaker']);
+const CHUNK_SPEAKER_KEYS = new Set(['providerSpeakerId', 'evidenceKey']);
 const privateEntryNames = new WeakMap<ManagedProjectImportMedia, string>();
 
 /**
@@ -394,6 +400,8 @@ async function collectRangeRecords(
         aggregate = addBounded(aggregate, raw.byteLength, limits.maximumAggregateDetachedBodyBytes);
         const coverage = parseJson(raw, 'editorial coverage sidecar');
         assertExactKeys(coverage, COVERAGE_KEYS, 'editorial coverage sidecar');
+        await verifyTranscriptionCoverageRecordV2(coverage as unknown as TranscriptionCoverageRecordV2)
+            .catch(() => { throw new Error('Editorial coverage sidecar is corrupt.'); });
         const descriptor = descriptorsByCoverage.get(coverageId as `sha256:${string}`)!;
         if (string(coverage.recordId, 'coverage record ID') !== coverageId
             || string(coverage.mergedTranscriptRecordId, 'coverage transcript record ID') !== descriptor.recordId
@@ -429,7 +437,7 @@ async function collectRangeRecords(
         const raw = await zip.readBytes(entryName, limits.maximumDetachedBodyBytes, signal);
         aggregate = addBounded(aggregate, raw.byteLength, limits.maximumAggregateDetachedBodyBytes);
         const chunk = parseJson(raw, 'editorial range chunk sidecar');
-        assertExactKeys(chunk, CHUNK_KEYS, 'editorial range chunk sidecar');
+        await verifyRangeTranscriptChunkRecordV2(chunk, chunkId);
         const expected = expectedChunks.get(chunkId)!;
         if (string(chunk.recordId, 'chunk record ID') !== chunkId
             || string(chunk.sourceFingerprint, 'chunk source fingerprint') !== expected.sourceFingerprint
@@ -439,6 +447,91 @@ async function collectRangeRecords(
         records.push(chunk);
     }
     return records;
+}
+
+async function verifyRangeTranscriptChunkRecordV2(
+    record: JsonObject,
+    expectedRecordId: string,
+): Promise<void> {
+    assertExactKeys(record, CHUNK_KEYS, 'editorial range chunk sidecar');
+    if (Object.keys(record).length !== CHUNK_KEYS.size
+        || record.version !== 2
+        || !SHA256.test(expectedRecordId)) {
+        throw new Error('Editorial range chunk sidecar is corrupt.');
+    }
+    const recordId = string(record.recordId, 'chunk record ID');
+    const sourceFingerprint = string(record.sourceFingerprint, 'chunk source fingerprint');
+    const acquisitionProfileDigest = string(record.acquisitionProfileDigest, 'chunk acquisition profile digest');
+    const windowId = string(record.windowId, 'chunk window ID');
+    if (recordId !== expectedRecordId
+        || !SHA256.test(recordId)
+        || !SHA256.test(acquisitionProfileDigest)
+        || !SHA256.test(windowId)
+        || !sourceFingerprint.trim()) {
+        throw new Error('Editorial range chunk sidecar is corrupt.');
+    }
+    const decoded = sampleRange(record.decoded, 'chunk decoded range');
+    if (!Array.isArray(record.words)) throw new Error('Editorial range chunk sidecar is corrupt.');
+    let previousEnd = decoded.startSample;
+    for (const wordValue of record.words) {
+        const word = object(wordValue, 'chunk word');
+        assertExactKeys(word, CHUNK_WORD_KEYS, 'chunk word');
+        if (Object.keys(word).length !== CHUNK_WORD_KEYS.size) {
+            throw new Error('Editorial range chunk word evidence is corrupt.');
+        }
+        const text = string(word.text, 'chunk word text');
+        const startSample = sampleIndex(word.startSample, 'chunk word start sample');
+        const endSample = sampleIndex(word.endSample, 'chunk word end sample');
+        if (!text.trim()
+            || startSample < previousEnd
+            || endSample <= startSample
+            || endSample > decoded.endSample
+            || !validProbability(word.probability)
+            || !validChunkSpeaker(word.speaker)) {
+            throw new Error('Editorial range chunk word evidence is corrupt.');
+        }
+        previousEnd = endSample;
+    }
+    const { recordId: _recordId, ...body } = record;
+    void _recordId;
+    if (await sha256CanonicalJson(body) !== recordId) {
+        throw new Error('Editorial range chunk hash does not match its canonical body.');
+    }
+}
+
+function sampleRange(value: unknown, label: string): { startSample: number; endSample: number } {
+    const range = object(value, label);
+    assertExactKeys(range, RANGE_KEYS, label);
+    if (Object.keys(range).length !== RANGE_KEYS.size) throw new Error(`${label} is invalid.`);
+    const startSample = sampleIndex(range.startSample, `${label} start`);
+    const endSample = sampleIndex(range.endSample, `${label} end`);
+    if (endSample <= startSample) throw new Error(`${label} is invalid.`);
+    return { startSample, endSample };
+}
+
+function sampleIndex(value: unknown, label: string): number {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} is invalid.`);
+    return value;
+}
+
+function validProbability(value: unknown): boolean {
+    return value === null || (typeof value === 'number'
+        && Number.isFinite(value)
+        && value >= 0
+        && value <= 1);
+}
+
+function validChunkSpeaker(value: unknown): boolean {
+    if (value === null) return true;
+    try {
+        const speaker = object(value, 'chunk speaker');
+        assertExactKeys(speaker, CHUNK_SPEAKER_KEYS, 'chunk speaker');
+        return Object.keys(speaker).length === CHUNK_SPEAKER_KEYS.size
+            && Boolean(string(speaker.providerSpeakerId, 'chunk speaker ID').trim())
+            && Boolean(string(speaker.evidenceKey, 'chunk speaker evidence key').trim());
+    } catch {
+        return false;
+    }
 }
 
 function createMedia(

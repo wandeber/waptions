@@ -1,5 +1,17 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import {
+    createEditorialTranscriptDescriptorV2,
+    createEditorialTranscriptRequestKey,
+} from '../../../src/lib/editorial-transcription/identity';
+import { createCanonicalMergedRangeRecord } from '../../../src/lib/editorial-transcription/orchestrator';
+import { mergeRangeTranscriptChunks } from '../../../src/lib/editorial-transcription/range-merge';
+import {
+    createTranscriptionCoverageRecordV2,
+    planIncrementalTranscriptionCoverage,
+} from '../../../src/lib/editorial-transcription/range-coverage';
+import { createRangeTranscriptChunkRecord } from '../../../src/lib/editorial-transcription/range-orchestrator';
+import { canonicalizeJson } from '../../../src/lib/editorial-transcription/canonical-json';
 import { createEmptyManagedCoreSnapshot } from '../core-editor-port';
 import { writeManagedPortableBundle } from '../export/portable-bundle-writer';
 import type { ManagedStreamingEntry } from '../export/contracts';
@@ -110,6 +122,39 @@ describe('managed project import service', () => {
         expect(published).not.toHaveBeenCalled();
     });
 
+    it('rejects mutated content-addressed coverage and chunk sidecars that retain their record IDs', async () => {
+        const fixture = await rangeSidecarFixture();
+        const mutations = [
+            {
+                entries: rangeBundleEntries(fixture, {
+                    coverage: { ...fixture.coverage, requestedModel: 'tampered-model' },
+                }),
+                expected: /Editorial coverage sidecar is corrupt/,
+            },
+            {
+                entries: rangeBundleEntries(fixture, {
+                    chunk: {
+                        ...fixture.chunk,
+                        words: [{ ...fixture.chunk.words[0]!, text: 'tampered evidence' }],
+                    },
+                }),
+                expected: /Editorial range chunk hash does not match its canonical body/,
+            },
+        ];
+        for (const { entries, expected } of mutations) {
+            const published = vi.fn(async (
+                input: Parameters<ManagedProjectImportServiceDependencies['receipts']['publishReceiptFirst']>[0],
+            ) => {
+                void input;
+                return success();
+            });
+            const service = new ManagedProjectImportService(dependencies(memoryLease(await bundleBytes(entries)), published));
+            await expect(service.handler(scopedCall('bundle-path'), { signal: new AbortController().signal }))
+                .rejects.toThrow(expected);
+            expect(published).not.toHaveBeenCalled();
+        }
+    });
+
     it('reads large entries in bounded chunks and can restart from the immutable lease', async () => {
         const large = new Uint8Array(3 * 1024 * 1024).fill(7);
         const bytes = await bundleBytes([
@@ -165,6 +210,122 @@ function metadata() {
         editorialTranscriptFiles: {},
         presets: [],
     };
+}
+
+async function rangeSidecarFixture() {
+    const source = {
+        id: 'range-source',
+        originalName: 'range.mp4',
+        mimeType: 'video/mp4',
+        size: 1,
+        lastModified: 1_700_000_000_000,
+        fingerprint: 'range-source-fingerprint',
+        duration: 2,
+        fps: 30,
+        width: 1_920,
+        height: 1_080,
+        bitrate: 5_000_000,
+        hasAudio: true,
+    };
+    const profile = {
+        sourceFingerprint: source.fingerprint,
+        sourceSampleRate: 16_000,
+        sourceSampleCount: 32_000,
+        coreCoverage: [{ startSample: 0, endSample: 32_000 }],
+        contextSamples: 0,
+        language: 'en',
+        speakerMode: 'none' as const,
+        endpointIdentityDigest: `sha256:${'d'.repeat(64)}` as const,
+        requestedModel: 'qwen-1.7b-edit-max',
+        responseSchema: 'edit-max-v1',
+        pcmAlgorithmVersion: 1,
+        providerProfileVersion: 1,
+    };
+    const plan = await planIncrementalTranscriptionCoverage({ profile });
+    const window = plan.acquisitionWindows[0]!;
+    const chunk = await createRangeTranscriptChunkRecord({
+        sourceFingerprint: source.fingerprint,
+        acquisitionProfileDigest: plan.acquisitionProfileDigest,
+        window,
+        localWords: [{
+            text: 'range evidence',
+            startSample: 0,
+            endSample: 16_000,
+            probability: 0.99,
+            speaker: null,
+        }],
+    });
+    const merged = mergeRangeTranscriptChunks([chunk], profile.coreCoverage);
+    const transcript = await createCanonicalMergedRangeRecord({
+        sourceFingerprint: source.fingerprint,
+        sampleCount: profile.sourceSampleCount,
+        language: profile.language,
+        speakerMode: profile.speakerMode,
+        canonicalModel: 'qwen-1.7b-edit-max-runtime',
+        words: merged.words,
+    });
+    const coverage = await createTranscriptionCoverageRecordV2({
+        sourceFingerprint: profile.sourceFingerprint,
+        sourceSampleRate: profile.sourceSampleRate,
+        sourceSampleCount: profile.sourceSampleCount,
+        acquisitionProfileDigest: plan.acquisitionProfileDigest,
+        endpointIdentityDigest: profile.endpointIdentityDigest,
+        contextSamples: profile.contextSamples,
+        requestedModel: profile.requestedModel,
+        responseSchema: profile.responseSchema,
+        pcmAlgorithmVersion: profile.pcmAlgorithmVersion,
+        providerProfileVersion: profile.providerProfileVersion,
+        language: profile.language,
+        speakerMode: profile.speakerMode,
+        coreCoverage: profile.coreCoverage,
+        acquisitionWindows: [{ ...window, chunkRecordIds: [chunk.recordId] }],
+        mergedTranscriptRecordId: transcript.recordId,
+    });
+    const descriptor = createEditorialTranscriptDescriptorV2({
+        recordId: transcript.recordId,
+        coverageRecord: coverage,
+        requestKey: await createEditorialTranscriptRequestKey({
+            sourceFingerprint: source.fingerprint,
+            sampleCount: profile.sourceSampleCount,
+            language: profile.language,
+            speakerMode: profile.speakerMode,
+            endpointIdentityDigest: profile.endpointIdentityDigest,
+        }),
+        sourceId: source.id,
+        sourceFingerprint: source.fingerprint,
+        endpointIdentityDigest: profile.endpointIdentityDigest,
+        body: transcript.body,
+        acquisition: 'provider',
+        createdAt: '2026-07-25T00:00:00.000Z',
+    });
+    const manifest = structuredClone(createEmptyManagedCoreSnapshot('range-project', 'range-epoch').state.snapshot.manifest);
+    manifest.videoSourceDescriptors = [source];
+    manifest.editorialTranscriptDescriptors = [descriptor];
+    return { source, transcript, coverage, chunk, manifest };
+}
+
+function rangeBundleEntries(
+    fixture: Awaited<ReturnType<typeof rangeSidecarFixture>>,
+    overrides: { coverage?: object; chunk?: object } = {},
+): ManagedStreamingEntry[] {
+    const coverage = overrides.coverage ?? fixture.coverage;
+    const chunk = overrides.chunk ?? fixture.chunk;
+    return [
+        bytesEntry('metadata.json', JSON.stringify({
+            version: '4.0',
+            project: { id: 'range-project', name: 'Range import' },
+            editorManifest: fixture.manifest,
+            sourceFiles: { video: { [fixture.source.id]: 'media/range.mp4' }, audio: {} },
+            editorialTranscriptFiles: { [fixture.transcript.recordId]: 'editorial/transcript.json' },
+            editorialCoverageFiles: { [fixture.coverage.recordId]: 'editorial/coverage.json' },
+            editorialChunkFiles: { [fixture.chunk.recordId]: 'editorial/chunk.json' },
+            presets: [],
+        })),
+        bytesEntry('media/range.mp4', new Uint8Array([1])),
+        bytesEntry('editorial/transcript.json', fixture.transcript.canonicalJson),
+        bytesEntry('editorial/coverage.json', canonicalizeJson(coverage)),
+        bytesEntry('editorial/chunk.json', canonicalizeJson(chunk)),
+    ];
 }
 
 function bytesEntry(name: string, value: string | Uint8Array): ManagedStreamingEntry {
