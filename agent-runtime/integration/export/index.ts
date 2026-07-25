@@ -1,5 +1,6 @@
 export * from './artifact-access-adapter';
 export * from './contracts';
+export * from './durable-export-job-handler';
 export * from './exact-render-router';
 export * from './managed-export-job-service';
 export * from './node-webm-renderer';
