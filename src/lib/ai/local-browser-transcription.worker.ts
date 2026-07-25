@@ -6,7 +6,8 @@ import { normalizeLocalBrowserPipelineOutput } from "@/lib/ai/local-browser-tran
 import type { LocalBrowserTranscriptionSettings } from "@/types/transcription";
 
 interface TranscribeMessage {
-    type: "transcribe";
+    type: "transcribe-window";
+    requestId?: string;
     audio: Float32Array;
     durationSeconds: number;
     settings: LocalBrowserTranscriptionSettings;
@@ -17,20 +18,25 @@ type WorkerMessage = TranscribeMessage;
 
 let cachedModelKey: string | null = null;
 let cachedPipeline: unknown = null;
+let activeRequestId: string | undefined;
 
 self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
-    if (event.data.type !== "transcribe") {
+    if (event.data.type !== "transcribe-window") {
         return;
     }
 
+    activeRequestId = event.data.requestId;
     try {
         const result = await transcribe(event.data);
-        self.postMessage({ type: "result", result });
+        self.postMessage({ type: "result", result, requestId: event.data.requestId });
     } catch (error) {
         self.postMessage({
             type: "error",
             error: error instanceof Error ? error.message : "Local browser transcription failed.",
+            requestId: event.data.requestId,
         });
+    } finally {
+        activeRequestId = undefined;
     }
 };
 
@@ -153,7 +159,7 @@ function getPipelineDtype(settings: LocalBrowserTranscriptionSettings): "fp32" |
 }
 
 function emitProgress(progress: LocalBrowserTranscriptionProgress) {
-    self.postMessage({ type: "progress", progress });
+    self.postMessage({ type: "progress", progress, requestId: activeRequestId });
 }
 
 function getProgressMessage(progress: unknown, label: string): string {

@@ -8,7 +8,10 @@ import {
 export const EDITORIAL_TRANSCRIPTION_MODEL = 'qwen-1.7b-edit-max';
 export const EDITORIAL_TRANSCRIPTION_RESPONSE_FORMAT = 'verbose_json';
 export const EDITORIAL_TRANSCRIPTION_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
-export const EDITORIAL_TRANSCRIPTION_MAX_WAV_BYTES = 512 * 1024 * 1024;
+// New V2 callers send <=30-second windows and normally stay below one MiB. The fixed compatibility
+// ceiling rejects any accidental legacy full-source upload before multipart parsing can pressure a
+// 128 MiB worker runtime.
+export const EDITORIAL_TRANSCRIPTION_MAX_WAV_BYTES = 8 * 1024 * 1024;
 export const EDITORIAL_TRANSCRIPTION_FAILURE_HEADER = 'x-waptions-editorial-failure';
 
 /**
@@ -113,7 +116,7 @@ export function buildEditorialTranscriptionProviderMultipart(input: {
 }
 
 /**
- * Sends one exact full-source WAV request through browser or Waptions server mode.
+ * Sends one exact bounded WAV request through browser or Waptions server mode.
  *
  * Browser mode exposes the endpoint/key only to the configured provider. Server mode adds those
  * transient values to the browser-to-Waptions multipart envelope; neither value is returned from

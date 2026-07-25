@@ -29,7 +29,7 @@ import type {
 } from '@/types/video';
 import type {
     EditorialDependentLinkV1,
-    EditorialTranscriptDescriptorV1,
+    EditorialTranscriptDescriptor,
     GlobalEditingMode,
     NarrativeDocumentV1,
     TransientNarrativeSelectionV1,
@@ -95,7 +95,7 @@ export interface TimelineHistoryProjection {
     transcriptionGroups: { [key: string]: Subtitle[] } | null;
     transcriptionContainerIds: string[] | null;
     globalEditingMode?: GlobalEditingMode;
-    editorialTranscriptDescriptors?: EditorialTranscriptDescriptorV1[];
+    editorialTranscriptDescriptors?: EditorialTranscriptDescriptor[];
     narrative?: NarrativeDocumentV1 | null;
     dependentLinks?: EditorialDependentLinkV1[];
 }
@@ -181,7 +181,7 @@ export interface TimelineStore {
     audioTracks: AudioTrack[];
     transientSelection: TransientMediaSelectionV4;
     globalEditingMode: GlobalEditingMode;
-    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptor[];
     narrative: NarrativeDocumentV1 | null;
     dependentLinks: EditorialDependentLinkV1[];
     transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;

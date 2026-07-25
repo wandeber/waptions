@@ -1,18 +1,21 @@
 import {
     AudioSampleSource,
-    BufferTarget,
     Mp4OutputFormat,
     Output,
+    StreamTarget,
     WebMOutputFormat,
     getFirstEncodableAudioCodec,
     type AudioCodec,
     type AudioSample,
+    type StreamTargetChunk,
+    type Target,
 } from 'mediabunny';
 import type { EditorDocumentV3 } from '@/types/video';
 import {
     buildAudioMixPlan,
     type AudioMixPlan,
 } from './audio-mix-plan';
+import type { HalfOpenSampleRange } from '@/types/editorial';
 import { createExportDocumentSnapshot } from './export-job';
 import {
     TimelineAudioRenderer,
@@ -20,6 +23,11 @@ import {
 } from './timeline-audio-renderer';
 
 const DIARIZATION_AUDIO_BITRATE = 128_000;
+const DEFAULT_DIARIZATION_CONTEXT_SECONDS = 2;
+const MAX_DIARIZATION_CONTEXT_SECONDS = 10;
+const MAX_DIARIZATION_WINDOW_SECONDS = 30;
+const MAX_DIARIZATION_ENCODED_BYTES = 8 * 1024 * 1024;
+const DIARIZATION_STREAM_CHUNK_BYTES = 1024 * 1024;
 
 declare const timelineDiarizationAudioSnapshotBrand: unique symbol;
 
@@ -39,6 +47,8 @@ export type TimelineDiarizationAudioStage = 'rendering-project-mix' | 'encoding-
 
 export interface TimelineDiarizationAudioOptions {
     signal: AbortSignal;
+    /** Internal bounded range selected from `createTimelineDiarizationCoveragePlan`. */
+    window?: TimelineDiarizationCoverageWindow;
     onProgress?: (progress: number) => void;
     onStage?: (stage: TimelineDiarizationAudioStage) => void;
 }
@@ -47,7 +57,68 @@ export interface EncodedTimelineDiarizationAudio {
     blob: Blob;
     filename: string;
     durationSeconds: number;
+    outputStartSample: number;
     outputEndSample: number;
+}
+
+export interface TimelineDiarizationCoverageWindow {
+    core: HalfOpenSampleRange;
+    decoded: HalfOpenSampleRange;
+}
+
+export interface TimelineDiarizationCoveragePlan {
+    sampleRate: 48_000;
+    coreCoverage: HalfOpenSampleRange[];
+    windows: TimelineDiarizationCoverageWindow[];
+}
+
+/**
+ * Projects only audible mix contributors into bounded diarization windows.
+ *
+ * Muted/unreferenced tracks and silent project tails never become core coverage. Context keeps
+ * leading/internal silence around used intervals for speaker continuity, but remains separate
+ * from ownership and is capped at ten seconds.
+ */
+export function createTimelineDiarizationCoveragePlan(
+    plan: AudioMixPlan,
+    contextSeconds = DEFAULT_DIARIZATION_CONTEXT_SECONDS,
+): TimelineDiarizationCoveragePlan {
+    if (plan.sampleRate !== 48_000
+        || !Number.isFinite(contextSeconds)
+        || contextSeconds < 0
+        || contextSeconds > MAX_DIARIZATION_CONTEXT_SECONDS) {
+        throw new Error('Timeline diarization coverage profile is invalid.');
+    }
+    const contextSamples = Math.round(contextSeconds * plan.sampleRate);
+    const coreCoverage = normalizeTimelineRanges(
+        plan.contributors.map(contributor => ({
+            startSample: contributor.outputStartSample,
+            endSample: contributor.outputEndSample,
+        })),
+        plan.totalSampleCount,
+    );
+    const maximumCoreSamples = (
+        MAX_DIARIZATION_WINDOW_SECONDS * plan.sampleRate - contextSamples * 2
+    );
+    if (maximumCoreSamples <= 0) {
+        throw new Error('Timeline diarization context leaves no bounded window core.');
+    }
+    const windows = coreCoverage.flatMap((core) => {
+        const pieces: TimelineDiarizationCoverageWindow[] = [];
+        for (let startSample = core.startSample; startSample < core.endSample;) {
+            const endSample = Math.min(core.endSample, startSample + maximumCoreSamples);
+            pieces.push({
+                core: { startSample, endSample },
+                decoded: {
+                    startSample: Math.max(0, startSample - contextSamples),
+                    endSample: Math.min(plan.totalSampleCount, endSample + contextSamples),
+                },
+            });
+            startSample = endSample;
+        }
+        return pieces;
+    });
+    return { sampleRate: 48_000, coreCoverage, windows };
 }
 
 /** Typed empty-mix result so orchestration can skip the network request without parsing text. */
@@ -76,6 +147,10 @@ export class TimelineDiarizationAudioError extends Error {
 
 type OwnedAudioSampleSource = Pick<AudioSampleSource, 'add' | 'close'>;
 type DiarizationOutput = Pick<Output, 'state' | 'addAudioTrack' | 'start' | 'finalize' | 'cancel'>;
+interface DiarizationEncodedTarget {
+    target: Target;
+    readBlob(mimeType: string): Blob | null;
+}
 
 interface SelectedAudioEncoding {
     codec: AudioCodec;
@@ -93,8 +168,8 @@ interface SelectedAudioEncoding {
 export interface TimelineDiarizationAudioDependencies {
     buildPlan(document: EditorDocumentV3): AudioMixPlan;
     selectCodec(codecs: AudioCodec[]): Promise<AudioCodec | null>;
-    createTarget(): BufferTarget;
-    createOutput(target: BufferTarget, container: SelectedAudioEncoding['container']): DiarizationOutput;
+    createTarget(): DiarizationEncodedTarget;
+    createOutput(target: Target, container: SelectedAudioEncoding['container']): DiarizationOutput;
     createSource(codec: AudioCodec): OwnedAudioSampleSource;
     render(
         document: EditorDocumentV3,
@@ -107,7 +182,7 @@ export interface TimelineDiarizationAudioDependencies {
 const defaultDependencies: TimelineDiarizationAudioDependencies = {
     buildPlan: buildAudioMixPlan,
     selectCodec: (codecs) => getFirstEncodableAudioCodec(codecs),
-    createTarget: () => new BufferTarget(),
+    createTarget: createBoundedDiarizationTarget,
     createOutput: (target, container) => new Output({
         // The target is already memory-backed. Avoid in-memory fast-start, which would retain a
         // second set of MP4 chunks while constructing the final upload Blob.
@@ -182,15 +257,32 @@ export async function encodeTimelineAudioForDiarization(
     // The upload ends at the last contributor that survives canonical mute/solo filtering. Using
     // totalSampleCount here would include silent video or muted independent-audio tails. Starting
     // the renderer at zero still preserves leading and internal project silence exactly.
-    const outputEndSample = plan.contributors.reduce(
+    const audibleEndSample = plan.contributors.reduce(
         (latest, contributor) => Math.max(latest, contributor.outputEndSample),
         0,
     );
-    if (!Number.isSafeInteger(outputEndSample) || outputEndSample <= 0) {
+    if (!Number.isSafeInteger(audibleEndSample) || audibleEndSample <= 0) {
         throw createStageError(
             'rendering',
             'The audible project mix has an invalid duration.',
             new RangeError('The audible output boundary must be a positive safe integer.'),
+        );
+    }
+    const outputStartSample = options.window?.decoded.startSample ?? 0;
+    const outputEndSample = options.window?.decoded.endSample ?? audibleEndSample;
+    if (!Number.isSafeInteger(outputStartSample)
+        || !Number.isSafeInteger(outputEndSample)
+        || outputStartSample < 0
+        || outputEndSample <= outputStartSample
+        || outputEndSample > plan.totalSampleCount
+        || outputEndSample - outputStartSample > MAX_DIARIZATION_WINDOW_SECONDS * plan.sampleRate
+        || (options.window && (
+            options.window.core.startSample < outputStartSample
+            || options.window.core.endSample > outputEndSample
+        ))) {
+        throw createStageError(
+            'rendering',
+            'Diarization audio must use a valid window of at most 30 seconds.',
         );
     }
 
@@ -231,7 +323,7 @@ export async function encodeTimelineAudioForDiarization(
         throwIfAborted(options.signal);
 
         const target = dependencies.createTarget();
-        output = dependencies.createOutput(target, encoding.container);
+        output = dependencies.createOutput(target.target, encoding.container);
         source = dependencies.createSource(encoding.codec);
         output.addAudioTrack(source as AudioSampleSource);
         sourceAttachedToOutput = true;
@@ -274,6 +366,7 @@ export async function encodeTimelineAudioForDiarization(
 
         try {
             await dependencies.render(snapshot, encodingSource, plan, {
+                outputStartSample,
                 outputEndSample,
                 signal: options.signal,
                 onProgress: options.onProgress,
@@ -293,28 +386,19 @@ export async function encodeTimelineAudioForDiarization(
         await awaitAbortable(finalizePromise, options.signal);
         throwIfAborted(options.signal);
 
-        if (!target.buffer) {
+        const blob = target.readBlob(encoding.mimeType);
+        if (!blob) {
             throw createStageError(
                 'encoding',
                 'Audio encoding completed without an output buffer.',
             );
         }
 
-        let blob: Blob;
-        try {
-            blob = new Blob([target.buffer], { type: encoding.mimeType });
-        } catch (error) {
-            throw createStageError(
-                'encoding',
-                'Could not assemble the encoded project audio.',
-                error,
-            );
-        }
-
         return {
             blob,
             filename: encoding.filename,
-            durationSeconds: outputEndSample / plan.sampleRate,
+            durationSeconds: (outputEndSample - outputStartSample) / plan.sampleRate,
+            outputStartSample,
             outputEndSample,
         };
     } catch (error) {
@@ -365,6 +449,52 @@ export async function encodeTimelineAudioForDiarization(
             );
         }
     }
+}
+
+/**
+ * Backs Mediabunny with a positional StreamTarget whose retained memory is fixed and pre-bounded.
+ *
+ * A thirty-second 128 kbps payload is normally below one MiB; the eight-MiB ceiling leaves ample
+ * container overhead while ensuring a codec or muxer regression cannot create source-sized RAM.
+ */
+function createBoundedDiarizationTarget(): DiarizationEncodedTarget {
+    const bytes = new Uint8Array(MAX_DIARIZATION_ENCODED_BYTES);
+    let highWaterMark = 0;
+    let closed = false;
+    let aborted = false;
+    const writable = new WritableStream<StreamTargetChunk>({
+        write: (chunk) => {
+            if (closed || aborted
+                || chunk.type !== 'write'
+                || !Number.isSafeInteger(chunk.position)
+                || chunk.position < 0) {
+                throw new Error('Diarization output stream received an invalid write.');
+            }
+            const end = chunk.position + chunk.data.byteLength;
+            if (!Number.isSafeInteger(end) || end > bytes.byteLength) {
+                throw new Error('Diarization output exceeds its bounded encoded-byte limit.');
+            }
+            bytes.set(chunk.data, chunk.position);
+            highWaterMark = Math.max(highWaterMark, end);
+        },
+        close: () => { closed = true; },
+        abort: () => {
+            aborted = true;
+            bytes.fill(0, 0, highWaterMark);
+            highWaterMark = 0;
+        },
+    }, { highWaterMark: 1 });
+    return {
+        target: new StreamTarget(writable, {
+            chunked: true,
+            chunkSize: DIARIZATION_STREAM_CHUNK_BYTES,
+        }),
+        readBlob: mimeType => (
+            closed && !aborted && highWaterMark > 0
+                ? new Blob([bytes.slice(0, highWaterMark)], { type: mimeType })
+                : null
+        ),
+    };
 }
 
 async function selectAudioEncoding(
@@ -421,6 +551,34 @@ function createStageError(
     cause?: unknown,
 ): TimelineDiarizationAudioError {
     return new TimelineDiarizationAudioError(stage, message, cause === undefined ? undefined : { cause });
+}
+
+function normalizeTimelineRanges(
+    ranges: readonly HalfOpenSampleRange[],
+    sampleCount: number,
+): HalfOpenSampleRange[] {
+    if (!Number.isSafeInteger(sampleCount) || sampleCount < 0) {
+        throw new Error('Timeline diarization sample count is invalid.');
+    }
+    const ordered = ranges.map((range) => {
+        if (!Number.isSafeInteger(range.startSample)
+            || !Number.isSafeInteger(range.endSample)
+            || range.startSample < 0
+            || range.endSample <= range.startSample
+            || range.endSample > sampleCount) {
+            throw new Error('Timeline diarization contributor range is invalid.');
+        }
+        return { ...range };
+    }).sort((left, right) => (
+        left.startSample - right.startSample || left.endSample - right.endSample
+    ));
+    const normalized: HalfOpenSampleRange[] = [];
+    ordered.forEach((range) => {
+        const previous = normalized.at(-1);
+        if (!previous || range.startSample > previous.endSample) normalized.push(range);
+        else previous.endSample = Math.max(previous.endSample, range.endSample);
+    });
+    return normalized;
 }
 
 function throwIfAborted(signal: AbortSignal): void {

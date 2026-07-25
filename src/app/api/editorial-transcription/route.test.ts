@@ -17,7 +17,12 @@ vi.mock('undici', () => ({
         constructor(options: unknown) {
             undiciMock.agentOptions.push(options);
         }
+        async close() {}
     },
+}));
+vi.mock('node:dns/promises', () => ({
+    resolve4: vi.fn(async () => ['203.0.114.1']),
+    resolve6: vi.fn(async () => []),
 }));
 
 import { POST } from './route';

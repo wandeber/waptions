@@ -11,6 +11,7 @@ interface GenerateSubtitlesInput {
     audioFile: File;
     model: string;
     customOpenAITranscription?: OpenAICompatibleTranscriptionSettings | null;
+    signal?: AbortSignal;
 }
 
 interface WhisperWord {
@@ -28,13 +29,28 @@ function buildSubtitlesFromWhisperWords(transcription: WhisperResponse) {
     if (!transcription.words) {
         return { subtitles: [] };
     }
+    if (!Array.isArray(transcription.words) || transcription.words.length > 100_000) {
+        throw new ValidationError("The transcriber returned too many words.");
+    }
 
-    const subtitles = transcription.words.map(word => ({
-        id: crypto.randomUUID(),
-        startTime: word.start,
-        endTime: word.end,
-        text: word.word.trim()
-    }));
+    const subtitles = transcription.words.map((word) => {
+        if (!word
+            || typeof word.word !== "string"
+            || !word.word.trim()
+            || word.word.length > 4_096
+            || !Number.isFinite(word.start)
+            || !Number.isFinite(word.end)
+            || word.start < 0
+            || word.end <= word.start) {
+            throw new ValidationError("The transcriber returned a malformed word.");
+        }
+        return {
+            id: crypto.randomUUID(),
+            startTime: word.start,
+            endTime: word.end,
+            text: word.word.trim(),
+        };
+    });
 
     return { subtitles };
 }
@@ -60,7 +76,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
     protected async execute(input: GenerateSubtitlesInput, ctx: ActionContext): Promise<unknown> {
         // Avoid unused var lint
         void ctx;
-        const { audioFile, model, customOpenAITranscription } = input;
+        const { audioFile, model, customOpenAITranscription, signal } = input;
 
         if (!audioFile) {
             throw new ValidationError("No audio file provided");
@@ -88,6 +104,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
                     prompt: `Usa puntuación correcta.`,
                     temperature: 0
                 },
+                signal,
             }) as WhisperResponse;
 
             return buildSubtitlesFromWhisperWords(transcription);
@@ -105,6 +122,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
                     audioFile,
                     fallbackModel: 'faster-whisper',
                     options,
+                    signal,
                 });
             }
 

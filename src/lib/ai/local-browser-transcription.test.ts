@@ -3,6 +3,7 @@ import {
     getLocalBrowserModelManifest,
     getVisibleLocalBrowserModelManifests,
     normalizeLocalBrowserPipelineOutput,
+    transcribeLocalBrowserPcmWindows,
 } from "@/lib/ai/local-browser-transcription";
 
 describe("normalizeLocalBrowserPipelineOutput", () => {
@@ -69,5 +70,78 @@ describe("local browser model manifests", () => {
 
         vi.stubEnv("NEXT_PUBLIC_ENABLE_EXPERIMENTAL_QWEN_BROWSER_ASR", "true");
         expect(getVisibleLocalBrowserModelManifests().some(manifest => manifest.id === "qwen-mega-asr-browser")).toBe(true);
+    });
+});
+
+describe("bounded local browser PCM windows", () => {
+    it("reuses one worker and transfers windows sequentially", async () => {
+        const posted: unknown[] = [];
+        let terminated = 0;
+        const worker = {
+            onmessage: null as ((event: MessageEvent<unknown>) => void) | null,
+            onerror: null,
+            postMessage(message: unknown) {
+                posted.push(message);
+                const request = message as { requestId: string; durationSeconds: number };
+                queueMicrotask(() => {
+                    worker.onmessage?.({
+                        data: {
+                            type: "result",
+                            requestId: request.requestId,
+                            result: {
+                                text: request.requestId,
+                                words: [{ word: "word", start: 0, end: request.durationSeconds }],
+                                diagnostics: {
+                                    engine: "whisper-webgpu",
+                                    device: "wasm",
+                                    modelId: "model",
+                                    durationSeconds: request.durationSeconds,
+                                },
+                            },
+                        },
+                    } as MessageEvent<unknown>);
+                });
+            },
+            terminate() {
+                terminated += 1;
+            },
+        };
+
+        const result = await transcribeLocalBrowserPcmWindows({
+            windows: [
+                { startSample: 0, samples: new Float32Array(16_000) },
+                { startSample: 32_000, samples: new Float32Array(8_000) },
+            ],
+            settings: {
+                enabled: true,
+                engine: "whisper-webgpu",
+                manifestId: "whisper-base-webgpu",
+                device: "wasm",
+                language: "es",
+                allowWasmFallback: true,
+            },
+            createWorker: () => worker,
+        });
+
+        expect(posted).toHaveLength(2);
+        expect(result.map(item => item.startSample)).toEqual([0, 32_000]);
+        expect(terminated).toBe(1);
+    });
+
+    it("rejects source-wide buffers beyond the 30-second window contract", async () => {
+        await expect(transcribeLocalBrowserPcmWindows({
+            windows: [{ startSample: 0, samples: new Float32Array(16_000 * 30 + 1) }],
+            settings: {
+                enabled: true,
+                engine: "whisper-webgpu",
+                manifestId: "whisper-base-webgpu",
+                device: "wasm",
+                language: "auto",
+                allowWasmFallback: true,
+            },
+            createWorker: () => {
+                throw new Error("worker should not start");
+            },
+        })).rejects.toThrow("30 seconds");
     });
 });

@@ -64,6 +64,7 @@ function makeDependencies(
             blob: new Blob(['encoded-audio'], { type: 'audio/mp4' }),
             filename: 'timeline-diarization.m4a',
             durationSeconds: 12,
+            outputStartSample: 0,
             outputEndSample: 576_000,
         })),
         requestFromBrowser: vi.fn(async () => ({ diarization: { speaker_segments: [] } })),
@@ -202,6 +203,7 @@ describe('runDiarizedEditorTranscription', () => {
                 blob: new Blob(['opus-audio'], { type: 'audio/webm' }),
                 filename: 'timeline-diarization.webm',
                 durationSeconds: 12,
+                outputStartSample: 0,
                 outputEndSample: 576_000,
             })),
             requestFromBrowser,
@@ -219,6 +221,59 @@ describe('runDiarizedEditorTranscription', () => {
             signal: controller.signal,
         }));
         expect(dependencies.requestThroughServer).not.toHaveBeenCalled();
+    });
+
+    it('reconciles window-local speaker labels only through overlapping word evidence', async () => {
+        const controller = new AbortController();
+        const windows = [{
+            core: { startSample: 0, endSample: 48_000 },
+            decoded: { startSample: 0, endSample: 80_000 },
+        }, {
+            core: { startSample: 48_000, endSample: 96_000 },
+            decoded: { startSample: 32_000, endSample: 96_000 },
+        }];
+        const secondWindowSpeakers: NormalizedDiarizedSpeaker[] = [{
+            sourceSpeakerLabel: 'SPEAKER_00',
+            subtitles: [{ id: 'world', startTime: 0.5, endTime: 1, text: 'world' }],
+            transcription: {
+                raw: [
+                    { id: 'context', startTime: 0.033, endTime: 0.233, text: 'Hello' },
+                    { id: 'world', startTime: 0.5, endTime: 1, text: 'world' },
+                ],
+                groups: {
+                    second: [{ id: 'world', startTime: 0.5, endTime: 1, text: 'world' }],
+                },
+                containerIds: ['second'],
+            },
+        }];
+        const normalize = vi.fn()
+            .mockReturnValueOnce(SPEAKERS)
+            .mockReturnValueOnce(secondWindowSpeakers);
+        const dependencies = makeDependencies({
+            planWindows: vi.fn(() => windows),
+            encodeWindow: vi.fn(async (_snapshot, window) => ({
+                blob: new Blob(['window'], { type: 'audio/mp4' }),
+                filename: 'timeline-diarization.m4a',
+                durationSeconds: (
+                    window.decoded.endSample - window.decoded.startSample
+                ) / 48_000,
+                outputStartSample: window.decoded.startSample,
+                outputEndSample: window.decoded.endSample,
+            })),
+            normalize,
+        });
+        const input = makeInput(controller);
+
+        await expect(runDiarizedEditorTranscription(input, dependencies)).resolves.toBe('applied');
+
+        expect(dependencies.encodeWindow).toHaveBeenCalledTimes(2);
+        expect(dependencies.encodeAudio).not.toHaveBeenCalled();
+        expect(dependencies.requestThroughServer).toHaveBeenCalledTimes(2);
+        const appliedSpeakers = vi.mocked(input.apply).mock.calls[0][1];
+        expect(appliedSpeakers).toHaveLength(1);
+        expect(appliedSpeakers[0].sourceSpeakerLabel).toBe('SPEAKER_00@0');
+        expect(appliedSpeakers[0].transcription.raw.map(word => word.text))
+            .toEqual(['Hello', 'world']);
     });
 
     it('preserves an Opus/WebM filename and MIME type at the browser multipart boundary', async () => {

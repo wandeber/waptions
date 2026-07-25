@@ -1,11 +1,11 @@
-import JSZip from 'jszip';
 import type { TProject } from '@/types/project';
 import type { Subtitle, SubtitleTrack } from '@/types/timeline';
 import {
     isSha256Digest,
-    type EditorialTranscriptDescriptorV1,
+    type EditorialTranscriptDescriptor,
     type ResolvedEditorialTranscriptMapV1,
     type Sha256Digest,
+    type TranscriptionCoverageRecordV2,
 } from '@/types/editorial';
 import type {
     EditorDocumentV4,
@@ -15,7 +15,11 @@ import type {
     VideoSourceAssetV3,
 } from '@/types/video';
 import type { StylePreset } from '@/components/video-editor/subtitle-editor/types';
-import { getStylePresets, saveStylePreset } from '@/components/video-editor/subtitle-editor/presetUtils';
+import {
+    deleteStylePreset,
+    getStylePresets,
+    saveStylePreset,
+} from '@/components/video-editor/subtitle-editor/presetUtils';
 import { validateEditorDocument } from './video-timeline';
 import { inspectVideoSource } from './video-source';
 import {
@@ -44,14 +48,34 @@ import {
     type CanonicalEditorialTranscriptRecordV1,
 } from './editorial-transcription/transcript-body';
 import { EditorialTranscriptRepository } from './storage/editorial-transcript-repository';
+import {
+    IndexedRangeTranscriptionRepository,
+} from './editorial-transcription/range-repository';
+import type { RangeTranscriptChunkRecordV2 } from './editorial-transcription/range-orchestrator';
+import { createCanonicalMergedRangeRecord } from './editorial-transcription/orchestrator';
+import { mergeRangeTranscriptChunks } from './editorial-transcription/range-merge';
+import {
+    createAcquisitionProfileDigest,
+    createRangeTranscriptionRequestKey,
+    verifyTranscriptionCoverageRecordV2,
+} from './editorial-transcription/range-coverage';
+import { sha256CanonicalJson, canonicalizeJson } from './editorial-transcription/canonical-json';
 import { storageService, type EditorPersistentAsset } from './storage/storage-service';
 import {
     addBoundedZipEntryBytes,
-    assertSafeProjectBundleEntries,
-    assertZipEntryExactSize,
-    getDeclaredZipEntrySize,
-    readBoundedZipUtf8,
+    inspectProjectBundleZipBlob,
 } from './project-bundle-zip';
+import {
+    MAX_IN_MEMORY_BUNDLE_BYTES,
+    createBoundedMemoryZipSink,
+    createWritableStreamZipSink,
+    openRangeBackedProjectBundleArchive,
+    writeStoredProjectBundleZip,
+    type ProjectBundleArchive,
+    type ProjectBundleArchiveEntry,
+    type StoredProjectBundleEntry,
+} from './project-bundle-streaming';
+import { sha256Blob } from './project-bundle-digest';
 
 export const PROJECT_BUNDLE_VERSION = '4.0';
 export const PROJECT_BUNDLE_METADATA_MAX_BYTES = 4 * 1024 * 1024;
@@ -60,12 +84,44 @@ export const PROJECT_BUNDLE_TRANSCRIPT_MAX_AGGREGATE_BYTES = 256 * 1024 * 1024;
 const PROJECT_BUNDLE_MAX_ENTRIES = 8_192;
 const IMPORT_PIN_GENERATION = 0;
 const EDITORIAL_TRANSCRIPT_DIRECTORY = 'editorial-transcripts/';
+const COVERAGE_RECORD_KEYS = new Set([
+    'version',
+    'recordId',
+    'sourceFingerprint',
+    'sourceSampleRate',
+    'sourceSampleCount',
+    'acquisitionProfileDigest',
+    'endpointIdentityDigest',
+    'contextSamples',
+    'requestedModel',
+    'responseSchema',
+    'pcmAlgorithmVersion',
+    'providerProfileVersion',
+    'language',
+    'speakerMode',
+    'mergeAlgorithmVersion',
+    'coreCoverage',
+    'acquisitionWindows',
+    'mergedTranscriptRecordId',
+]);
+const CHUNK_RECORD_KEYS = new Set([
+    'version',
+    'recordId',
+    'sourceFingerprint',
+    'acquisitionProfileDigest',
+    'windowId',
+    'decoded',
+    'words',
+]);
 const V4_METADATA_KEYS = new Set([
     'version',
     'project',
     'editorManifest',
     'sourceFiles',
     'editorialTranscriptFiles',
+    'editorialCoverageFiles',
+    'editorialChunkFiles',
+    'sourceDigests',
     'presets',
 ]);
 const SERIALIZED_PROJECT_KEYS = new Set([
@@ -98,8 +154,16 @@ export interface ProjectBundleMetadataV4 {
         video: Record<string, string>;
         audio: Record<string, string>;
     };
+    /** Streaming SHA-256 of every source. Optional only for legacy 4.0 compatibility. */
+    sourceDigests?: {
+        video: Record<string, Sha256Digest>;
+        audio: Record<string, Sha256Digest>;
+    };
     /** One unique canonical sidecar path for every record ID described by the current manifest. */
     editorialTranscriptFiles: Record<Sha256Digest, string>;
+    /** V2 range proof and immutable chunk sidecars; omitted by legacy V1-only 4.0 bundles. */
+    editorialCoverageFiles?: Record<Sha256Digest, string>;
+    editorialChunkFiles?: Record<Sha256Digest, string>;
     presets: StylePreset[];
 }
 
@@ -144,6 +208,8 @@ interface PreparedProjectImport {
     manifest: EditorManifestV4;
     sourceAssets: EditorPersistentAsset[];
     transcriptRecords: CanonicalEditorialTranscriptRecordV1[];
+    coverageRecords: TranscriptionCoverageRecordV2[];
+    chunkRecords: RangeTranscriptChunkRecordV2[];
     recordIds: Sha256Digest[];
 }
 
@@ -154,12 +220,59 @@ interface PreparedProjectImport {
  * enter the archive accidentally.
  */
 export async function exportProjectBundle(projectId: string): Promise<Blob> {
+    const entries = await prepareProjectBundleExportEntries(
+        projectId,
+        undefined,
+        MAX_IN_MEMORY_BUNDLE_BYTES,
+    );
+    const projectedBytes = entries.reduce((total, entry) => total + entry.data.size, 0);
+    if (!Number.isSafeInteger(projectedBytes)
+        || projectedBytes + 1024 * 1024 > MAX_IN_MEMORY_BUNDLE_BYTES) {
+        throw new Error(
+            'Project bundle exceeds the in-memory compatibility limit; use streaming export.',
+        );
+    }
+    const memory = createBoundedMemoryZipSink();
+    await writeStoredProjectBundleZip({ entries, sink: memory.sink });
+    return memory.toBlob();
+}
+
+/** Streams a .waptions archive to a file-backed destination with cancellation and backpressure. */
+export async function exportProjectBundleToWritableStream(
+    projectId: string,
+    stream: WritableStream<Uint8Array>,
+    signal?: AbortSignal,
+): Promise<void> {
+    const sink = createWritableStreamZipSink(stream);
+    try {
+        const entries = await prepareProjectBundleExportEntries(projectId, signal);
+        await writeStoredProjectBundleZip({ entries, sink, signal });
+    } catch (error) {
+        await sink.abort?.(error).catch(() => undefined);
+        throw error;
+    }
+}
+
+async function prepareProjectBundleExportEntries(
+    projectId: string,
+    signal?: AbortSignal,
+    maximumArchiveBytes?: number,
+): Promise<StoredProjectBundleEntry[]> {
     const [project, document] = await Promise.all([
         storageService.loadProject(projectId),
         storageService.loadEditorDocument(projectId, { targetVersion: 4 }),
     ]);
     if (!project) throw new Error('Project not found.');
     if (!document) throw new Error('The project has no durable editor document.');
+    const sourceBytes = [...document.videoSources, ...document.audioSources]
+        .reduce((total, source) => total + source.file.size, 0);
+    if (!Number.isSafeInteger(sourceBytes)
+        || (maximumArchiveBytes !== undefined
+            && sourceBytes + 1024 * 1024 > maximumArchiveBytes)) {
+        throw new Error(
+            'Project bundle exceeds the in-memory compatibility limit; use streaming export.',
+        );
+    }
 
     const manifest = createEditorManifestV4(document);
     const transcriptRepository = new EditorialTranscriptRepository();
@@ -168,26 +281,61 @@ export async function exportProjectBundle(projectId: string): Promise<Blob> {
         manifest.editorialTranscriptDescriptors,
         transcriptRepository,
     );
-    const zip = new JSZip();
+    const rangeRepository = new IndexedRangeTranscriptionRepository();
+    const { coverageRecords, chunkRecords } = await resolveCurrentRangeRecords(
+        manifest.editorialTranscriptDescriptors,
+        rangeRepository,
+        transcriptRecords,
+    );
+    const entries: StoredProjectBundleEntry[] = [];
     const sourceFiles: ProjectBundleMetadataV4['sourceFiles'] = { video: {}, audio: {} };
-    document.videoSources.forEach((source) => {
+    const sourceDigests: NonNullable<ProjectBundleMetadataV4['sourceDigests']> = {
+        video: {},
+        audio: {},
+    };
+    for (const source of document.videoSources) {
+        throwIfAborted(signal);
         const path = sourcePath('video', source.id, source.originalName);
         sourceFiles.video[source.id] = path;
-        zip.file(path, source.file);
-    });
-    document.audioSources.forEach((source) => {
+        sourceDigests.video[source.id] = await sha256Blob(source.file, signal);
+        entries.push({ name: path, data: source.file });
+    }
+    for (const source of document.audioSources) {
+        throwIfAborted(signal);
         const path = sourcePath('audio', source.id, source.originalName);
         sourceFiles.audio[source.id] = path;
-        zip.file(path, source.file);
-    });
+        sourceDigests.audio[source.id] = await sha256Blob(source.file, signal);
+        entries.push({ name: path, data: source.file });
+    }
 
     const editorialTranscriptFiles = {} as Record<Sha256Digest, string>;
+    const editorialCoverageFiles = {} as Record<Sha256Digest, string>;
+    const editorialChunkFiles = {} as Record<Sha256Digest, string>;
     transcriptRecords.forEach((record) => {
         const path = editorialTranscriptPath(record.recordId);
         editorialTranscriptFiles[record.recordId] = path;
         // `canonicalJson` is the exact byte-domain string used to compute recordId. Pretty
         // printing or adding a newline here would make a nominally valid sidecar non-canonical.
-        zip.file(path, record.canonicalJson);
+        entries.push({
+            name: path,
+            data: new Blob([record.canonicalJson], { type: 'application/json' }),
+        });
+    });
+    coverageRecords.forEach((record) => {
+        const path = editorialCoveragePath(record.recordId);
+        editorialCoverageFiles[record.recordId] = path;
+        entries.push({
+            name: path,
+            data: new Blob([canonicalizeJson(record)], { type: 'application/json' }),
+        });
+    });
+    chunkRecords.forEach((record) => {
+        const path = editorialChunkPath(record.recordId);
+        editorialChunkFiles[record.recordId] = path;
+        entries.push({
+            name: path,
+            data: new Blob([canonicalizeJson(record)], { type: 'application/json' }),
+        });
     });
     const metadata: ProjectBundleMetadataV4 = {
         version: PROJECT_BUNDLE_VERSION,
@@ -198,23 +346,31 @@ export async function exportProjectBundle(projectId: string): Promise<Blob> {
         },
         editorManifest: manifest,
         sourceFiles,
+        sourceDigests,
         editorialTranscriptFiles,
+        ...(coverageRecords.length > 0 ? { editorialCoverageFiles } : {}),
+        ...(chunkRecords.length > 0 ? { editorialChunkFiles } : {}),
         presets: getStylePresets().filter((preset) => !preset.isDefault),
     };
     const metadataJson = JSON.stringify(metadata, null, 2);
     if (new TextEncoder().encode(metadataJson).byteLength > PROJECT_BUNDLE_METADATA_MAX_BYTES) {
         throw new Error('Project bundle metadata exceeds the supported byte limit.');
     }
-    zip.file('metadata.json', metadataJson);
-    if (Object.keys(zip.files).length > PROJECT_BUNDLE_MAX_ENTRIES) {
+    entries.push({
+        name: 'metadata.json',
+        data: new Blob([metadataJson], { type: 'application/json' }),
+    });
+    if (entries.length > PROJECT_BUNDLE_MAX_ENTRIES) {
         throw new Error('Project bundle contains too many source or transcript entries.');
     }
-    return zip.generateAsync({ type: 'blob' });
+    return entries;
 }
 
 export async function peekProjectBundle(blob: Blob): Promise<ProjectBundleMetadata> {
     const zip = await loadProjectBundleZip(blob);
-    return readMetadata(zip);
+    const metadata = await readMetadata(zip);
+    validateDeclaredArchiveEntries(zip, metadata);
+    return metadata;
 }
 
 /**
@@ -223,21 +379,40 @@ export async function peekProjectBundle(blob: Blob): Promise<ProjectBundleMetada
  * while releasing only its own pending project generation. The temporary project database and
  * dashboard index are both removed before the original failure is returned.
  */
-export async function importProjectBundle(blob: Blob): Promise<{ projectId: string; versionMismatch: boolean }> {
-    const zip = await loadProjectBundleZip(blob);
+export async function importProjectBundle(
+    blob: Blob,
+    signal?: AbortSignal,
+): Promise<{ projectId: string; versionMismatch: boolean }> {
+    throwIfAborted(signal);
+    const zip = await loadProjectBundleZip(blob, signal);
     const metadata = await readMetadata(zip);
+    validateDeclaredArchiveEntries(zip, metadata);
+    throwIfAborted(signal);
     const newProjectId = crypto.randomUUID();
     const importedProject = createImportedProject(metadata, newProjectId);
-    const prepared = await prepareProjectImport(zip, metadata);
+    const prepared = await prepareProjectImport(zip, metadata, signal);
     const transcriptRepository = new EditorialTranscriptRepository();
+    const rangeRepository = new IndexedRangeTranscriptionRepository();
     let pendingPinsOwned = false;
+    let durablePinsPublished = false;
+    const importedPresetIds: string[] = [];
 
     try {
         // Imported bodies are verified again by the repository write boundary. Existing equal
         // bytes are an idempotent dedupe; conflicting bytes under one hash fail without overwrite.
         for (const record of prepared.transcriptRecords) {
+            throwIfAborted(signal);
             await transcriptRepository.putRecord(record);
         }
+        for (const record of prepared.chunkRecords) {
+            throwIfAborted(signal);
+            await rangeRepository.putChunk(record);
+        }
+        for (const record of prepared.coverageRecords) {
+            throwIfAborted(signal);
+            await rangeRepository.putCoverage(record);
+        }
+        throwIfAborted(signal);
         if (prepared.recordIds.length > 0) {
             await transcriptRepository.setPendingGenerationPins(
                 newProjectId,
@@ -256,6 +431,7 @@ export async function importProjectBundle(blob: Blob): Promise<{ projectId: stri
             prepared.sourceAssets,
         );
         await storageService.saveProject(importedProject);
+        throwIfAborted(signal);
         if (prepared.recordIds.length > 0) {
             await transcriptRepository.publishDurableProjectPins({
                 projectId: newProjectId,
@@ -266,7 +442,15 @@ export async function importProjectBundle(blob: Blob): Promise<{ projectId: stri
                 walRecordIds: [],
             });
             pendingPinsOwned = false;
+            durablePinsPublished = true;
         }
+        const existingPresets = getStylePresets();
+        metadata.presets.forEach((preset) => {
+            if (!existingPresets.some((existing) => existing.name === preset.name)) {
+                importedPresetIds.push(saveStylePreset(preset.name, preset.style).id);
+            }
+        });
+        return { projectId: newProjectId, versionMismatch: metadata.version !== PROJECT_BUNDLE_VERSION };
     } catch (error) {
         // Cleanup is deliberately scoped to the random temporary project and its exact pending
         // generation. CAS records may have existed before import (or may be useful verified cache
@@ -277,32 +461,36 @@ export async function importProjectBundle(blob: Blob): Promise<{ projectId: stri
             pendingPinsOwned
                 ? transcriptRepository.clearPendingGenerationPins(newProjectId, IMPORT_PIN_GENERATION)
                 : Promise.resolve(),
+            durablePinsPublished
+                ? transcriptRepository.deleteProjectPins(newProjectId)
+                : Promise.resolve(),
         ]);
+        importedPresetIds.forEach((presetId) => {
+            try {
+                deleteStylePreset(presetId);
+            } catch {
+                // Project and pin cleanup remain authoritative even if localStorage is unavailable.
+            }
+        });
         throw error;
     }
-
-    const existingPresets = getStylePresets();
-    metadata.presets.forEach((preset) => {
-        if (!existingPresets.some((existing) => existing.name === preset.name)) {
-            saveStylePreset(preset.name, preset.style);
-        }
-    });
-    return { projectId: newProjectId, versionMismatch: metadata.version !== PROJECT_BUNDLE_VERSION };
 }
 
 async function prepareProjectImport(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     metadata: ProjectBundleMetadata,
+    signal?: AbortSignal,
 ): Promise<PreparedProjectImport> {
-    if (isV4Metadata(metadata)) return prepareV4Import(zip, metadata);
-    if (isV3Metadata(metadata)) return prepareV3Import(zip, metadata);
-    if (isV2Metadata(metadata)) return prepareV2Import(zip, metadata);
-    return prepareV1Import(zip, metadata);
+    if (isV4Metadata(metadata)) return prepareV4Import(zip, metadata, signal);
+    if (isV3Metadata(metadata)) return prepareV3Import(zip, metadata, signal);
+    if (isV2Metadata(metadata)) return prepareV2Import(zip, metadata, signal);
+    return prepareV1Import(zip, metadata, signal);
 }
 
 async function prepareV4Import(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     metadata: ProjectBundleMetadataV4,
+    signal?: AbortSignal,
 ): Promise<PreparedProjectImport> {
     const manifest = normalizeLegacyEditorManifestV4(metadata.editorManifest);
     assertValidManifestV4(manifest, 'bundle V4 manifest');
@@ -312,25 +500,52 @@ async function prepareV4Import(
         manifest.audioSourceDescriptors,
         'V4',
     );
-    const videoSources = await Promise.all(manifest.videoSourceDescriptors.map((descriptor) => (
-        restoreSourceFile(zip, metadata.sourceFiles.video[descriptor.id], descriptor)
-    )));
-    const audioSources = await Promise.all(manifest.audioSourceDescriptors.map((descriptor) => (
-        restoreSourceFile(zip, metadata.sourceFiles.audio[descriptor.id], descriptor)
-    )));
+    assertSourceDigestMaps(
+        metadata.sourceDigests,
+        manifest.videoSourceDescriptors,
+        manifest.audioSourceDescriptors,
+    );
+    const videoSources = [];
+    for (const descriptor of manifest.videoSourceDescriptors) {
+        videoSources.push(await restoreSourceFile(
+            zip,
+            metadata.sourceFiles.video[descriptor.id],
+            descriptor,
+            metadata.sourceDigests?.video[descriptor.id],
+            signal,
+        ));
+    }
+    const audioSources = [];
+    for (const descriptor of manifest.audioSourceDescriptors) {
+        audioSources.push(await restoreSourceFile(
+            zip,
+            metadata.sourceFiles.audio[descriptor.id],
+            descriptor,
+            metadata.sourceDigests?.audio[descriptor.id],
+            signal,
+        ));
+    }
     const document = hydrateEditorDocumentV4(manifest, videoSources, audioSources);
     const transcriptRecords = await readAndValidateTranscriptSidecars(zip, metadata, document);
+    const { coverageRecords, chunkRecords } = await readAndValidateRangeSidecars(
+        zip,
+        metadata,
+        transcriptRecords,
+    );
     return {
         manifest: createEditorManifestV4(document),
         sourceAssets: persistentAssets(videoSources, audioSources),
         transcriptRecords,
+        coverageRecords,
+        chunkRecords,
         recordIds: transcriptRecords.map((record) => record.recordId),
     };
 }
 
 async function prepareV3Import(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     metadata: ProjectBundleMetadataV3,
+    signal?: AbortSignal,
 ): Promise<PreparedProjectImport> {
     const normalizedManifest = normalizeLegacyEditorManifestV3(metadata.editorManifest);
     const validation = validateEditorManifestV3(normalizedManifest);
@@ -341,12 +556,26 @@ async function prepareV3Import(
         normalizedManifest.audioSourceDescriptors,
         'V3',
     );
-    const videoSources = await Promise.all(normalizedManifest.videoSourceDescriptors.map((descriptor) => (
-        restoreSourceFile(zip, metadata.sourceFiles.video[descriptor.id], descriptor)
-    )));
-    const audioSources = await Promise.all(normalizedManifest.audioSourceDescriptors.map((descriptor) => (
-        restoreSourceFile(zip, metadata.sourceFiles.audio[descriptor.id], descriptor)
-    )));
+    const videoSources = [];
+    for (const descriptor of normalizedManifest.videoSourceDescriptors) {
+        videoSources.push(await restoreSourceFile(
+            zip,
+            metadata.sourceFiles.video[descriptor.id],
+            descriptor,
+            undefined,
+            signal,
+        ));
+    }
+    const audioSources = [];
+    for (const descriptor of normalizedManifest.audioSourceDescriptors) {
+        audioSources.push(await restoreSourceFile(
+            zip,
+            metadata.sourceFiles.audio[descriptor.id],
+            descriptor,
+            undefined,
+            signal,
+        ));
+    }
     // The existing reader establishes a valid hydrated V3 graph first; the one authoritative pure
     // migration then supplies explicit V4 placement and subtitle response policy.
     const v3Document = hydrateEditorDocumentV3(normalizedManifest, videoSources, audioSources);
@@ -355,19 +584,29 @@ async function prepareV3Import(
         manifest: createEditorManifestV4(document),
         sourceAssets: persistentAssets(videoSources, audioSources),
         transcriptRecords: [],
+        coverageRecords: [],
+        chunkRecords: [],
         recordIds: [],
     };
 }
 
 async function prepareV2Import(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     metadata: ProjectBundleMetadataV2,
+    signal?: AbortSignal,
 ): Promise<PreparedProjectImport> {
     assertV2ManifestSourceShape(metadata.editorManifest);
     assertLegacySourceMap(metadata.sourceFiles, metadata.editorManifest.sourceDescriptors, 'V2');
-    const videoSources = await Promise.all(metadata.editorManifest.sourceDescriptors.map((descriptor) => (
-        restoreSourceFile(zip, metadata.sourceFiles[descriptor.id], descriptor)
-    )));
+    const videoSources = [];
+    for (const descriptor of metadata.editorManifest.sourceDescriptors) {
+        videoSources.push(await restoreSourceFile(
+            zip,
+            metadata.sourceFiles[descriptor.id],
+            descriptor,
+            undefined,
+            signal,
+        ));
+    }
     const legacyDocument = {
         revision: metadata.editorManifest.revision,
         projectFps: metadata.editorManifest.projectFps,
@@ -389,18 +628,24 @@ async function prepareV2Import(
         manifest: createEditorManifestV4(document),
         sourceAssets: persistentAssets(videoSources, []),
         transcriptRecords: [],
+        coverageRecords: [],
+        chunkRecords: [],
         recordIds: [],
     };
 }
 
 async function prepareV1Import(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     metadata: ProjectBundleMetadataV1,
+    signal?: AbortSignal,
 ): Promise<PreparedProjectImport> {
-    const videoEntry = zip.file(/^video\./)[0] ?? null;
+    const videoEntry = Array.from(zip.entries.values())
+        .find(entry => /^video\./.test(entry.name) && !entry.directory) ?? null;
     let source: VideoSourceAssetV3 | null = null;
     if (videoEntry) {
-        const blob = await videoEntry.async('blob');
+        throwIfAborted(signal);
+        const blob = await videoEntry.readBlob();
+        throwIfAborted(signal);
         source = await inspectVideoSource(new File([blob], baseName(videoEntry.name), {
             type: getMimeTypeFromFileName(videoEntry.name),
         }));
@@ -416,13 +661,15 @@ async function prepareV1Import(
         manifest: createEditorManifestV4(document),
         sourceAssets: persistentAssets(source ? [source] : [], []),
         transcriptRecords: [],
+        coverageRecords: [],
+        chunkRecords: [],
         recordIds: [],
     };
 }
 
 async function resolveCurrentTranscriptRecords(
     document: EditorDocumentV4,
-    descriptors: readonly EditorialTranscriptDescriptorV1[],
+    descriptors: readonly EditorialTranscriptDescriptor[],
     repository: EditorialTranscriptRepository,
 ): Promise<CanonicalEditorialTranscriptRecordV1[]> {
     const descriptorsByRecordId = groupDescriptorsByRecordId(descriptors);
@@ -446,8 +693,53 @@ async function resolveCurrentTranscriptRecords(
     return records;
 }
 
+async function resolveCurrentRangeRecords(
+    descriptors: readonly EditorialTranscriptDescriptor[],
+    repository: IndexedRangeTranscriptionRepository,
+    transcriptRecords: readonly CanonicalEditorialTranscriptRecordV1[],
+): Promise<{
+    coverageRecords: TranscriptionCoverageRecordV2[];
+    chunkRecords: RangeTranscriptChunkRecordV2[];
+}> {
+    const coverageById = new Map<Sha256Digest, TranscriptionCoverageRecordV2>();
+    const chunksById = new Map<Sha256Digest, RangeTranscriptChunkRecordV2>();
+    for (const descriptor of descriptors) {
+        if (descriptor.version !== 2) continue;
+        const coverage = await repository.getCoverage(descriptor.coverageRecordId);
+        if (!coverage
+            || coverage.mergedTranscriptRecordId !== descriptor.recordId
+            || coverage.sourceFingerprint !== descriptor.sourceFingerprint
+            || coverage.acquisitionProfileDigest !== descriptor.acquisitionProfileDigest
+            || coverage.mergeAlgorithmVersion !== descriptor.mergeAlgorithmVersion) {
+            throw new Error('A coverage record required for bundle export is missing or inconsistent.');
+        }
+        coverageById.set(coverage.recordId, coverage);
+        for (const chunkId of coverage.acquisitionWindows.flatMap(window => window.chunkRecordIds)) {
+            const chunk = await repository.getChunk(chunkId);
+            if (!chunk
+                || chunk.sourceFingerprint !== descriptor.sourceFingerprint
+                || chunk.acquisitionProfileDigest !== descriptor.acquisitionProfileDigest) {
+                throw new Error('A range chunk required for bundle export is missing or inconsistent.');
+            }
+            chunksById.set(chunk.recordId, chunk);
+        }
+    }
+    await assertRangeSidecarsReproduceMergedRecords({
+        descriptors,
+        coverageRecords: Array.from(coverageById.values()),
+        chunkRecords: Array.from(chunksById.values()),
+        transcriptRecords,
+    });
+    return {
+        coverageRecords: Array.from(coverageById.values())
+            .sort((left, right) => left.recordId.localeCompare(right.recordId)),
+        chunkRecords: Array.from(chunksById.values())
+            .sort((left, right) => left.recordId.localeCompare(right.recordId)),
+    };
+}
+
 async function readAndValidateTranscriptSidecars(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     metadata: ProjectBundleMetadataV4,
     document: EditorDocumentV4,
 ): Promise<CanonicalEditorialTranscriptRecordV1[]> {
@@ -456,7 +748,7 @@ async function readAndValidateTranscriptSidecars(
     const resolvedBodies = {} as Record<Sha256Digest, ResolvedEditorialTranscriptMapV1[Sha256Digest]>;
     const records: CanonicalEditorialTranscriptRecordV1[] = [];
     for (const declaration of declarations) {
-        const bounded = await readBoundedZipUtf8(
+        const bounded = await readBoundedArchiveUtf8(
             declaration.entry,
             PROJECT_BUNDLE_TRANSCRIPT_MAX_RECORD_BYTES,
             'editorial transcript sidecar',
@@ -492,15 +784,238 @@ async function readAndValidateTranscriptSidecars(
     return records;
 }
 
+async function readAndValidateRangeSidecars(
+    zip: ProjectBundleArchive,
+    metadata: ProjectBundleMetadataV4,
+    transcriptRecords: readonly CanonicalEditorialTranscriptRecordV1[],
+): Promise<{
+    coverageRecords: TranscriptionCoverageRecordV2[];
+    chunkRecords: RangeTranscriptChunkRecordV2[];
+}> {
+    const descriptors = metadata.editorManifest.editorialTranscriptDescriptors
+        .filter(descriptor => descriptor.version === 2);
+    const expectedCoverageIds = new Set(descriptors.map(descriptor => descriptor.coverageRecordId));
+    const coverageDeclarations = validateRangeDeclarations({
+        zip,
+        declarations: metadata.editorialCoverageFiles ?? {},
+        expectedIds: expectedCoverageIds,
+        directory: 'editorial-coverage/',
+        pathForId: editorialCoveragePath,
+        label: 'coverage',
+    });
+    const coverageRecords: TranscriptionCoverageRecordV2[] = [];
+    for (const declaration of coverageDeclarations) {
+        const value = await readCanonicalRangeJson(
+            declaration.entry,
+            PROJECT_BUNDLE_TRANSCRIPT_MAX_RECORD_BYTES,
+            'editorial coverage sidecar',
+        );
+        assertOnlyObjectKeys(value, COVERAGE_RECORD_KEYS, 'editorial coverage sidecar');
+        const coverage = value as unknown as TranscriptionCoverageRecordV2;
+        if (coverage.recordId !== declaration.recordId) {
+            throw new Error('Invalid editorial coverage sidecar: record ID mismatch.');
+        }
+        await verifyTranscriptionCoverageRecordV2(coverage);
+        const descriptor = descriptors.find(
+            candidate => candidate.coverageRecordId === coverage.recordId,
+        );
+        if (!descriptor
+            || coverage.mergedTranscriptRecordId !== descriptor.recordId
+            || coverage.sourceFingerprint !== descriptor.sourceFingerprint
+            || coverage.acquisitionProfileDigest !== descriptor.acquisitionProfileDigest
+            || coverage.endpointIdentityDigest !== descriptor.endpointIdentityDigest) {
+            throw new Error('Invalid editorial coverage sidecar: descriptor mismatch.');
+        }
+        const profile = {
+            sourceFingerprint: coverage.sourceFingerprint,
+            sourceSampleRate: coverage.sourceSampleRate,
+            sourceSampleCount: coverage.sourceSampleCount,
+            coreCoverage: coverage.coreCoverage,
+            contextSamples: coverage.contextSamples,
+            language: descriptor.language,
+            speakerMode: coverage.speakerMode,
+            endpointIdentityDigest: coverage.endpointIdentityDigest,
+            requestedModel: coverage.requestedModel,
+            responseSchema: coverage.responseSchema,
+            pcmAlgorithmVersion: coverage.pcmAlgorithmVersion,
+            providerProfileVersion: coverage.providerProfileVersion,
+            mergeAlgorithmVersion: coverage.mergeAlgorithmVersion,
+        };
+        if (await createAcquisitionProfileDigest(profile) !== coverage.acquisitionProfileDigest
+            || await createRangeTranscriptionRequestKey(profile) !== descriptor.requestKey) {
+            throw new Error('Invalid editorial coverage sidecar: acquisition identity mismatch.');
+        }
+        coverageRecords.push(coverage);
+    }
+
+    const expectedChunkIds = new Set(coverageRecords.flatMap(record => (
+        record.acquisitionWindows.flatMap(window => window.chunkRecordIds)
+    )));
+    const chunkDeclarations = validateRangeDeclarations({
+        zip,
+        declarations: metadata.editorialChunkFiles ?? {},
+        expectedIds: expectedChunkIds,
+        directory: 'editorial-chunks/',
+        pathForId: editorialChunkPath,
+        label: 'chunk',
+    });
+    const chunkRecords: RangeTranscriptChunkRecordV2[] = [];
+    for (const declaration of chunkDeclarations) {
+        const value = await readCanonicalRangeJson(
+            declaration.entry,
+            PROJECT_BUNDLE_TRANSCRIPT_MAX_RECORD_BYTES,
+            'editorial chunk sidecar',
+        );
+        assertOnlyObjectKeys(value, CHUNK_RECORD_KEYS, 'editorial chunk sidecar');
+        const chunk = value as unknown as RangeTranscriptChunkRecordV2;
+        if (chunk.recordId !== declaration.recordId) {
+            throw new Error('Invalid editorial chunk sidecar: record ID mismatch.');
+        }
+        const { recordId, ...body } = chunk;
+        if (await sha256CanonicalJson(body) !== recordId
+            || !coverageRecords.some(record => (
+                record.sourceFingerprint === chunk.sourceFingerprint
+                && record.acquisitionProfileDigest === chunk.acquisitionProfileDigest
+                && record.acquisitionWindows.some(window => (
+                    window.windowId === chunk.windowId
+                    && window.chunkRecordIds.includes(chunk.recordId)
+                ))
+            ))) {
+            throw new Error('Invalid editorial chunk sidecar: hash or coverage mismatch.');
+        }
+        chunkRecords.push(chunk);
+    }
+    await assertRangeSidecarsReproduceMergedRecords({
+        descriptors,
+        coverageRecords,
+        chunkRecords,
+        transcriptRecords,
+    });
+    return { coverageRecords, chunkRecords };
+}
+
+async function assertRangeSidecarsReproduceMergedRecords(input: {
+    descriptors: readonly EditorialTranscriptDescriptor[];
+    coverageRecords: readonly TranscriptionCoverageRecordV2[];
+    chunkRecords: readonly RangeTranscriptChunkRecordV2[];
+    transcriptRecords: readonly CanonicalEditorialTranscriptRecordV1[];
+}): Promise<void> {
+    const chunks = new Map(input.chunkRecords.map(record => [record.recordId, record]));
+    const transcripts = new Map(input.transcriptRecords.map(record => [record.recordId, record]));
+    for (const coverage of input.coverageRecords) {
+        const descriptor = input.descriptors.find(candidate => (
+            candidate.version === 2 && candidate.coverageRecordId === coverage.recordId
+        ));
+        const transcript = transcripts.get(coverage.mergedTranscriptRecordId);
+        if (!descriptor || !transcript) {
+            throw new Error('Invalid editorial coverage sidecar: merged transcript is missing.');
+        }
+        const referencedChunks = coverage.acquisitionWindows.flatMap(window => (
+            window.chunkRecordIds.map((recordId) => {
+                const chunk = chunks.get(recordId);
+                if (!chunk) {
+                    throw new Error('Invalid editorial coverage sidecar: range chunk is missing.');
+                }
+                return chunk;
+            })
+        ));
+        if (descriptor.acquisition === 'local-no-audio') {
+            if (!transcript.body.noAudioStream
+                || referencedChunks.some(chunk => chunk.words.length > 0)) {
+                throw new Error('Invalid editorial coverage sidecar: no-audio proof is contradictory.');
+            }
+            continue;
+        }
+        const merged = mergeRangeTranscriptChunks(referencedChunks, coverage.coreCoverage);
+        const rebuilt = await createCanonicalMergedRangeRecord({
+            sourceFingerprint: coverage.sourceFingerprint,
+            sampleCount: coverage.sourceSampleCount,
+            language: descriptor.language,
+            speakerMode: descriptor.speakerMode,
+            canonicalModel: descriptor.canonicalModel,
+            words: merged.words,
+        });
+        if (rebuilt.recordId !== coverage.mergedTranscriptRecordId
+            || rebuilt.canonicalJson !== transcript.canonicalJson) {
+            throw new Error(
+                'Invalid editorial coverage sidecar: chunks do not reproduce the merged transcript.',
+            );
+        }
+    }
+}
+
+function validateRangeDeclarations(input: {
+    zip: ProjectBundleArchive;
+    declarations: Record<Sha256Digest, string>;
+    expectedIds: ReadonlySet<Sha256Digest>;
+    directory: string;
+    pathForId: (recordId: Sha256Digest) => string;
+    label: string;
+}): Array<{ recordId: Sha256Digest; entry: ProjectBundleArchiveEntry }> {
+    const declaredIds = new Set<Sha256Digest>();
+    const declaredPaths = new Set<string>();
+    const result: Array<{ recordId: Sha256Digest; entry: ProjectBundleArchiveEntry }> = [];
+    Object.entries(input.declarations).forEach(([candidateId, path]) => {
+        if (!isSha256Digest(candidateId)
+            || !input.expectedIds.has(candidateId)
+            || path !== input.pathForId(candidateId)
+            || declaredIds.has(candidateId)
+            || declaredPaths.has(path)) {
+            throw new Error(`Invalid bundle ${input.label} declaration.`);
+        }
+        const entry = input.zip.get(path);
+        if (!entry || entry.directory) {
+            throw new Error(`Invalid bundle ${input.label} declaration: sidecar is missing.`);
+        }
+        declaredIds.add(candidateId);
+        declaredPaths.add(path);
+        result.push({ recordId: candidateId, entry });
+    });
+    input.expectedIds.forEach((recordId) => {
+        if (!declaredIds.has(recordId)) {
+            throw new Error(`Invalid bundle ${input.label} declaration: descriptor has no sidecar.`);
+        }
+    });
+    input.zip.entries.forEach((entry) => {
+        if (!entry.directory && entry.name.startsWith(input.directory)
+            && !declaredPaths.has(entry.name)) {
+            throw new Error(`Invalid bundle ${input.label} declaration: undeclared sidecar.`);
+        }
+    });
+    return result.sort((left, right) => left.recordId.localeCompare(right.recordId));
+}
+
+async function readCanonicalRangeJson(
+    entry: ProjectBundleArchiveEntry,
+    maximumBytes: number,
+    label: string,
+): Promise<unknown> {
+    const bounded = await readBoundedArchiveUtf8(entry, maximumBytes, label);
+    let value: unknown;
+    try {
+        value = JSON.parse(bounded.text) as unknown;
+    } catch {
+        throw new Error(`Invalid ${label}: malformed JSON.`);
+    }
+    if (canonicalizeJson(value) !== bounded.text) {
+        throw new Error(`Invalid ${label}: bytes are not canonical JSON.`);
+    }
+    return value;
+}
+
 function validateTranscriptDeclarations(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     declarationMap: Record<Sha256Digest, string>,
-    descriptorsByRecordId: Map<Sha256Digest, EditorialTranscriptDescriptorV1[]>,
-): Array<{ recordId: Sha256Digest; path: string; entry: JSZip.JSZipObject }> {
+    descriptorsByRecordId: Map<Sha256Digest, EditorialTranscriptDescriptor[]>,
+): Array<{ recordId: Sha256Digest; path: string; entry: ProjectBundleArchiveEntry }> {
     const entries = Object.entries(declarationMap);
     const declaredRecordIds = new Set<Sha256Digest>();
     const declaredPaths = new Set<string>();
-    const declarations: Array<{ recordId: Sha256Digest; path: string; entry: JSZip.JSZipObject }> = [];
+    const declarations: Array<{
+        recordId: Sha256Digest;
+        path: string;
+        entry: ProjectBundleArchiveEntry;
+    }> = [];
     let aggregateBytes = 0;
 
     for (const [candidateRecordId, path] of entries) {
@@ -521,11 +1036,11 @@ function validateTranscriptDeclarations(
         if (path !== expectedPath) {
             throw new Error('Invalid bundle transcript declaration: sidecar path does not match its record ID.');
         }
-        const entry = zip.files[path];
-        if (!entry || entry.dir) {
+        const entry = zip.get(path);
+        if (!entry || entry.directory) {
             throw new Error('Invalid bundle transcript declaration: required sidecar is missing.');
         }
-        aggregateBytes = addTranscriptSidecarBytes(aggregateBytes, getDeclaredZipEntrySize(entry));
+        aggregateBytes = addTranscriptSidecarBytes(aggregateBytes, entry.uncompressedBytes);
         declaredRecordIds.add(recordId);
         declaredPaths.add(path);
         declarations.push({ recordId, path, entry });
@@ -535,8 +1050,8 @@ function validateTranscriptDeclarations(
             throw new Error('Invalid bundle transcript declaration: manifest descriptor has no sidecar.');
         }
     }
-    Object.values(zip.files).forEach((entry) => {
-        if (!entry.dir && entry.name.startsWith(EDITORIAL_TRANSCRIPT_DIRECTORY)
+    zip.entries.forEach((entry) => {
+        if (!entry.directory && entry.name.startsWith(EDITORIAL_TRANSCRIPT_DIRECTORY)
             && !declaredPaths.has(entry.name)) {
             throw new Error('Invalid bundle transcript declaration: undeclared transcript sidecar.');
         }
@@ -545,9 +1060,9 @@ function validateTranscriptDeclarations(
 }
 
 function groupDescriptorsByRecordId(
-    descriptors: readonly EditorialTranscriptDescriptorV1[],
-): Map<Sha256Digest, EditorialTranscriptDescriptorV1[]> {
-    const grouped = new Map<Sha256Digest, EditorialTranscriptDescriptorV1[]>();
+    descriptors: readonly EditorialTranscriptDescriptor[],
+): Map<Sha256Digest, EditorialTranscriptDescriptor[]> {
+    const grouped = new Map<Sha256Digest, EditorialTranscriptDescriptor[]>();
     descriptors.forEach((descriptor) => {
         const current = grouped.get(descriptor.recordId) ?? [];
         current.push(descriptor);
@@ -557,8 +1072,9 @@ function groupDescriptorsByRecordId(
 }
 
 async function assertEditorialDescriptorRequestKey(
-    descriptor: EditorialTranscriptDescriptorV1,
+    descriptor: EditorialTranscriptDescriptor,
 ): Promise<void> {
+    if (descriptor.version === 2) return;
     const expectedRequestKey = await createEditorialTranscriptRequestKey({
         sourceFingerprint: descriptor.sourceFingerprint,
         sampleCount: descriptor.sampleCount,
@@ -588,14 +1104,22 @@ async function restoreSourceFile<T extends {
     size: number;
     lastModified: number;
 }>(
-    zip: JSZip,
+    zip: ProjectBundleArchive,
     path: string | undefined,
     descriptor: T,
+    expectedDigest?: Sha256Digest,
+    signal?: AbortSignal,
 ): Promise<T & { file: File }> {
-    const entry = path ? zip.files[path] : null;
-    if (!entry || entry.dir) throw new Error(`Bundle source file "${descriptor.id}" is missing.`);
-    assertZipEntryExactSize(entry, descriptor.size, 'bundle source file');
-    const blob = await entry.async('blob');
+    throwIfAborted(signal);
+    const entry = path ? zip.get(path) : null;
+    if (!entry || entry.directory) throw new Error(`Bundle source file "${descriptor.id}" is missing.`);
+    if (entry.uncompressedBytes !== descriptor.size) {
+        throw new Error('Invalid bundle source file: ZIP byte size does not match its descriptor.');
+    }
+    const blob = await entry.readBlob(
+        expectedDigest ? { expectedSha256: expectedDigest } : undefined,
+    );
+    throwIfAborted(signal);
     if (blob.size !== descriptor.size) {
         throw new Error(`Bundle source file "${descriptor.id}" has an invalid byte size.`);
     }
@@ -629,22 +1153,32 @@ function createImportedProject(metadata: ProjectBundleMetadata, newProjectId: st
     };
 }
 
-async function loadProjectBundleZip(blob: Blob): Promise<JSZip> {
-    // ArrayBuffer is supported consistently by JSZip in browsers and in the Node-based unit
-    // environment. Browser Blob handling ultimately performs the same whole compressed-archive
-    // read before central-directory parsing, so normalizing here does not decompress any entry.
-    const input = typeof Blob !== 'undefined' && blob instanceof Blob
-        ? await blob.arrayBuffer()
+async function loadProjectBundleZip(
+    blob: Blob,
+    signal?: AbortSignal,
+): Promise<ProjectBundleArchive> {
+    throwIfAborted(signal);
+    const normalized = ArrayBuffer.isView(blob)
+        ? new Blob([
+            new Uint8Array(blob.buffer, blob.byteOffset, blob.byteLength),
+        ])
         : blob;
-    const zip = await JSZip.loadAsync(input);
-    assertSafeProjectBundleEntries(zip, PROJECT_BUNDLE_MAX_ENTRIES);
-    return zip;
+    await inspectProjectBundleZipBlob(normalized, PROJECT_BUNDLE_MAX_ENTRIES);
+    return openRangeBackedProjectBundleArchive(normalized, PROJECT_BUNDLE_MAX_ENTRIES, signal);
 }
 
-async function readMetadata(zip: JSZip): Promise<ProjectBundleMetadata> {
-    const metadataFile = zip.files['metadata.json'];
-    if (!metadataFile || metadataFile.dir) throw new Error('Invalid .waptions file: missing metadata.');
-    const bounded = await readBoundedZipUtf8(
+function throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+        throw new DOMException('Project bundle operation was cancelled.', 'AbortError');
+    }
+}
+
+async function readMetadata(zip: ProjectBundleArchive): Promise<ProjectBundleMetadata> {
+    const metadataFile = zip.get('metadata.json');
+    if (!metadataFile || metadataFile.directory) {
+        throw new Error('Invalid .waptions file: missing metadata.');
+    }
+    const bounded = await readBoundedArchiveUtf8(
         metadataFile,
         PROJECT_BUNDLE_METADATA_MAX_BYTES,
         '.waptions metadata',
@@ -665,6 +1199,25 @@ async function readMetadata(zip: JSZip): Promise<ProjectBundleMetadata> {
     throw new Error(`Unsupported project bundle version "${value.version}".`);
 }
 
+async function readBoundedArchiveUtf8(
+    entry: ProjectBundleArchiveEntry,
+    maximumBytes: number,
+    label: string,
+): Promise<{ bytes: Uint8Array; text: string }> {
+    if (entry.uncompressedBytes > maximumBytes) {
+        throw new Error(`Invalid ${label}: exceeds the ${maximumBytes}-byte limit.`);
+    }
+    const bytes = await entry.readBytes(maximumBytes);
+    try {
+        return {
+            bytes,
+            text: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+        };
+    } catch {
+        throw new Error(`Invalid ${label}: content is not valid UTF-8.`);
+    }
+}
+
 function isMetadataBase(value: unknown): value is MetadataBaseValue {
     if (!isRecord(value) || typeof value.version !== 'string' || !isSerializedProject(value.project)
         || !Array.isArray(value.presets)) return false;
@@ -681,7 +1234,12 @@ function isV4MetadataShape(
         && hasOnlyKeys(value.project, SERIALIZED_PROJECT_KEYS)
         && isRecord(value.editorManifest)
         && isTypedSourceMapValue(value.sourceFiles)
-        && isStringRecord(value.editorialTranscriptFiles);
+        && (value.sourceDigests === undefined || isTypedSourceMapValue(value.sourceDigests))
+        && isStringRecord(value.editorialTranscriptFiles)
+        && (value.editorialCoverageFiles === undefined
+            || isStringRecord(value.editorialCoverageFiles))
+        && (value.editorialChunkFiles === undefined
+            || isStringRecord(value.editorialChunkFiles));
 }
 
 function isV3MetadataShape(
@@ -705,6 +1263,53 @@ function isV1MetadataShape(
         && (value.timeline.transcriptionGroups === null || isRecord(value.timeline.transcriptionGroups))
         && (value.timeline.transcriptionContainerIds === null
             || Array.isArray(value.timeline.transcriptionContainerIds));
+}
+
+function validateDeclaredArchiveEntries(
+    zip: ProjectBundleArchive,
+    metadata: ProjectBundleMetadata,
+): void {
+    const expectedFiles = new Set<string>(['metadata.json']);
+    if (isV4Metadata(metadata)) {
+        Object.values(metadata.sourceFiles.video).forEach(path => expectedFiles.add(path));
+        Object.values(metadata.sourceFiles.audio).forEach(path => expectedFiles.add(path));
+        Object.values(metadata.editorialTranscriptFiles).forEach(path => expectedFiles.add(path));
+        Object.values(metadata.editorialCoverageFiles ?? {}).forEach(path => expectedFiles.add(path));
+        Object.values(metadata.editorialChunkFiles ?? {}).forEach(path => expectedFiles.add(path));
+    } else if (isV3Metadata(metadata)) {
+        Object.values(metadata.sourceFiles.video).forEach(path => expectedFiles.add(path));
+        Object.values(metadata.sourceFiles.audio).forEach(path => expectedFiles.add(path));
+    } else if (isV2Metadata(metadata)) {
+        Object.values(metadata.sourceFiles).forEach(path => expectedFiles.add(path));
+    } else {
+        const legacyVideoFiles = Array.from(zip.entries.values())
+            .filter(entry => !entry.directory && /^video\.[^/]+$/.test(entry.name));
+        if (legacyVideoFiles.length > 1) {
+            throw new Error('Invalid .waptions file: multiple legacy video entries are unsupported.');
+        }
+        legacyVideoFiles.forEach(entry => expectedFiles.add(entry.name));
+    }
+    const expectedDirectories = new Set<string>();
+    expectedFiles.forEach((path) => {
+        const segments = path.split('/');
+        for (let index = 1; index < segments.length; index += 1) {
+            expectedDirectories.add(`${segments.slice(0, index).join('/')}/`);
+        }
+    });
+    zip.entries.forEach((entry) => {
+        const specializedV4Sidecar = isV4Metadata(metadata)
+            && (
+                entry.name.startsWith(EDITORIAL_TRANSCRIPT_DIRECTORY)
+                || entry.name.startsWith('editorial-coverage/')
+                || entry.name.startsWith('editorial-chunks/')
+            );
+        const expected = specializedV4Sidecar || (entry.directory
+            ? expectedDirectories.has(entry.name)
+            : expectedFiles.has(entry.name));
+        if (!expected) {
+            throw new Error('Invalid .waptions file: archive contains an undeclared entry.');
+        }
+    });
 }
 
 function isSerializedProject(value: unknown): value is SerializedProject {
@@ -743,6 +1348,29 @@ function assertTypedSourceMaps(
     const paths = [...Object.values(sourceFiles.video), ...Object.values(sourceFiles.audio)];
     if (new Set(paths).size !== paths.length) {
         throw new Error(`Invalid ${versionLabel} bundle source map: duplicate source path.`);
+    }
+}
+
+function assertSourceDigestMaps(
+    sourceDigests: ProjectBundleMetadataV4['sourceDigests'],
+    videoDescriptors: readonly { id: string }[],
+    audioDescriptors: readonly { id: string }[],
+): void {
+    if (!sourceDigests) return;
+    assertDigestMap(sourceDigests.video, videoDescriptors, 'V4 video');
+    assertDigestMap(sourceDigests.audio, audioDescriptors, 'V4 audio');
+}
+
+function assertDigestMap(
+    digests: Record<string, string>,
+    descriptors: readonly { id: string }[],
+    label: string,
+): void {
+    const expectedIds = new Set(descriptors.map(descriptor => descriptor.id));
+    const actualIds = Object.keys(digests);
+    if (actualIds.length !== expectedIds.size
+        || actualIds.some(id => !expectedIds.has(id) || !isSha256Digest(digests[id]))) {
+        throw new Error(`Invalid ${label} bundle source digest map.`);
     }
 }
 
@@ -820,6 +1448,14 @@ function editorialTranscriptPath(recordId: Sha256Digest): string {
     return `${EDITORIAL_TRANSCRIPT_DIRECTORY}${recordId.slice('sha256:'.length)}.json`;
 }
 
+function editorialCoveragePath(recordId: Sha256Digest): string {
+    return `editorial-coverage/${recordId.slice('sha256:'.length)}.json`;
+}
+
+function editorialChunkPath(recordId: Sha256Digest): string {
+    return `editorial-chunks/${recordId.slice('sha256:'.length)}.json`;
+}
+
 function sourcePath(kind: 'video' | 'audio', id: string, filename: string): string {
     return `sources/${kind}/${id}${getExtension(filename)}`;
 }
@@ -862,6 +1498,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasOnlyKeys(value: object, allowed: ReadonlySet<string>): boolean {
     const keys = Object.keys(value);
     return keys.length <= allowed.size && keys.every(key => allowed.has(key));
+}
+
+function assertOnlyObjectKeys(
+    value: unknown,
+    allowed: ReadonlySet<string>,
+    label: string,
+): asserts value is Record<string, unknown> {
+    if (!isRecord(value) || !hasOnlyKeys(value, allowed)) {
+        throw new Error(`Invalid ${label}: contains unsupported fields.`);
+    }
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {

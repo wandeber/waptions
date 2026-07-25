@@ -1,9 +1,11 @@
 import type {
     EditorialSpeakerMode,
-    EditorialTranscriptDescriptorV1,
+    EditorialTranscriptDescriptor,
+    HalfOpenSampleRange,
     EditorialTranscriptRecordBodyV1,
     Sha256Digest,
 } from '@/types/editorial';
+import { EDITORIAL_TRANSCRIPT_REQUESTED_MODEL as REQUESTED_MODEL } from '@/types/editorial';
 import {
     EditorialTranscriptInFlightRegistry,
     EditorialTranscriptRepository,
@@ -26,11 +28,29 @@ import {
     normalizeEditorialLanguage,
     type EditorialTranscriptionPreferencesV1,
 } from './preferences';
-import { requestEditMaxEditorialTranscript } from './request';
 import {
+    EDITORIAL_TRANSCRIPTION_MAX_WAV_BYTES,
+    requestEditMaxEditorialTranscript,
+} from './request';
+import {
+    createCanonicalEditorialTranscriptRecord,
     createLocalNoAudioTranscriptRecord,
     type CanonicalEditorialTranscriptRecordV1,
 } from './transcript-body';
+import { createMediabunnyEditorialPcmWindowDecoder } from './pcm-window-decoder';
+import { EditorialPcmWindowRepository } from '@/lib/storage/editorial-pcm-window-cache';
+import { IndexedRangeTranscriptionRepository } from './range-repository';
+import {
+    RangeTranscriptionCoordinator,
+    type RangeTranscriptionRepository,
+} from './range-orchestrator';
+import { createPcm16WavBlob } from './wav';
+import {
+    createEditorialTranscriptDescriptorV2,
+} from './identity';
+
+export const LEGACY_FULL_SOURCE_MAX_SECONDS = 30;
+export const LEGACY_FULL_SOURCE_MAX_FILE_BYTES = EDITORIAL_TRANSCRIPTION_MAX_WAV_BYTES;
 
 export type EditorialTranscriptionProgressStage =
     | 'preparing-full-source-audio'
@@ -44,6 +64,9 @@ export interface EditorialTranscriptionSource {
     sourceFingerprint: string;
     file: File;
     declaredDuration: RationalDuration;
+    /** Exact active source ranges. Presence selects bounded V2 acquisition. */
+    coreCoverage?: readonly HalfOpenSampleRange[];
+    hasAudio?: boolean;
 }
 
 export interface EditorialTranscriptionConsumerGuard {
@@ -106,6 +129,8 @@ export interface EditorialTranscriptionCoordinatorDependencies {
     preparePcm?: typeof prepareFullSourceEditorialPcmInWorker;
     requestTranscript?: typeof requestEditMaxEditorialTranscript;
     now?: () => Date;
+    rangeRepository?: RangeTranscriptionRepository;
+    pcmWindowRepository?: EditorialPcmWindowRepository;
 }
 
 /**
@@ -126,6 +151,8 @@ export class EditorialTranscriptionCoordinator {
     private readonly preparePcm: typeof prepareFullSourceEditorialPcmInWorker;
     private readonly requestTranscript: typeof requestEditMaxEditorialTranscript;
     private readonly now: () => Date;
+    private readonly rangeRepository: RangeTranscriptionRepository;
+    private readonly pcmWindowRepository: EditorialPcmWindowRepository;
 
     constructor(dependencies: EditorialTranscriptionCoordinatorDependencies = {}) {
         this.repository = dependencies.repository ?? new EditorialTranscriptRepository();
@@ -136,6 +163,8 @@ export class EditorialTranscriptionCoordinator {
         this.preparePcm = dependencies.preparePcm ?? prepareFullSourceEditorialPcmInWorker;
         this.requestTranscript = dependencies.requestTranscript ?? requestEditMaxEditorialTranscript;
         this.now = dependencies.now ?? (() => new Date());
+        this.rangeRepository = dependencies.rangeRepository ?? new IndexedRangeTranscriptionRepository();
+        this.pcmWindowRepository = dependencies.pcmWindowRepository ?? new EditorialPcmWindowRepository();
     }
 
     /** Releases a mounted editor session after durable project/history pins take ownership. */
@@ -152,9 +181,16 @@ export class EditorialTranscriptionCoordinator {
         regenerate?: boolean;
         isGuardCurrent(guard: EditorialTranscriptionPublicationGuard): boolean | Promise<boolean>;
         onProgress?(progress: EditorialTranscriptionProgress): void;
-    }): Promise<EditorialTranscriptDescriptorV1[]> {
+    }): Promise<EditorialTranscriptDescriptor[]> {
         const distinctSources = distinctBySourceId(input.sources);
         if (distinctSources.length === 0) return [];
+        const rangedSourceCount = distinctSources.filter(source => source.coreCoverage !== undefined).length;
+        if (rangedSourceCount > 0 && rangedSourceCount !== distinctSources.length) {
+            throw new Error('Editorial acquisition cannot mix V1 full-source and V2 ranged sources.');
+        }
+        if (rangedSourceCount === distinctSources.length) {
+            return this.acquireRangeSources({ ...input, sources: distinctSources });
+        }
         // These profile fields are common to the whole call. Computing them once guarantees that
         // every source request is grouped using exactly the same normalized provider identity.
         const language = normalizeEditorialLanguage(input.preferences.language);
@@ -169,6 +205,12 @@ export class EditorialTranscriptionCoordinator {
             throwIfAborted(input.signal);
             const declaredDuration = normalizeRationalDuration(source.declaredDuration);
             const sampleCount = ceilRationalSampleCount(declaredDuration, 16_000);
+            if (sampleCount > LEGACY_FULL_SOURCE_MAX_SECONDS * 16_000
+                || source.file.size > LEGACY_FULL_SOURCE_MAX_FILE_BYTES) {
+                throw new Error(
+                    'Legacy full-source editorial acquisition is limited to 30 seconds and 8 MiB.',
+                );
+            }
             const requestKey = await createEditorialTranscriptRequestKey({
                 sourceFingerprint: source.sourceFingerprint,
                 sampleCount,
@@ -254,6 +296,236 @@ export class EditorialTranscriptionCoordinator {
                 createdAt: acquired.createdAt,
             });
         });
+    }
+
+    private async acquireRangeSources(input: {
+        sources: readonly EditorialTranscriptionSource[];
+        preferences: EditorialTranscriptionPreferencesV1;
+        apiKey?: string;
+        guard: EditorialTranscriptionConsumerGuard;
+        signal?: AbortSignal;
+        regenerate?: boolean;
+        isGuardCurrent(guard: EditorialTranscriptionPublicationGuard): boolean | Promise<boolean>;
+        onProgress?(progress: EditorialTranscriptionProgress): void;
+    }): Promise<EditorialTranscriptDescriptor[]> {
+        const signal = input.signal ?? new AbortController().signal;
+        const language = normalizeEditorialLanguage(input.preferences.language);
+        const speakerMode: EditorialSpeakerMode = input.preferences.detectSpeakers ? 'diarized' : 'none';
+        const endpointIdentityDigest = await createEditorialEndpointIdentityDigest(input.preferences.endpoint);
+        const descriptors: EditorialTranscriptDescriptor[] = [];
+        const pinnedRecordIds: Sha256Digest[] = [];
+
+        for (let sourceIndex = 0; sourceIndex < input.sources.length; sourceIndex += 1) {
+            throwIfAborted(signal);
+            const source = input.sources[sourceIndex];
+            const declaredDuration = normalizeRationalDuration(source.declaredDuration);
+            const sampleCount = ceilRationalSampleCount(declaredDuration, 16_000);
+            const coreCoverage = source.coreCoverage ?? [];
+            if (coreCoverage.length === 0) {
+                throw new Error('Editorial V2 acquisition requires at least one active source range.');
+            }
+            const legacyRequestKey = await createEditorialTranscriptRequestKey({
+                sourceFingerprint: source.sourceFingerprint,
+                sampleCount,
+                language,
+                speakerMode,
+                endpointIdentityDigest,
+            });
+            const compatibleV1 = input.regenerate
+                ? null
+                : await this.repository.getRequestDescriptor(legacyRequestKey);
+            const decoder = createMediabunnyEditorialPcmWindowDecoder({
+                resolveSource: fingerprint => fingerprint === source.sourceFingerprint
+                    ? { file: source.file, declaredDuration }
+                    : null,
+            });
+            const rangeCoordinator = new RangeTranscriptionCoordinator<Int16Array>({
+                repository: this.rangeRepository,
+                decodeWindow: async ({ window, signal: windowSignal }) => {
+                    input.onProgress?.({
+                        stage: 'preparing-full-source-audio',
+                        sourceIndex,
+                        sourceCount: input.sources.length,
+                        cacheHit: false,
+                    });
+                    if (source.hasAudio === false) {
+                        return new Int16Array(window.decoded.endSample - window.decoded.startSample);
+                    }
+                    return this.pcmWindowRepository.getOrDecode({
+                        sourceFingerprint: source.sourceFingerprint,
+                        pcmAlgorithmVersion: 1,
+                        startSample: window.decoded.startSample,
+                        endSample: window.decoded.endSample,
+                    }, decoder, { signal: windowSignal });
+                },
+                transcribeWindow: async ({ pcm, window, signal: windowSignal }) => {
+                    if (source.hasAudio === false) return [];
+                    input.onProgress?.({
+                        stage: 'uploading-source',
+                        sourceIndex,
+                        sourceCount: input.sources.length,
+                        cacheHit: false,
+                    });
+                    const response = await this.requestTranscript({
+                        endpoint: input.preferences.endpoint,
+                        requestMode: input.preferences.requestMode,
+                        wav: createPcm16WavBlob([pcm], pcm.length),
+                        apiKey: input.apiKey,
+                        language,
+                        speakerMode,
+                        signal: windowSignal,
+                    });
+                    const parsed = await parseEditMaxEditorialTranscript(response, {
+                        sourceFingerprint: source.sourceFingerprint,
+                        sampleCount: window.decoded.endSample - window.decoded.startSample,
+                        language,
+                        speakerMode,
+                    });
+                    const speakerLabels = new Map(parsed.body.speakers.map(value => [value.id, value.label]));
+                    return parsed.body.words.map(word => ({
+                        text: word.text,
+                        startSample: word.alignedStartSample,
+                        endSample: word.alignedEndSample,
+                        probability: word.probability,
+                        speaker: word.speakerId === null ? null : {
+                            providerSpeakerId: speakerLabels.get(word.speakerId)
+                                ?? (() => { throw new Error('Editorial speaker provenance is unavailable.'); })(),
+                            // Provider labels are request-local. The merge may alias window-local
+                            // evidence only when duplicate overlap words prove continuity.
+                            evidenceKey: `${window.windowId}:${
+                                speakerLabels.get(word.speakerId)
+                                    ?? (() => { throw new Error('Editorial speaker provenance is unavailable.'); })()
+                            }`,
+                        },
+                    }));
+                },
+                buildMergedRecord: async ({ merged, signal: mergeSignal }) => {
+                    throwIfAborted(mergeSignal);
+                    const builtRecord = source.hasAudio === false
+                        ? await createLocalNoAudioTranscriptRecord({
+                            sourceFingerprint: source.sourceFingerprint,
+                            sampleCount,
+                            language,
+                            speakerMode,
+                        })
+                        : await createCanonicalMergedRangeRecord({
+                            sourceFingerprint: source.sourceFingerprint,
+                            sampleCount,
+                            language,
+                            speakerMode,
+                            canonicalModel: REQUESTED_MODEL,
+                            words: merged.words,
+                        });
+                    await this.repository.putRecord(builtRecord);
+                    return { recordId: builtRecord.recordId };
+                },
+                isPublicationCurrent: ({ requestKey }) => input.isGuardCurrent({
+                    ...input.guard,
+                    sourceFingerprint: source.sourceFingerprint,
+                    requestKey,
+                }),
+                publish: async ({ coverageRecord, expectedCoverageRecordIds }) => (
+                    this.rangeRepository.compareAndSwapCoverage({
+                        sourceFingerprint: coverageRecord.sourceFingerprint,
+                        acquisitionProfileDigest: coverageRecord.acquisitionProfileDigest,
+                        expectedRecordIds: expectedCoverageRecordIds,
+                        record: coverageRecord,
+                    })
+                ),
+            });
+            const result = await rangeCoordinator.acquire({
+                profile: {
+                    sourceFingerprint: source.sourceFingerprint,
+                    sourceSampleRate: 16_000,
+                    sourceSampleCount: sampleCount,
+                    coreCoverage,
+                    contextSamples: 2 * 16_000,
+                    language,
+                    speakerMode,
+                    endpointIdentityDigest,
+                    requestedModel: REQUESTED_MODEL,
+                    responseSchema: 'edit-max-v1',
+                    pcmAlgorithmVersion: 1,
+                    providerProfileVersion: 1,
+                },
+                signal,
+                compatibleV1FullSource: compatibleV1
+                    ? { recordId: compatibleV1.recordId }
+                    : undefined,
+                onProgress: progress => input.onProgress?.({
+                    stage: progress.stage === 'decoding'
+                        ? 'preparing-full-source-audio'
+                        : progress.stage === 'transcribing'
+                            ? 'transcribing-and-aligning'
+                            : progress.stage === 'merging'
+                                ? 'validating-edit-timeline'
+                                : 'saving-transcript-cache',
+                    sourceIndex,
+                    sourceCount: input.sources.length,
+                    cacheHit: progress.totalWindows === 0,
+                }),
+            });
+            throwIfAborted(signal);
+            await assertCurrent(input.isGuardCurrent, {
+                ...input.guard,
+                sourceFingerprint: source.sourceFingerprint,
+                requestKey: result.requestKey,
+            });
+            if (!result.coverageRecord) {
+                if (!compatibleV1 || result.reusedV1RecordId !== compatibleV1.recordId) {
+                    throw new Error('Editorial V1 compatibility cache changed during reuse.');
+                }
+                const body = await this.repository.getRecord(compatibleV1.recordId, {
+                    descriptor: compatibleV1,
+                    referenced: true,
+                });
+                if (!body) throw new Error('Editorial V1 compatibility record is unavailable.');
+                if (!pinnedRecordIds.includes(compatibleV1.recordId)) {
+                    pinnedRecordIds.push(compatibleV1.recordId);
+                }
+                await this.repository.setSessionPins(
+                    input.guard.projectId,
+                    input.guard.sessionId,
+                    pinnedRecordIds,
+                );
+                descriptors.push(createEditorialTranscriptDescriptor({
+                    recordId: compatibleV1.recordId,
+                    requestKey: legacyRequestKey,
+                    sourceId: source.sourceId,
+                    sourceFingerprint: source.sourceFingerprint,
+                    endpointIdentityDigest,
+                    body,
+                    acquisition: compatibleV1.acquisition,
+                    createdAt: compatibleV1.createdAt,
+                }));
+                continue;
+            }
+            if (!pinnedRecordIds.includes(result.coverageRecord.mergedTranscriptRecordId)) {
+                pinnedRecordIds.push(result.coverageRecord.mergedTranscriptRecordId);
+            }
+            await this.repository.setSessionPins(
+                input.guard.projectId,
+                input.guard.sessionId,
+                pinnedRecordIds,
+            );
+            const body = await this.repository.getRecord(
+                result.coverageRecord.mergedTranscriptRecordId,
+                { referenced: true },
+            );
+            if (!body) throw new Error('Editorial V2 merged transcript is unavailable.');
+            descriptors.push(createEditorialTranscriptDescriptorV2({
+                recordId: result.coverageRecord.mergedTranscriptRecordId,
+                coverageRecord: result.coverageRecord,
+                requestKey: result.requestKey,
+                sourceId: source.sourceId,
+                sourceFingerprint: source.sourceFingerprint,
+                endpointIdentityDigest,
+                body,
+                acquisition: source.hasAudio === false ? 'local-no-audio' : 'provider',
+                createdAt: this.now().toISOString(),
+            }));
+        }
+        return descriptors;
     }
 
     private async acquireOne(input: {
@@ -477,6 +749,74 @@ function distinctBySourceId(
 
 function uniqueRecordIds(records: Iterable<AcquiredEditorialRecord>): Sha256Digest[] {
     return Array.from(new Set(Array.from(records, record => record.recordId)));
+}
+
+export async function createCanonicalMergedRangeRecord(input: {
+    sourceFingerprint: string;
+    sampleCount: number;
+    language: string | null;
+    speakerMode: EditorialSpeakerMode;
+    canonicalModel: string;
+    words: readonly import('./range-merge').MergedRangeTranscriptWord[];
+}): Promise<CanonicalEditorialTranscriptRecordV1> {
+    const speakerSegments = new Map<string, Array<{ startSample: number; endSample: number }>>();
+    const words = input.words.map((word, index) => {
+        const nextStart = input.words[index + 1]?.startSample ?? word.endSample;
+        const previousEditableEnd = index === 0
+            ? 0
+            : Math.min(
+                input.words[index - 1].endSample,
+                word.startSample,
+            );
+        const editableStartSample = Math.max(word.startSample, previousEditableEnd);
+        const editableEndSample = Math.min(
+            word.endSample,
+            Math.max(editableStartSample + 1, nextStart),
+        );
+        if (editableEndSample <= editableStartSample) {
+            throw new Error('Merged range words cannot be assigned disjoint editable intervals.');
+        }
+        const speakerLabel = word.speaker?.evidenceKey ?? null;
+        if (input.speakerMode === 'diarized' && !speakerLabel) {
+            throw new Error('Diarized range transcript word lacks stable speaker evidence.');
+        }
+        if (speakerLabel) {
+            const segments = speakerSegments.get(speakerLabel) ?? [];
+            const previous = segments.at(-1);
+            if (previous && word.startSample <= previous.endSample) {
+                previous.endSample = Math.max(previous.endSample, word.endSample);
+            } else {
+                segments.push({
+                    startSample: word.startSample,
+                    endSample: word.endSample,
+                });
+            }
+            speakerSegments.set(speakerLabel, segments);
+        }
+        return {
+            text: word.text,
+            alignedStartSample: word.startSample,
+            alignedEndSample: word.endSample,
+            editableStartSample,
+            editableEndSample,
+            probability: word.probability,
+            speakerLabel,
+        };
+    });
+    return createCanonicalEditorialTranscriptRecord({
+        sourceFingerprint: input.sourceFingerprint,
+        sampleCount: input.sampleCount,
+        canonicalModel: input.canonicalModel,
+        language: input.language,
+        speakerMode: input.speakerMode,
+        noAudioStream: false,
+        words,
+        speechRegions: [],
+        editBoundaries: [],
+        speakers: Array.from(speakerSegments.entries())
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([label, segments]) => ({ label, segments })),
+    });
 }
 
 async function assertCurrent(

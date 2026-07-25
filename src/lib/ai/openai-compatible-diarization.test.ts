@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe("transcribeDiarizedAudioWithOpenAICompatibleEndpoint", () => {
-    it("sends exactly one non-streaming verbose diarization request with the caller signal", async () => {
+    it("sends exactly one non-streaming verbose diarization request with a caller-linked timeout signal", async () => {
         const controller = new AbortController();
         const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
             const formData = init?.body as FormData;
@@ -19,7 +19,8 @@ describe("transcribeDiarizedAudioWithOpenAICompatibleEndpoint", () => {
             ]);
 
             expect(input.toString()).toBe("http://localhost:43556/v1/audio/transcriptions");
-            expect(init?.signal).toBe(controller.signal);
+            expect(init?.signal).toBeInstanceOf(AbortSignal);
+            expect(init?.signal).not.toBe(controller.signal);
             expect(entries).toEqual([
                 ["file", "file:project-audio.mp4"],
                 ["model", "whisper-1"],

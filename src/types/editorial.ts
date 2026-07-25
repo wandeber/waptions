@@ -18,6 +18,8 @@ export const EDITORIAL_TRANSCRIPT_RESPONSE_SCHEMA = 'edit-max-v1' as const;
 export const EDITORIAL_TRANSCRIPT_PCM_ALGORITHM_VERSION = 1 as const;
 export const EDITORIAL_TRANSCRIPT_RECORD_BODY_VERSION = 1 as const;
 export const EDITORIAL_CANONICAL_JSON_VERSION = 1 as const;
+export const EDITORIAL_TRANSCRIPT_COVERAGE_VERSION = 2 as const;
+export const EDITORIAL_TRANSCRIPT_MERGE_ALGORITHM_VERSION = 'range-merge-v1' as const;
 
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
@@ -61,6 +63,87 @@ export interface EditorialTranscriptDescriptorV1 {
     acquisition: EditorialTranscriptAcquisition;
     createdAt: string;
 }
+
+/** A normalized half-open range in an explicitly declared sample-rate domain. */
+export interface HalfOpenSampleRange {
+    startSample: number;
+    endSample: number;
+}
+
+export interface TranscriptionAcquisitionWindowV2 {
+    /** Stable content-derived identity for the exact core and decoded ranges. */
+    windowId: Sha256Digest;
+    core: HalfOpenSampleRange;
+    decoded: HalfOpenSampleRange;
+    /** Immutable provider/local chunk records used by the deterministic merge. */
+    chunkRecordIds: Sha256Digest[];
+}
+
+/**
+ * Immutable proof of which parts of a source were acquired for one transcript.
+ *
+ * The record ID is the hash of the canonical record without `recordId`. Coverage is source
+ * absolute, normalized, sorted, disjoint, and half-open. Context lives only in `decoded`; it
+ * never grants narrative ownership outside `coreCoverage`.
+ */
+export interface TranscriptionCoverageRecordV2 {
+    version: 2;
+    recordId: Sha256Digest;
+    sourceFingerprint: string;
+    sourceSampleRate: number;
+    sourceSampleCount: number;
+    acquisitionProfileDigest: Sha256Digest;
+    endpointIdentityDigest: Sha256Digest;
+    contextSamples: number;
+    requestedModel: string;
+    responseSchema: string;
+    pcmAlgorithmVersion: number;
+    providerProfileVersion: number;
+    language: string;
+    speakerMode: EditorialSpeakerMode;
+    mergeAlgorithmVersion: typeof EDITORIAL_TRANSCRIPT_MERGE_ALGORITHM_VERSION;
+    coreCoverage: HalfOpenSampleRange[];
+    acquisitionWindows: TranscriptionAcquisitionWindowV2[];
+    mergedTranscriptRecordId: Sha256Digest;
+}
+
+/**
+ * Range-covered descriptor accepted by the V4 graph without changing its root version.
+ *
+ * The merged transcript remains an ordinary canonical V1 record body with absolute source
+ * coordinates. The separate coverage record proves that it is intentionally partial.
+ */
+export interface EditorialTranscriptDescriptorV2 {
+    version: 2;
+    recordId: Sha256Digest;
+    coverageRecordId: Sha256Digest;
+    requestKey: Sha256Digest;
+    sourceKind: 'video-source-audio';
+    sourceId: string;
+    sourceFingerprint: string;
+    pcmAlgorithmVersion: 1;
+    recordBodyVersion: 1;
+    canonicalJsonVersion: 1;
+    coverageVersion: 2;
+    responseSchema: 'edit-max-v1';
+    requestedModel: 'qwen-1.7b-edit-max';
+    canonicalModel: string;
+    sampleRateHz: 16_000;
+    /** Full source length. Coverage is held by the immutable coverage sidecar. */
+    sampleCount: number;
+    language: string | null;
+    speakerMode: EditorialSpeakerMode;
+    endpointIdentityDigest: Sha256Digest;
+    acquisitionProfileDigest: Sha256Digest;
+    mergeAlgorithmVersion: typeof EDITORIAL_TRANSCRIPT_MERGE_ALGORITHM_VERSION;
+    acquisition: EditorialTranscriptAcquisition;
+    createdAt: string;
+}
+
+/** Strict descriptor union persisted by EditorDocumentV4 and bundle manifests. */
+export type EditorialTranscriptDescriptor =
+    | EditorialTranscriptDescriptorV1
+    | EditorialTranscriptDescriptorV2;
 
 /** Evidence accepted from the frozen edit-max-v1 response profile. */
 export type EditorialSpeechRegionEvidenceV1 =

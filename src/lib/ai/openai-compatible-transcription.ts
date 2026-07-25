@@ -1,5 +1,13 @@
 import { ValidationError } from "@/lib/utils/errors";
 import type { OpenAICompatibleTranscriptionSettings } from "@/types/transcription";
+import {
+    createTotalTimeoutSignal,
+    readBoundedErrorExcerpt,
+    readBoundedJsonResponse,
+    TRANSCRIPTION_REQUEST_MAX_BYTES,
+    TranscriptionPayloadTooLargeError,
+    TranscriptionTimeoutError,
+} from "./transcription-http-policy";
 
 const DEFAULT_TRANSCRIPTION_PATH = "/v1/audio/transcriptions";
 const TRANSCRIPTION_ENDPOINT_SUFFIX = "/audio/transcriptions";
@@ -92,6 +100,9 @@ export async function transcribeWithOpenAICompatibleEndpoint({
     fetchImpl = fetch,
     signal,
 }: OpenAICompatibleTranscriptionRequest): Promise<unknown> {
+    if (audioFile.size > TRANSCRIPTION_REQUEST_MAX_BYTES) {
+        throw new TranscriptionPayloadTooLargeError("request");
+    }
     const endpointUrl = resolveOpenAICompatibleTranscriptionUrl(settings.endpoint);
     const formData = new FormData();
 
@@ -104,25 +115,55 @@ export async function transcribeWithOpenAICompatibleEndpoint({
         headers.set("Authorization", `Bearer ${settings.apiKey.trim()}`);
     }
 
-    const response = await fetchImpl(endpointUrl, {
-        method: "POST",
-        body: formData,
-        headers,
-        redirect: "error",
-        signal,
-    });
+    const timeout = createTotalTimeoutSignal(signal);
+    let serverTransport: {
+        fetch: typeof fetch;
+        dispose(): Promise<void>;
+    } | null = null;
+    try {
+        if (settings.requestMode === "server") {
+            const { createServerTranscriptionTransport } = await import(
+                "./openai-compatible-transcription-server"
+            );
+            serverTransport = await createServerTranscriptionTransport(endpointUrl, fetchImpl);
+        }
+        let response: Response;
+        try {
+            response = await (serverTransport?.fetch ?? fetchImpl)(endpointUrl, {
+                method: "POST",
+                body: formData,
+                headers,
+                redirect: "error",
+                signal: timeout.signal,
+            });
+        } catch {
+            if (signal?.aborted) throw createAbortError();
+            if (timeout.didTimeout()) throw new TranscriptionTimeoutError();
+            throw new Error("Custom transcription endpoint is unavailable.");
+        }
 
-    const responseText = await response.text();
-    const responseBody = parseJsonResponse(responseText);
+        if (!response.ok) {
+            if (settings.requestMode === "server") {
+                await response.body?.cancel().catch(() => undefined);
+                throw new Error(`Custom transcription endpoint rejected the request (${response.status}).`);
+            }
+            // Provider bodies are hostile diagnostics. Retain only one small prefix and cancel the
+            // rest so an error response cannot become an alternate unbounded transcript buffer.
+            const responseText = await readBoundedErrorExcerpt(response, {
+                signal: timeout.signal,
+            });
+            const responseBody = parseJsonResponse(responseText);
+            const responseMessage = extractErrorMessage(responseBody, responseText);
+            throw new Error(
+                `Custom transcription endpoint error (${response.status}): ${redactConfiguredApiKey(responseMessage, settings.apiKey)}`
+            );
+        }
 
-    if (!response.ok) {
-        const responseMessage = extractErrorMessage(responseBody, responseText);
-        throw new Error(
-            `Custom transcription endpoint error (${response.status}): ${redactConfiguredApiKey(responseMessage, settings.apiKey)}`
-        );
+        return await readBoundedJsonResponse(response, { signal: timeout.signal });
+    } finally {
+        timeout.dispose();
+        await serverTransport?.dispose();
     }
-
-    return responseBody;
 }
 
 function appendOpenAICompatibleOptions(formData: FormData, options: Record<string, unknown>) {
@@ -201,4 +242,8 @@ function hasExplicitProtocol(value: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function createAbortError(): DOMException {
+    return new DOMException("Custom transcription was cancelled.", "AbortError");
 }

@@ -1,5 +1,6 @@
 import {
     isSha256Digest,
+    type EditorialTranscriptDescriptor,
     type EditorialTranscriptDescriptorV1,
     type EditorialTranscriptRecordBodyV1,
     type Sha256Digest,
@@ -177,7 +178,7 @@ export class EditorialTranscriptRepository {
     async getRecord(
         recordId: Sha256Digest,
         options: {
-            descriptor?: EditorialTranscriptDescriptorV1;
+            descriptor?: EditorialTranscriptDescriptor;
             referenced?: boolean;
         } = {},
     ): Promise<EditorialTranscriptRecordBodyV1 | null> {

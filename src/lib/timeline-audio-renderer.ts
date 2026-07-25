@@ -32,6 +32,8 @@ export interface TimelineAudioRendererDependencies {
 }
 
 export interface TimelineAudioRenderOptions {
+    /** Exact inclusive output origin. Encoded sample timestamps are rebased to this boundary. */
+    outputStartSample?: number;
     /** Exact exclusive output boundary. A longer content tail is encoded as explicit silence. */
     outputEndSample: number;
     windowSampleCount?: number;
@@ -70,7 +72,12 @@ export class TimelineAudioRenderer {
 
     async render(options: TimelineAudioRenderOptions): Promise<void> {
         if (this.disposed) throw new Error('The timeline audio renderer has been disposed.');
+        const outputStartSample = options.outputStartSample ?? 0;
+        assertNonNegativeSafeInteger(outputStartSample, 'outputStartSample');
         assertNonNegativeSafeInteger(options.outputEndSample, 'outputEndSample');
+        if (outputStartSample > options.outputEndSample) {
+            throw new RangeError('outputStartSample must not exceed outputEndSample.');
+        }
         const windowSampleCount = options.windowSampleCount ?? DEFAULT_EXPORT_AUDIO_WINDOW_SAMPLES;
         assertPositiveSafeInteger(windowSampleCount, 'windowSampleCount');
 
@@ -91,7 +98,12 @@ export class TimelineAudioRenderer {
                 : plan;
             this.throwIfCancelled(options);
             this.decoder.setDocument(this.document, generation);
-            for (let startSample = 0; startSample < options.outputEndSample; startSample += windowSampleCount) {
+            const outputSampleCount = options.outputEndSample - outputStartSample;
+            for (
+                let startSample = outputStartSample;
+                startSample < options.outputEndSample;
+                startSample += windowSampleCount
+            ) {
                 this.throwIfCancelled(options);
                 const endSample = Math.min(options.outputEndSample, startSample + windowSampleCount);
                 const rendered = await this.renderWindow(
@@ -111,14 +123,16 @@ export class TimelineAudioRenderer {
                 // request is resolving. Check again before giving the result to the encoder so no
                 // stale window can be emitted after cancellation has been observed.
                 this.throwIfCancelled(options);
-                await this.addRenderedWindow(rendered);
+                await this.addRenderedWindow(rendered, outputStartSample);
                 // The final source.add() may be the last awaited boundary in the loop. Observe an
                 // abort that fires while the encoder owns that sample before reporting completion
                 // or letting the caller finalize an output that it already cancelled.
                 this.throwIfCancelled(options);
-                options.onProgress?.(endSample / Math.max(1, options.outputEndSample));
+                options.onProgress?.(
+                    (endSample - outputStartSample) / Math.max(1, outputSampleCount),
+                );
             }
-            if (options.outputEndSample === 0) options.onProgress?.(1);
+            if (outputSampleCount === 0) options.onProgress?.(1);
         } finally {
             options.signal?.removeEventListener('abort', externalAbort);
             this.dispose();
@@ -139,7 +153,10 @@ export class TimelineAudioRenderer {
         this.disposed = true;
     }
 
-    private async addRenderedWindow(rendered: RenderedAudioMix): Promise<void> {
+    private async addRenderedWindow(
+        rendered: RenderedAudioMix,
+        timestampOriginSample: number,
+    ): Promise<void> {
         const frameCount = rendered.endSample - rendered.startSample;
         const planar = new Float32Array(frameCount * 2);
         planar.set(rendered.channels[0], 0);
@@ -149,7 +166,7 @@ export class TimelineAudioRenderer {
             sampleRate: rendered.sampleRate,
             numberOfFrames: frameCount,
             numberOfChannels: 2,
-            timestamp: rendered.startSample / rendered.sampleRate,
+            timestamp: (rendered.startSample - timestampOriginSample) / rendered.sampleRate,
             data: planar,
         });
         try {

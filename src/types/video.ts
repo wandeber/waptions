@@ -1,6 +1,6 @@
 import type {
     EditorialDependentLinkV1,
-    EditorialTranscriptDescriptorV1,
+    EditorialTranscriptDescriptor,
     GlobalEditingMode,
     NarrativeDocumentV1,
     TransientNarrativeSelectionV1,
@@ -311,7 +311,7 @@ export interface EditorDocumentV4 {
     /** This remains subtitle-generation provenance and never stores editorial record IDs. */
     transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
     globalEditingMode: GlobalEditingMode;
-    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptor[];
     narrative: NarrativeDocumentV1 | null;
     dependentLinks: EditorialDependentLinkV1[];
 }
@@ -340,7 +340,7 @@ export interface EditorManifestV4 {
     /** This remains subtitle-generation provenance and never stores editorial record IDs. */
     transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
     globalEditingMode: GlobalEditingMode;
-    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptor[];
     narrative: NarrativeDocumentV1 | null;
     dependentLinks: EditorialDependentLinkV1[];
 }

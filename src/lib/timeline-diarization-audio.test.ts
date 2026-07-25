@@ -3,8 +3,8 @@ import type {
     AudioCodec,
     AudioSample,
     AudioSampleSource,
-    BufferTarget,
     Output,
+    Target,
 } from 'mediabunny';
 import type { EditorDocumentV3 } from '@/types/video';
 import { buildAudioMixPlan } from './audio-mix-plan';
@@ -14,6 +14,7 @@ import {
 } from './timeline-audio-renderer';
 import {
     encodeTimelineAudioForDiarization,
+    createTimelineDiarizationCoveragePlan,
     createTimelineDiarizationAudioSnapshot,
     TimelineDiarizationAudioError,
     TimelineDiarizationNoAudioError,
@@ -140,6 +141,46 @@ function makeDocument(): EditorDocumentV3 {
     };
 }
 
+describe('timeline diarization range coverage', () => {
+    it('keeps only audible contributor cores and excludes muted/visual tails', () => {
+        const plan = createTimelineDiarizationCoveragePlan(buildAudioMixPlan(makeDocument()), 0);
+
+        expect(plan.coreCoverage).toEqual([
+            { startSample: 0, endSample: 48_000 },
+            { startSample: 96_000, endSample: 144_000 },
+        ]);
+        expect(plan.windows.map(window => window.core)).toEqual(plan.coreCoverage);
+        expect(plan.coreCoverage.every(range => range.endSample <= 144_000)).toBe(true);
+    });
+
+    it('keeps bounded context separate and splits long audible intervals at 30 seconds', () => {
+        const longPlan = {
+            sampleRate: 48_000 as const,
+            totalSampleCount: 2_000_000,
+            videoSampleCount: 2_000_000,
+            contributors: [{
+                id: 'long',
+                kind: 'embedded-video' as const,
+                trackId: null,
+                source: { kind: 'video-source-audio' as const, videoSourceId: 'video' },
+                outputStartSample: 100_000,
+                outputEndSample: 1_900_000,
+                sourceRange: { domain: 'seconds' as const, startSeconds: 0, endSeconds: 37.5 },
+                fadeInSamples: 0,
+                fadeOutSamples: 0,
+                gainLinear: 1,
+            }],
+        };
+        const coverage = createTimelineDiarizationCoveragePlan(longPlan, 2);
+
+        expect(coverage.coreCoverage).toEqual([{ startSample: 100_000, endSample: 1_900_000 }]);
+        expect(coverage.windows.every(window => (
+            window.decoded.endSample - window.decoded.startSample <= 30 * 48_000
+        ))).toBe(true);
+        expect(coverage.windows[0].decoded.startSample).toBe(4_000);
+    });
+});
+
 interface HarnessOptions {
     selectedCodecs?: Array<AudioCodec | null | Error>;
     targetBuffer?: ArrayBuffer | null;
@@ -153,11 +194,15 @@ interface HarnessOptions {
 
 function createHarness(options: HarnessOptions = {}) {
     let outputState: Output['state'] = 'pending';
+    const targetBuffer = options.targetBuffer === undefined
+        ? Uint8Array.from([1, 2, 3]).buffer
+        : options.targetBuffer;
     const target = {
-        buffer: options.targetBuffer === undefined
-            ? Uint8Array.from([1, 2, 3]).buffer
-            : options.targetBuffer,
-    } as BufferTarget;
+        target: {} as Target,
+        readBlob: vi.fn((mimeType: string) => (
+            targetBuffer ? new Blob([targetBuffer], { type: mimeType }) : null
+        )),
+    };
     const source = {
         add: vi.fn(options.sourceAdd ?? (async () => undefined)),
         close: vi.fn(),

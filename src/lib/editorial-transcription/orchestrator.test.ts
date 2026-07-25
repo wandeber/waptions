@@ -3,6 +3,7 @@ import type {
     EditorialTranscriptDescriptorV1,
     EditorialTranscriptRecordBodyV1,
     Sha256Digest,
+    TranscriptionCoverageRecordV2,
 } from '@/types/editorial';
 import { EditorialTranscriptRepository } from '@/lib/storage/editorial-transcript-repository';
 import { createEditorialEndpointIdentityDigest } from './endpoint';
@@ -21,6 +22,10 @@ import {
     type CanonicalEditorialTranscriptRecordV1,
 } from './transcript-body';
 import pointAnchorE2eFixture from '../../../e2e/fixtures/editorial/edit-max-v1-point-anchor.json';
+import type {
+    RangeTranscriptChunkRecordV2,
+    RangeTranscriptionRepository,
+} from './range-orchestrator';
 
 const preferences: EditorialTranscriptionPreferencesV1 = {
     version: 1,
@@ -73,6 +78,47 @@ class CoordinatorRepository extends EditorialTranscriptRepository {
 
     override async clearSessionPins(projectId: string, sessionId: string): Promise<void> {
         this.clearedSessions.push([projectId, sessionId]);
+    }
+}
+
+class CoordinatorRangeRepository implements RangeTranscriptionRepository {
+    readonly coverage: TranscriptionCoverageRecordV2[] = [];
+    readonly chunks = new Map<Sha256Digest, RangeTranscriptChunkRecordV2>();
+
+    async listCompatibleCoverage(input: {
+        sourceFingerprint: string;
+        acquisitionProfileDigest: Sha256Digest;
+    }) {
+        return this.coverage.filter(record => (
+            record.sourceFingerprint === input.sourceFingerprint
+            && record.acquisitionProfileDigest === input.acquisitionProfileDigest
+        ));
+    }
+    async getChunk(recordId: Sha256Digest) {
+        return this.chunks.get(recordId) ?? null;
+    }
+    async putChunk(record: RangeTranscriptChunkRecordV2) {
+        this.chunks.set(record.recordId, record);
+    }
+    async putCoverage(record: TranscriptionCoverageRecordV2) {
+        this.coverage.push(record);
+    }
+    async compareAndSwapCoverage(input: {
+        sourceFingerprint: string;
+        acquisitionProfileDigest: Sha256Digest;
+        expectedRecordIds: readonly Sha256Digest[];
+        record: TranscriptionCoverageRecordV2;
+    }) {
+        const currentRecordIds = (await this.listCompatibleCoverage(input))
+            .map(record => record.recordId)
+            .sort();
+        if (JSON.stringify(currentRecordIds) !== JSON.stringify(input.expectedRecordIds)) {
+            return false;
+        }
+        if (!this.coverage.some(record => record.recordId === input.record.recordId)) {
+            this.coverage.push(input.record);
+        }
+        return true;
     }
 }
 
@@ -394,5 +440,168 @@ describe('editorial transcription coordinator', () => {
         expect(preparePcm).toHaveBeenCalledTimes(1);
         expect(requestTranscript).not.toHaveBeenCalled();
         expect(repository.sessionPinWrites).toEqual([]);
+    });
+
+    it('rejects large legacy full-source requests before allocating PCM', async () => {
+        const preparePcm = vi.fn();
+        const coordinator = new EditorialTranscriptionCoordinator({
+            repository: new CoordinatorRepository(),
+            preparePcm,
+        });
+        await expect(coordinator.acquireSources({
+            sources: [{
+                ...source('legacy-source', 'legacy-fingerprint'),
+                declaredDuration: { numerator: 31, denominator: 1 },
+            }],
+            preferences,
+            guard: {
+                projectId: 'project-a',
+                persistenceGeneration: 1,
+                documentRevision: 1,
+                sessionId: 'session-a',
+            },
+            isGuardCurrent: () => true,
+        })).rejects.toThrow('limited to 30 seconds');
+        expect(preparePcm).not.toHaveBeenCalled();
+    });
+
+    it('uses bounded V2 acquisition for the managed range path', async () => {
+        const repository = new CoordinatorRepository();
+        const rangeRepository = new CoordinatorRangeRepository();
+        const preparePcm = vi.fn();
+        const requestTranscript = vi.fn();
+        const coordinator = new EditorialTranscriptionCoordinator({
+            repository,
+            rangeRepository,
+            preparePcm,
+            requestTranscript,
+        });
+        const [descriptor] = await coordinator.acquireSources({
+            sources: [{
+                ...source('range-source', 'range-fingerprint'),
+                coreCoverage: [{ startSample: 4_000, endSample: 8_000 }],
+                hasAudio: false,
+            }],
+            preferences,
+            guard: {
+                projectId: 'project-a',
+                persistenceGeneration: 1,
+                documentRevision: 1,
+                sessionId: 'session-a',
+            },
+            isGuardCurrent: () => true,
+        });
+
+        expect(descriptor).toMatchObject({
+            version: 2,
+            sourceId: 'range-source',
+            acquisition: 'local-no-audio',
+        });
+        expect(rangeRepository.coverage).toHaveLength(1);
+        expect(rangeRepository.coverage[0].coreCoverage).toEqual([
+            { startSample: 4_000, endSample: 8_000 },
+        ]);
+        expect(preparePcm).not.toHaveBeenCalled();
+        expect(requestTranscript).not.toHaveBeenCalled();
+    });
+
+    it('keeps cumulative session pins while acquiring multiple ranged sources', async () => {
+        const repository = new CoordinatorRepository();
+        const coordinator = new EditorialTranscriptionCoordinator({
+            repository,
+            rangeRepository: new CoordinatorRangeRepository(),
+            preparePcm: vi.fn(),
+            requestTranscript: vi.fn(),
+        });
+
+        const descriptors = await coordinator.acquireSources({
+            sources: [
+                {
+                    ...source('range-a', 'range-fingerprint-a'),
+                    coreCoverage: [{ startSample: 4_000, endSample: 8_000 }],
+                    hasAudio: false,
+                },
+                {
+                    ...source('range-b', 'range-fingerprint-b'),
+                    coreCoverage: [{ startSample: 8_000, endSample: 12_000 }],
+                    hasAudio: false,
+                },
+            ],
+            preferences,
+            guard: {
+                projectId: 'project-a',
+                persistenceGeneration: 1,
+                documentRevision: 1,
+                sessionId: 'session-a',
+            },
+            isGuardCurrent: () => true,
+        });
+
+        expect(descriptors).toHaveLength(2);
+        expect(repository.sessionPinWrites.at(-1)).toEqual([
+            descriptors[0].recordId,
+            descriptors[1].recordId,
+        ]);
+    });
+
+    it('reuses a compatible V1 full-source record for a managed range without rewriting it', async () => {
+        const repository = new CoordinatorRepository();
+        const rangeRepository = new CoordinatorRangeRepository();
+        const cached = await providerRecord('range-fingerprint', 'qwen-1.7b-edit-max');
+        const endpointIdentityDigest = await createEditorialEndpointIdentityDigest(preferences.endpoint);
+        const requestKey = await createEditorialTranscriptRequestKey({
+            sourceFingerprint: 'range-fingerprint',
+            sampleCount: 16_000,
+            language: null,
+            speakerMode: 'none',
+            endpointIdentityDigest,
+        });
+        repository.records.set(cached.recordId, cached.body);
+        repository.requests.set(requestKey, createEditorialTranscriptDescriptor({
+            recordId: cached.recordId,
+            requestKey,
+            sourceId: 'original-source-id',
+            sourceFingerprint: 'range-fingerprint',
+            endpointIdentityDigest,
+            body: cached.body,
+            acquisition: 'provider',
+            createdAt: '2026-07-25T00:00:00.000Z',
+        }));
+        const preparePcm = vi.fn();
+        const requestTranscript = vi.fn();
+        const coordinator = new EditorialTranscriptionCoordinator({
+            repository,
+            rangeRepository,
+            preparePcm,
+            requestTranscript,
+        });
+
+        const [descriptor] = await coordinator.acquireSources({
+            sources: [{
+                ...source('range-source', 'range-fingerprint'),
+                coreCoverage: [{ startSample: 4_000, endSample: 8_000 }],
+                hasAudio: true,
+            }],
+            preferences,
+            guard: {
+                projectId: 'project-a',
+                persistenceGeneration: 1,
+                documentRevision: 1,
+                sessionId: 'session-a',
+            },
+            isGuardCurrent: () => true,
+        });
+
+        expect(descriptor).toMatchObject({
+            version: 1,
+            recordId: cached.recordId,
+            requestKey,
+            sourceId: 'range-source',
+        });
+        expect(rangeRepository.coverage).toHaveLength(0);
+        expect(repository.records.size).toBe(1);
+        expect(repository.sessionPinWrites).toEqual([[cached.recordId]]);
+        expect(preparePcm).not.toHaveBeenCalled();
+        expect(requestTranscript).not.toHaveBeenCalled();
     });
 });

@@ -62,27 +62,28 @@ describe("GenerateDiarizedSubtitlesAction", () => {
 
         await expect(GenerateDiarizedSubtitlesAction.run({
             audioFile: new File(["audio"], "mix.mp4", { type: "audio/mp4" }),
-            customOpenAITranscription: serverSettings("http://localhost:43556/v1"),
+            customOpenAITranscription: serverSettings("https://transcriber.example.com/v1"),
             signal: new AbortController().signal,
         }, actionContext)).rejects.toThrow("not allowed");
 
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("allows an allowlisted production endpoint and propagates the request signal", async () => {
+    it("allows an allowlisted production endpoint and attaches the bounded request signal", async () => {
         vi.stubEnv("NODE_ENV", "production");
-        vi.stubEnv(ALLOWLIST_ENV, "transcriber.example.com");
+        vi.stubEnv(ALLOWLIST_ENV, "8.8.8.8");
         const controller = new AbortController();
         const rawResponse = { diarization: { speaker_segments: [] } };
         const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-            expect(init?.signal).toBe(controller.signal);
+            expect(init?.signal).toBeInstanceOf(AbortSignal);
+            expect(init?.signal?.aborted).toBe(false);
             return new Response(JSON.stringify(rawResponse), { status: 200 });
         });
         vi.stubGlobal("fetch", fetchMock);
 
         const result = await GenerateDiarizedSubtitlesAction.run({
             audioFile: new File(["audio"], "mix.mp4", { type: "audio/mp4" }),
-            customOpenAITranscription: serverSettings("https://transcriber.example.com/v1"),
+            customOpenAITranscription: serverSettings("https://8.8.8.8/v1"),
             signal: controller.signal,
         }, actionContext);
 

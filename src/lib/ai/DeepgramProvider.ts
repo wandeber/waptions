@@ -1,6 +1,10 @@
 import { createClient } from "@deepgram/sdk";
 import type { AIGenerateOptions, AIUsageMetrics } from "./AIProvider";
 import { AIProvider } from "./AIProvider";
+import {
+    TRANSCRIPTION_REQUEST_MAX_BYTES,
+    TranscriptionPayloadTooLargeError,
+} from "./transcription-http-policy";
 
 export interface DeepgramSettings {
     apiKey: string;
@@ -43,7 +47,12 @@ export class DeepgramProvider extends AIProvider {
         if (!this.models.includes(model)) {
             throw new Error(`Model not supported: ${model}`);
         }
+        if (audioFile.size > TRANSCRIPTION_REQUEST_MAX_BYTES) {
+            throw new TranscriptionPayloadTooLargeError("request");
+        }
 
+        // Deepgram's SDK currently requires a contiguous Node buffer. The shared hard cap and
+        // range-backed caller keep this compatibility seam bounded to one <=30-second window.
         const buffer = Buffer.from(await audioFile.arrayBuffer());
 
         const response = await this.getClient().listen.prerecorded.transcribeFile(

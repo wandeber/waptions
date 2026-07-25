@@ -1,4 +1,8 @@
-import { assertServerTranscriptionEndpointAllowed } from '@/lib/ai/openai-compatible-transcription-server';
+import {
+    assertServerTranscriptionEndpointAllowed,
+    assertServerTranscriptionEndpointNetworkAllowed,
+    createServerTranscriptionTransport,
+} from '@/lib/ai/openai-compatible-transcription-server';
 import { normalizeEditorialTranscriptionEndpoint } from '@/lib/editorial-transcription/endpoint';
 import {
     buildEditorialTranscriptionProviderMultipart,
@@ -6,9 +10,15 @@ import {
     EDITORIAL_TRANSCRIPTION_FAILURE_HEADER,
     EDITORIAL_TRANSCRIPTION_MAX_WAV_BYTES,
     EditorialTranscriptionResponseTooLargeError,
-    readEditorialTranscriptionResponseBytes,
     type EditorialTranscriptionFailureCode,
 } from '@/lib/editorial-transcription/request';
+import {
+    getTranscriptionAdmissionKey,
+    readBoundedMultipartFormData,
+    sharedTranscriptionAdmissionGate,
+    TranscriptionAdmissionError,
+    TranscriptionPayloadTooLargeError,
+} from '@/lib/ai/transcription-http-policy';
 import { normalizeEditorialLanguage } from '@/lib/editorial-transcription/preferences';
 import {
     EditorialProviderTimeoutError,
@@ -39,27 +49,30 @@ const ALLOWED_FIELDS = new Set([
  * no logging. The API key exists only in this request scope and the outbound Headers instance.
  */
 export async function POST(request: Request): Promise<Response> {
+    let release: (() => void) | null = null;
     try {
+        try {
+            release = sharedTranscriptionAdmissionGate.acquire(
+                getTranscriptionAdmissionKey(request),
+            );
+        } catch (error) {
+            if (error instanceof TranscriptionAdmissionError) {
+                return Response.json({ error: 'Editorial transcription is busy.' }, {
+                    status: 429,
+                    headers: { 'retry-after': '60' },
+                });
+            }
+            throw error;
+        }
         let formData: FormData;
         try {
-            const contentType = request.headers.get('content-type');
-            if (!contentType?.toLowerCase().startsWith('multipart/form-data;')) {
-                throw new EditorialRouteValidationError('Multipart form data is required.');
-            }
-            // request.formData() alone may buffer an arbitrarily large chunked body before the
-            // File.size check. Reusing the stream-bounded reader enforces the limit even when an
-            // attacker omits Content-Length; only the bounded bytes are handed to the parser.
-            const upload = new Response(request.body, { headers: request.headers });
-            const bytes = await readEditorialTranscriptionResponseBytes(
-                upload,
+            formData = await readBoundedMultipartFormData(
+                request,
                 EDITORIAL_TRANSCRIPTION_MAX_WAV_BYTES
                     + EDITORIAL_TRANSCRIPTION_MAX_MULTIPART_OVERHEAD_BYTES,
             );
-            formData = await new Response(bytes, {
-                headers: { 'content-type': contentType },
-            }).formData();
         } catch (error) {
-            if (error instanceof EditorialTranscriptionResponseTooLargeError) {
+            if (error instanceof TranscriptionPayloadTooLargeError) {
                 return jsonError('Editorial transcription upload is too large.', 413);
             }
             if (request.signal.aborted) {
@@ -89,6 +102,7 @@ export async function POST(request: Request): Promise<Response> {
         // outbound request. In production it preserves the existing explicit host allowlist;
         // development continues to permit a user-owned localhost transcriber.
         assertServerTranscriptionEndpointAllowed(endpoint);
+        await assertServerTranscriptionEndpointNetworkAllowed(endpoint);
 
         const languageEntry = formData.get('language');
         const language = languageEntry === null
@@ -110,12 +124,14 @@ export async function POST(request: Request): Promise<Response> {
         if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`);
 
         let providerResult;
+        const providerTransport = await createServerTranscriptionTransport(endpoint);
         try {
             providerResult = await requestEditorialTranscriptionProvider({
                 endpoint,
                 body: providerForm,
                 headers,
                 signal: request.signal,
+                fetchImpl: providerTransport.fetch,
             });
         } catch (error) {
             if (request.signal.aborted) return jsonError('Editorial transcription request cancelled.', 499);
@@ -134,6 +150,8 @@ export async function POST(request: Request): Promise<Response> {
                 502,
                 'network-unreachable',
             );
+        } finally {
+            await providerTransport.dispose();
         }
 
         if (providerResult.kind === 'rejected') {
@@ -157,6 +175,8 @@ export async function POST(request: Request): Promise<Response> {
             return jsonError('Invalid editorial transcription request.', 400);
         }
         return jsonError('Editorial transcription request failed.', 500);
+    } finally {
+        release?.();
     }
 }
 

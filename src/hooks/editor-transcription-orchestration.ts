@@ -10,11 +10,14 @@ import {
 import { frameRateToNumber } from '@/lib/render-profile';
 import {
     createTimelineDiarizationAudioSnapshot,
+    createTimelineDiarizationCoveragePlan,
     encodeTimelineAudioForDiarization,
     type EncodedTimelineDiarizationAudio,
     type TimelineDiarizationAudioSnapshot,
     type TimelineDiarizationAudioOptions,
+    type TimelineDiarizationCoverageWindow,
 } from '@/lib/timeline-diarization-audio';
+import { buildAudioMixPlan } from '@/lib/audio-mix-plan';
 import type {
     DiarizedSpeakerTrackInput,
     DiarizedTranscriptionMetadata,
@@ -25,6 +28,7 @@ import type {
     TranscriptionSubmission,
 } from '@/types/transcription';
 import type { EditorDocumentV3 } from '@/types/video';
+import { readBoundedJsonResponse } from '@/lib/ai/transcription-http-policy';
 
 const DEFAULT_CUSTOM_MODEL = 'faster-whisper';
 
@@ -100,6 +104,14 @@ export interface EditorDiarizationOrchestrationDependencies {
         document: TimelineDiarizationAudioSnapshot,
         options: TimelineDiarizationAudioOptions,
     ) => Promise<EncodedTimelineDiarizationAudio>;
+    planWindows?: (
+        document: TimelineDiarizationAudioSnapshot,
+    ) => readonly TimelineDiarizationCoverageWindow[];
+    encodeWindow?: (
+        document: TimelineDiarizationAudioSnapshot,
+        window: TimelineDiarizationCoverageWindow,
+        options: TimelineDiarizationAudioOptions,
+    ) => Promise<EncodedTimelineDiarizationAudio>;
     requestFromBrowser: (input: BrowserDiarizationRequestInput) => Promise<unknown>;
     requestThroughServer: (input: {
         settings: OpenAICompatibleTranscriptionSettings;
@@ -119,6 +131,13 @@ const defaultDependencies: EditorDiarizationOrchestrationDependencies = {
     captureSnapshot: createTimelineDiarizationAudioSnapshot,
     createGuard: createDiarizationJobGuard,
     encodeAudio: encodeTimelineAudioForDiarization,
+    planWindows: document => createTimelineDiarizationCoveragePlan(
+        buildAudioMixPlan(document),
+    ).windows,
+    encodeWindow: (document, window, options) => encodeTimelineAudioForDiarization(
+        document,
+        { ...options, window },
+    ),
     requestFromBrowser: requestDiarizationFromBrowser,
     requestThroughServer: requestDiarizationThroughServer,
     normalize: normalizeOpenAICompatibleDiarization,
@@ -222,57 +241,78 @@ export async function runDiarizedEditorTranscription(
     if (!guard) return 'stale';
     throwIfAborted(input.signal);
 
-    let currentEncodingStage = 'Rendering the project audio mix';
-    const encoded = await dependencies.encodeAudio(snapshot, {
-        signal: input.signal,
-        onStage: (stage) => {
-            currentEncodingStage = stage === 'rendering-project-mix'
-                ? 'Rendering the project audio mix'
-                : 'Encoding the project audio mix';
-            input.onStatus(`${currentEncodingStage}…`);
-        },
-        onProgress: (progress) => {
-            if (!Number.isFinite(progress)) return;
-            const percentage = Math.round(Math.min(1, Math.max(0, progress)) * 100);
-            input.onStatus(`${currentEncodingStage}… ${percentage}%`);
-        },
-    });
-    throwIfAborted(input.signal);
+    const windows = dependencies.planWindows && dependencies.encodeWindow
+        ? dependencies.planWindows(snapshot)
+        : null;
+    const windowInputs: Array<TimelineDiarizationCoverageWindow | null> = windows
+        ? [...windows]
+        : [null];
+    const collectedSpeakers = new Map<string, NormalizedDiarizedSpeaker>();
+    for (let windowIndex = 0; windowIndex < windowInputs.length; windowIndex += 1) {
+        const window = windowInputs[windowIndex];
+        let currentEncodingStage = 'Rendering the project audio mix';
+        const encodingOptions: TimelineDiarizationAudioOptions = {
+            signal: input.signal,
+            onStage: (stage) => {
+                currentEncodingStage = stage === 'rendering-project-mix'
+                    ? 'Rendering the project audio mix'
+                    : 'Encoding the project audio mix';
+                input.onStatus(`${currentEncodingStage} (${windowIndex + 1}/${windowInputs.length})…`);
+            },
+            onProgress: (progress) => {
+                if (!Number.isFinite(progress)) return;
+                const percentage = Math.round(Math.min(1, Math.max(0, progress)) * 100);
+                input.onStatus(
+                    `${currentEncodingStage} (${windowIndex + 1}/${windowInputs.length})… ${percentage}%`,
+                );
+            },
+        };
+        const encoded = window && dependencies.encodeWindow
+            ? await dependencies.encodeWindow(snapshot, window, encodingOptions)
+            : await dependencies.encodeAudio(snapshot, encodingOptions);
+        throwIfAborted(input.signal);
 
-    let response: unknown;
-    if (input.settings.requestMode === 'browser') {
-        input.onStatus('Sending the project mix to the transcriber from this browser…');
-        try {
-            response = await dependencies.requestFromBrowser({
+        let response: unknown;
+        if (input.settings.requestMode === 'browser') {
+            input.onStatus(`Sending audio window ${windowIndex + 1}/${windowInputs.length} from this browser…`);
+            try {
+                response = await dependencies.requestFromBrowser({
+                    settings: input.settings,
+                    audio: encoded.blob,
+                    filename: encoded.filename,
+                    signal: input.signal,
+                });
+            } catch (error) {
+                if (input.signal.aborted || isAbortLikeError(error)) throw error;
+                const message = error instanceof Error
+                    ? redactConfiguredSecret(error.message, input.settings.apiKey)
+                    : 'The browser could not call the transcriber.';
+                throw new Error(`${message} Check that the endpoint allows CORS from ${input.browserOrigin}.`);
+            }
+        } else {
+            input.onStatus(`Sending audio window ${windowIndex + 1}/${windowInputs.length} through the Waptions server…`);
+            response = await dependencies.requestThroughServer({
                 settings: input.settings,
                 audio: encoded.blob,
                 filename: encoded.filename,
                 signal: input.signal,
             });
-        } catch (error) {
-            if (input.signal.aborted || isAbortLikeError(error)) throw error;
-            const message = error instanceof Error
-                ? redactConfiguredSecret(error.message, input.settings.apiKey)
-                : 'The browser could not call the transcriber.';
-            throw new Error(`${message} Check that the endpoint allows CORS from ${input.browserOrigin}.`);
         }
-    } else {
-        input.onStatus('Sending the project mix through the Waptions server…');
-        response = await dependencies.requestThroughServer({
-            settings: input.settings,
-            audio: encoded.blob,
-            filename: encoded.filename,
-            signal: input.signal,
+        throwIfAborted(input.signal);
+        input.onStatus('Organizing speaker tracks…');
+        const normalized = dependencies.normalize(
+            response,
+            encoded.durationSeconds,
+            frameRateToNumber(snapshot.renderProfile.fps),
+        );
+        collectWindowSpeakers({
+            target: collectedSpeakers,
+            speakers: normalized,
+            window,
+            outputStartSample: encoded.outputStartSample ?? 0,
         });
     }
-    throwIfAborted(input.signal);
-
-    input.onStatus('Organizing speaker tracks…');
-    const speakers = dependencies.normalize(
-        response,
-        encoded.durationSeconds,
-        frameRateToNumber(snapshot.renderProfile.fps),
-    );
+    const speakers = Array.from(collectedSpeakers.values());
     throwIfAborted(input.signal);
 
     // A valid response with no speech is not an instruction to erase a prior
@@ -286,6 +326,89 @@ export async function runDiarizedEditorTranscription(
         generatedAt: dependencies.now().toISOString(),
     }, guard);
     return applied ? 'applied' : 'stale';
+}
+
+function collectWindowSpeakers(input: {
+    target: Map<string, NormalizedDiarizedSpeaker>;
+    speakers: readonly NormalizedDiarizedSpeaker[];
+    window: TimelineDiarizationCoverageWindow | null;
+    outputStartSample: number;
+}): void {
+    const offsetSeconds = input.outputStartSample / 48_000;
+    const assignedKeys = new Set<string>();
+    const owns = (subtitle: { startTime: number; endTime: number }): boolean => {
+        if (!input.window) return true;
+        const midpointSample = input.outputStartSample
+            + Math.round((subtitle.startTime + subtitle.endTime) / 2 * 48_000);
+        return midpointSample >= input.window.core.startSample
+            && midpointSample < input.window.core.endSample;
+    };
+    const project = (subtitle: { id: string; startTime: number; endTime: number; text: string }) => ({
+        ...subtitle,
+        startTime: subtitle.startTime + offsetSeconds,
+        endTime: subtitle.endTime + offsetSeconds,
+    });
+    input.speakers.forEach((speaker) => {
+        const projectedEvidence = speaker.transcription.raw.map(project);
+        const candidates = new Set<string>();
+        if (input.window) {
+            input.target.forEach((existing, key) => {
+                if (projectedEvidence.some(current => (
+                    existing.transcription.raw.some(previous => sameOverlapWord(previous, current))
+                ))) {
+                    candidates.add(key);
+                }
+            });
+        }
+        if (candidates.size > 1) {
+            throw new Error('Diarization overlap has irreconcilable speaker evidence.');
+        }
+        const speakerKey = candidates.values().next().value as string | undefined
+            ?? (input.window
+                ? `${input.window.decoded.startSample}:${speaker.sourceSpeakerLabel}`
+                : speaker.sourceSpeakerLabel);
+        if (assignedKeys.has(speakerKey)) {
+            throw new Error('Diarization overlap maps multiple local speakers to one identity.');
+        }
+        assignedKeys.add(speakerKey);
+        const retainedSubtitles = speaker.subtitles.filter(owns).map(project);
+        const retainedRaw = speaker.transcription.raw.filter(owns).map(project);
+        if (retainedSubtitles.length === 0 && retainedRaw.length === 0) return;
+        const existing = input.target.get(speakerKey) ?? {
+            sourceSpeakerLabel: input.window
+                ? `${speaker.sourceSpeakerLabel}@${input.window.decoded.startSample}`
+                : speaker.sourceSpeakerLabel,
+            subtitles: [],
+            transcription: { raw: [], groups: {}, containerIds: [] },
+        };
+        existing.subtitles.push(...retainedSubtitles);
+        existing.transcription.raw.push(...retainedRaw);
+        speaker.transcription.containerIds.forEach((containerId) => {
+            const words = (speaker.transcription.groups[containerId] ?? [])
+                .filter(owns)
+                .map(project);
+            if (words.length === 0) return;
+            const projectedId = input.window
+                ? `${input.window.decoded.startSample}:${containerId}`
+                : containerId;
+            existing.transcription.groups[projectedId] = words;
+            existing.transcription.containerIds.push(projectedId);
+        });
+        input.target.set(speakerKey, existing);
+    });
+}
+
+function sameOverlapWord(
+    left: { startTime: number; endTime: number; text: string },
+    right: { startTime: number; endTime: number; text: string },
+): boolean {
+    if (left.text.normalize('NFKC').trim().toLocaleLowerCase('und')
+        !== right.text.normalize('NFKC').trim().toLocaleLowerCase('und')) {
+        return false;
+    }
+    const overlap = Math.min(left.endTime, right.endTime) - Math.max(left.startTime, right.startTime);
+    const shorter = Math.min(left.endTime - left.startTime, right.endTime - right.startTime);
+    return overlap > 0 && overlap * 2 >= shorter;
 }
 
 async function requestDiarizationThroughServer(input: {
@@ -303,7 +426,7 @@ async function requestDiarizationThroughServer(input: {
         body: formData,
         signal: input.signal,
     });
-    const responseBody = await response.json() as unknown;
+    const responseBody = await readBoundedJsonResponse(response, { signal: input.signal });
     if (!response.ok) {
         const rawMessage = isRecord(responseBody) && typeof responseBody.error === 'string'
             ? responseBody.error

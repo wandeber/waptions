@@ -20,7 +20,10 @@ import { useEditorProjectSync } from '@/hooks/use-editor-project-sync';
 import { useEditorTranscription } from '@/hooks/use-editor-transcription';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useTimelineAudioEngine } from '@/hooks/use-timeline-audio-engine';
-import { exportProjectBundle } from '@/lib/project-bundle';
+import {
+    exportProjectBundle,
+    exportProjectBundleToWritableStream,
+} from '@/lib/project-bundle';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useTimelineStore } from '@/stores/timeline-store';
@@ -195,6 +198,30 @@ function EditorContent() {
             await saveCurrentProject();
             const persistenceError = useProjectStore.getState().persistenceError;
             if (persistenceError) throw persistenceError;
+            const filePicker = (window as Window & {
+                showSaveFilePicker?: (options: {
+                    suggestedName: string;
+                    types: Array<{
+                        description: string;
+                        accept: Record<string, string[]>;
+                    }>;
+                }) => Promise<{
+                    createWritable(): Promise<WritableStream<Uint8Array>>;
+                }>;
+            }).showSaveFilePicker;
+            if (filePicker) {
+                const handle = await filePicker.call(window, {
+                    suggestedName: `${activeProject.name}.waptions`,
+                    types: [{
+                        description: 'Waptions project',
+                        accept: { 'application/zip': ['.waptions'] },
+                    }],
+                });
+                const writable = await handle.createWritable();
+                await exportProjectBundleToWritableStream(activeProject.id, writable);
+                return;
+            }
+            // Browsers without the File System Access API retain a deliberately bounded fallback.
             const blob = await exportProjectBundle(activeProject.id);
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');

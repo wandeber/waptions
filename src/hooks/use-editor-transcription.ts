@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { transcribeWithOpenAICompatibleEndpoint } from '@/lib/ai/openai-compatible-transcription';
 import {
+  createLocalBrowserTranscriptionSession,
   type LocalBrowserTranscriptionProgress,
-  transcribeWithLocalBrowserModel,
+  type LocalBrowserTranscriptionSession,
 } from '@/lib/ai/local-browser-transcription';
 import {
   resolveEditorTranscriptionRoute,
@@ -11,7 +12,12 @@ import {
 } from '@/hooks/editor-transcription-orchestration';
 import { buildAudioTranscriptionPlan } from '@/lib/audio-transcription-plan';
 import { resolveAudioMediaAsset, type AudioMediaCacheKey } from '@/lib/media-asset-ref';
-import { extractAudio } from '@/lib/mediabunny-utils';
+import {
+  decodeBoundedSourceTranscriptionWindows,
+  int16PcmToFloat32,
+  projectWindowWordsToSource,
+  type SourceTimedWord,
+} from '@/lib/ai/bounded-source-transcription';
 import {
   mapAudioTranscriptionPlanToProject,
   mapPremiumAudioTranscriptionPlanToProject,
@@ -22,6 +28,8 @@ import type { Subtitle } from '@/types/timeline';
 import type {
   TranscriptionSubmission,
 } from '@/types/transcription';
+import { readBoundedJsonResponse } from '@/lib/ai/transcription-http-policy';
+import type { TranscriptionAcquisitionWindowV2 } from '@/types/editorial';
 
 interface GenerateSubtitlesResponse {
   subtitles?: Subtitle[];
@@ -33,14 +41,32 @@ interface TimedTranscriptionResponse {
   words?: Array<{ word: string; start: number; end: number }>;
 }
 
-const buildSubtitlesFromTimedWords = (transcription: TimedTranscriptionResponse): Subtitle[] => (
-  transcription.words?.map((word) => ({
-    id: crypto.randomUUID(),
-    startTime: word.start,
-    endTime: word.end,
-    text: word.word.trim(),
-  })) ?? []
-);
+const projectSubtitlesFromWindow = (
+  subtitles: readonly Subtitle[],
+  window: TranscriptionAcquisitionWindowV2,
+): Subtitle[] => projectWindowWordsToSource(
+  subtitles.map((subtitle) => ({
+    word: subtitle.text,
+    start: subtitle.startTime,
+    end: subtitle.endTime,
+  })),
+  window,
+).map((word) => ({
+  id: crypto.randomUUID(),
+  startTime: word.start,
+  endTime: word.end,
+  text: word.word,
+}));
+
+const projectTimedWordsFromWindow = (
+  words: readonly SourceTimedWord[],
+  window: TranscriptionAcquisitionWindowV2,
+): Subtitle[] => projectWindowWordsToSource(words, window).map((word) => ({
+  id: crypto.randomUUID(),
+  startTime: word.start,
+  endTime: word.end,
+  text: word.word,
+}));
 
 const formatLocalProgress = (progress: LocalBrowserTranscriptionProgress): string => (
   typeof progress.progress === 'number'
@@ -134,10 +160,18 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    let localBrowserSession: LocalBrowserTranscriptionSession | null = null;
     try {
       setIsGenerating(true);
       const sourceWords = new Map<AudioMediaCacheKey, Subtitle[]>();
       const premiumBySource = new Map<AudioMediaCacheKey, SourcePremiumTranscription>();
+      if (requestRoute.kind === 'local-browser') {
+        localBrowserSession = await createLocalBrowserTranscriptionSession({
+          settings: requestRoute.settings,
+          signal: abortController.signal,
+          onProgress: progress => setStatus(formatLocalProgress(progress)),
+        });
+      }
 
       for (let sourceIndex = 0; sourceIndex < transcriptionPlan.sourceJobs.length; sourceIndex += 1) {
         const sourceJob = transcriptionPlan.sourceJobs[sourceIndex];
@@ -149,62 +183,100 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
         if (!media) throw new Error(`The audio source ${sourceJob.sourceKey} is no longer available.`);
 
         const sourceNumber = `${sourceIndex + 1}/${transcriptionPlan.sourceJobs.length}`;
-        setStatus(`Extracting audio ${sourceNumber}: ${media.asset.originalName}`);
-        const audioBlob = await extractAudio(media.asset.file);
-        let data: GenerateSubtitlesResponse;
-        if (abortController.signal.aborted) {
-          throw new DOMException('Transcription cancelled.', 'AbortError');
-        }
-
-        if (requestRoute.kind === 'local-browser') {
-          const transcription = await transcribeWithLocalBrowserModel({
-            audioBlob,
-            settings: requestRoute.settings,
-            signal: abortController.signal,
-            onProgress: (progress) => setStatus(`${sourceNumber} · ${formatLocalProgress(progress)}`),
-          });
-          data = { subtitles: buildSubtitlesFromTimedWords(transcription) };
-        } else if (requestRoute.kind === 'custom-browser') {
-          try {
-            setStatus(`Transcribing ${sourceNumber} in this browser…`);
-            const transcription = await transcribeWithOpenAICompatibleEndpoint({
-              settings: requestRoute.settings,
-              audioFile: audioBlob,
-              fallbackModel: 'faster-whisper',
-              options: {
-                response_format: 'verbose_json',
-                timestamp_granularities: ['word'],
-                prompt: 'Use correct punctuation.',
-                temperature: 0,
-              },
+        const accumulated: GenerateSubtitlesResponse = {
+          subtitles: [],
+          raw: [],
+          groups: [],
+        };
+        let windowIndex = 0;
+        for await (const bounded of decodeBoundedSourceTranscriptionWindows({
+          job: sourceJob,
+          media,
+          signal: abortController.signal,
+        })) {
+          windowIndex += 1;
+          setStatus(`Transcribing ${sourceNumber}, window ${windowIndex}…`);
+          let data: GenerateSubtitlesResponse;
+          if (requestRoute.kind === 'local-browser') {
+            if (!localBrowserSession) {
+              throw new Error('Local browser transcription session is unavailable.');
+            }
+            const transcription = await localBrowserSession.transcribeWindow({
+                startSample: bounded.window.decoded.startSample,
+                samples: int16PcmToFloat32(bounded.pcm),
+            }, `${media.asset.id}-${windowIndex}`);
+            data = {
+              subtitles: projectTimedWordsFromWindow(
+                transcription.result.words,
+                bounded.window,
+              ),
+            };
+          } else if (requestRoute.kind === 'custom-browser') {
+            try {
+              const transcription = await transcribeWithOpenAICompatibleEndpoint({
+                settings: requestRoute.settings,
+                audioFile: new File([bounded.wav], `${media.asset.id}-${windowIndex}.wav`, {
+                  type: 'audio/wav',
+                }),
+                fallbackModel: 'faster-whisper',
+                options: {
+                  response_format: 'verbose_json',
+                  timestamp_granularities: ['word'],
+                  prompt: 'Use correct punctuation.',
+                  temperature: 0,
+                },
+                signal: abortController.signal,
+              }) as TimedTranscriptionResponse;
+              data = {
+                subtitles: projectTimedWordsFromWindow(
+                  transcription.words ?? [],
+                  bounded.window,
+                ),
+              };
+            } catch (error) {
+              if (abortController.signal.aborted) throw error;
+              const message = error instanceof Error
+                ? error.message
+                : 'The browser could not call the transcriber.';
+              throw new Error(`${message} Check that the endpoint allows CORS from ${window.location.origin}.`);
+            }
+          } else {
+            const formData = new FormData();
+            formData.append('audio', bounded.wav, `${media.asset.id}-${windowIndex}.wav`);
+            formData.append('model', requestRoute.transportModelId);
+            if (requestRoute.customOpenAITranscription?.enabled) {
+              formData.append('customOpenAITranscription', JSON.stringify(requestRoute.customOpenAITranscription));
+            }
+            const response = await fetch('/api/generate-subtitles', {
+              method: 'POST',
+              body: formData,
               signal: abortController.signal,
-            }) as TimedTranscriptionResponse;
-            data = { subtitles: buildSubtitlesFromTimedWords(transcription) };
-          } catch (error) {
-            if (abortController.signal.aborted) throw error;
-            const message = error instanceof Error
-              ? error.message
-              : 'The browser could not call the transcriber.';
-            throw new Error(`${message} Check that the endpoint allows CORS from ${window.location.origin}.`);
+            });
+            const responseBody = await readBoundedJsonResponse(response, {
+              signal: abortController.signal,
+            });
+            data = parseGenerateSubtitlesResponse(responseBody);
+            if (!response.ok) {
+              throw new Error(
+                isRecord(responseBody) && typeof responseBody.error === 'string'
+                  ? responseBody.error
+                  : 'Subtitle generation failed.',
+              );
+            }
+            data = {
+              subtitles: projectSubtitlesFromWindow(data.subtitles ?? [], bounded.window),
+              raw: projectSubtitlesFromWindow(data.raw ?? data.subtitles ?? [], bounded.window),
+              groups: (data.groups ?? []).map((group) => ({
+                id: `${bounded.window.windowId}:${group.id}`,
+                words: projectSubtitlesFromWindow(group.words, bounded.window),
+              })).filter((group) => group.words.length > 0),
+            };
           }
-        } else {
-          setStatus(`Transcribing ${sourceNumber} on the server…`);
-          const formData = new FormData();
-          formData.append('audio', audioBlob, `${media.asset.id}.mp4`);
-          formData.append('model', requestRoute.transportModelId);
-          if (requestRoute.customOpenAITranscription?.enabled) {
-            formData.append('customOpenAITranscription', JSON.stringify(requestRoute.customOpenAITranscription));
-          }
-          const response = await fetch('/api/generate-subtitles', {
-            method: 'POST',
-            body: formData,
-            signal: abortController.signal,
-          });
-          data = await response.json();
-          if (!response.ok) {
-            throw new Error((data as { error?: string }).error || 'Subtitle generation failed.');
-          }
+          accumulated.subtitles!.push(...(data.subtitles ?? []));
+          accumulated.raw!.push(...(data.raw ?? data.subtitles ?? []));
+          accumulated.groups!.push(...(data.groups ?? []));
         }
+        const data = accumulated;
 
         if (isPremiumBuiltIn) {
           premiumBySource.set(sourceJob.sourceKey, {
@@ -258,6 +330,7 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
       console.error('Failed to generate subtitles:', error);
       alert(error instanceof Error ? error.message : 'Subtitle generation failed. Please try again.');
     } finally {
+      localBrowserSession?.dispose();
       if (abortControllerRef.current === abortController) abortControllerRef.current = null;
       setIsGenerating(false);
       setStatus(null);
@@ -272,5 +345,50 @@ export function useEditorTranscription(targetTrackId: string | undefined) {
     close,
     confirm,
     cancel,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseGenerateSubtitlesResponse(value: unknown): GenerateSubtitlesResponse {
+  if (!isRecord(value)) throw new Error('Subtitle generation returned an invalid response.');
+  const parseSubtitles = (candidate: unknown): Subtitle[] => {
+    if (candidate === undefined) return [];
+    if (!Array.isArray(candidate) || candidate.length > 100_000) {
+      throw new Error('Subtitle generation returned too many or invalid words.');
+    }
+    return candidate.map((subtitle) => {
+      if (!isRecord(subtitle)
+        || typeof subtitle.id !== 'string'
+        || typeof subtitle.startTime !== 'number'
+        || !Number.isFinite(subtitle.startTime)
+        || typeof subtitle.endTime !== 'number'
+        || !Number.isFinite(subtitle.endTime)
+        || subtitle.endTime <= subtitle.startTime
+        || typeof subtitle.text !== 'string'
+        || !subtitle.text.trim()
+        || subtitle.text.length > 4_096) {
+        throw new Error('Subtitle generation returned a malformed word.');
+      }
+      return subtitle as unknown as Subtitle;
+    });
+  };
+  const groupsValue = value.groups;
+  if (groupsValue !== undefined
+    && (!Array.isArray(groupsValue) || groupsValue.length > 20_000)) {
+    throw new Error('Subtitle generation returned invalid groups.');
+  }
+  const groups = (groupsValue ?? []).map((group) => {
+    if (!isRecord(group) || typeof group.id !== 'string' || !group.id.trim()) {
+      throw new Error('Subtitle generation returned a malformed group.');
+    }
+    return { id: group.id, words: parseSubtitles(group.words) };
+  });
+  return {
+    subtitles: parseSubtitles(value.subtitles),
+    raw: parseSubtitles(value.raw),
+    groups,
   };
 }

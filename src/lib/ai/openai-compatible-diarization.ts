@@ -6,6 +6,10 @@ import type { TrackTranscriptionState } from "@/types/video";
 const DEFAULT_DIARIZATION_MODEL = "faster-whisper";
 const AAC_FRAME_SAMPLE_COUNT = 1_024;
 const DIARIZATION_AUDIO_SAMPLE_RATE = 48_000;
+const MAX_DIARIZATION_SEGMENTS = 100_000;
+const MAX_DIARIZATION_SPEAKERS = 128;
+const MAX_DIARIZATION_SEGMENT_TEXT_CHARACTERS = 4_096;
+const MAX_DIARIZATION_SPEAKER_LABEL_CHARACTERS = 256;
 
 export interface OpenAICompatibleDiarizationRequest {
     settings: OpenAICompatibleTranscriptionSettings;
@@ -75,6 +79,9 @@ export function normalizeOpenAICompatibleDiarization(
     if (sourceSegments.length === 0) {
         return [];
     }
+    if (sourceSegments.length > MAX_DIARIZATION_SEGMENTS) {
+        throw new Error("The transcriber returned too many diarization segments.");
+    }
 
     const timestampTolerance = Math.max(
         1 / projectFps,
@@ -99,6 +106,9 @@ export function normalizeOpenAICompatibleDiarization(
     orderedSegments.forEach((segment) => {
         let speaker = speakersByLabel.get(segment.sourceSpeakerLabel);
         if (!speaker) {
+            if (speakersByLabel.size >= MAX_DIARIZATION_SPEAKERS) {
+                throw new Error("The transcriber returned too many speakers.");
+            }
             speaker = {
                 sourceSpeakerLabel: segment.sourceSpeakerLabel,
                 subtitles: [],
@@ -149,7 +159,13 @@ function normalizeSpeakerSegment(
     const start = getFiniteNumber(value.start);
     const end = getFiniteNumber(value.end);
 
-    if (!sourceSpeakerLabel || !text || start === undefined || end === undefined || end <= start) {
+    if (!sourceSpeakerLabel
+        || sourceSpeakerLabel.length > MAX_DIARIZATION_SPEAKER_LABEL_CHARACTERS
+        || !text
+        || text.length > MAX_DIARIZATION_SEGMENT_TEXT_CHARACTERS
+        || start === undefined
+        || end === undefined
+        || end <= start) {
         throw invalidSegmentError(sourceIndex);
     }
 

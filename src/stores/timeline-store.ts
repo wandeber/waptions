@@ -126,11 +126,17 @@ import {
     timelineEditorialRuntime,
 } from './timeline-editorial-runtime';
 import {
+    ceilRationalSampleCount,
+    normalizeRationalDuration,
+} from '@/lib/editorial-transcription/pcm';
+import {
+    exactClipSourceFrameRange,
     planActivateNarrative,
     planChangeGlobalEditingMode,
     planReleaseNarrativeTracks,
     preflightNarrativeActivationCandidates,
 } from '@/lib/narrative/commands';
+import { sourceFrameRangeToTranscriptSamples } from '@/lib/narrative/materializer';
 import { planEditorialLinksForTargetTransforms } from '@/lib/editorial-links';
 import {
     EditorialTranscriptionRequestError,
@@ -2474,12 +2480,36 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const sources = sourceIds.map((sourceId) => {
             const source = before.videoSources.find((value) => value.id === sourceId);
             if (!source) throw new Error(`Activation source "${sourceId}" is unavailable.`);
+            const declaredDuration = normalizeRationalDuration(
+                request.declaredDurationBySourceId?.[source.id]
+                    ?? approximateSecondsAsRationalDuration(source.duration),
+            );
+            const sampleCount = ceilRationalSampleCount(declaredDuration, 16_000);
+            const coreCoverage = before.videoClips
+                .filter((clip) => clip.sourceId === source.id && accepted.has(clip.id))
+                .map((clip) => {
+                    const crop = exactClipSourceFrameRange(clip, source);
+                    if (!crop) {
+                        throw new Error(`Activation clip "${clip.id}" has invalid source bounds.`);
+                    }
+                    const range = sourceFrameRangeToTranscriptSamples(
+                        crop.start,
+                        crop.end,
+                        source.fps,
+                        sampleCount,
+                    );
+                    return {
+                        startSample: range.start,
+                        endSample: range.end,
+                    };
+                });
             return {
                 sourceId: source.id,
                 sourceFingerprint: source.fingerprint,
                 file: source.file,
-                declaredDuration: request.declaredDurationBySourceId?.[source.id]
-                    ?? approximateSecondsAsRationalDuration(source.duration),
+                declaredDuration,
+                coreCoverage,
+                hasAudio: source.hasAudio,
             };
         });
         let acquired;

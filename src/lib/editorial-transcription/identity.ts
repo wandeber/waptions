@@ -6,9 +6,12 @@ import {
     EDITORIAL_TRANSCRIPT_RESPONSE_SCHEMA,
     type EditorialSpeakerMode,
     type EditorialTranscriptAcquisition,
+    type EditorialTranscriptDescriptor,
+    type EditorialTranscriptDescriptorV2,
     type EditorialTranscriptDescriptorV1,
     type EditorialTranscriptRecordBodyV1,
     type Sha256Digest,
+    type TranscriptionCoverageRecordV2,
 } from '@/types/editorial';
 import { sha256CanonicalJson } from './canonical-json';
 
@@ -79,7 +82,7 @@ export function createEditorialTranscriptDescriptor(input: {
 }
 
 export function assertEditorialDescriptorMatchesBody(
-    descriptor: EditorialTranscriptDescriptorV1,
+    descriptor: EditorialTranscriptDescriptor,
     body: EditorialTranscriptRecordBodyV1,
 ): void {
     if (
@@ -98,4 +101,52 @@ export function assertEditorialDescriptorMatchesBody(
     ) {
         throw new Error('Editorial transcript descriptor does not match its immutable body.');
     }
+}
+
+export function createEditorialTranscriptDescriptorV2(input: {
+    recordId: Sha256Digest;
+    coverageRecord: TranscriptionCoverageRecordV2;
+    requestKey: Sha256Digest;
+    sourceId: string;
+    sourceFingerprint: string;
+    endpointIdentityDigest: Sha256Digest;
+    body: EditorialTranscriptRecordBodyV1;
+    acquisition: EditorialTranscriptAcquisition;
+    createdAt?: string;
+}): EditorialTranscriptDescriptorV2 {
+    if (input.coverageRecord.mergedTranscriptRecordId !== input.recordId
+        || input.coverageRecord.sourceFingerprint !== input.sourceFingerprint
+        || input.coverageRecord.sourceSampleRate !== input.body.sampleRateHz
+        || input.coverageRecord.sourceSampleCount !== input.body.sampleCount
+        || input.coverageRecord.speakerMode !== input.body.speakerMode
+        || input.coverageRecord.language !== (input.body.language ?? 'auto')) {
+        throw new Error('Editorial coverage record does not match its merged transcript.');
+    }
+    const descriptor: EditorialTranscriptDescriptorV2 = {
+        version: 2,
+        recordId: input.recordId,
+        coverageRecordId: input.coverageRecord.recordId,
+        requestKey: input.requestKey,
+        sourceKind: 'video-source-audio',
+        sourceId: input.sourceId,
+        sourceFingerprint: input.sourceFingerprint,
+        pcmAlgorithmVersion: 1,
+        recordBodyVersion: 1,
+        canonicalJsonVersion: 1,
+        coverageVersion: 2,
+        responseSchema: 'edit-max-v1',
+        requestedModel: 'qwen-1.7b-edit-max',
+        canonicalModel: input.body.canonicalModel,
+        sampleRateHz: 16_000,
+        sampleCount: input.body.sampleCount,
+        language: input.body.language,
+        speakerMode: input.body.speakerMode,
+        endpointIdentityDigest: input.endpointIdentityDigest,
+        acquisitionProfileDigest: input.coverageRecord.acquisitionProfileDigest,
+        mergeAlgorithmVersion: input.coverageRecord.mergeAlgorithmVersion,
+        acquisition: input.acquisition,
+        createdAt: input.createdAt ?? new Date().toISOString(),
+    };
+    assertEditorialDescriptorMatchesBody(descriptor, input.body);
+    return descriptor;
 }

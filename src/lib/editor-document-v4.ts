@@ -6,9 +6,11 @@ import {
     EDITORIAL_TRANSCRIPT_REQUESTED_MODEL,
     EDITORIAL_TRANSCRIPT_RESPONSE_SCHEMA,
     EDITORIAL_TRANSCRIPT_SAMPLE_RATE_HZ,
+    EDITORIAL_TRANSCRIPT_COVERAGE_VERSION,
+    EDITORIAL_TRANSCRIPT_MERGE_ALGORITHM_VERSION,
     isSha256Digest,
     type EditorialDependentLinkV1,
-    type EditorialTranscriptDescriptorV1,
+    type EditorialTranscriptDescriptor,
     type NarrativeBlockV1,
     type NarrativeDocumentV1,
     type ResolvedEditorialTranscriptMapV1,
@@ -100,7 +102,7 @@ interface V4GraphView {
     activeSubtitleTrackId: string | null;
     transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
     globalEditingMode: unknown;
-    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptor[];
     narrative: NarrativeDocumentV1 | null;
     dependentLinks: EditorialDependentLinkV1[];
     transientSelection?: TransientMediaSelectionV4;
@@ -120,9 +122,9 @@ interface StructuralContext {
 
 interface DescriptorCatalog {
     /** One immutable CAS body may be intentionally mapped to multiple equivalent source assets. */
-    byRecordId: Map<Sha256Digest, EditorialTranscriptDescriptorV1[]>;
+    byRecordId: Map<Sha256Digest, EditorialTranscriptDescriptor[]>;
     /** Narrative ownership resolves a descriptor by both body identity and exact source identity. */
-    byRecordAndSourceId: Map<Sha256Digest, Map<string, EditorialTranscriptDescriptorV1>>;
+    byRecordAndSourceId: Map<Sha256Digest, Map<string, EditorialTranscriptDescriptor>>;
 }
 
 interface BodyIndexes {
@@ -132,7 +134,7 @@ interface BodyIndexes {
     speakerIds: Set<string>;
 }
 
-const DESCRIPTOR_KEYS = new Set([
+const DESCRIPTOR_V1_KEYS = new Set([
     'version',
     'recordId',
     'requestKey',
@@ -152,6 +154,13 @@ const DESCRIPTOR_KEYS = new Set([
     'endpointIdentityDigest',
     'acquisition',
     'createdAt',
+]);
+const DESCRIPTOR_V2_KEYS = new Set([
+    ...Array.from(DESCRIPTOR_V1_KEYS),
+    'coverageRecordId',
+    'coverageVersion',
+    'acquisitionProfileDigest',
+    'mergeAlgorithmVersion',
 ]);
 const NARRATIVE_DOCUMENT_KEYS = new Set([
     'version',
@@ -526,7 +535,7 @@ function readGraph(value: unknown, validateFiles: boolean, addIssue: AddIssue): 
         activeSubtitleTrackId: value.activeSubtitleTrackId as string | null,
         transcriptionByTrackId: value.transcriptionByTrackId as Record<string, TrackTranscriptionProvenanceV3>,
         globalEditingMode: value.globalEditingMode,
-        editorialTranscriptDescriptors: descriptors as EditorialTranscriptDescriptorV1[],
+        editorialTranscriptDescriptors: descriptors as EditorialTranscriptDescriptor[],
         narrative: value.narrative as unknown as NarrativeDocumentV1 | null,
         dependentLinks: links as EditorialDependentLinkV1[],
         transientSelection: validateFiles
@@ -759,17 +768,18 @@ function validateDescriptors(
         byRecordId: new Map(),
         byRecordAndSourceId: new Map(),
     };
-    const firstDescriptorByRequestKey = new Map<Sha256Digest, EditorialTranscriptDescriptorV1>();
+    const firstDescriptorByRequestKey = new Map<Sha256Digest, EditorialTranscriptDescriptor>();
     const sources = new Map(graph.videoSources.map((source) => [source.id, source]));
     graph.editorialTranscriptDescriptors.forEach((descriptor, index) => {
         const path = `editorialTranscriptDescriptors[${index}]`;
+        const descriptorKeys = descriptor.version === 2 ? DESCRIPTOR_V2_KEYS : DESCRIPTOR_V1_KEYS;
         Object.keys(descriptor).forEach((key) => {
-            if (!DESCRIPTOR_KEYS.has(key)) {
+            if (!descriptorKeys.has(key)) {
                 addIssue('invalid-descriptor', `${path}.${key}`,
                     'Editorial transcript descriptors may contain provenance fields only.');
             }
         });
-        if (descriptor.version !== 1
+        if ((descriptor.version !== 1 && descriptor.version !== 2)
             || !isSha256Digest(descriptor.recordId)
             || !isSha256Digest(descriptor.requestKey)
             || !isSha256Digest(descriptor.endpointIdentityDigest)
@@ -788,7 +798,15 @@ function validateDescriptors(
             || (descriptor.acquisition !== 'provider' && descriptor.acquisition !== 'local-no-audio')
             || !isIsoDate(descriptor.createdAt)) {
             addIssue('invalid-descriptor', path,
-                'Editorial descriptor versions, hashes, model profile, timing, and provenance must use the frozen V1 contract.');
+                'Editorial descriptor versions, hashes, model profile, timing, and provenance are invalid.');
+        }
+        if (descriptor.version === 2
+            && (!isSha256Digest(descriptor.coverageRecordId)
+                || descriptor.coverageVersion !== EDITORIAL_TRANSCRIPT_COVERAGE_VERSION
+                || !isSha256Digest(descriptor.acquisitionProfileDigest)
+                || descriptor.mergeAlgorithmVersion !== EDITORIAL_TRANSCRIPT_MERGE_ALGORITHM_VERSION)) {
+            addIssue('invalid-descriptor', path,
+                'Range-covered descriptors must use the frozen V2 coverage contract.');
         }
         const source = sources.get(descriptor.sourceId);
         if (!source) {
@@ -842,8 +860,8 @@ function validateDescriptors(
 
 /** Fields below are embedded in, or deterministically asserted against, the immutable CAS body. */
 function descriptorsShareImmutableBody(
-    left: EditorialTranscriptDescriptorV1,
-    right: EditorialTranscriptDescriptorV1,
+    left: EditorialTranscriptDescriptor,
+    right: EditorialTranscriptDescriptor,
 ): boolean {
     return left.sourceFingerprint === right.sourceFingerprint
         && left.pcmAlgorithmVersion === right.pcmAlgorithmVersion
@@ -861,8 +879,8 @@ function descriptorsShareImmutableBody(
 
 /** Mirrors the frozen request-key input while intentionally excluding project-local source IDs. */
 function descriptorsShareRequestIdentity(
-    left: EditorialTranscriptDescriptorV1,
-    right: EditorialTranscriptDescriptorV1,
+    left: EditorialTranscriptDescriptor,
+    right: EditorialTranscriptDescriptor,
 ): boolean {
     return left.sourceKind === right.sourceKind
         && left.sourceFingerprint === right.sourceFingerprint
@@ -875,7 +893,13 @@ function descriptorsShareRequestIdentity(
         && left.sampleCount === right.sampleCount
         && left.language === right.language
         && left.speakerMode === right.speakerMode
-        && left.endpointIdentityDigest === right.endpointIdentityDigest;
+        && left.endpointIdentityDigest === right.endpointIdentityDigest
+        && left.version === right.version
+        && (left.version !== 2 || right.version !== 2 || (
+            left.coverageRecordId === right.coverageRecordId
+            && left.acquisitionProfileDigest === right.acquisitionProfileDigest
+            && left.mergeAlgorithmVersion === right.mergeAlgorithmVersion
+        ));
 }
 
 function validateNarrative(
@@ -1167,7 +1191,7 @@ function validateMaterialization(
     profile: RenderProfile,
     clip: VideoClipV4 | undefined,
     source: V4VideoSource | undefined,
-    descriptor: EditorialTranscriptDescriptorV1 | undefined,
+    descriptor: EditorialTranscriptDescriptor | undefined,
     addIssue: AddIssue,
 ): void {
     const materialization = block.materialization;
@@ -1283,7 +1307,7 @@ function validateRecomputedMarginBoundary(
     coreSample: number,
     narrative: NarrativeDocumentV1,
     source: V4VideoSource,
-    descriptor: EditorialTranscriptDescriptorV1,
+    descriptor: EditorialTranscriptDescriptor,
     path: string,
     addIssue: AddIssue,
 ): void {
@@ -1603,7 +1627,7 @@ function validateHydratedGraph(
     resolvedBodies: ResolvedEditorialTranscriptMapV1,
     addIssue: AddIssue,
 ): void {
-    const descriptorsByRecordId = new Map<Sha256Digest, EditorialTranscriptDescriptorV1[]>();
+    const descriptorsByRecordId = new Map<Sha256Digest, EditorialTranscriptDescriptor[]>();
     graph.editorialTranscriptDescriptors.forEach((descriptor) => {
         const descriptors = descriptorsByRecordId.get(descriptor.recordId) ?? [];
         descriptors.push(descriptor);
@@ -1640,7 +1664,7 @@ function validateHydratedGraph(
 
 function validateTranscriptBody(
     body: ResolvedEditorialTranscriptRecordBodyV1,
-    descriptors: readonly EditorialTranscriptDescriptorV1[],
+    descriptors: readonly EditorialTranscriptDescriptor[],
     path: string,
     addIssue: AddIssue,
 ): BodyIndexes | null {
@@ -1685,7 +1709,7 @@ function validateTranscriptBody(
 
 function validateTranscriptBodyDescriptorIdentity(
     body: ResolvedEditorialTranscriptRecordBodyV1,
-    descriptor: EditorialTranscriptDescriptorV1,
+    descriptor: EditorialTranscriptDescriptor,
     path: string,
     addIssue: AddIssue,
 ): void {

@@ -8,7 +8,12 @@ import type {
     VideoSourceAssetV3,
 } from '@/types/video';
 import type { AnimationStyle } from '@/types/timeline';
-import type { EditorialTranscriptDescriptorV1, Sha256Digest } from '@/types/editorial';
+import type {
+    EditorialTranscriptDescriptorV1,
+    EditorialTranscriptDescriptorV2,
+    Sha256Digest,
+    TranscriptionCoverageRecordV2,
+} from '@/types/editorial';
 import {
     createEditorDocumentV4Fixture,
     createEditorialDependentLinkFixture,
@@ -28,12 +33,27 @@ import {
 } from './editor-document-v4-migration';
 import {
     createEditorialTranscriptDescriptor,
+    createEditorialTranscriptDescriptorV2,
     createEditorialTranscriptRequestKey,
 } from './editorial-transcription/identity';
+import {
+    createAcquisitionProfileDigest,
+    createRangeTranscriptionRequestKey,
+    createTranscriptionCoverageRecordV2,
+    planIncrementalTranscriptionCoverage,
+} from './editorial-transcription/range-coverage';
+import {
+    createRangeTranscriptChunkRecord,
+    type RangeTranscriptChunkRecordV2,
+} from './editorial-transcription/range-orchestrator';
+import { mergeRangeTranscriptChunks } from './editorial-transcription/range-merge';
+import { createCanonicalMergedRangeRecord } from './editorial-transcription/orchestrator';
+import { IndexedRangeTranscriptionRepository } from './editorial-transcription/range-repository';
 import {
     createCanonicalEditorialTranscriptRecord,
     type CanonicalEditorialTranscriptRecordV1,
 } from './editorial-transcription/transcript-body';
+import { canonicalizeJson } from './editorial-transcription/canonical-json';
 import * as mediaUtils from './mediabunny-utils';
 import {
     exportProjectBundle,
@@ -185,6 +205,14 @@ interface EditorialBundleFixture {
 
 let editorialFixture: EditorialBundleFixture;
 
+interface RangeEditorialBundleFixture {
+    document: EditorDocumentV4;
+    record: CanonicalEditorialTranscriptRecordV1;
+    descriptor: EditorialTranscriptDescriptorV2;
+    coverage: TranscriptionCoverageRecordV2;
+    chunk: RangeTranscriptChunkRecordV2;
+}
+
 beforeAll(async () => {
     editorialFixture = await createEditorialBundleFixture();
 });
@@ -203,6 +231,8 @@ describe('project bundle 4.0', () => {
 
         expect(metadata.sourceFiles.video).toEqual({ video: 'sources/video/video.mp4' });
         expect(metadata.sourceFiles.audio).toEqual({ audio: 'sources/audio/audio.wav' });
+        expect(metadata.sourceDigests?.video.video).toMatch(/^sha256:[0-9a-f]{64}$/);
+        expect(metadata.sourceDigests?.audio.audio).toMatch(/^sha256:[0-9a-f]{64}$/);
         expect(metadata.editorManifest.audioTracks[0].clips[0].source.kind).toBe('video-source-audio');
         expect(zip.file('sources/video/video.mp4')).toBeTruthy();
         expect(zip.file('sources/audio/audio.wav')).toBeTruthy();
@@ -222,6 +252,25 @@ describe('project bundle 4.0', () => {
             version: 4,
             renderBackgroundColor: '#000000',
         });
+    });
+
+    it('rejects same-size source substitution against the streaming SHA-256 map', async () => {
+        const document = migrateEditorDocumentV3ToV4(v3Document(false));
+        vi.spyOn(storageService, 'loadProject').mockResolvedValue(project);
+        vi.spyOn(storageService, 'loadEditorDocument').mockResolvedValue(document as never);
+        const bundle = await exportProjectBundle('project');
+        const zip = await JSZip.loadAsync(await bundle.arrayBuffer());
+        const metadata = JSON.parse(
+            await zip.file('metadata.json')!.async('text'),
+        ) as ProjectBundleMetadataV4;
+        const sourcePath = metadata.sourceFiles.video.video;
+        const original = await zip.file(sourcePath)!.async('uint8array');
+        const substituted = original.slice();
+        substituted[0] ^= 0xff;
+        zip.file(sourcePath, substituted);
+
+        await expect(importProjectBundle(await toBundleBlob(zip)))
+            .rejects.toThrow('SHA-256 integrity check');
     });
 
     it('exports a descriptor-only manifest, typed sources, and exact canonical current-record sidecars', async () => {
@@ -334,6 +383,112 @@ describe('project bundle 4.0', () => {
             .toBe(await firstZip.file(sidecarPath)!.async('text'));
     });
 
+    it('round-trips V2 coverage and chunk proofs that reproduce the merged transcript', async () => {
+        const fixture = await createRangeEditorialBundleFixture();
+        vi.spyOn(storageService, 'loadProject').mockResolvedValue(project);
+        vi.spyOn(storageService, 'loadEditorDocument').mockResolvedValue(fixture.document as never);
+        vi.spyOn(EditorialTranscriptRepository.prototype, 'getRecord')
+            .mockResolvedValue(fixture.record.body);
+        vi.spyOn(IndexedRangeTranscriptionRepository.prototype, 'getCoverage')
+            .mockResolvedValue(fixture.coverage);
+        vi.spyOn(IndexedRangeTranscriptionRepository.prototype, 'getChunk')
+            .mockResolvedValue(fixture.chunk);
+        const putRecord = vi.spyOn(EditorialTranscriptRepository.prototype, 'putRecord').mockResolvedValue();
+        const putCoverage = vi.spyOn(IndexedRangeTranscriptionRepository.prototype, 'putCoverage')
+            .mockResolvedValue();
+        const putChunk = vi.spyOn(IndexedRangeTranscriptionRepository.prototype, 'putChunk')
+            .mockResolvedValue();
+        vi.spyOn(EditorialTranscriptRepository.prototype, 'setPendingGenerationPins').mockResolvedValue();
+        vi.spyOn(EditorialTranscriptRepository.prototype, 'publishDurableProjectPins').mockResolvedValue();
+        vi.spyOn(storageService, 'saveEditorDocument').mockResolvedValue();
+        vi.spyOn(storageService, 'saveProject').mockResolvedValue();
+
+        const bundle = await exportProjectBundle('project');
+        const zip = await JSZip.loadAsync(await bundle.arrayBuffer());
+        const metadata = JSON.parse(
+            await zip.file('metadata.json')!.async('text'),
+        ) as ProjectBundleMetadataV4;
+        expect(metadata.editorialCoverageFiles).toEqual({
+            [fixture.coverage.recordId]: coveragePath(fixture.coverage.recordId),
+        });
+        expect(metadata.editorialChunkFiles).toEqual({
+            [fixture.chunk.recordId]: chunkPath(fixture.chunk.recordId),
+        });
+        expect(await zip.file(coveragePath(fixture.coverage.recordId))!.async('text'))
+            .not.toContain('localhost');
+        expect(await zip.file(chunkPath(fixture.chunk.recordId))!.async('text'))
+            .not.toContain('apiKey');
+
+        await importProjectBundle(bundle);
+        expect(putRecord).toHaveBeenCalledWith(expect.objectContaining({
+            recordId: fixture.record.recordId,
+        }));
+        expect(putChunk).toHaveBeenCalledWith(fixture.chunk);
+        expect(putCoverage).toHaveBeenCalledWith(fixture.coverage);
+    });
+
+    it('rejects a self-hashed V2 chunk that does not reproduce the declared merged transcript', async () => {
+        const fixture = await createRangeEditorialBundleFixture();
+        const alteredChunk = await createRangeTranscriptChunkRecord({
+            sourceFingerprint: fixture.chunk.sourceFingerprint,
+            acquisitionProfileDigest: fixture.chunk.acquisitionProfileDigest,
+            window: fixture.coverage.acquisitionWindows[0],
+            localWords: [{
+                text: 'tampered',
+                startSample: 0,
+                endSample: 16_000,
+                probability: 0.99,
+                speaker: null,
+            }],
+        });
+        const coverage = await createTranscriptionCoverageRecordV2({
+            sourceFingerprint: fixture.coverage.sourceFingerprint,
+            sourceSampleRate: fixture.coverage.sourceSampleRate,
+            sourceSampleCount: fixture.coverage.sourceSampleCount,
+            acquisitionProfileDigest: fixture.coverage.acquisitionProfileDigest,
+            endpointIdentityDigest: fixture.coverage.endpointIdentityDigest,
+            contextSamples: fixture.coverage.contextSamples,
+            requestedModel: fixture.coverage.requestedModel,
+            responseSchema: fixture.coverage.responseSchema,
+            pcmAlgorithmVersion: fixture.coverage.pcmAlgorithmVersion,
+            providerProfileVersion: fixture.coverage.providerProfileVersion,
+            language: fixture.coverage.language,
+            speakerMode: fixture.coverage.speakerMode,
+            coreCoverage: fixture.coverage.coreCoverage,
+            acquisitionWindows: [{
+                ...fixture.coverage.acquisitionWindows[0],
+                chunkRecordIds: [alteredChunk.recordId],
+            }],
+            mergedTranscriptRecordId: fixture.coverage.mergedTranscriptRecordId,
+        });
+        const metadata = createV4Metadata(fixture.document);
+        metadata.editorialCoverageFiles = {
+            [coverage.recordId]: coveragePath(coverage.recordId),
+        };
+        metadata.editorialChunkFiles = {
+            [alteredChunk.recordId]: chunkPath(alteredChunk.recordId),
+        };
+        metadata.editorManifest.editorialTranscriptDescriptors = [{
+            ...fixture.descriptor,
+            coverageRecordId: coverage.recordId,
+        }];
+        const bundle = await generateV4Bundle(
+            metadata,
+            fixture.document,
+            [fixture.record],
+            {
+                extraFiles: {
+                    [coveragePath(coverage.recordId)]: canonicalizeJson(coverage),
+                    [chunkPath(alteredChunk.recordId)]: canonicalizeJson(alteredChunk),
+                },
+            },
+        );
+
+        await expect(importProjectBundle(bundle)).rejects.toThrow(
+            'chunks do not reproduce the merged transcript',
+        );
+    });
+
     it('rejects missing declarations, missing files, duplicate paths, and undeclared sidecars before CAS writes', async () => {
         const putRecord = vi.spyOn(EditorialTranscriptRepository.prototype, 'putRecord').mockResolvedValue();
 
@@ -376,6 +531,22 @@ describe('project bundle 4.0', () => {
             { extraFiles: { 'editorial-transcripts/undeclared.json': '{}' } },
         ))).rejects.toThrow('undeclared transcript sidecar');
         expect(putRecord).not.toHaveBeenCalled();
+    });
+
+    it('rejects undeclared top-level files and source entries', async () => {
+        const metadata = createV4Metadata(editorialFixture.document);
+        await expect(importProjectBundle(await generateV4Bundle(
+            metadata,
+            editorialFixture.document,
+            [editorialFixture.record],
+            { extraFiles: { 'unexpected.json': '{}' } },
+        ))).rejects.toThrow('undeclared entry');
+        await expect(importProjectBundle(await generateV4Bundle(
+            metadata,
+            editorialFixture.document,
+            [editorialFixture.record],
+            { extraFiles: { 'sources/video/undeclared.mp4': 'media' } },
+        ))).rejects.toThrow('undeclared entry');
     });
 
     it('rejects non-canonical, corrupt/hash-mismatched, source-mismatched, and deeply dangling sidecars', async () => {
@@ -866,6 +1037,120 @@ async function createEditorialBundleFixture(): Promise<EditorialBundleFixture> {
     return { document, record, descriptor, secondaryRecord, secondaryDescriptor };
 }
 
+async function createRangeEditorialBundleFixture(): Promise<RangeEditorialBundleFixture> {
+    const source = editorialFixture.document.videoSources[0];
+    const profile = {
+        sourceFingerprint: source.fingerprint,
+        sourceSampleRate: 16_000,
+        sourceSampleCount: 32_000,
+        coreCoverage: [{ startSample: 0, endSample: 32_000 }],
+        contextSamples: 0,
+        language: 'en',
+        speakerMode: 'none' as const,
+        endpointIdentityDigest: digest('d'),
+        requestedModel: 'qwen-1.7b-edit-max',
+        responseSchema: 'edit-max-v1',
+        pcmAlgorithmVersion: 1,
+        providerProfileVersion: 1,
+    };
+    const plan = await planIncrementalTranscriptionCoverage({ profile });
+    const chunk = await createRangeTranscriptChunkRecord({
+        sourceFingerprint: source.fingerprint,
+        acquisitionProfileDigest: plan.acquisitionProfileDigest,
+        window: plan.acquisitionWindows[0],
+        localWords: [{
+            text: 'Hello',
+            startSample: 0,
+            endSample: 16_000,
+            probability: 0.99,
+            speaker: null,
+        }, {
+            text: 'world',
+            startSample: 16_000,
+            endSample: 32_000,
+            probability: 0.98,
+            speaker: null,
+        }],
+    });
+    const merged = mergeRangeTranscriptChunks([chunk], profile.coreCoverage);
+    const record = await createCanonicalMergedRangeRecord({
+        sourceFingerprint: source.fingerprint,
+        sampleCount: profile.sourceSampleCount,
+        language: profile.language,
+        speakerMode: profile.speakerMode,
+        canonicalModel: 'qwen-1.7b-edit-max-runtime',
+        words: merged.words,
+    });
+    const coverage = await createTranscriptionCoverageRecordV2({
+        sourceFingerprint: profile.sourceFingerprint,
+        sourceSampleRate: profile.sourceSampleRate,
+        sourceSampleCount: profile.sourceSampleCount,
+        acquisitionProfileDigest: await createAcquisitionProfileDigest(profile),
+        endpointIdentityDigest: profile.endpointIdentityDigest,
+        contextSamples: profile.contextSamples,
+        requestedModel: profile.requestedModel,
+        responseSchema: profile.responseSchema,
+        pcmAlgorithmVersion: profile.pcmAlgorithmVersion,
+        providerProfileVersion: profile.providerProfileVersion,
+        language: profile.language,
+        speakerMode: profile.speakerMode,
+        coreCoverage: profile.coreCoverage,
+        acquisitionWindows: [{
+            ...plan.acquisitionWindows[0],
+            chunkRecordIds: [chunk.recordId],
+        }],
+        mergedTranscriptRecordId: record.recordId,
+    });
+    const descriptor = createEditorialTranscriptDescriptorV2({
+        recordId: record.recordId,
+        coverageRecord: coverage,
+        requestKey: await createRangeTranscriptionRequestKey(profile),
+        sourceId: source.id,
+        sourceFingerprint: source.fingerprint,
+        endpointIdentityDigest: profile.endpointIdentityDigest,
+        body: record.body,
+        acquisition: 'provider',
+        createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const manifest = structuredClone(createEditorManifestV4(editorialFixture.document));
+    manifest.editorialTranscriptDescriptors = [descriptor];
+    retargetManifestRecord(manifest, record.recordId);
+    const wordIdMap = new Map(
+        editorialFixture.record.body.words.map((word, index) => [
+            word.id,
+            record.body.words[index]?.id,
+        ]),
+    );
+    Object.values(manifest.narrative?.blocks ?? {}).forEach((block) => {
+        if (block.kind !== 'speech') return;
+        block.sourceWordIds = block.sourceWordIds.map((wordId) => {
+            const next = wordIdMap.get(wordId);
+            if (!next) throw new Error('Range fixture word projection is unavailable.');
+            return next;
+        });
+        block.wordTextOverrides = Object.fromEntries(
+            Object.entries(block.wordTextOverrides).map(([wordId, text]) => {
+                const next = wordIdMap.get(wordId);
+                if (!next) throw new Error('Range fixture word projection is unavailable.');
+                return [next, text];
+            }),
+        );
+        block.speakerOverrides = Object.fromEntries(
+            Object.entries(block.speakerOverrides).map(([wordId, speaker]) => {
+                const next = wordIdMap.get(wordId);
+                if (!next) throw new Error('Range fixture word projection is unavailable.');
+                return [next, speaker];
+            }),
+        );
+    });
+    const document = hydrateEditorDocumentV4(
+        manifest,
+        editorialFixture.document.videoSources,
+        editorialFixture.document.audioSources,
+    );
+    return { document, record, descriptor, coverage, chunk };
+}
+
 function canonicalBodyInput(sourceFingerprint: string) {
     return {
         sourceFingerprint,
@@ -978,6 +1263,14 @@ async function toBundleBlob(zip: JSZip): Promise<Blob> {
 
 function transcriptPath(recordId: Sha256Digest): string {
     return `editorial-transcripts/${recordId.slice('sha256:'.length)}.json`;
+}
+
+function coveragePath(recordId: Sha256Digest): string {
+    return `editorial-coverage/${recordId.slice('sha256:'.length)}.json`;
+}
+
+function chunkPath(recordId: Sha256Digest): string {
+    return `editorial-chunks/${recordId.slice('sha256:'.length)}.json`;
 }
 
 function digest(character: string): Sha256Digest {

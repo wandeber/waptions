@@ -1,30 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import JSZip from 'jszip';
+import { describe, expect, it } from 'vitest';
 import {
     addBoundedZipEntryBytes,
-    assertSafeProjectBundleEntries,
-    assertZipEntryExactSize,
-    getDeclaredZipEntrySize,
-    readBoundedZipUtf8,
+    inspectProjectBundleZipBlob,
 } from './project-bundle-zip';
 
-const loadedEntry = (
-    declaredBytes: number | undefined,
-    bytes: Uint8Array,
-): JSZip.JSZipObject => ({
-    name: 'metadata.json',
-    dir: false,
-    date: new Date(0),
-    comment: '',
-    unixPermissions: null,
-    dosPermissions: null,
-    options: {},
-    async: vi.fn(async () => bytes),
-    nodeStream: vi.fn(),
-    _data: declaredBytes === undefined ? {} : { uncompressedSize: declaredBytes },
-} as unknown as JSZip.JSZipObject);
-
-describe('project bundle bounded ZIP reader', () => {
+describe('project bundle ZIP allocation policy', () => {
     it('enforces per-entry and aggregate bounds without unsafe integer overflow', () => {
         expect(addBoundedZipEntryBytes(4, 5, 5, 10, 'sidecars')).toBe(9);
         expect(() => addBoundedZipEntryBytes(0, 6, 5, 10, 'sidecars')).toThrow('per-entry');
@@ -38,47 +18,100 @@ describe('project bundle bounded ZIP reader', () => {
         )).toThrow('aggregate');
     });
 
-    it('rejects an oversized declaration before asking JSZip to decompress it', async () => {
-        const entry = loadedEntry(11, new TextEncoder().encode('not reached'));
-
-        await expect(readBoundedZipUtf8(entry, 10, 'test entry')).rejects.toThrow('exceeds');
-        expect(entry.async).not.toHaveBeenCalled();
+    it('rejects physical duplicate, Unicode-alias, traversal, and link entries', async () => {
+        await expect(inspectProjectBundleZipBlob(createRawZip([
+            { name: 'metadata.json' },
+            { name: 'metadata.json' },
+        ]), 8)).rejects.toThrow('duplicate');
+        await expect(inspectProjectBundleZipBlob(createRawZip([
+            { name: 'café.json' },
+            { name: 'cafe\u0301.json' },
+        ]), 8)).rejects.toThrow('Unicode');
+        await expect(inspectProjectBundleZipBlob(createRawZip([
+            { name: '../metadata.json' },
+        ]), 8)).rejects.toThrow('unsafe path');
+        await expect(inspectProjectBundleZipBlob(createRawZip([{
+            name: 'metadata.json',
+            externalAttributes: 0o120777 << 16,
+        }]), 8)).rejects.toThrow('links and device');
     });
 
-    it('requires declared and actual sizes to agree and decodes UTF-8 fatally', async () => {
-        const mismatched = loadedEntry(4, new TextEncoder().encode('three'));
-        await expect(readBoundedZipUtf8(mismatched, 10, 'test entry')).rejects.toThrow('inconsistent');
-
-        const invalidUtf8 = loadedEntry(2, new Uint8Array([0xc3, 0x28]));
-        await expect(readBoundedZipUtf8(invalidUtf8, 10, 'test entry')).rejects.toThrow('UTF-8');
-
-        const validBytes = new TextEncoder().encode('{"ok":true}');
-        const valid = loadedEntry(validBytes.byteLength, validBytes);
-        await expect(readBoundedZipUtf8(valid, validBytes.byteLength, 'test entry')).resolves.toEqual({
-            bytes: validBytes,
-            text: '{"ok":true}',
-        });
-    });
-
-    it('fails closed when loaded size metadata is absent or a source size differs', () => {
-        const missing = loadedEntry(undefined, new Uint8Array());
-        expect(() => getDeclaredZipEntrySize(missing)).toThrow('size is unavailable');
-
-        const source = loadedEntry(7, new Uint8Array(7));
-        expect(() => assertZipEntryExactSize(source, 8, 'source')).toThrow('does not match');
-        expect(() => assertZipEntryExactSize(source, 7, 'source')).not.toThrow();
-    });
-
-    it('rejects ZIP-slip names retained by JSZip and enforces an entry-count limit', async () => {
-        const authored = new JSZip();
-        authored.file('../metadata.json', '{}');
-        const loaded = await JSZip.loadAsync(await authored.generateAsync({ type: 'uint8array' }));
-
-        expect(() => assertSafeProjectBundleEntries(loaded, 10)).toThrow('unsafe path');
-
-        const ordinary = new JSZip();
-        ordinary.file('metadata.json', '{}');
-        ordinary.file('extra.json', '{}');
-        expect(() => assertSafeProjectBundleEntries(ordinary, 1)).toThrow('more than 1');
+    it('rejects encryption, unknown flags, unsafe DOS metadata, and compression bombs', async () => {
+        await expect(inspectProjectBundleZipBlob(createRawZip([{
+            name: 'metadata.json',
+            flags: 0x0001,
+        }]), 8)).rejects.toThrow('unsupported or unsafe metadata');
+        await expect(inspectProjectBundleZipBlob(createRawZip([{
+            name: 'metadata.json',
+            flags: 0x4000,
+        }]), 8)).rejects.toThrow('unsupported or unsafe metadata');
+        await expect(inspectProjectBundleZipBlob(createRawZip([{
+            name: 'metadata.json',
+            madeBy: 0x0014,
+            externalAttributes: 0x0008,
+        }]), 8)).rejects.toThrow('DOS attributes');
+        await expect(inspectProjectBundleZipBlob(createRawZip([{
+            name: 'metadata.json',
+            compressionMethod: 8,
+            compressedBytes: 1,
+            uncompressedBytes: 10_000,
+        }]), 8)).rejects.toThrow('compression-ratio');
     });
 });
+
+interface RawZipEntry {
+    name: string;
+    flags?: number;
+    compressionMethod?: number;
+    compressedBytes?: number;
+    uncompressedBytes?: number;
+    madeBy?: number;
+    externalAttributes?: number;
+}
+
+function createRawZip(entries: readonly RawZipEntry[]): Blob {
+    const localParts: Uint8Array[] = [];
+    const centralParts: Uint8Array[] = [];
+    let localOffset = 0;
+    entries.forEach((entry) => {
+        const name = new TextEncoder().encode(entry.name);
+        const compressedBytes = entry.compressedBytes ?? 0;
+        const uncompressedBytes = entry.uncompressedBytes ?? compressedBytes;
+        const local = new Uint8Array(30 + name.byteLength + compressedBytes);
+        const localView = new DataView(local.buffer);
+        localView.setUint32(0, 0x04034b50, true);
+        localView.setUint16(4, 20, true);
+        localView.setUint16(6, entry.flags ?? 0x0800, true);
+        localView.setUint16(8, entry.compressionMethod ?? 0, true);
+        localView.setUint32(18, compressedBytes, true);
+        localView.setUint32(22, uncompressedBytes, true);
+        localView.setUint16(26, name.byteLength, true);
+        local.set(name, 30);
+        localParts.push(local);
+
+        const central = new Uint8Array(46 + name.byteLength);
+        const centralView = new DataView(central.buffer);
+        centralView.setUint32(0, 0x02014b50, true);
+        centralView.setUint16(4, entry.madeBy ?? 0x031e, true);
+        centralView.setUint16(6, 20, true);
+        centralView.setUint16(8, entry.flags ?? 0x0800, true);
+        centralView.setUint16(10, entry.compressionMethod ?? 0, true);
+        centralView.setUint32(20, compressedBytes, true);
+        centralView.setUint32(24, uncompressedBytes, true);
+        centralView.setUint16(28, name.byteLength, true);
+        centralView.setUint32(38, entry.externalAttributes ?? (0o100644 << 16), true);
+        centralView.setUint32(42, localOffset, true);
+        central.set(name, 46);
+        centralParts.push(central);
+        localOffset += local.byteLength;
+    });
+    const centralBytes = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+    const eocd = new Uint8Array(22);
+    const eocdView = new DataView(eocd.buffer);
+    eocdView.setUint32(0, 0x06054b50, true);
+    eocdView.setUint16(8, entries.length, true);
+    eocdView.setUint16(10, entries.length, true);
+    eocdView.setUint32(12, centralBytes, true);
+    eocdView.setUint32(16, localOffset, true);
+    return new Blob([...localParts, ...centralParts, eocd]);
+}
