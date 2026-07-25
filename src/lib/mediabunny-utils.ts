@@ -1,7 +1,6 @@
 import {
     Input,
     ALL_FORMATS,
-    BlobSource,
     VideoSampleSink,
     BufferTarget,
     Output,
@@ -14,6 +13,11 @@ import {
     type InputAudioTrack,
     type InputVideoTrack,
 } from 'mediabunny';
+import type { MediaBudgetLease, MediaBudgetManager } from './media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from './media-byte-source/budgets';
+import { createAdmittedMediabunnyInput } from './media-byte-source/mediabunny-adapter';
+import type { MediaByteSourceInput } from './media-byte-source/types';
+import { throwIfAborted } from './media-byte-source/types';
 
 export interface MediaTrackInspection {
     duration: number;
@@ -38,12 +42,18 @@ export interface MediaInspectionInput {
     dispose(): void;
 }
 
-export type MediaInspectionInputFactory = (file: File) => MediaInspectionInput;
+type MaybePromise<T> = T | Promise<T>;
 
-const createMediaInspectionInput: MediaInspectionInputFactory = (file) => new Input({
-    source: new BlobSource(file),
-    formats: ALL_FORMATS,
-});
+export type MediaInspectionInputFactory = (
+    source: MediaByteSourceInput,
+) => MaybePromise<MediaInspectionInput>;
+
+const createMediaInspectionInput: MediaInspectionInputFactory = (source) => (
+    createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
+        formats: ALL_FORMATS,
+    }))
+);
 
 type AudioExtractionInput = Pick<Input, 'getPrimaryAudioTrack' | 'dispose'>;
 type AudioExtractionOutput = Pick<Output, 'state' | 'addAudioTrack' | 'start' | 'finalize' | 'cancel'>;
@@ -56,7 +66,7 @@ type AudioExtractionSink = Pick<AudioSampleSink, 'samples'>;
  * fakes so every terminal path can assert exact ownership without depending on browser codecs.
  */
 export interface AudioExtractionDependencies {
-    createInput(file: File): AudioExtractionInput;
+    createInput(source: MediaByteSourceInput): MaybePromise<AudioExtractionInput>;
     createTarget(): BufferTarget;
     createOutput(target: BufferTarget): AudioExtractionOutput;
     selectCodec(): Promise<AudioCodec>;
@@ -65,10 +75,10 @@ export interface AudioExtractionDependencies {
 }
 
 const defaultAudioExtractionDependencies: AudioExtractionDependencies = {
-    createInput: (file) => new Input({
-        source: new BlobSource(file),
+    createInput: (source) => createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
         formats: ALL_FORMATS,
-    }),
+    })),
     createTarget: () => new BufferTarget(),
     createOutput: (target) => new Output({
         format: new Mp4OutputFormat(),
@@ -116,10 +126,10 @@ function normalizeFrameRate(averagePacketRate: number): number {
  * Tracks are lightweight views owned by the Input and must not outlive this function.
  */
 export async function inspectMediaTracks(
-    file: File,
+    file: MediaByteSourceInput,
     inputFactory: MediaInspectionInputFactory = createMediaInspectionInput,
 ): Promise<MediaTrackInspection> {
-    const input = inputFactory(file);
+    const input = await inputFactory(file);
     try {
         const [duration, videoTrack, audioTrack] = await Promise.all([
             input.computeDuration(),
@@ -220,55 +230,135 @@ export async function getAudioInfo(audioFile: File): Promise<{
     };
 }
 
+interface ThumbnailTrack {
+    readonly displayWidth: number;
+    readonly displayHeight: number;
+    canDecode(): Promise<boolean>;
+}
+
+interface ThumbnailSample {
+    draw(
+        context: CanvasRenderingContext2D,
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+    ): void;
+    close(): void;
+}
+
+interface ThumbnailInput {
+    getPrimaryVideoTrack(): Promise<ThumbnailTrack | null>;
+    dispose(): void;
+}
+
+interface ThumbnailSink {
+    getSample(timestamp: number): Promise<ThumbnailSample | null>;
+}
+
+export interface ThumbnailDependencies {
+    createInput(source: MediaByteSourceInput): MaybePromise<ThumbnailInput>;
+    createSink(track: ThumbnailTrack): ThumbnailSink;
+    createCanvas(): HTMLCanvasElement;
+    decodedPixelBudget: MediaBudgetManager;
+}
+
+export interface GenerateThumbnailOptions {
+    readonly signal?: AbortSignal;
+    readonly dependencies?: ThumbnailDependencies;
+}
+
+const defaultThumbnailDependencies: ThumbnailDependencies = {
+    createInput: (source) => createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
+        formats: ALL_FORMATS,
+    }) as unknown as ThumbnailInput),
+    createSink: (track) => new VideoSampleSink(track as InputVideoTrack) as unknown as ThumbnailSink,
+    createCanvas: () => document.createElement('canvas'),
+    decodedPixelBudget: mediaRuntimeBudgets.decodedPixels,
+};
+
 /**
- * Generate a thumbnail from a video at a specific time.
+ * Generates a bounded thumbnail and closes the Input, sample, and pixel leases on every exit.
  */
 export async function generateThumbnail(
-    videoFile: File,
-    timeInSeconds: number
+    videoFile: MediaByteSourceInput,
+    timeInSeconds: number,
+    options: GenerateThumbnailOptions = {},
 ): Promise<string> {
-    const input = new Input({
-        source: new BlobSource(videoFile),
-        formats: ALL_FORMATS,
-    });
+    const dependencies = options.dependencies ?? defaultThumbnailDependencies;
+    const input = await dependencies.createInput(videoFile);
+    let inputDisposed = false;
+    let frame: ThumbnailSample | null = null;
+    let frameClosed = false;
+    let sourcePixelLease: MediaBudgetLease | null = null;
+    let canvasPixelLease: MediaBudgetLease | null = null;
+    const disposeInput = () => {
+        if (inputDisposed) return;
+        inputDisposed = true;
+        input.dispose();
+    };
+    const closeFrame = () => {
+        if (!frame || frameClosed) return;
+        frameClosed = true;
+        frame.close();
+    };
 
-    const videoTrack = await input.getPrimaryVideoTrack();
-    if (!videoTrack) {
-        throw new Error('No video track found in the file');
+    try {
+        throwIfAborted(options.signal);
+        const videoTrack = await input.getPrimaryVideoTrack();
+        throwIfAborted(options.signal);
+        if (!videoTrack) throw new Error('No video track found in the file');
+        if (!await videoTrack.canDecode()) {
+            throw new Error('Video codec not supported for decoding');
+        }
+        throwIfAborted(options.signal);
+
+        const originalWidth = Math.max(1, Math.round(videoTrack.displayWidth));
+        const originalHeight = Math.max(1, Math.round(videoTrack.displayHeight));
+        const sourceBytes = originalWidth * originalHeight * 4;
+        if (!Number.isSafeInteger(sourceBytes)) {
+            throw new RangeError('Thumbnail source dimensions exceed the decoded-pixel address space.');
+        }
+        const sourceReservation = await dependencies.decodedPixelBudget.reserve(sourceBytes, {
+            label: 'thumbnail-source-frame',
+            signal: options.signal,
+        });
+        sourcePixelLease = sourceReservation.commit();
+
+        const sink = dependencies.createSink(videoTrack);
+        frame = await sink.getSample(timeInSeconds);
+        throwIfAborted(options.signal);
+        if (!frame) throw new Error('Could not get frame at specified time');
+
+        const targetWidth = 400;
+        const targetHeight = Math.max(1, Math.round(targetWidth / (originalWidth / originalHeight)));
+        const canvasReservation = await dependencies.decodedPixelBudget.reserve(
+            targetWidth * targetHeight * 4,
+            { label: 'thumbnail-canvas', signal: options.signal },
+        );
+        canvasPixelLease = canvasReservation.commit();
+        const canvas = dependencies.createCanvas();
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Could not get canvas context');
+
+        frame.draw(context, 0, 0, targetWidth, targetHeight);
+        closeFrame();
+        sourcePixelLease.release();
+        sourcePixelLease = null;
+        throwIfAborted(options.signal);
+        return canvas.toDataURL('image/jpeg', 0.7);
+    } finally {
+        try {
+            closeFrame();
+        } finally {
+            sourcePixelLease?.release();
+            canvasPixelLease?.release();
+            disposeInput();
+        }
     }
-
-    const canDecode = await videoTrack.canDecode();
-    if (!canDecode) {
-        throw new Error('Video codec not supported for decoding');
-    }
-
-    const sink = new VideoSampleSink(videoTrack);
-    const frame = await sink.getSample(timeInSeconds);
-
-    if (!frame) {
-        throw new Error('Could not get frame at specified time');
-    }
-
-    const originalWidth = videoTrack.displayWidth;
-    const originalHeight = videoTrack.displayHeight;
-    const aspectRatio = originalWidth / originalHeight;
-
-    const canvas = document.createElement('canvas');
-    const targetWidth = 400; // Slightly larger for better detail
-    const targetHeight = targetWidth / aspectRatio;
-
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    const ctx = canvas.getContext('2d');
-
-    if (!ctx) {
-        throw new Error('Could not get canvas context');
-    }
-
-    frame.draw(ctx, 0, 0, targetWidth, targetHeight);
-    frame.close();
-
-    return canvas.toDataURL('image/jpeg', 0.7);
 }
 
 /**
@@ -277,10 +367,10 @@ export async function generateThumbnail(
  * This significantly reduces file size and ensures compatibility.
  */
 export async function extractAudio(
-    videoFile: File,
+    videoFile: MediaByteSourceInput,
     dependencies: AudioExtractionDependencies = defaultAudioExtractionDependencies,
 ): Promise<Blob> {
-    const input = dependencies.createInput(videoFile);
+    const input = await dependencies.createInput(videoFile);
     let inputDisposed = false;
     let output: AudioExtractionOutput | null = null;
     let source: AudioSampleSource | null = null;

@@ -16,6 +16,7 @@ import {
     selectRequestedAudioMedia,
     selectRequestedAudibleSources,
 } from './video-waveform';
+import { MediaBudgetManager } from './media-byte-source/budget-manager';
 
 const peaks = (value: number): WaveformPeaks => ({
     duration: 1,
@@ -164,6 +165,7 @@ describe('typed waveform media and decoder ownership', () => {
         const closeCounts = [0, 0];
         let disposeCount = 0;
         const media: AudioMediaAsset = { kind: 'audio-source', asset: audioSource('audio') };
+        const pcmBudget = new MediaBudgetManager('waveform-test', 1024);
         const result = await extractAudioMediaWaveformPeaks(media, () => false, async () => ({
             samples: (async function* () {
                 for (let index = 0; index < closeCounts.length; index += 1) {
@@ -185,11 +187,13 @@ describe('typed waveform media and decoder ownership', () => {
             dispose: () => {
                 disposeCount += 1;
             },
-        }));
+        }), { pcmBudget });
 
         expect(result).not.toBeNull();
         expect(closeCounts).toEqual([1, 1]);
         expect(disposeCount).toBe(1);
+        expect(pcmBudget.snapshot().peakBytes).toBe(16);
+        pcmBudget.assertDrained();
     });
 
     it('publishes owned progress snapshots at a maximum 250ms cadence', async () => {

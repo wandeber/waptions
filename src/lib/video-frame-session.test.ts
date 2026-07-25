@@ -6,6 +6,7 @@ import {
     type VideoFrameSessionInput,
     type VideoFrameSessionTrack,
 } from './video-frame-session';
+import { MediaBudgetManager } from './media-byte-source/budget-manager';
 
 const deferred = <T>() => {
     let resolve!: (value: T) => void;
@@ -82,5 +83,72 @@ describe('VideoFrameSession', () => {
         expect(input.dispose).toHaveBeenCalledTimes(1);
         expect(iteratorReturn).toHaveBeenCalledTimes(1);
         await expect(session.request('preview', 1)).resolves.toBeNull();
+    });
+
+    it('reserves the complete source-resolution pool before creating the sink', async () => {
+        const bytesPerFrame = 100 * 50 * 4;
+        const budget = new MediaBudgetManager('pixels', bytesPerFrame * 3);
+        const track: VideoFrameSessionTrack = {
+            displayWidth: 100,
+            displayHeight: 50,
+            canDecode: vi.fn(async () => true),
+            computePacketStats: vi.fn(async () => ({ averagePacketRate: 30 })),
+        };
+        const input: VideoFrameSessionInput = {
+            getPrimaryVideoTrack: vi.fn(async () => track),
+            dispose: vi.fn(),
+        };
+        const createSink = vi.fn((_track, options?: { poolSize: number }) => {
+            expect(options?.poolSize).toBe(3);
+            expect(budget.snapshot()).toMatchObject({
+                leasedBytes: bytesPerFrame * 3,
+                currentBytes: bytesPerFrame * 3,
+            });
+            return { canvases: vi.fn() };
+        });
+        const session = await VideoFrameSession.open({
+            file,
+            generation: 1,
+            signal: new AbortController().signal,
+            backend: { createInput: () => input, createSink },
+            decodedPixelBudget: budget,
+        });
+
+        await session.dispose();
+        expect(input.dispose).toHaveBeenCalledTimes(1);
+        budget.assertDrained();
+    });
+
+    it('releases all pool reservations through fifty open/close cycles', async () => {
+        const budget = new MediaBudgetManager('pixels', 1024);
+        for (let index = 0; index < 50; index++) {
+            const track: VideoFrameSessionTrack = {
+                displayWidth: 4,
+                displayHeight: 4,
+                canDecode: async () => true,
+                computePacketStats: async () => ({ averagePacketRate: 30 }),
+            };
+            const input: VideoFrameSessionInput = {
+                getPrimaryVideoTrack: async () => track,
+                dispose: vi.fn(),
+            };
+            const session = await VideoFrameSession.open({
+                file,
+                generation: index,
+                signal: new AbortController().signal,
+                backend: {
+                    createInput: () => input,
+                    createSink: () => ({ canvases: vi.fn() }),
+                },
+                decodedPixelBudget: budget,
+            });
+            await session.dispose();
+        }
+        expect(budget.snapshot()).toMatchObject({
+            reservations: 50,
+            releases: 50,
+            currentBytes: 0,
+        });
+        budget.assertDrained();
     });
 });

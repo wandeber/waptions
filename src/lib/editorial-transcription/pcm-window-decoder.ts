@@ -1,7 +1,6 @@
 import {
     ALL_FORMATS,
     AudioSampleSink,
-    BlobSource,
     Input,
     type AudioSample,
 } from 'mediabunny';
@@ -24,9 +23,14 @@ import {
     EDITORIAL_RESAMPLER_TAPS,
     isSupportedEditorialPcmNativeSampleRate,
 } from './resampler';
+import type { MediaBudgetManager } from '@/lib/media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from '@/lib/media-byte-source/budgets';
+import { createAdmittedMediabunnyInput } from '@/lib/media-byte-source/mediabunny-adapter';
+import type { MediaByteSource, MediaByteSourceInput } from '@/lib/media-byte-source/types';
 
 export interface EditorialPcmWindowSource {
     file: File;
+    byteSource?: MediaByteSource;
     declaredDuration: RationalDuration;
 }
 
@@ -58,18 +62,22 @@ export interface OpenEditorialPcmWindowAudioResult {
 }
 
 export type OpenEditorialPcmWindowAudio = (
-    file: File,
+    source: MediaByteSourceInput,
 ) => Promise<OpenEditorialPcmWindowAudioResult | null>;
 
 export interface MediabunnyEditorialPcmWindowDecoderOptions {
     resolveSource: ResolveEditorialPcmWindowSource;
     openAudio?: OpenEditorialPcmWindowAudio;
+    pcmBudget?: MediaBudgetManager;
 }
 
 async function openEditorialPcmWindowAudioWithMediabunny(
-    file: File,
+    source: MediaByteSourceInput,
 ): Promise<OpenEditorialPcmWindowAudioResult | null> {
-    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+    const input = await createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
+        formats: ALL_FORMATS,
+    }));
     let disposed = false;
     const dispose = () => {
         if (disposed) return;
@@ -114,6 +122,7 @@ export function createMediabunnyEditorialPcmWindowDecoder(
             request,
             resolveSource: options.resolveSource,
             openAudio,
+            pcmBudget: options.pcmBudget ?? mediaRuntimeBudgets.pcmBytes,
         }),
     };
 }
@@ -125,6 +134,7 @@ async function decodeEditorialPcmWindow(input: {
     };
     resolveSource: ResolveEditorialPcmWindowSource;
     openAudio: OpenEditorialPcmWindowAudio;
+    pcmBudget: MediaBudgetManager;
 }): Promise<Int16Array> {
     const { request } = input;
     throwIfAborted(request.signal);
@@ -139,7 +149,7 @@ async function decodeEditorialPcmWindow(input: {
     }
 
     const output = new Int16Array(request.endSample - request.startSample);
-    const reader = await input.openAudio(source.file);
+    const reader = await input.openAudio(source.byteSource ?? source.file);
     throwIfAborted(request.signal);
     if (!reader) return output;
 
@@ -177,95 +187,106 @@ async function decodeEditorialPcmWindow(input: {
             nativeSampleRate: reader.sampleRate,
             declaredNativeSampleCount,
         });
-        const native = new Float64Array(nativeSupport.end - nativeSupport.start);
+        const nativeFrameCount = nativeSupport.end - nativeSupport.start;
+        const maximumMixFrames = Math.min(EDITORIAL_PCM_MIX_CHUNK_FRAMES, nativeFrameCount);
+        const nativeReservation = await input.pcmBudget.reserve(
+            nativeFrameCount * Float64Array.BYTES_PER_ELEMENT
+                + maximumMixFrames * (reader.numberOfChannels + 2) * Float32Array.BYTES_PER_ELEMENT,
+            { label: 'editorial-pcm-native-window', signal: request.signal },
+        );
+        const native = new Float64Array(nativeFrameCount);
         let nextNativeSample = nativeSupport.start;
         let previousTimestampMicroseconds: number | null = null;
 
-        for await (const sample of reader.samples(
-            nativeSupport.start / reader.sampleRate,
-            nativeSupport.end / reader.sampleRate,
-        )) {
-            let processingFailed = false;
-            try {
-                throwIfAborted(request.signal);
-                assertWindowSampleFormat(sample, reader.sampleRate, reader.numberOfChannels);
-                if (previousTimestampMicroseconds !== null
-                    && sample.microsecondTimestamp < previousTimestampMicroseconds) {
-                    throw new Error('Editorial decoded timestamps must be monotonic.');
-                }
-                previousTimestampMicroseconds = sample.microsecondTimestamp;
-                const decodedStart = timestampMicrosecondsToNativeSample(
-                    sample.microsecondTimestamp,
-                    reader.sampleRate,
-                );
-                const decodedEnd = decodedStart + sample.numberOfFrames;
-                const retainedStart = Math.max(
-                    nativeSupport.start,
-                    nextNativeSample,
-                    decodedStart,
-                    0,
-                );
-                const retainedEnd = Math.min(
-                    nativeSupport.end,
-                    declaredNativeSampleCount,
-                    decodedEnd,
-                );
-                if (retainedStart >= retainedEnd) continue;
-                const sourceFrameOffset = retainedStart - decodedStart;
-                const retainedFrameCount = retainedEnd - retainedStart;
-                for (let processed = 0; processed < retainedFrameCount;) {
-                    throwIfAborted(request.signal);
-                    const frameCount = Math.min(
-                        EDITORIAL_PCM_MIX_CHUNK_FRAMES,
-                        retainedFrameCount - processed,
-                    );
-                    const mono = downmixEditorialChannelsToMono(
-                        reader.numberOfChannels,
-                        frameCount,
-                        (channel) => {
-                            const plane = new Float32Array(frameCount);
-                            sample.copyTo(plane, {
-                                planeIndex: channel,
-                                format: 'f32-planar',
-                                frameOffset: sourceFrameOffset + processed,
-                                frameCount,
-                            });
-                            return plane;
-                        },
-                    );
-                    native.set(mono, retainedStart - nativeSupport.start + processed);
-                    processed += frameCount;
-                }
-                nextNativeSample = retainedEnd;
-            } catch (error) {
-                processingFailed = true;
-                throw error;
-            } finally {
+        try {
+            for await (const sample of reader.samples(
+                nativeSupport.start / reader.sampleRate,
+                nativeSupport.end / reader.sampleRate,
+            )) {
+                let processingFailed = false;
                 try {
-                    sample.close();
+                    throwIfAborted(request.signal);
+                    assertWindowSampleFormat(sample, reader.sampleRate, reader.numberOfChannels);
+                    if (previousTimestampMicroseconds !== null
+                        && sample.microsecondTimestamp < previousTimestampMicroseconds) {
+                        throw new Error('Editorial decoded timestamps must be monotonic.');
+                    }
+                    previousTimestampMicroseconds = sample.microsecondTimestamp;
+                    const decodedStart = timestampMicrosecondsToNativeSample(
+                        sample.microsecondTimestamp,
+                        reader.sampleRate,
+                    );
+                    const decodedEnd = decodedStart + sample.numberOfFrames;
+                    const retainedStart = Math.max(
+                        nativeSupport.start,
+                        nextNativeSample,
+                        decodedStart,
+                        0,
+                    );
+                    const retainedEnd = Math.min(
+                        nativeSupport.end,
+                        declaredNativeSampleCount,
+                        decodedEnd,
+                    );
+                    if (retainedStart >= retainedEnd) continue;
+                    const sourceFrameOffset = retainedStart - decodedStart;
+                    const retainedFrameCount = retainedEnd - retainedStart;
+                    for (let processed = 0; processed < retainedFrameCount;) {
+                        throwIfAborted(request.signal);
+                        const frameCount = Math.min(
+                            EDITORIAL_PCM_MIX_CHUNK_FRAMES,
+                            retainedFrameCount - processed,
+                        );
+                        const mono = downmixEditorialChannelsToMono(
+                            reader.numberOfChannels,
+                            frameCount,
+                            (channel) => {
+                                const plane = new Float32Array(frameCount);
+                                sample.copyTo(plane, {
+                                    planeIndex: channel,
+                                    format: 'f32-planar',
+                                    frameOffset: sourceFrameOffset + processed,
+                                    frameCount,
+                                });
+                                return plane;
+                            },
+                        );
+                        native.set(mono, retainedStart - nativeSupport.start + processed);
+                        processed += frameCount;
+                    }
+                    nextNativeSample = retainedEnd;
                 } catch (error) {
-                    if (!processingFailed) throw error;
+                    processingFailed = true;
+                    throw error;
+                } finally {
+                    try {
+                        sample.close();
+                    } catch (error) {
+                        if (!processingFailed) throw error;
+                    }
                 }
             }
-        }
-        throwIfAborted(request.signal);
+            throwIfAborted(request.signal);
 
-        const coefficients = createEditorialResamplerCoefficientTable(reader.sampleRate);
-        for (let index = 0; index < output.length; index += 1) {
-            const outputSample = request.startSample + index;
-            const phase = getSourcePhase(outputSample, reader.sampleRate);
-            const baseSample = phase.sourceSample - (EDITORIAL_RESAMPLER_TAPS / 2 - 1);
-            const coefficientOffset = phase.phase * EDITORIAL_RESAMPLER_TAPS;
-            let value = 0;
-            for (let tap = 0; tap < EDITORIAL_RESAMPLER_TAPS; tap += 1) {
-                const sourceSample = baseSample + tap;
-                const nativeIndex = sourceSample - nativeSupport.start;
-                const sampleValue = nativeIndex >= 0 && nativeIndex < native.length
-                    ? native[nativeIndex]
-                    : 0;
-                value += sampleValue * coefficients[coefficientOffset + tap];
+            const coefficients = createEditorialResamplerCoefficientTable(reader.sampleRate);
+            for (let index = 0; index < output.length; index += 1) {
+                const outputSample = request.startSample + index;
+                const phase = getSourcePhase(outputSample, reader.sampleRate);
+                const baseSample = phase.sourceSample - (EDITORIAL_RESAMPLER_TAPS / 2 - 1);
+                const coefficientOffset = phase.phase * EDITORIAL_RESAMPLER_TAPS;
+                let value = 0;
+                for (let tap = 0; tap < EDITORIAL_RESAMPLER_TAPS; tap += 1) {
+                    const sourceSample = baseSample + tap;
+                    const nativeIndex = sourceSample - nativeSupport.start;
+                    const sampleValue = nativeIndex >= 0 && nativeIndex < native.length
+                        ? native[nativeIndex]
+                        : 0;
+                    value += sampleValue * coefficients[coefficientOffset + tap];
+                }
+                output[index] = quantizeEditorialPcm16(value);
             }
-            output[index] = quantizeEditorialPcm16(value);
+        } finally {
+            nativeReservation.release();
         }
         return output;
     } finally {

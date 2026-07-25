@@ -3,6 +3,7 @@ import { quantizeEditorialPcm16 } from './pcm';
 import type { EditorialPcmWindowAudioSample } from './pcm-window-decoder';
 import { createMediabunnyEditorialPcmWindowDecoder } from './pcm-window-decoder';
 import { StreamingEditorialResampler } from './resampler';
+import { MediaBudgetManager } from '@/lib/media-byte-source/budget-manager';
 
 class FakeWindowSample implements EditorialPcmWindowAudioSample {
     readonly timestamp: number;
@@ -46,6 +47,7 @@ describe('phase-aligned editorial PCM window decoder', () => {
         const sample = new FakeWindowSample(0, sampleRate, [frames]);
         const requestedRanges: Array<[number, number]> = [];
         const dispose = vi.fn();
+        const pcmBudget = new MediaBudgetManager('editorial-window-test', 1024 * 1024);
         const decoder = createMediabunnyEditorialPcmWindowDecoder({
             resolveSource: () => ({
                 file: {} as File,
@@ -60,6 +62,7 @@ describe('phase-aligned editorial PCM window decoder', () => {
                 },
                 dispose,
             }),
+            pcmBudget,
         });
 
         const result = await decoder.decodeWindow({
@@ -86,6 +89,8 @@ describe('phase-aligned editorial PCM window decoder', () => {
         expect(requestedRanges[0][1] - requestedRanges[0][0]).toBeLessThan(0.07);
         expect(sample.close).toHaveBeenCalledOnce();
         expect(dispose).toHaveBeenCalledOnce();
+        expect(pcmBudget.snapshot().peakBytes).toBeLessThanOrEqual(pcmBudget.maxBytes);
+        pcmBudget.assertDrained();
     });
 
     it('zero-fills a source without audio and rejects unsupported native rates', async () => {

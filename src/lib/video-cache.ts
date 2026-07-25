@@ -3,9 +3,12 @@ import {
     FrameCache,
     getAdaptiveFrameCacheBudgetBytes,
     getBrowserDeviceMemory,
+    type FrameCacheAdmission,
     type ImageBitmapLease,
 } from './frame-cache';
 import { normalizeFps, timeToFrameIndex } from './frame-utils';
+import type { MediaBudgetManager } from './media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from './media-byte-source/budgets';
 import { runtimeDiagnostics } from './runtime-diagnostics';
 import { VideoFrameSession } from './video-frame-session';
 import {
@@ -61,6 +64,7 @@ interface VideoCacheOptions {
     ) => Promise<ImageBitmap>;
     now?: () => number;
     maxInactiveSessions?: number;
+    decodedPixelBudget?: MediaBudgetManager;
 }
 
 interface PreviewResolutionState {
@@ -95,7 +99,7 @@ const RESOLUTION_DOWNSHIFT_STABILITY_MS = 500;
 const RESOLUTION_DOWNSHIFT_AREA_RATIO = 0.7;
 // Keeping a small recency window makes ordinary A/B clip navigation cheap without allowing every
 // source in a large project to retain its Input, decoder state, CanvasSink, and pooled canvases.
-const DEFAULT_MAX_INACTIVE_SESSIONS = 3;
+const DEFAULT_MAX_INACTIVE_SESSIONS = 1;
 
 /**
  * Bounded video runtime for source-native decoding and leased preview frames.
@@ -109,6 +113,7 @@ export class VideoCache {
     private readonly createBitmap: NonNullable<VideoCacheOptions['createBitmap']>;
     private readonly now: () => number;
     private readonly maxInactiveSessions: number;
+    private readonly decodedPixelBudget: MediaBudgetManager;
     private readonly sessions = new Map<string, SessionRecord>();
     private readonly generations = new Map<string, number>();
     private readonly sourceFingerprints = new Map<string, string>();
@@ -131,10 +136,14 @@ export class VideoCache {
 
     constructor(options: VideoCacheOptions = {}) {
         const adaptiveMemoryMB = getAdaptiveFrameCacheBudgetBytes(getBrowserDeviceMemory()) / (1024 * 1024);
-        // VideoCache is the sole owner of its LRU. Tests may lower the cap, but production always
-        // derives the strict budget from the current device instead of sharing global mutable state.
-        this.cache = new FrameCache(options.cacheMemoryMB ?? adaptiveMemoryMB);
-        this.openSession = options.openSession ?? ((sessionOptions) => VideoFrameSession.open(sessionOptions));
+        this.decodedPixelBudget = options.decodedPixelBudget ?? mediaRuntimeBudgets.decodedPixels;
+        // The local preview LRU remains adaptive, but every resident bitmap also leases the shared
+        // decoded-pixel budget used by decoder pools and thumbnails.
+        this.cache = new FrameCache(options.cacheMemoryMB ?? adaptiveMemoryMB, this.decodedPixelBudget);
+        this.openSession = options.openSession ?? ((sessionOptions) => VideoFrameSession.open({
+            ...sessionOptions,
+            decodedPixelBudget: this.decodedPixelBudget,
+        }));
         this.createBitmap = options.createBitmap ?? ((source, bitmapOptions) => (
             createImageBitmap(source, bitmapOptions)
         ));
@@ -301,6 +310,7 @@ export class VideoCache {
             sequentialReads: this.counters.sequentialReads,
             warmupFrames: this.counters.warmupFrames,
             cancelledWarmups: this.counters.cancelledWarmups,
+            globalPixelBudget: frameStats.globalPixelBudget,
         };
     }
 
@@ -382,19 +392,65 @@ export class VideoCache {
     private async createPreviewBitmap(
         canvas: HTMLCanvasElement | OffscreenCanvas,
         target: VideoFrameTargetResolution,
-    ): Promise<ImageBitmap> {
+        admissionOptions: {
+            videoId: string;
+            frameIndex: number;
+            retentionPriority: number;
+            signal: AbortSignal;
+        },
+    ): Promise<{ bitmap: ImageBitmap; admission: FrameCacheAdmission } | null> {
         const sourceWidth = Math.max(1, canvas.width);
         const sourceHeight = Math.max(1, canvas.height);
+        const localCacheBytes = this.cache.getStats().maxMemoryBytes;
+        if (localCacheBytes < 4) return null;
+        const localCacheScale = Math.sqrt(localCacheBytes / (sourceWidth * sourceHeight * 4));
         const scale = Math.min(
             1,
             target.width / sourceWidth,
             target.height / sourceHeight,
+            localCacheScale,
         );
-        return this.createBitmap(canvas, {
-            resizeWidth: Math.max(1, Math.round(sourceWidth * scale)),
-            resizeHeight: Math.max(1, Math.round(sourceHeight * scale)),
-            resizeQuality: 'high',
-        });
+        // Floor both dimensions so rounding can never push the requested allocation over the
+        // local hard cap used to derive localCacheScale.
+        const resizeWidth = Math.max(1, Math.floor(sourceWidth * scale));
+        const resizeHeight = Math.max(1, Math.floor(sourceHeight * scale));
+        // One alignment bucket of headroom covers implementation-specific output alignment while
+        // the cache commits only the actual bitmap bytes.
+        const alignedAdmissionWidth = Math.ceil(
+            (resizeWidth + PREVIEW_RESOLUTION_BUCKET) / PREVIEW_RESOLUTION_BUCKET,
+        )
+            * PREVIEW_RESOLUTION_BUCKET;
+        const alignedAdmissionHeight = Math.ceil(
+            (resizeHeight + PREVIEW_RESOLUTION_BUCKET) / PREVIEW_RESOLUTION_BUCKET,
+        )
+            * PREVIEW_RESOLUTION_BUCKET;
+        const alignedAdmissionBytes = alignedAdmissionWidth * alignedAdmissionHeight * 4;
+        const useAlignedAdmission = alignedAdmissionBytes <= localCacheBytes;
+        const admission = await this.cache.reserveFrameAtIndex(
+            admissionOptions.videoId,
+            admissionOptions.frameIndex,
+            resizeWidth,
+            resizeHeight,
+            {
+                retentionPriority: admissionOptions.retentionPriority,
+                signal: admissionOptions.signal,
+                globalReservationBytes: useAlignedAdmission
+                    ? alignedAdmissionBytes
+                    : resizeWidth * resizeHeight * 4,
+            },
+        );
+        if (!admission) return null;
+        try {
+            const bitmap = await this.createBitmap(canvas, {
+                resizeWidth,
+                resizeHeight,
+                resizeQuality: 'high',
+            });
+            return { bitmap, admission };
+        } catch (error) {
+            admission.release();
+            throw error;
+        }
     }
 
     private resultFromLease(lease: ImageBitmapLease): VideoFrameResult {
@@ -461,9 +517,14 @@ export class VideoCache {
             }
 
             const renderStartedAt = this.now();
-            let bitmap: ImageBitmap;
+            let preview: { bitmap: ImageBitmap; admission: FrameCacheAdmission } | null;
             try {
-                bitmap = await this.createPreviewBitmap(frame.canvas, resolution.target);
+                preview = await this.createPreviewBitmap(frame.canvas, resolution.target, {
+                    videoId: cacheId,
+                    frameIndex: sourceFrameIndex,
+                    retentionPriority: getRetentionPriority(),
+                    signal,
+                });
             } catch (error) {
                 if (!signal.aborted
                     && this.isCurrentFrameWork(request, sessionKey, record, session, resolution.generation)) {
@@ -471,6 +532,8 @@ export class VideoCache {
                 }
                 return null;
             }
+            if (!preview) return null;
+            const { bitmap, admission } = preview;
             runtimeDiagnostics.observeTiming('video', 'render', Math.max(0, this.now() - renderStartedAt));
 
             // Neither decoder cancellation nor createImageBitmap cancellation is universally
@@ -479,6 +542,7 @@ export class VideoCache {
             if (signal.aborted
                 || !this.isCurrentFrameWork(request, sessionKey, record, session, resolution.generation)) {
                 bitmap.close();
+                admission.release();
                 runtimeDiagnostics.increment('video', 'staleFrames');
                 return null;
             }
@@ -487,6 +551,7 @@ export class VideoCache {
                 timestamp: frame.timestamp,
                 duration: frame.duration,
                 retentionPriority: getRetentionPriority(),
+                admission,
             });
             if (!added) return null;
             if (request.scope === 'warmup') this.counters.warmupFrames += 1;

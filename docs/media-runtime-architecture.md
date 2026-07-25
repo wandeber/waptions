@@ -9,6 +9,9 @@ project manifest or `.waptions` bundle.
 
 Every expensive browser resource has one explicit owner:
 
+- `MediaByteSourceRegistry` owns immutable byte sources. Consumers receive range grants and
+  reference-counted leases; a replacement invalidates old leases immediately and closes the
+  retired source after its last lease releases.
 - `TimelineAudioEngine` owns the preview `AudioContext`, `AudioWorkletNode`, queued mix blocks, and
   the preview audio decoder catalog. `destroy()` invalidates pending setup and releases those
   resources exactly once.
@@ -123,6 +126,37 @@ cap; stage-specific errors release owned resources and leave tracks/history/pers
 
 ## Video preview and cache budgets
 
+Media inputs enter decoders through `MediaByteSource`. Browser `Blob`/`File`, managed filesystem,
+and HTTP range adapters expose the same half-open random-read contract. A single read is limited to
+8 MiB; HTTP responses stage at most 4 MiB and propagate stream backpressure. Managed filesystem
+sources adopt an already-authorized, already-verified regular-file handle and never reopen its
+path. Every range checks the descriptor's device, inode, size, mtime, and ctime token. Path
+replacement or in-place mutation therefore invalidates the active source rather than silently
+redirecting reads. Full SHA-256 runs at registration and explicit final verification, not for
+ordinary thumbnails or range reads. Hashing is incremental with one globally budgeted 8 MiB
+buffer. Logical source size therefore does not determine resident memory.
+
+The shared runtime budget manager separates reservations made before allocation from leases for
+live resources. It uses strict FIFO backpressure, abortable waiters, idempotent release, and
+current/peak diagnostics. Compressed read staging is capped at 32 MiB and canonical PCM windows at
+8 MiB. Each production Mediabunny `StreamSource` reserves its complete 8 MiB cache from that
+compressed budget until `Input.dispose()`. A separate admission cap permits at most three such
+caches, preserving one 8 MiB read slot so cache admission cannot deadlock range staging; the
+synchronous compatibility adapter has a zero-byte cache. The global decoded-pixel budget includes
+source-resolution `CanvasSink` pools, preview
+bitmaps, and thumbnail source/canvas surfaces:
+
+| Reported device memory | Global decoded-pixel budget |
+| --- | ---: |
+| 2 GiB or less | 96 MiB |
+| Unknown or between 2 and 8 GiB | 192 MiB |
+| 8 GiB or more | 384 MiB |
+
+`VideoFrameSession` reserves its complete source-resolution pool before constructing `CanvasSink`.
+The preferred pool contains five frames; it shrinks before construction when the global cap cannot
+hold five, and rejects a source when even one frame cannot fit. Session disposal retains that lease
+until the input and iterator have physically unwound.
+
 `FrameCache` is a strict resident-memory LRU. Its production budget derives from
 `navigator.deviceMemory`:
 
@@ -132,9 +166,17 @@ cap; stage-specific errors release owned resources and leave tracks/history/pers
 | Unknown or between 2 and 8 GiB | 128 MiB |
 | 8 GiB or more | 256 MiB |
 
-An oversized bitmap is rejected and closed. Eviction removes lookup access immediately; a leased
+The cache reserves global pixels before calling `createImageBitmap`, then commits only the actual
+bitmap dimensions. Backend alignment receives a conservative reservation while local admission
+uses the requested output size. An oversized bitmap is rejected before allocation where possible
+and closed if an already-owned result must be rejected. Eviction removes lookup access immediately; a leased
 bitmap remains resident until its last lease releases, and those deferred bytes continue counting
-toward the hard cap. The cache therefore never admits a frame that would exceed owned GPU memory.
+toward both the local and global hard caps. The cache therefore never admits a frame that would
+exceed owned GPU memory.
+
+Thumbnail generation uses the same global budget and owns its Mediabunny input and decoded sample.
+Success, unsupported media, missing frames, draw/serialization errors, cancellation, and late
+results all close the sample and input exactly once and release every reservation.
 
 Preview decodes once at source aspect, downsizes the long edge to at most 1280 pixels in 32-pixel
 buckets, and applies letterboxing in the shared compositor. Export uses the same contain geometry
@@ -212,8 +254,28 @@ the previous durable project reopenable.
 ## Diagnostics
 
 `runtimeDiagnostics` stores local counters, gauges, and bounded timing aggregates for audio, video,
-waveforms, and export. Hot paths batch updates and consumers pull snapshots. Diagnostics do not
-send network telemetry, persist samples, or publish per-frame React state.
+waveforms, and export. Media budget and source registries additionally publish frozen current/peak
+byte, reservation, lease, queue, cancellation, invalidation, and close snapshots and expose
+leak assertions for deterministic teardown tests. Hot paths batch updates and consumers pull
+snapshots. Diagnostics do not send network telemetry, persist samples, or publish per-frame React
+state.
+
+## Decoder seam inventory
+
+This inventory prevents direct whole-file decoder construction from reappearing unnoticed:
+
+| Seam | Status and owner |
+| --- | --- |
+| Preview `VideoFrameSession` / `CanvasSink` | Migrated to `MediaByteSource`; source-resolution pool reserves the process-wide decoded-pixel budget before construction. |
+| Preview `createImageBitmap` / `FrameCache` | Migrated; cache admission reserves globally before allocation and every owned bitmap closes exactly once. |
+| Track inspection and audio extraction | Migrated through the bounded Mediabunny byte-source adapter; existing sample/output close-once terminals are preserved. |
+| Thumbnail `VideoSampleSink` | Migrated and globally pixel-bounded; input, sample, and reservations close on every terminal. |
+| Timeline audio decoder | Migrated; retained copied PCM reserves the shared PCM budget and oversized decoded samples fail before allocation. |
+| Waveform `AudioSampleSink` | Migrated; decoding remains streaming, samples close per iteration, and mix chunks reserve shared PCM staging. |
+| Editorial bounded PCM-window decoder | Migrated; verified byte sources are accepted, native support and channel-mix buffers reserve shared PCM staging, and no-audio returns zero PCM. |
+| Export `BlobSource` / `CanvasSink` | Deliberately owned by the P5C render/export package, which must adopt the same process-wide decoded budget rather than a private cap. |
+| Editorial full-source PCM `BlobSource` | Deliberately owned by the transcription package; the bounded refinement decoder in this package is already migrated. |
+| Legacy video-cut WebCodecs frame source | Owned by the video-cut compatibility package and excluded from the preview/review runtime. It must be removed or adapted before that path is exposed to managed jobs. |
 
 ## Verification
 

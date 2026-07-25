@@ -814,8 +814,9 @@ describe('VideoCache', () => {
         expect(result).toBeNull();
     });
 
-    it('returns null and closes the owned bitmap when the strict cache cap rejects it', async () => {
+    it('rejects before bitmap allocation when the strict cache cap cannot fit a frame', async () => {
         const bitmap = imageBitmap();
+        const createBitmap = vi.fn(async () => bitmap);
         const session = {
             fps: 30,
             generation: 1,
@@ -823,10 +824,9 @@ describe('VideoCache', () => {
             dispose: vi.fn(async () => undefined),
         };
         const videoCache = new VideoCache({
-            // A zero-byte budget forces the stable ImageBitmap through the strict rejection path.
-            // The decoder's pooled canvas must never become a mutable fallback result.
+            // A zero-byte budget must reject before creating a stable ImageBitmap.
             cacheMemoryMB: 0,
-            createBitmap: vi.fn(async () => bitmap),
+            createBitmap,
             openSession: vi.fn(async () => session),
         });
 
@@ -840,7 +840,9 @@ describe('VideoCache', () => {
         });
 
         expect(result).toBeNull();
-        expect(bitmap.close).toHaveBeenCalledTimes(1);
+        // Admission fails before createImageBitmap when even one preview frame cannot fit.
+        expect(bitmap.close).not.toHaveBeenCalled();
+        expect(createBitmap).not.toHaveBeenCalled();
         expect(videoCache.getStats().cachedFrames).toBe(0);
     });
 

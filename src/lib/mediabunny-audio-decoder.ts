@@ -1,4 +1,4 @@
-import { ALL_FORMATS, AudioSampleSink, BlobSource, Input } from 'mediabunny';
+import { ALL_FORMATS, AudioSampleSink, Input } from 'mediabunny';
 import type { AudioMixContributor } from './audio-mix-plan';
 import {
     downmixFrameToStereoInto,
@@ -12,6 +12,10 @@ import {
     type AudioSampleWindowData,
 } from './audio-sample-window';
 import { runtimeDiagnostics } from './runtime-diagnostics';
+import type { MediaBudgetLease, MediaBudgetManager } from './media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from './media-byte-source/budgets';
+import { createAdmittedMediabunnyInput } from './media-byte-source/mediabunny-adapter';
+import type { MediaByteSourceInput } from './media-byte-source/types';
 import type { TimelineAudioRuntimeDocument } from '@/types/timeline-audio-engine';
 
 const OUTPUT_SAMPLE_RATE = 48_000;
@@ -43,11 +47,14 @@ export interface MediabunnyAudioSession {
 
 /** Injectable seam that opens a source session, not a one-shot decoded range. */
 export type OpenMediabunnyAudioSession = (
-    file: File,
+    source: MediaByteSourceInput,
 ) => Promise<MediabunnyAudioSession | null>;
 
-async function openMediabunnyAudioSession(file: File): Promise<MediabunnyAudioSession | null> {
-    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+async function openMediabunnyAudioSession(source: MediaByteSourceInput): Promise<MediabunnyAudioSession | null> {
+    const input = await createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
+        formats: ALL_FORMATS,
+    }));
     try {
         const track = await input.getPrimaryAudioTrack();
         if (!track) {
@@ -74,7 +81,7 @@ async function openMediabunnyAudioSession(file: File): Promise<MediabunnyAudioSe
 
 interface ResolvedContributorAsset {
     cacheKey: string;
-    file: File;
+    source: MediaByteSourceInput;
     duration: number;
 }
 
@@ -100,8 +107,12 @@ export class SequentialMediabunnyAudioReader {
     private reachedSourceEnd = false;
     private disposed = false;
     private operationTail: Promise<void> = Promise.resolve();
+    private readonly windowLeases = new Map<AudioSampleWindowData, MediaBudgetLease>();
 
-    constructor(private readonly session: MediabunnyAudioSession) {}
+    constructor(
+        private readonly session: MediabunnyAudioSession,
+        private readonly pcmBudget: MediaBudgetManager = mediaRuntimeBudgets.pcmBytes,
+    ) {}
 
     read(
         startSample: number,
@@ -119,7 +130,7 @@ export class SequentialMediabunnyAudioReader {
         if (this.disposed) return;
         this.disposed = true;
         void this.closeActiveIterator();
-        this.windows = [];
+        this.releaseAllWindows();
     }
 
     private async readExclusive(
@@ -176,8 +187,21 @@ export class SequentialMediabunnyAudioReader {
                 }
                 const sample = result.value;
                 try {
-                    const window = copySampleToStereoWindow(sample, signal);
+                    const peakBytes = sample.numberOfFrames * (sample.numberOfChannels + 2) * 4;
+                    const reservation = await this.pcmBudget.reserve(peakBytes, {
+                        label: 'audio-reader-window',
+                        signal,
+                    });
+                    let window: AudioSampleWindowData;
+                    try {
+                        window = copySampleToStereoWindow(sample, signal);
+                    } catch (error) {
+                        reservation.release();
+                        throw error;
+                    }
+                    const lease = reservation.commit(sample.numberOfFrames * 2 * 4);
                     this.windows.push(window);
+                    this.windowLeases.set(window, lease);
                     this.decodedThroughSample = Math.max(
                         this.decodedThroughSample,
                         getAudioWindowEndSample(window),
@@ -209,7 +233,7 @@ export class SequentialMediabunnyAudioReader {
 
     private async restartAt(startSample: number): Promise<void> {
         await this.closeActiveIterator();
-        this.windows = [];
+        this.releaseAllWindows();
         this.retainedRangeStartSample = startSample;
         this.decodedThroughSample = startSample;
         this.reachedSourceEnd = false;
@@ -235,9 +259,12 @@ export class SequentialMediabunnyAudioReader {
         );
         if (boundedStart <= this.retainedRangeStartSample) return;
         this.retainedRangeStartSample = boundedStart;
-        this.windows = this.windows.filter((window) => (
-            getAudioWindowEndSample(window) > boundedStart
-        ));
+        this.windows = this.windows.filter((window) => {
+            if (getAudioWindowEndSample(window) > boundedStart) return true;
+            this.windowLeases.get(window)?.release();
+            this.windowLeases.delete(window);
+            return false;
+        });
     }
 
     private closeActiveIterator(): Promise<void> {
@@ -255,6 +282,12 @@ export class SequentialMediabunnyAudioReader {
             // Input disposal or a decoder error can make iterator.return reject. The iterator is
             // already terminal and the original read/dispose path owns the meaningful error.
         }
+    }
+
+    private releaseAllWindows(): void {
+        for (const lease of Array.from(this.windowLeases.values())) lease.release();
+        this.windowLeases.clear();
+        this.windows = [];
     }
 }
 
@@ -282,6 +315,7 @@ export class MediabunnyAudioDecoder {
 
     constructor(
         private readonly openSession: OpenMediabunnyAudioSession = openMediabunnyAudioSession,
+        private readonly pcmBudget: MediaBudgetManager = mediaRuntimeBudgets.pcmBytes,
     ) {}
 
     setDocument(document: TimelineAudioRuntimeDocument, _generation?: number): void {
@@ -349,7 +383,7 @@ export class MediabunnyAudioDecoder {
             if (!session) return createSilentWindow(startSample, endSample);
             let reader = this.readers.get(asset.cacheKey);
             if (!reader) {
-                reader = new SequentialMediabunnyAudioReader(session);
+                reader = new SequentialMediabunnyAudioReader(session, this.pcmBudget);
                 this.readers.set(asset.cacheKey, reader);
             }
             const windows = await reader.read(startSample, endSample, request.signal);
@@ -398,7 +432,7 @@ export class MediabunnyAudioDecoder {
         const cached = this.sessionPromises.get(asset.cacheKey);
         if (cached) return cached;
 
-        const promise = this.openSession(asset.file).then((session) => {
+        const promise = this.openSession(asset.source).then((session) => {
             if (!session) return null;
             // Comparing the promise itself makes source replacement safe even when the new source
             // reuses an id while an old asynchronous Input is still being constructed.
@@ -521,14 +555,14 @@ function resolveContributorAsset(
         ));
         return source ? {
             cacheKey: `video-source-audio:${source.id}:${source.fingerprint}`,
-            file: source.file,
+            source: source.file,
             duration: source.duration,
         } : null;
     }
     const source = document.audioSources.find((item) => item.id === sourceReference.audioSourceId);
     return source ? {
         cacheKey: `audio-source:${source.id}:${source.fingerprint}`,
-        file: source.file,
+        source: source.file,
         duration: source.duration,
     } : null;
 }

@@ -1,4 +1,4 @@
-import { ALL_FORMATS, AudioSampleSink, BlobSource, Input } from 'mediabunny';
+import { ALL_FORMATS, AudioSampleSink, Input } from 'mediabunny';
 import type {
     AudioSourceAsset,
     RationalFrameRate,
@@ -16,6 +16,10 @@ import {
     type AudioMediaCacheKey,
     type AudioMediaReference,
 } from './media-asset-ref';
+import type { MediaBudgetManager } from './media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from './media-byte-source/budgets';
+import { createAdmittedMediabunnyInput } from './media-byte-source/mediabunny-adapter';
+import type { MediaByteSourceInput } from './media-byte-source/types';
 
 const DEFAULT_SAMPLE_RATE = 48_000;
 const MINIMUM_BUCKET_COUNT = 1_000;
@@ -71,16 +75,22 @@ export interface OpenWaveformAudioResult {
     dispose(): void;
 }
 
-export type OpenWaveformAudio = (file: File) => Promise<OpenWaveformAudioResult | null>;
+export type OpenWaveformAudio = (source: MediaByteSourceInput) => Promise<OpenWaveformAudioResult | null>;
 
 export interface WaveformExtractionProgressOptions {
     onProgress?: (peaks: WaveformPeaks) => void;
     intervalMs?: number;
     now?: () => number;
+    pcmBudget?: MediaBudgetManager;
 }
 
-async function openWaveformAudioWithMediabunny(file: File): Promise<OpenWaveformAudioResult | null> {
-    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+async function openWaveformAudioWithMediabunny(
+    source: MediaByteSourceInput,
+): Promise<OpenWaveformAudioResult | null> {
+    const input = await createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
+        formats: ALL_FORMATS,
+    }));
     try {
         const track = await input.getPrimaryAudioTrack();
         if (!track) {
@@ -183,23 +193,31 @@ export async function extractAudioFileWaveformPeaks(
                         WAVEFORM_MIX_CHUNK_FRAMES,
                         window.frameCount - processedFrames,
                     );
-                    const mono = mixWaveformChannelsToMono(
-                        sample.numberOfChannels,
-                        frameCount,
-                        (channel) => {
-                            const plane = new Float32Array(frameCount);
-                            sample.copyTo(plane, {
-                                planeIndex: channel,
-                                format: 'f32-planar',
-                                frameOffset: window.sourceFrameOffset + processedFrames,
-                                frameCount,
-                            });
-                            return plane;
-                        },
-                        shouldCancel,
-                    );
-                    if (!mono) return null;
-                    appendWaveformSamples(aggregator, mono);
+                    const pcmReservation = await (
+                        progress.pcmBudget ?? mediaRuntimeBudgets.pcmBytes
+                    ).reserve(frameCount * 2 * 4, { label: 'waveform-mix-chunk' });
+                    try {
+                        if (shouldCancel()) return null;
+                        const mono = mixWaveformChannelsToMono(
+                            sample.numberOfChannels,
+                            frameCount,
+                            (channel) => {
+                                const plane = new Float32Array(frameCount);
+                                sample.copyTo(plane, {
+                                    planeIndex: channel,
+                                    format: 'f32-planar',
+                                    frameOffset: window.sourceFrameOffset + processedFrames,
+                                    frameCount,
+                                });
+                                return plane;
+                            },
+                            shouldCancel,
+                        );
+                        if (!mono) return null;
+                        appendWaveformSamples(aggregator, mono);
+                    } finally {
+                        pcmReservation.release();
+                    }
 
                     const currentTime = now();
                     if (

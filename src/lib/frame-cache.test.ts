@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FrameCache, getAdaptiveFrameCacheBudgetBytes } from './frame-cache';
+import { MediaBudgetManager } from './media-byte-source/budget-manager';
 
 const bitmap = (width = 2, height = 2) => ({
     width,
@@ -18,6 +19,7 @@ describe('FrameCache', () => {
         expect(lease?.bitmap).toBe(frame);
         expect(cache.acquireFrame('preview', 1.017, 30)).toBeNull();
         lease?.release();
+        cache.clear();
     });
 
     it('supports exact frame-index reads and timestamp reporting', () => {
@@ -31,6 +33,7 @@ describe('FrameCache', () => {
         expect(lease?.bitmap).toBe(frame);
         expect(cache.getCachedTimestamps('preview')).toEqual([1.5]);
         lease?.release();
+        cache.clear();
     });
 
     it('closes replaced and cleared bitmaps', () => {
@@ -62,6 +65,7 @@ describe('FrameCache', () => {
         expect(cache.addFrameAtIndex('preview', 0, first)).toBe(true);
         expect(cache.addFrameAtIndex('preview', 1, second)).toBe(true);
         expect(cache.getStats().memoryBytes).toBeLessThanOrEqual(cache.getStats().maxMemoryBytes);
+        cache.clear();
         expect(first.close).toHaveBeenCalledTimes(1);
 
         expect(cache.addFrameAtIndex('preview', 2, oversized)).toBe(false);
@@ -133,5 +137,40 @@ describe('FrameCache', () => {
         for (const frame of frames) {
             expect(frame.close).toHaveBeenCalledTimes(1);
         }
+    });
+
+    it('reserves the shared pixel budget before allocation and transfers it atomically', async () => {
+        const pixelBudget = new MediaBudgetManager('pixels', 1024 * 1024);
+        const cache = new FrameCache(1, pixelBudget);
+        const admission = await cache.reserveFrameAtIndex('preview', 0, 400, 400);
+        expect(admission).not.toBeNull();
+        expect(pixelBudget.snapshot()).toMatchObject({
+            reservedBytes: 400 * 400 * 4,
+            leasedBytes: 0,
+        });
+
+        const frame = bitmap(400, 400);
+        expect(cache.addFrameAtIndex('preview', 0, frame, 30, {
+            admission: admission ?? undefined,
+        })).toBe(true);
+        expect(pixelBudget.snapshot()).toMatchObject({
+            reservedBytes: 0,
+            leasedBytes: 400 * 400 * 4,
+        });
+        cache.clear();
+        pixelBudget.assertDrained();
+    });
+
+    it('never accepts the same bitmap ownership twice', () => {
+        const pixelBudget = new MediaBudgetManager('pixels', 1024 * 1024);
+        const cache = new FrameCache(1, pixelBudget);
+        const frame = bitmap();
+
+        expect(cache.addFrameAtIndex('preview', 0, frame)).toBe(true);
+        expect(cache.addFrameAtIndex('preview', 1, frame)).toBe(false);
+        expect(frame.close).not.toHaveBeenCalled();
+        cache.clear();
+        expect(frame.close).toHaveBeenCalledTimes(1);
+        pixelBudget.assertDrained();
     });
 });

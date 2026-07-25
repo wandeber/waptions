@@ -7,6 +7,8 @@ import {
     SequentialMediabunnyAudioReader,
     type MediabunnyDecodedSample,
 } from './mediabunny-audio-decoder';
+import type { MediaByteSourceInput } from './media-byte-source/types';
+import { MediaBudgetManager } from './media-byte-source/budget-manager';
 import {
     buildSanitizedAudioWindowPlan,
     materializeSanitizedAudioWindowRange,
@@ -373,7 +375,8 @@ describe('MediabunnyAudioDecoder session cache', () => {
                 [Symbol.asyncDispose]: vi.fn(async () => undefined),
             };
         });
-        const reader = new SequentialMediabunnyAudioReader(session);
+        const pcmBudget = new MediaBudgetManager('audio-reader-test', 2 * 1024 * 1024);
+        const reader = new SequentialMediabunnyAudioReader(session, pcmBudget);
 
         for (let attempt = 0; attempt < abortedStarts.length; attempt += 1) {
             const controller = new AbortController();
@@ -422,6 +425,8 @@ describe('MediabunnyAudioDecoder session cache', () => {
 
         reader.dispose();
         await vi.waitFor(() => expect(iteratorReturns.at(-1)).toHaveBeenCalledOnce());
+        expect(pcmBudget.snapshot().peakBytes).toBeLessThanOrEqual(pcmBudget.maxBytes);
+        pcmBudget.assertDrained();
     });
 
     it('keeps video-audio and imported-audio sessions distinct even when source IDs match', async () => {
@@ -430,7 +435,8 @@ describe('MediabunnyAudioDecoder session cache', () => {
         document.audioSources[0].id = 'shared';
         const sessions = [makeSession(), makeSession()];
         const openedNames: string[] = [];
-        const openSession = vi.fn(async (file: File) => {
+        const openSession = vi.fn(async (source: MediaByteSourceInput) => {
+            const file = source as File;
             openedNames.push(file.name);
             return sessions[openedNames.length - 1];
         });
@@ -565,7 +571,9 @@ describe('MediabunnyAudioDecoder session cache', () => {
             ['video.mp4', [videoSession]],
             ['audio.wav', [audioSession, replacementAudioSession]],
         ]);
-        const openSession = vi.fn(async (file: File) => sessionsByName.get(file.name)!.shift()!);
+        const openSession = vi.fn(async (source: MediaByteSourceInput) => (
+            sessionsByName.get((source as File).name)!.shift()!
+        ));
         const decoder = new MediabunnyAudioDecoder(openSession);
         const document = makeDocument();
         decoder.setDocument(document, 1);

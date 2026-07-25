@@ -1,12 +1,15 @@
 import {
     ALL_FORMATS,
-    BlobSource,
     CanvasSink,
     Input,
     type InputVideoTrack,
     type WrappedCanvas,
 } from 'mediabunny';
 import { normalizeFps } from './frame-utils';
+import type { MediaBudgetLease, MediaBudgetManager } from './media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from './media-byte-source/budgets';
+import { createAdmittedMediabunnyInput } from './media-byte-source/mediabunny-adapter';
+import type { MediaByteSource } from './media-byte-source/types';
 import { VideoFrameScheduler } from './video-frame-scheduler';
 import type { VideoFrameSessionRequestScope } from './video-runtime-types';
 
@@ -16,6 +19,8 @@ export interface VideoFrameSessionInput {
 }
 
 export interface VideoFrameSessionTrack {
+    readonly displayWidth?: number;
+    readonly displayHeight?: number;
     canDecode(): Promise<boolean>;
     computePacketStats(maximumPacketCount?: number): Promise<{ averagePacketRate: number }>;
 }
@@ -25,19 +30,35 @@ export interface VideoFrameSessionSink {
 }
 
 export interface VideoFrameSessionBackend {
-    createInput(file: File): VideoFrameSessionInput;
-    createSink(track: VideoFrameSessionTrack): VideoFrameSessionSink;
+    createInput(
+        file: File,
+        signal?: AbortSignal,
+    ): VideoFrameSessionInput | Promise<VideoFrameSessionInput>;
+    createInputFromSource?(
+        source: MediaByteSource,
+        signal?: AbortSignal,
+    ): VideoFrameSessionInput | Promise<VideoFrameSessionInput>;
+    createSink(track: VideoFrameSessionTrack, options?: { poolSize: number }): VideoFrameSessionSink;
 }
 
 const defaultBackend: VideoFrameSessionBackend = {
-    createInput: (file) => new Input({
-        source: new BlobSource(file),
+    createInput: (file, signal) => createAdmittedMediabunnyInput(file, (admittedSource) => new Input({
+        source: admittedSource,
         formats: ALL_FORMATS,
-    }) as unknown as VideoFrameSessionInput,
+    }) as unknown as VideoFrameSessionInput, { signal }),
+    createInputFromSource: (source, signal) => createAdmittedMediabunnyInput(source, (admittedSource) => new Input({
+        source: admittedSource,
+        formats: ALL_FORMATS,
+    }) as unknown as VideoFrameSessionInput, { signal }),
     // The sink intentionally decodes at the source display aspect. Letterboxing belongs to the
     // shared compositor, not the decoder, and preview downscaling happens once when caching.
-    createSink: (track) => new CanvasSink(track as InputVideoTrack, { poolSize: 5 }),
+    createSink: (track, options) => new CanvasSink(
+        track as InputVideoTrack,
+        { poolSize: options?.poolSize ?? 5 },
+    ),
 };
+
+const DEFAULT_CANVAS_POOL_SIZE = 5;
 
 function createAbortError(): Error {
     if (typeof DOMException !== 'undefined') {
@@ -68,6 +89,7 @@ export class VideoFrameSession {
         private readonly input: VideoFrameSessionInput,
         videoTrack: VideoFrameSessionTrack,
         private readonly sink: VideoFrameSessionSink,
+        private readonly poolPixelLease: MediaBudgetLease,
         fps: number,
         generation: number,
     ) {
@@ -78,17 +100,26 @@ export class VideoFrameSession {
 
     static async open({
         file,
+        source,
         generation,
         signal,
         backend = defaultBackend,
+        decodedPixelBudget = mediaRuntimeBudgets.decodedPixels,
     }: {
-        file: File;
+        file?: File;
+        source?: MediaByteSource;
         generation: number;
         signal: AbortSignal;
         backend?: VideoFrameSessionBackend;
+        decodedPixelBudget?: MediaBudgetManager;
     }): Promise<VideoFrameSession> {
-        const input = backend.createInput(file);
+        if (!file && !source) throw new TypeError('Video frame session requires a file or byte source.');
+        const input = await (source
+            ? backend.createInputFromSource?.(source, signal)
+            : backend.createInput(file as File, signal));
+        if (!input) throw new Error('This video frame backend does not support MediaByteSource.');
         let inputDisposed = false;
+        let poolPixelLease: MediaBudgetLease | null = null;
         const disposeInput = () => {
             if (inputDisposed) return;
             inputDisposed = true;
@@ -110,16 +141,44 @@ export class VideoFrameSession {
             throwIfAborted();
             const packetStats = await track.computePacketStats(100);
             throwIfAborted();
+            const sourceWidth = Math.max(1, Math.round(track.displayWidth ?? 1));
+            const sourceHeight = Math.max(1, Math.round(track.displayHeight ?? 1));
+            const frameBytes = sourceWidth * sourceHeight * 4;
+            if (!Number.isSafeInteger(frameBytes)) {
+                throw new RangeError('Video source dimensions exceed the decoded-pixel budget address space.');
+            }
+            const maxPoolSize = Math.floor(decodedPixelBudget.snapshot().maxBytes / frameBytes);
+            if (maxPoolSize < 1) {
+                throw new RangeError('A single source-resolution video frame exceeds the decoded-pixel budget.');
+            }
+            const poolSize = Math.min(DEFAULT_CANVAS_POOL_SIZE, maxPoolSize);
+            const poolReservation = await decodedPixelBudget.reserve(frameBytes * poolSize, {
+                label: `canvas-sink-pool:${generation}`,
+                signal,
+            });
+            poolPixelLease = poolReservation.commit();
+            throwIfAborted();
+            let sink: VideoFrameSessionSink;
+            try {
+                sink = backend.createSink(track, { poolSize });
+            } catch (error) {
+                poolPixelLease.release();
+                poolPixelLease = null;
+                throw error;
+            }
+            throwIfAborted();
             const session = new VideoFrameSession(
                 input,
                 track,
-                backend.createSink(track),
+                sink,
+                poolPixelLease,
                 packetStats.averagePacketRate,
                 generation,
             );
             session.inputDisposed = inputDisposed;
             return session;
         } catch (error) {
+            poolPixelLease?.release();
             disposeInput();
             throw error;
         } finally {
@@ -147,19 +206,27 @@ export class VideoFrameSession {
         if (this.disposePromise) return this.disposePromise;
         this.disposed = true;
         this.scheduler.dispose();
-        this.disposeInput();
         const iterator = this.iterator;
         this.iterator = null;
         this.currentFrame = null;
         this.disposePromise = (async () => {
+            let cleanupError: unknown;
+            try {
+                this.disposeInput();
+            } catch (error) {
+                cleanupError = error;
+            }
             if (iterator) {
                 try {
                     await iterator.return();
-                } catch {
+                } catch (error) {
                     // Input.dispose() deliberately cancels iterator work; cancellation rejection is
                     // expected and must not prevent the remaining ownership state from settling.
+                    cleanupError ??= error;
                 }
             }
+            this.poolPixelLease.release();
+            if (cleanupError) throw cleanupError;
         })();
         return this.disposePromise;
     }

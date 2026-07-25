@@ -1,5 +1,12 @@
 import { runtimeDiagnostics } from './runtime-diagnostics';
 import { frameDuration, frameIndexToTime, normalizeFps, timeToFrameIndex } from './frame-utils';
+import type {
+    MediaBudgetLease,
+    MediaBudgetManager,
+    MediaBudgetReservation,
+    MediaBudgetSnapshot,
+} from './media-byte-source/budget-manager';
+import { mediaRuntimeBudgets } from './media-byte-source/budgets';
 
 const MEBIBYTE = 1024 * 1024;
 
@@ -17,6 +24,7 @@ interface OwnedCachedFrame extends CachedFrame {
     resident: boolean;
     cached: boolean;
     retentionPriority: number;
+    pixelLease: MediaBudgetLease;
 }
 
 export interface ImageBitmapLease {
@@ -32,6 +40,18 @@ export interface FrameCacheStats {
     memoryBytes: number;
     maxMemoryBytes: number;
     leasedFrameCount: number;
+    globalPixelBudget: MediaBudgetSnapshot;
+}
+
+export interface FrameCacheAdmission {
+    readonly videoId: string;
+    readonly frameIndex: number;
+    readonly width: number;
+    readonly height: number;
+    readonly sizeBytes: number;
+    readonly retentionPriority: number;
+    readonly released: boolean;
+    release(): void;
 }
 
 export function getAdaptiveFrameCacheBudgetBytes(deviceMemory?: number): number {
@@ -61,10 +81,83 @@ export class FrameCache {
     private residentMemoryBytes = 0;
     private accessSequence = 0;
     private readonly residentFrames = new Set<OwnedCachedFrame>();
+    private readonly ownedBitmaps = new WeakSet<ImageBitmap>();
+    private readonly closedBitmaps = new WeakSet<ImageBitmap>();
+    private readonly admissionReservations = new WeakMap<
+        FrameCacheAdmission,
+        () => MediaBudgetReservation | null
+    >();
 
     /** @param maxMemoryMB Hard resident-memory limit in MiB. */
-    constructor(maxMemoryMB = 128) {
+    constructor(
+        maxMemoryMB = 128,
+        private readonly decodedPixelBudget: MediaBudgetManager = mediaRuntimeBudgets.decodedPixels,
+    ) {
         this.maxMemoryBytes = Math.max(0, maxMemoryMB) * MEBIBYTE;
+    }
+
+    /**
+     * Reserves both the local cache allowance and the shared decoded-pixel budget before a bitmap
+     * is created. Callers must either transfer this admission to addFrameAtIndex or release it.
+     */
+    async reserveFrameAtIndex(
+        videoId: string,
+        frameIndex: number,
+        width: number,
+        height: number,
+        options: {
+            retentionPriority?: number;
+            signal?: AbortSignal;
+            /** Conservative global reservation for backend alignment beyond requested output size. */
+            globalReservationBytes?: number;
+        } = {},
+    ): Promise<FrameCacheAdmission | null> {
+        const safeFrameIndex = Math.max(0, Math.round(frameIndex));
+        const safeWidth = Math.max(0, Math.round(width));
+        const safeHeight = Math.max(0, Math.round(height));
+        const localSizeBytes = safeWidth * safeHeight * 4;
+        const sizeBytes = Math.max(localSizeBytes, options.globalReservationBytes ?? localSizeBytes);
+        const retentionPriority = this.normalizeRetentionPriority(options.retentionPriority);
+        if (
+            !Number.isSafeInteger(sizeBytes)
+            || localSizeBytes > this.maxMemoryBytes
+            || sizeBytes > this.decodedPixelBudget.snapshot().maxBytes
+        ) {
+            runtimeDiagnostics.increment('video', 'oversizedRejects');
+            return null;
+        }
+
+        const key = this.getKey(videoId, safeFrameIndex);
+        this.detachFrame(key, false);
+        this.evictUntilFits(localSizeBytes, retentionPriority);
+        if (this.residentMemoryBytes + localSizeBytes > this.maxMemoryBytes) {
+            runtimeDiagnostics.increment('video', 'oversizedRejects');
+            return null;
+        }
+
+        let reservation = this.decodedPixelBudget.tryReserve(
+            sizeBytes,
+            `preview-frame:${videoId}:${safeFrameIndex}`,
+        );
+        while (!reservation && this.evictOneForGlobalBudget(retentionPriority)) {
+            reservation = this.decodedPixelBudget.tryReserve(
+                sizeBytes,
+                `preview-frame:${videoId}:${safeFrameIndex}`,
+            );
+        }
+        reservation ??= await this.decodedPixelBudget.reserve(sizeBytes, {
+            label: `preview-frame:${videoId}:${safeFrameIndex}`,
+            signal: options.signal,
+        });
+        return this.createAdmission(
+            videoId,
+            safeFrameIndex,
+            safeWidth,
+            safeHeight,
+            sizeBytes,
+            retentionPriority,
+            reservation,
+        );
     }
 
     addFrame(videoId: string, timestamp: number, bitmap: ImageBitmap, fps = 30): boolean {
@@ -88,6 +181,8 @@ export class FrameCache {
             duration?: number;
             /** Higher values survive before lower-value speculative entries under pressure. */
             retentionPriority?: number;
+            /** Reservation created before bitmap allocation. */
+            admission?: FrameCacheAdmission;
         },
     ): boolean {
         const normalizedFps = normalizeFps(fps);
@@ -95,16 +190,46 @@ export class FrameCache {
         const key = this.getKey(videoId, safeFrameIndex);
         const sizeBytes = Math.max(0, bitmap.width) * Math.max(0, bitmap.height) * 4;
         const retentionPriority = this.normalizeRetentionPriority(options?.retentionPriority);
+        const admission = options?.admission;
+
+        if (this.ownedBitmaps.has(bitmap) || this.closedBitmaps.has(bitmap)) {
+            admission?.release();
+            return false;
+        }
+        if (
+            admission
+            && (
+                admission.released
+                || admission.videoId !== videoId
+                || admission.frameIndex !== safeFrameIndex
+                || sizeBytes > admission.sizeBytes
+            )
+        ) {
+            admission.release();
+            this.closeBitmapOnce(bitmap);
+            return false;
+        }
 
         this.detachFrame(key, false);
         this.evictUntilFits(sizeBytes, retentionPriority);
 
         if (sizeBytes > this.maxMemoryBytes || this.residentMemoryBytes + sizeBytes > this.maxMemoryBytes) {
-            bitmap.close();
+            admission?.release();
+            this.closeBitmapOnce(bitmap);
             runtimeDiagnostics.increment('video', 'oversizedRejects');
             this.publishGauges();
             return false;
         }
+        const reservation = admission
+            ? this.consumeAdmission(admission)
+            : this.decodedPixelBudget.tryReserve(sizeBytes, `preview-frame:${videoId}:${safeFrameIndex}`);
+        if (!reservation) {
+            this.closeBitmapOnce(bitmap);
+            runtimeDiagnostics.increment('video', 'oversizedRejects');
+            this.publishGauges();
+            return false;
+        }
+        const pixelLease = reservation.commit(sizeBytes);
 
         const frame: OwnedCachedFrame = {
             bitmap,
@@ -117,7 +242,9 @@ export class FrameCache {
             resident: true,
             cached: true,
             retentionPriority,
+            pixelLease,
         };
+        this.ownedBitmaps.add(bitmap);
         this.frames.set(key, frame);
         this.residentFrames.add(frame);
         this.residentMemoryBytes += sizeBytes;
@@ -188,6 +315,7 @@ export class FrameCache {
             memoryBytes: this.residentMemoryBytes,
             maxMemoryBytes: this.maxMemoryBytes,
             leasedFrameCount,
+            globalPixelBudget: this.decodedPixelBudget.snapshot(),
         };
     }
 
@@ -233,6 +361,26 @@ export class FrameCache {
         }
     }
 
+    private evictOneForGlobalBudget(incomingPriority: number): boolean {
+        let candidateKey: string | null = null;
+        let oldestAccess = Number.POSITIVE_INFINITY;
+        let lowestPriority = Number.POSITIVE_INFINITY;
+        for (const [key, frame] of Array.from(this.frames.entries())) {
+            if (frame.leaseCount > 0) continue;
+            if (
+                frame.retentionPriority < lowestPriority
+                || (frame.retentionPriority === lowestPriority && frame.lastUsed < oldestAccess)
+            ) {
+                lowestPriority = frame.retentionPriority;
+                oldestAccess = frame.lastUsed;
+                candidateKey = key;
+            }
+        }
+        if (!candidateKey || lowestPriority > incomingPriority) return false;
+        this.detachFrame(candidateKey, true);
+        return true;
+    }
+
     private normalizeRetentionPriority(priority?: number): number {
         return typeof priority === 'number' && !Number.isNaN(priority) ? priority : 0;
     }
@@ -249,10 +397,60 @@ export class FrameCache {
     private closeResidentFrame(frame: OwnedCachedFrame): void {
         if (!frame.resident) return;
         frame.resident = false;
-        frame.bitmap.close();
+        this.ownedBitmaps.delete(frame.bitmap);
+        this.closeBitmapOnce(frame.bitmap);
+        frame.pixelLease.release();
         this.residentFrames.delete(frame);
         this.residentMemoryBytes = Math.max(0, this.residentMemoryBytes - frame.sizeBytes);
         this.publishGauges();
+    }
+
+    private createAdmission(
+        videoId: string,
+        frameIndex: number,
+        width: number,
+        height: number,
+        sizeBytes: number,
+        retentionPriority: number,
+        reservation: MediaBudgetReservation,
+    ): FrameCacheAdmission {
+        let released = false;
+        let consumed = false;
+        const admission: FrameCacheAdmission = {
+            videoId,
+            frameIndex,
+            width,
+            height,
+            sizeBytes,
+            retentionPriority,
+            get released() {
+                return released;
+            },
+            release() {
+                if (released || consumed) return;
+                released = true;
+                reservation.release();
+            },
+        };
+        this.admissionReservations.set(admission, () => {
+            if (released || consumed) return null;
+            consumed = true;
+            released = true;
+            return reservation;
+        });
+        return admission;
+    }
+
+    private consumeAdmission(admission: FrameCacheAdmission): MediaBudgetReservation | null {
+        const consume = this.admissionReservations.get(admission);
+        this.admissionReservations.delete(admission);
+        return consume?.() ?? null;
+    }
+
+    private closeBitmapOnce(bitmap: ImageBitmap): void {
+        if (this.closedBitmaps.has(bitmap)) return;
+        this.closedBitmaps.add(bitmap);
+        bitmap.close();
     }
 
     private publishGauges(): void {
