@@ -32,17 +32,17 @@ describe('mapEditorUiCommand', () => {
       tool: 'edit',
       operations: [
         {
-          operationId: 'batch:0:0',
+          operationId: 'batch:0-0',
           type: 'video-clip.delete',
           payload: { clipId: 'video-a' },
         },
         {
-          operationId: 'batch:0:1',
+          operationId: 'batch:0-1',
           type: 'audio-clip.delete',
           payload: { clipId: 'audio-a' },
         },
         {
-          operationId: 'batch:0:2',
+          operationId: 'batch:0-2',
           type: 'subtitle.delete',
           payload: { trackId: 'subtitle-track', subtitleId: 'subtitle-a' },
         },
@@ -276,7 +276,7 @@ describe('mapEditorUiCommand', () => {
   it('routes view, playback, history, jobs, transcription, and export separately', () => {
     expect(mapEditorUiCommand({ type: 'view.select', ids: ['clip'] })).toEqual({
       tool: 'view',
-      patch: { selectionIds: ['clip'] },
+      patch: { selection: { kind: 'clips', ids: ['clip'] } },
     });
     expect(mapEditorUiCommand({
       type: 'view.update',
@@ -293,41 +293,51 @@ describe('mapEditorUiCommand', () => {
       patch: {
         playheadFrame: 60,
         zoom: 1.5,
-        scrollX: 320,
-        layout: 'text',
+        scrollLeft: 320,
         focusedPanel: 'video-1',
-        presentation: 'pip',
+        presentation: 'picture-in-picture',
       },
     });
     expect(mapEditorUiCommand({ type: 'playback.seek', timelineFrame: 90 })).toEqual({
       tool: 'playback',
-      action: 'seek',
-      frame: 90,
+      action: { kind: 'seek', frame: 90 },
     });
     expect(mapEditorUiCommand({ type: 'history.undo' })).toEqual({
       tool: 'history',
-      action: 'undo',
+      action: { kind: 'undo' },
     });
     expect(mapEditorUiCommand({
       type: 'transcription.start',
-      mode: 'editorial',
-      trackIds: ['video-1'],
-      ranges: [{ startSample: 0, endSample: 16_000, sampleRate: 16_000 }],
+      transcriptionKind: 'editorial',
+      targetTrackIds: ['video-1'],
+      ranges: [{
+        sourceId: 'source-1',
+        startSample16k: 0,
+        endSample16k: 16_000,
+      }],
       language: 'es',
-      speakerMode: 'detect',
-      providerPolicy: 'managed-local-endpoint',
-      providerId: 'lazy-whisper-api',
+      speakerMode: 'diarized',
+      providerPolicy: {
+        kind: 'managed-local-endpoint',
+        endpointCapabilityId: 'lazy-whisper-api',
+      },
     })).toEqual({
       tool: 'transcription',
       action: 'start',
       request: {
-        mode: 'editorial',
-        trackIds: ['video-1'],
-        ranges: [{ startSample: 0, endSample: 16_000, sampleRate: 16_000 }],
+        transcriptionKind: 'editorial',
+        targetTrackIds: ['video-1'],
+        ranges: [{
+          sourceId: 'source-1',
+          startSample16k: 0,
+          endSample16k: 16_000,
+        }],
         language: 'es',
-        speakerMode: 'detect',
-        providerPolicy: 'managed-local-endpoint',
-        providerId: 'lazy-whisper-api',
+        speakerMode: 'diarized',
+        providerPolicy: {
+          kind: 'managed-local-endpoint',
+          endpointCapabilityId: 'lazy-whisper-api',
+        },
       },
     });
     expect(mapEditorUiCommand({ type: 'job.cancel', jobId: 'job-1' })).toEqual({

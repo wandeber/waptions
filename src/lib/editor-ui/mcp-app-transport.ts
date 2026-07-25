@@ -1,10 +1,12 @@
-import type {
-  EditorUiCommandRequest,
-  EditorUiCommandResult,
-  EditorUiModelContext,
-  EditorUiPresentationMode,
-  EditorUiSnapshot,
-  EditorUiTransport,
+import {
+  createEmptyEditorUiSnapshot,
+  type EditorUiCommandRequest,
+  type EditorUiCommandResult,
+  type EditorUiModelContext,
+  type EditorUiPresentationMode,
+  type EditorUiSnapshot,
+  type EditorUiStateToken,
+  type EditorUiTransport,
 } from './contracts';
 import {
   EDITOR_UI_API_VERSION,
@@ -12,16 +14,23 @@ import {
   type EditorUiCommandRoute,
 } from './core-operation-mapper';
 import {
-  normalizeMcpEvent,
+  normalizeMcpEvents,
   normalizeMcpFailure,
-  normalizeMcpSnapshot,
-  type McpEditorCommandData,
-  type McpEditorEventsData,
-  type McpEditorSnapshotData,
   type McpToolEnvelope,
 } from './mcp-envelope';
+import type {
+  McpArtifactListData,
+  McpEventsReadData,
+  McpHistoryGetData,
+  McpJobListData,
+  McpPage,
+  McpPlaybackData,
+  McpProjectSummaryData,
+  McpTimelineQueryData,
+  McpViewData,
+} from './mcp-projection-contract';
+import { composeMcpEditorUiSnapshot } from './mcp-snapshot-composer';
 import { createWindowRpcBridge, type EditorUiRpcBridge } from './rpc-bridge';
-import type { EditorUiSnapshotProjectionRequest } from './mcp-projection-contract';
 
 interface McpToolResult {
   structuredContent?: unknown;
@@ -30,7 +39,12 @@ interface McpToolResult {
 }
 
 export interface McpAppToolMapping {
-  snapshot: string;
+  project: string;
+  timeline: string;
+  historyGet: string;
+  viewGet: string;
+  jobList: string;
+  artifactList: string;
   edit: string;
   history: string;
   playback: string;
@@ -43,8 +57,13 @@ export interface McpAppToolMapping {
 }
 
 export const DEFAULT_MCP_APP_TOOL_MAPPING: McpAppToolMapping = {
-  // Rendering attaches an App and must never be used as the App's data refresh path.
-  snapshot: 'waptions_project_get',
+  // Rendering attaches the App; closed semantic reads are its only data refresh path.
+  project: 'waptions_project_get',
+  timeline: 'waptions_timeline_query',
+  historyGet: 'waptions_history_get',
+  viewGet: 'waptions_view_get',
+  jobList: 'waptions_job_list',
+  artifactList: 'waptions_artifact_list',
   edit: 'waptions_edit_apply',
   history: 'waptions_history_apply',
   playback: 'waptions_playback_control',
@@ -56,7 +75,10 @@ export const DEFAULT_MCP_APP_TOOL_MAPPING: McpAppToolMapping = {
   jobCancel: 'waptions_job_cancel',
 };
 
-const commandTool = (route: EditorUiCommandRoute, mapping: McpAppToolMapping): string => {
+const commandTool = (
+  route: Exclude<EditorUiCommandRoute, { tool: 'local-view' }>,
+  mapping: McpAppToolMapping,
+): string => {
   switch (route.tool) {
     case 'edit':
       return mapping.edit;
@@ -97,6 +119,59 @@ const requiredEnvelope = <Data>(
   return envelope as McpToolEnvelope<Data>;
 };
 
+const sameState = (left: EditorUiStateToken, right: EditorUiStateToken): boolean => (
+  left.sessionId === right.sessionId
+  && left.projectId === right.projectId
+  && left.sessionEpoch === right.sessionEpoch
+  && left.sessionRevision === right.sessionRevision
+  && left.documentRevision === right.documentRevision
+  && left.audioGraphRevision === right.audioGraphRevision
+  && left.narrativeRevision === right.narrativeRevision
+  && left.eventCursor === right.eventCursor
+);
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const isPlaybackData = (value: unknown): value is McpPlaybackData => (
+  isRecord(value)
+  && typeof value.playbackRevision === 'number'
+  && typeof value.playing === 'boolean'
+  && typeof value.playheadFrame === 'number'
+  && typeof value.rate === 'number'
+  && typeof value.masterVolume === 'number'
+  && typeof value.masterMuted === 'boolean'
+  && typeof value.followingPresenter === 'boolean'
+);
+
+const coreOperationId = (commandId: string): string => {
+  const encoded = Array.from(commandId, (character) => (
+    /^[A-Za-z0-9_-]$/.test(character)
+      ? character
+      : `_${character.codePointAt(0)?.toString(16) ?? '0'}_`
+  )).join('');
+  return `ui-${encoded}`.slice(0, 128);
+};
+
+const selectionKind = (
+  snapshot: EditorUiSnapshot,
+  ids: readonly string[],
+): 'tracks' | 'clips' | 'subtitles' | 'narrative' => {
+  if (ids.every((id) => snapshot.project.tracks.some((track) => track.id === id))) {
+    return 'tracks';
+  }
+  if (ids.every((id) => snapshot.project.narrativeBlocks.some((block) => block.id === id))) {
+    return 'narrative';
+  }
+  if (ids.every((id) => snapshot.project.tracks.some((track) => (
+    track.kind === 'subtitle' && track.clips.some((clip) => clip.id === id)
+  )))) {
+    return 'subtitles';
+  }
+  return 'clips';
+};
+
 export interface CreateMcpAppTransportOptions {
   bridge?: EditorUiRpcBridge;
   toolMapping?: Partial<McpAppToolMapping>;
@@ -132,8 +207,9 @@ export function createMcpAppTransport(
   const availableDisplayModes = new Set<McpUiDisplayMode>(
     options.availableDisplayModes ?? ['inline'],
   );
-  let bootstrapSnapshot = options.initialSnapshot;
-  let latestSnapshot = options.initialSnapshot;
+  let latestSnapshot = options.initialSnapshot ?? createEmptyEditorUiSnapshot({
+    sessionId: options.sessionId,
+  });
   const callTool = (
     name: string,
     args: Record<string, unknown>,
@@ -142,6 +218,183 @@ export function createMcpAppTransport(
     name,
     arguments: args,
   }, signal);
+  const readTool = async <Data>(
+    name: string,
+    args: Record<string, unknown>,
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<{ data: Data; state: EditorUiStateToken }> => {
+    const envelope = requiredEnvelope<Data>(await callTool(name, args, signal));
+    if (!envelope.ok) throw new Error(envelope.error.message);
+    states.push(envelope.state);
+    return { data: envelope.data, state: envelope.state };
+  };
+  const readPaged = async <Data extends { page: McpPage }>(
+    name: string,
+    args: Record<string, unknown>,
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<Data[]> => {
+    const pages: Data[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await readTool<Data>(
+        name,
+        { ...args, ...(cursor ? { cursor } : {}), limit: 500 },
+        states,
+        signal,
+      );
+      pages.push(result.data);
+      cursor = result.data.page.hasMore ? result.data.page.nextCursor : undefined;
+      if (result.data.page.hasMore && !cursor) {
+        throw new Error(`${name} returned an incomplete pagination cursor.`);
+      }
+    } while (cursor);
+    return pages;
+  };
+  const readProjectSection = async (
+    section: 'summary' | 'sources',
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<McpProjectSummaryData> => {
+    const pages = await readPaged<McpProjectSummaryData>(
+      mapping.project,
+      {
+        apiVersion: EDITOR_UI_API_VERSION,
+        sessionId: options.sessionId,
+        section,
+      },
+      states,
+      signal,
+    );
+    const first = pages[0];
+    if (!first) throw new Error('waptions_project_get returned no project page.');
+    return {
+      ...first,
+      references: pages.flatMap((page) => page.references),
+      page: { hasMore: false },
+    };
+  };
+  const readTimeline = async (
+    entityKind: 'tracks' | 'clips' | 'subtitles' | 'narrative-blocks',
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<McpTimelineQueryData> => {
+    const pages = await readPaged<McpTimelineQueryData>(
+      mapping.timeline,
+      {
+        apiVersion: EDITOR_UI_API_VERSION,
+        sessionId: options.sessionId,
+        entityKind,
+      },
+      states,
+      signal,
+    );
+    return {
+      entityKind,
+      items: pages.flatMap((page) => page.items),
+      page: { hasMore: false },
+    };
+  };
+  const readHistory = async (
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<McpHistoryGetData> => {
+    const pages = await readPaged<McpHistoryGetData>(
+      mapping.historyGet,
+      {
+        apiVersion: EDITOR_UI_API_VERSION,
+        sessionId: options.sessionId,
+        direction: 'both',
+      },
+      states,
+      signal,
+    );
+    const last = pages.at(-1);
+    if (!last) throw new Error('waptions_history_get returned no history page.');
+    return {
+      currentIndex: last.currentIndex,
+      past: pages.flatMap((page) => page.past),
+      future: pages.flatMap((page) => page.future),
+      page: { hasMore: false },
+    };
+  };
+  const readJobs = async (
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<McpJobListData> => {
+    const pages = await readPaged<McpJobListData>(
+      mapping.jobList,
+      { apiVersion: EDITOR_UI_API_VERSION, sessionId: options.sessionId },
+      states,
+      signal,
+    );
+    return { items: pages.flatMap((page) => page.items), page: { hasMore: false } };
+  };
+  const readArtifacts = async (
+    states: EditorUiStateToken[],
+    signal?: AbortSignal,
+  ): Promise<McpArtifactListData> => {
+    const pages = await readPaged<McpArtifactListData>(
+      mapping.artifactList,
+      { apiVersion: EDITOR_UI_API_VERSION, sessionId: options.sessionId },
+      states,
+      signal,
+    );
+    return { items: pages.flatMap((page) => page.items), page: { hasMore: false } };
+  };
+  const readCanonicalSnapshot = async (signal?: AbortSignal): Promise<EditorUiSnapshot> => {
+    const states: EditorUiStateToken[] = [];
+    const [
+      project,
+      sources,
+      tracks,
+      clips,
+      subtitles,
+      narrativeBlocks,
+      history,
+      viewResult,
+      jobs,
+      artifacts,
+    ] = await Promise.all([
+      readProjectSection('summary', states, signal),
+      readProjectSection('sources', states, signal),
+      readTimeline('tracks', states, signal),
+      readTimeline('clips', states, signal),
+      readTimeline('subtitles', states, signal),
+      readTimeline('narrative-blocks', states, signal),
+      readHistory(states, signal),
+      readTool<McpViewData>(
+        mapping.viewGet,
+        {
+          apiVersion: EDITOR_UI_API_VERSION,
+          sessionId: options.sessionId,
+          viewId: options.viewId,
+        },
+        states,
+        signal,
+      ),
+      readJobs(states, signal),
+      readArtifacts(states, signal),
+    ]);
+    const state = states[0];
+    if (!state || states.some((candidate) => !sameState(candidate, state))) {
+      throw new Error('The project changed while the editor snapshot was being composed.');
+    }
+    return composeMcpEditorUiSnapshot({
+      state,
+      project,
+      sourceReferences: sources.references,
+      tracks,
+      clips,
+      subtitles,
+      narrativeBlocks,
+      history,
+      view: viewResult.data,
+      jobs,
+      artifacts,
+    }, latestSnapshot);
+  };
   const mutationEnvelope = (request: EditorUiCommandRequest) => ({
     apiVersion: EDITOR_UI_API_VERSION,
     sessionId: options.sessionId,
@@ -158,7 +411,7 @@ export function createMcpAppTransport(
   });
   const routeArguments = (
     request: EditorUiCommandRequest,
-    route: EditorUiCommandRoute,
+    route: Exclude<EditorUiCommandRoute, { tool: 'local-view' }>,
   ): Record<string, unknown> => {
     const common = mutationEnvelope(request);
     switch (route.tool) {
@@ -166,114 +419,116 @@ export function createMcpAppTransport(
         return {
           ...common,
           operations: route.operations,
-          ...(route.history
-            ? {
-                historyLabel: route.history.label,
-                semanticCategory: route.history.category,
-              }
-            : {
-                historyLabel: request.command.type,
-                semanticCategory: 'editor-ui',
-              }),
+          history: route.history ?? {
+            label: request.command.type,
+            category: 'editor-ui',
+          },
         };
       case 'history':
-        return {
-          ...common,
-          action: route.action,
-          ...(route.action === 'jump' ? { historyEntryId: route.entryId ?? null } : {}),
-        };
+        return { ...common, action: route.action };
       case 'playback':
         return {
           ...common,
           viewId: options.viewId,
-          expectedPlaybackRevision: latestSnapshot?.playback.revision ?? 0,
+          expectedPlaybackRevision: latestSnapshot.playback.revision,
           action: route.action,
-          ...(route.frame === undefined ? {} : { frame: route.frame }),
-          ...(route.volume === undefined ? {} : { volume: route.volume }),
-          ...(route.muted === undefined ? {} : { muted: route.muted }),
-          ...(route.rate === undefined ? {} : { rate: route.rate }),
-          ...(route.presenterViewId === undefined
-            ? {}
-            : { presenterViewId: route.presenterViewId }),
         };
       case 'view':
         return {
           ...common,
           viewId: options.viewId,
-          expectedViewRevision: latestSnapshot?.view.revision ?? 0,
+          expectedViewRevision: latestSnapshot.view.revision,
           patch: route.patch,
         };
       case 'media-import':
-        return { ...common, ...route.request };
       case 'transcription':
+      case 'export':
         return { ...common, ...route.request };
       case 'job-cancel':
         return { ...common, jobId: route.jobId };
-      case 'export':
-        return { ...common, ...route.request };
     }
   };
 
   return {
     async readSnapshot(signal?: AbortSignal): Promise<EditorUiSnapshot> {
-      if (bootstrapSnapshot) {
-        const snapshot = bootstrapSnapshot;
-        bootstrapSnapshot = undefined;
-        latestSnapshot = snapshot;
-        return snapshot;
-      }
-      const projectionRequest: EditorUiSnapshotProjectionRequest = {
-        apiVersion: EDITOR_UI_API_VERSION,
-        sessionId: options.sessionId,
-        viewId: options.viewId,
-        projection: 'editor-ui',
-      };
-      const result = await callTool(mapping.snapshot, { ...projectionRequest }, signal);
-      const envelope = requiredEnvelope<McpEditorSnapshotData>(result);
-      if (!envelope.ok) throw new Error(envelope.error.message);
-      latestSnapshot = normalizeMcpSnapshot(envelope.data.editorUiSnapshot, envelope.state);
+      latestSnapshot = await readCanonicalSnapshot(signal);
       return latestSnapshot;
     },
     async execute(
       request: EditorUiCommandRequest,
       signal?: AbortSignal,
     ): Promise<EditorUiCommandResult> {
+      const selectedIds = request.command.type === 'view.select'
+        ? request.command.ids
+        : request.command.type === 'view.update'
+          ? request.command.patch.selectedIds
+          : undefined;
       const route = mapEditorUiCommand(request.command, {
-        operationId: `${request.commandId}:0`,
-        projectFps: latestSnapshot?.project.fps,
+        operationId: coreOperationId(request.commandId),
+        projectFps: latestSnapshot.project.fps,
+        ...(selectedIds && selectedIds.length > 0
+          ? { selectionKind: selectionKind(latestSnapshot, selectedIds) }
+          : {}),
       });
+      if (route.tool === 'local-view') {
+        return {
+          ok: true,
+          commandId: request.commandId,
+          stateToken: latestSnapshot.stateToken,
+        };
+      }
       const result = await callTool(
         commandTool(route, mapping),
         routeArguments(request, route),
         signal,
       );
-      const envelope = requiredEnvelope<McpEditorCommandData>(result);
+      const envelope = requiredEnvelope<Record<string, unknown>>(result);
       if (!envelope.ok) return normalizeMcpFailure(envelope, request.commandId);
-      if (envelope.data.editorUiSnapshot) {
-        latestSnapshot = normalizeMcpSnapshot(
-          envelope.data.editorUiSnapshot,
-          envelope.state,
-        );
-      } else if (latestSnapshot) {
-        latestSnapshot = {
-          ...latestSnapshot,
-          stateToken: envelope.state,
-          view: route.tool === 'view'
-            ? { ...latestSnapshot.view, revision: latestSnapshot.view.revision + 1 }
+      const stateToken = envelope.committedState ?? envelope.state;
+      const viewData = route.tool === 'view' && isRecord(envelope.data.view)
+        ? envelope.data as unknown as McpViewData
+        : null;
+      const playbackData = route.tool === 'playback' && isPlaybackData(envelope.data)
+        ? envelope.data
+        : null;
+      latestSnapshot = {
+        ...latestSnapshot,
+        stateToken,
+        view: viewData
+          ? {
+              ...latestSnapshot.view,
+              revision: viewData.view.viewRevision,
+              presentation: viewData.view.presentation,
+              zoom: viewData.view.zoom,
+              scrollLeft: viewData.view.scrollLeft,
+              playheadSeconds: viewData.view.playheadFrame / latestSnapshot.project.fps,
+              selectedIds: viewData.view.selection.kind === 'none'
+                ? []
+                : viewData.view.selection.ids,
+              focusedTrackId: viewData.view.focusedPanel ?? null,
+            }
+          : playbackData
+            ? {
+                ...latestSnapshot.view,
+                playheadSeconds: playbackData.playheadFrame / latestSnapshot.project.fps,
+              }
             : latestSnapshot.view,
-          playback: route.tool === 'playback'
-            ? { ...latestSnapshot.playback, revision: latestSnapshot.playback.revision + 1 }
-            : latestSnapshot.playback,
-        };
-      }
+        playback: playbackData
+          ? {
+              revision: playbackData.playbackRevision,
+              isPlaying: playbackData.playing,
+              volume: playbackData.masterVolume,
+              muted: playbackData.masterMuted,
+              playbackRate: playbackData.rate,
+              presenterViewId: playbackData.presenterViewId ?? null,
+              followingPresenter: playbackData.followingPresenter,
+            }
+          : latestSnapshot.playback,
+      };
       return {
-        ...envelope.data.editorUiCommandResult,
         ok: true,
         commandId: request.commandId,
-        stateToken: envelope.state,
-        ...(latestSnapshot && envelope.data.editorUiSnapshot
-          ? { snapshot: latestSnapshot }
-          : {}),
+        stateToken,
       };
     },
     async readEvents({ cursor, limit, signal }) {
@@ -283,21 +538,16 @@ export function createMcpAppTransport(
         afterCursor: cursor,
         limit,
       }, signal);
-      const envelope = requiredEnvelope<McpEditorEventsData>(result);
+      const envelope = requiredEnvelope<McpEventsReadData>(result);
       if (!envelope.ok) {
         if (envelope.error.code === 'EVENT_CURSOR_EXPIRED') {
           return { events: [], cursorExpired: true };
         }
         throw new Error(envelope.error.message);
       }
-      for (const event of envelope.data.editorUiEvents.events) {
-        if (event.editorUiSnapshot) {
-          latestSnapshot = normalizeMcpSnapshot(event.editorUiSnapshot, event.state);
-        }
-      }
       return {
-        events: envelope.data.editorUiEvents.events.map(normalizeMcpEvent),
-        cursorExpired: envelope.data.editorUiEvents.cursorExpired,
+        events: normalizeMcpEvents(envelope.data, cursor),
+        cursorExpired: false,
       };
     },
     async requestPresentation(
@@ -313,7 +563,7 @@ export function createMcpAppTransport(
         return result?.mode ? fromMcpDisplayMode(result.mode) : mode;
       } catch {
         // Older hosts may not implement presentation requests. Inline remains fully editable.
-        return mode === 'inline' ? 'inline' : 'inline';
+        return 'inline';
       }
     },
     updateModelContext(context: EditorUiModelContext): Promise<void> {

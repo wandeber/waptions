@@ -2,30 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { createEmptyEditorUiSnapshot } from './contracts';
 import {
   normalizeMcpEvent,
+  normalizeMcpEvents,
   normalizeMcpJobState,
-  normalizeMcpSnapshot,
-  type McpEditorEventType,
   type McpJobState,
 } from './mcp-envelope';
+import type { McpEventRecord } from './mcp-projection-contract';
 
 describe('MCP editor envelope normalization', () => {
   it.each([
-    ['pending', 'queued'],
     ['queued', 'queued'],
-    ['active', 'running'],
     ['running', 'running'],
-    ['recovering', 'running'],
-    ['paused', 'running'],
     ['succeeded', 'completed'],
-    ['completed', 'completed'],
-    ['error', 'failed'],
     ['failed', 'failed'],
     ['cancelled', 'cancelled'],
-    ['canceled', 'cancelled'],
     ['stale', 'failed'],
     ['interrupted', 'failed'],
   ] satisfies Array<[McpJobState, ReturnType<typeof normalizeMcpJobState>]>)(
-    'normalizes job state %s to %s',
+    'normalizes canonical job state %s to %s',
     (source, expected) => {
       expect(normalizeMcpJobState(source)).toBe(expected);
     },
@@ -42,58 +35,44 @@ describe('MCP editor envelope normalization', () => {
     ['presence.changed', 'presence'],
     ['view.changed', 'view'],
     ['source.invalidated', 'project'],
-  ] satisfies Array<[McpEditorEventType, ReturnType<typeof normalizeMcpEvent>['kind']]>)(
+  ] satisfies Array<[McpEventRecord['type'], ReturnType<typeof normalizeMcpEvent>['kind']]>)(
     'normalizes event %s to %s',
     (type, expectedKind) => {
       const state = createEmptyEditorUiSnapshot({ sessionId: 'session' }).stateToken;
       expect(normalizeMcpEvent({
-        eventId: 'event',
-        previousCursor: 'before',
+        schemaVersion: 1,
         cursor: 'after',
         type,
+        occurredAt: '2026-07-25T12:00:00.000Z',
         state,
-      }).kind).toBe(expectedKind);
+        sequence: 1,
+        data: {},
+      }, 'before').kind).toBe(expectedKind);
     },
   );
 
-  it('uses the authoritative state and preserves narrativeRevision', () => {
-    const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
-    snapshot.jobs = [{
-      id: 'job',
-      kind: 'export',
-      label: 'Export',
-      state: 'completed',
-      progress: 1,
-    }];
-    const state = {
-      ...snapshot.stateToken,
-      sessionRevision: 9,
-      documentRevision: 8,
-      narrativeRevision: 7,
-      eventCursor: 'cursor-9',
-    };
-    const normalized = normalizeMcpSnapshot(snapshot, state);
-    expect(normalized.stateToken).toMatchObject({
-      sessionRevision: 9,
-      documentRevision: 8,
-      narrativeRevision: 7,
-      eventCursor: 'cursor-9',
-    });
-    expect(normalized.jobs[0]?.state).toBe('completed');
-  });
-
-  it('rejects job states outside the normalized runtime and MCP vocabulary', () => {
-    expect(() => normalizeMcpJobState('done' as McpJobState)).toThrow(/Unsupported/);
-  });
-
-  it('rejects unknown event vocabulary so the controller refreshes authoritatively', () => {
+  it('derives previous cursors from the canonical event page order', () => {
     const state = createEmptyEditorUiSnapshot({ sessionId: 'session' }).stateToken;
-    expect(() => normalizeMcpEvent({
-      eventId: 'event',
-      previousCursor: 'before',
-      cursor: 'after',
-      type: 'project.magic',
-      state,
-    })).toThrow(/unsupported/);
+    const event = (cursor: string, sequence: number): McpEventRecord => ({
+      schemaVersion: 1,
+      cursor,
+      type: 'project.mutated',
+      occurredAt: '2026-07-25T12:00:00.000Z',
+      state: { ...state, eventCursor: cursor },
+      sequence,
+      data: {
+        commandId: `command-${sequence}`,
+        operationIds: [],
+        affectedIds: [],
+      },
+    });
+    expect(normalizeMcpEvents({
+      events: [event('cursor-1', 1), event('cursor-2', 2)],
+      nextCursor: 'cursor-2',
+      hasMore: false,
+    }, 'cursor-0')).toMatchObject([
+      { previousCursor: 'cursor-0', cursor: 'cursor-1' },
+      { previousCursor: 'cursor-1', cursor: 'cursor-2' },
+    ]);
   });
 });

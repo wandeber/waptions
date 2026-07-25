@@ -271,6 +271,18 @@ export interface EditorUiArtifact {
   label: string;
 }
 
+export interface EditorUiExportDestinationCapability {
+  schemaVersion: 1;
+  destinationId: string;
+  grantId: string;
+  stagingHandleId: string;
+  mode: 'create-only' | 'overwrite-file';
+  outputName: string;
+  verifiedParentIdentity: string;
+  overwriteConfirmationId?: string;
+  expiresAt: string;
+}
+
 export interface EditorUiLink {
   id: string;
   kind: 'overlap' | 'binding';
@@ -554,11 +566,16 @@ export type EditorUiCommand =
     }
   | {
       type: 'media.import';
-      grantId: string;
-      sources: Array<{ path: string; expectedSha256?: string }>;
-      placement: 'register-only' | 'append-natural-order';
-      videoTrackId?: string;
-      audioTrackId?: string;
+      mediaHandles: string[];
+      placement:
+        | { kind: 'register-only' }
+        | {
+            kind: 'place';
+            ordering: 'natural';
+            timelineStartFrame: number;
+            videoTrackId?: string;
+            audioTrackId?: string;
+          };
     }
   | { type: 'view.select'; ids: string[] }
   | { type: 'view.set-track-height'; trackId: string; height: number }
@@ -585,22 +602,33 @@ export type EditorUiCommand =
   | { type: 'playback.unfollow' }
   | {
       type: 'transcription.start';
-      mode: 'subtitle' | 'editorial';
-      trackIds: string[];
-      ranges: Array<{ startSample: number; endSample: number; sampleRate: 16_000 | 48_000 }>;
-      language: string;
-      speakerMode: 'none' | 'detect' | 'known-speakers';
-      providerPolicy: 'browser-local' | 'managed-local-endpoint' | 'custom-openai-compatible';
-      providerId?: string;
+      transcriptionKind: 'subtitle' | 'editorial';
+      targetTrackIds: string[];
+      ranges?: Array<{
+        sourceId: string;
+        startSample16k: number;
+        endSample16k: number;
+      }>;
+      language: string | null;
+      speakerMode: 'none' | 'diarized';
+      providerPolicy: {
+        kind: 'browser-local' | 'managed-local-endpoint' | 'openai-compatible';
+        credentialCapabilityId?: string;
+        endpointCapabilityId?: string;
+        model?: string;
+      };
     }
   | { type: 'job.cancel'; jobId: string }
   | {
       type: 'export.start';
-      format: 'mp4-h264-aac' | 'webm' | 'portable-bundle' | 'reference-snapshot' | 'proof';
-      grantId: string;
-      destinationPath: string;
-      overwriteGrantId?: string;
-      confirmation?: { acknowledged: boolean; phrase?: string };
+      exportKind:
+        | 'mp4-h264-aac'
+        | 'webm'
+        | 'portable-bundle'
+        | 'reference-snapshot'
+        | 'proof-record';
+      destination: EditorUiExportDestinationCapability;
+      overwriteConfirmation?: string;
     };
 
 export interface EditorUiCommandRequest {

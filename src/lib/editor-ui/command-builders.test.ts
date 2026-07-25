@@ -14,35 +14,81 @@ describe('managed editor command builders', () => {
       id: 'video-track',
       kind: 'video',
       name: 'Video',
-      clips: [],
+      clips: [{
+        id: 'clip',
+        trackId: 'video-track',
+        sourceId: 'source',
+        kind: 'video',
+        label: 'Source',
+        startSeconds: 0,
+        durationSeconds: 10,
+        sourceOffsetSeconds: 0,
+        linkedTargetIds: [],
+      }],
       locked: false,
       height: 96,
     }];
     expect(buildEditorialTranscriptionCommand(snapshot, ' lazy-whisper-api ')).toEqual({
       type: 'transcription.start',
-      mode: 'editorial',
-      trackIds: ['video-track'],
-      ranges: [{ startSample: 0, endSample: 160_000, sampleRate: 16_000 }],
+      transcriptionKind: 'editorial',
+      targetTrackIds: ['video-track'],
+      ranges: [{ sourceId: 'source', startSample16k: 0, endSample16k: 160_000 }],
       language: 'es',
-      speakerMode: 'detect',
-      providerPolicy: 'managed-local-endpoint',
-      providerId: 'lazy-whisper-api',
+      speakerMode: 'diarized',
+      providerPolicy: {
+        kind: 'managed-local-endpoint',
+        endpointCapabilityId: 'lazy-whisper-api',
+      },
     });
   });
 
-  it('builds complete granted import/export requests and rejects empty authority', () => {
-    expect(buildManagedMediaImportCommand('grant', '/media/source.mov')).toEqual({
+  it('uses the managed local transcription default when no endpoint capability is supplied', () => {
+    const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
+    snapshot.project.tracks = [{
+      id: 'video-track',
+      kind: 'video',
+      name: 'Video',
+      clips: [],
+      locked: false,
+      height: 96,
+    }];
+
+    expect(buildEditorialTranscriptionCommand(snapshot)).toEqual({
+      type: 'transcription.start',
+      transcriptionKind: 'editorial',
+      targetTrackIds: ['video-track'],
+      language: 'es',
+      speakerMode: 'diarized',
+      providerPolicy: { kind: 'managed-local-endpoint' },
+    });
+  });
+
+  it('builds capability-backed import/export requests and rejects legacy paths', () => {
+    expect(buildManagedMediaImportCommand(
+      [' media-handle '],
+      { kind: 'place', ordering: 'natural', timelineStartFrame: 0 },
+    )).toEqual({
       type: 'media.import',
-      grantId: 'grant',
-      sources: [{ path: '/media/source.mov' }],
-      placement: 'append-natural-order',
+      mediaHandles: ['media-handle'],
+      placement: { kind: 'place', ordering: 'natural', timelineStartFrame: 0 },
     });
-    expect(buildManagedExportCommand('grant', '/exports/video.mp4')).toEqual({
+    const destination = {
+      schemaVersion: 1 as const,
+      destinationId: 'destination',
+      grantId: 'grant',
+      stagingHandleId: 'staging',
+      mode: 'create-only' as const,
+      outputName: 'video.mp4',
+      verifiedParentIdentity: 'parent',
+      expiresAt: '2026-07-25T12:00:00.000Z',
+    };
+    expect(buildManagedExportCommand(destination)).toEqual({
       type: 'export.start',
-      format: 'mp4-h264-aac',
-      grantId: 'grant',
-      destinationPath: '/exports/video.mp4',
+      exportKind: 'mp4-h264-aac',
+      destination,
     });
+    expect(buildManagedMediaImportCommand('grant', '/media/source.mov')).toBeNull();
+    expect(buildManagedExportCommand('grant', '/exports/video.mp4')).toBeNull();
     expect(buildManagedMediaImportCommand('', '/media/source.mov')).toBeNull();
     expect(buildManagedExportCommand('grant', '')).toBeNull();
   });

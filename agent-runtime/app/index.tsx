@@ -5,8 +5,8 @@ import { createRoot } from 'react-dom/client';
 import { McpAppEditorHost } from '../../src/components/editor-surface/hosts';
 import type {
   EditorUiPresentationMode,
-  EditorUiSnapshot,
 } from '../../src/lib/editor-ui/contracts';
+import { createEmptyEditorUiSnapshot } from '../../src/lib/editor-ui/contracts';
 import { createLocalBridgeMediaResolver } from '../../src/lib/editor-ui/local-bridge-media-resolver';
 import {
   initializeMcpAppBridge,
@@ -14,7 +14,6 @@ import {
   type McpUiHostContext,
 } from '../../src/lib/editor-ui/mcp-app-lifecycle';
 import { fromMcpDisplayMode } from '../../src/lib/editor-ui/mcp-app-transport';
-import { isEditorUiSnapshotProjection } from '../../src/lib/editor-ui/mcp-envelope';
 import {
   createWindowRpcBridge,
   type EditorUiRpcBridge,
@@ -42,15 +41,6 @@ const readLaunchInput = (value: unknown): AppLaunchInput | null => {
   };
 };
 
-const readInitialSnapshot = (value: unknown): EditorUiSnapshot | null => {
-  if (!isRecord(value)) return null;
-  const structured = isRecord(value.structuredContent) ? value.structuredContent : value;
-  if (structured.ok !== true || !isRecord(structured.data)) return null;
-  return isEditorUiSnapshotProjection(structured.data.editorUiSnapshot)
-    ? structured.data.editorUiSnapshot
-    : null;
-};
-
 const readMediaPairingCapability = (value: unknown): string | null => {
   if (!isRecord(value) || !isRecord(value._meta) || !isRecord(value._meta.bridge)) return null;
   const capability = value._meta.bridge.capabilityToken;
@@ -59,7 +49,6 @@ const readMediaPairingCapability = (value: unknown): string | null => {
 
 function WaptionsMcpApp({ bridge }: { bridge: EditorUiRpcBridge }) {
   const [launchInput, setLaunchInput] = useState<AppLaunchInput | null>(null);
-  const [initialSnapshot, setInitialSnapshot] = useState<EditorUiSnapshot | null>(null);
   const [mediaPairingCapability, setMediaPairingCapability] = useState<string | null>(null);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [hostContext, setHostContext] = useState<McpUiHostContext>({
@@ -79,8 +68,6 @@ function WaptionsMcpApp({ bridge }: { bridge: EditorUiRpcBridge }) {
       }
     });
     const unsubscribeResult = bridge.subscribe('ui/notifications/tool-result', (payload) => {
-      const snapshot = readInitialSnapshot(payload);
-      if (snapshot) setInitialSnapshot((current) => current ?? snapshot);
       const mediaCapability = readMediaPairingCapability(payload);
       if (mediaCapability) {
         setMediaPairingCapability((current) => current ?? mediaCapability);
@@ -127,10 +114,15 @@ function WaptionsMcpApp({ bridge }: { bridge: EditorUiRpcBridge }) {
   }, [bridge]);
 
   const launch = useMemo(() => (
-    initialized && launchInput && initialSnapshot
-      ? { ...launchInput, initialSnapshot }
+    initialized && launchInput
+      ? {
+          ...launchInput,
+          initialSnapshot: createEmptyEditorUiSnapshot({
+            sessionId: launchInput.sessionId,
+          }),
+        }
       : null
-  ), [initialSnapshot, initialized, launchInput]);
+  ), [initialized, launchInput]);
   const mediaResolver = useMemo(() => (
     mediaPairingCapability
       ? createLocalBridgeMediaResolver({ pairingCapability: mediaPairingCapability })

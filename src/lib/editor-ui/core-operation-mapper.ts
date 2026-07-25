@@ -323,42 +323,46 @@ export type EditorUiCommandRoute =
       operations: readonly CoreSemanticOperation[];
       history?: { label: string; category: string };
     }
-  | { tool: 'history'; action: 'undo' | 'redo' | 'jump'; entryId?: string | null }
+  | {
+      tool: 'history';
+      action:
+        | { kind: 'undo' | 'redo'; steps?: number }
+        | { kind: 'jump'; entryId: string; position: 'before' | 'after' };
+    }
   | {
       tool: 'playback';
       action:
-        | 'play'
-        | 'pause'
-        | 'seek'
-        | 'set-master-volume'
-        | 'set-master-mute'
-        | 'set-rate'
-        | 'claim-presenter'
-        | 'release-presenter'
-        | 'follow'
-        | 'unfollow';
-      frame?: number;
-      volume?: number;
-      muted?: boolean;
-      rate?: number;
-      presenterViewId?: string;
+        | {
+            kind:
+              | 'play'
+              | 'pause'
+              | 'claim-presenter'
+              | 'release-presenter'
+              | 'follow'
+              | 'unfollow';
+          }
+        | { kind: 'seek'; frame: number }
+        | { kind: 'set-master-volume'; volume: number }
+        | { kind: 'set-master-mute'; muted: boolean }
+        | { kind: 'set-rate'; rate: number };
     }
   | {
       tool: 'view';
-      patch:
-        | { selectionIds: string[] }
-        | { rowHeights: Record<string, number> }
-        | {
-            selectionIds?: string[];
-            playheadFrame?: number;
-            zoom?: number;
-            scrollX?: number;
-            rowHeights?: Record<string, number>;
-            layout?: 'timeline' | 'text' | 'split';
-            focusedPanel?: string;
-            presentation?: 'inline' | 'fullscreen' | 'pip';
-          };
+      patch: {
+        selection?:
+          | { kind: 'none' }
+          | {
+              kind: 'tracks' | 'clips' | 'subtitles' | 'narrative';
+              ids: string[];
+            };
+        playheadFrame?: number;
+        zoom?: number;
+        scrollLeft?: number;
+        focusedPanel?: string;
+        presentation?: 'inline' | 'fullscreen' | 'picture-in-picture';
+      };
     }
+  | { tool: 'local-view' }
   | {
       tool: 'media-import';
       request: Omit<Extract<EditorUiCommand, { type: 'media.import' }>, 'type'>;
@@ -677,7 +681,11 @@ const validateOperationUnits = (operation: DurableEditorUiCommand): void => {
  */
 export function mapEditorUiCommand(
   command: EditorUiCommand,
-  context: { operationId?: string; projectFps?: number } = {},
+  context: {
+    operationId?: string;
+    projectFps?: number;
+    selectionKind?: 'tracks' | 'clips' | 'subtitles' | 'narrative';
+  } = {},
 ): EditorUiCommandRoute {
   if (command.type === 'edit.batch') {
     if (!context.operationId) {
@@ -692,7 +700,7 @@ export function mapEditorUiCommand(
     const operations = command.commands.flatMap((operation, index) => {
       const mapped = mapEditorUiCommand(operation, {
         ...context,
-        operationId: `${context.operationId}:${index}`,
+        operationId: `${context.operationId}-${index}`,
       });
       if (mapped.tool !== 'edit') {
         throw new Error('Editor command batches may contain durable operations only.');
@@ -707,57 +715,93 @@ export function mapEditorUiCommand(
     }
     return { tool: 'edit', operations, history: command.history };
   }
-  if (command.type === 'history.undo') return { tool: 'history', action: 'undo' };
-  if (command.type === 'history.redo') return { tool: 'history', action: 'redo' };
-  if (command.type === 'history.jump') {
-    return { tool: 'history', action: 'jump', entryId: command.entryId };
+  if (command.type === 'history.undo') {
+    return { tool: 'history', action: { kind: 'undo' } };
   }
-  if (command.type === 'playback.play') return { tool: 'playback', action: 'play' };
-  if (command.type === 'playback.pause') return { tool: 'playback', action: 'pause' };
+  if (command.type === 'history.redo') {
+    return { tool: 'history', action: { kind: 'redo' } };
+  }
+  if (command.type === 'history.jump') {
+    if (!command.entryId) {
+      throw new Error('history.jump requires a history entry ID.');
+    }
+    return {
+      tool: 'history',
+      action: { kind: 'jump', entryId: command.entryId, position: 'after' },
+    };
+  }
+  if (command.type === 'playback.play') {
+    return { tool: 'playback', action: { kind: 'play' } };
+  }
+  if (command.type === 'playback.pause') {
+    return { tool: 'playback', action: { kind: 'pause' } };
+  }
   if (command.type === 'playback.seek') {
     assertInteger(command.timelineFrame, 'playback.seek.timelineFrame');
-    return { tool: 'playback', action: 'seek', frame: command.timelineFrame };
+    return {
+      tool: 'playback',
+      action: { kind: 'seek', frame: command.timelineFrame },
+    };
   }
   if (command.type === 'playback.set-volume') {
     if (!Number.isFinite(command.volume) || command.volume < 0 || command.volume > 1) {
       throw new Error('playback.set-volume.volume must be between 0 and 1.');
     }
-    return { tool: 'playback', action: 'set-master-volume', volume: command.volume };
+    return {
+      tool: 'playback',
+      action: { kind: 'set-master-volume', volume: command.volume },
+    };
   }
   if (command.type === 'playback.set-muted') {
-    return { tool: 'playback', action: 'set-master-mute', muted: command.muted };
+    return {
+      tool: 'playback',
+      action: { kind: 'set-master-mute', muted: command.muted },
+    };
   }
   if (command.type === 'playback.set-rate') {
     if (!Number.isFinite(command.rate) || command.rate < 0.1 || command.rate > 16) {
       throw new Error('playback.set-rate.rate must be between 0.1 and 16.');
     }
-    return { tool: 'playback', action: 'set-rate', rate: command.rate };
+    return { tool: 'playback', action: { kind: 'set-rate', rate: command.rate } };
   }
   if (command.type === 'playback.presenter.claim') {
-    return { tool: 'playback', action: 'claim-presenter' };
+    return { tool: 'playback', action: { kind: 'claim-presenter' } };
   }
   if (command.type === 'playback.presenter.release') {
-    return { tool: 'playback', action: 'release-presenter' };
+    return { tool: 'playback', action: { kind: 'release-presenter' } };
   }
   if (command.type === 'playback.follow') {
-    return { tool: 'playback', action: 'follow', presenterViewId: command.presenterViewId };
+    return { tool: 'playback', action: { kind: 'follow' } };
   }
-  if (command.type === 'playback.unfollow') return { tool: 'playback', action: 'unfollow' };
+  if (command.type === 'playback.unfollow') {
+    return { tool: 'playback', action: { kind: 'unfollow' } };
+  }
   if (command.type === 'view.select') {
-    return { tool: 'view', patch: { selectionIds: command.ids } };
-  }
-  if (command.type === 'view.set-track-height') {
     return {
       tool: 'view',
-      patch: { rowHeights: { [command.trackId]: command.height } },
+      patch: {
+        selection: command.ids.length > 0
+          ? { kind: context.selectionKind ?? 'clips', ids: command.ids }
+          : { kind: 'none' },
+      },
     };
+  }
+  if (command.type === 'view.set-track-height') {
+    return { tool: 'local-view' };
   }
   if (command.type === 'view.update') {
     const projectFps = context.projectFps;
     const patch: Extract<EditorUiCommandRoute, { tool: 'view' }>['patch'] = {
       ...(command.patch.selectedIds === undefined
         ? {}
-        : { selectionIds: command.patch.selectedIds }),
+        : {
+            selection: command.patch.selectedIds.length > 0
+              ? {
+                  kind: context.selectionKind ?? 'clips',
+                  ids: command.patch.selectedIds,
+                }
+              : { kind: 'none' },
+          }),
       ...(command.patch.playheadSeconds === undefined
         ? {}
         : {
@@ -769,35 +813,26 @@ export function mapEditorUiCommand(
       ...(command.patch.zoom === undefined ? {} : { zoom: command.patch.zoom }),
       ...(command.patch.scrollLeft === undefined
         ? {}
-        : { scrollX: command.patch.scrollLeft }),
-      ...(command.patch.trackHeights === undefined
+        : { scrollLeft: command.patch.scrollLeft }),
+      ...(command.patch.focusedTrackId == null
         ? {}
-        : { rowHeights: command.patch.trackHeights }),
-      ...(command.patch.activePane === undefined
-        ? {}
-        : { layout: command.patch.activePane }),
-      ...(command.patch.focusedTrackId === undefined
-        ? {}
-        : { focusedPanel: command.patch.focusedTrackId ?? undefined }),
+        : { focusedPanel: command.patch.focusedTrackId }),
       ...(command.patch.presentation === undefined
         ? {}
         : {
-            presentation: command.patch.presentation === 'picture-in-picture'
-              ? 'pip'
-              : command.patch.presentation,
+            presentation: command.patch.presentation,
           }),
     };
-    return { tool: 'view', patch };
+    return Object.keys(patch).length > 0
+      ? { tool: 'view', patch }
+      : { tool: 'local-view' };
   }
   if (command.type === 'media.import') {
     return {
       tool: 'media-import',
       request: {
-        grantId: command.grantId,
-        sources: command.sources,
+        mediaHandles: command.mediaHandles,
         placement: command.placement,
-        ...(command.videoTrackId ? { videoTrackId: command.videoTrackId } : {}),
-        ...(command.audioTrackId ? { audioTrackId: command.audioTrackId } : {}),
       },
     };
   }
@@ -806,13 +841,12 @@ export function mapEditorUiCommand(
       tool: 'transcription',
       action: 'start',
       request: {
-        mode: command.mode,
-        trackIds: command.trackIds,
-        ranges: command.ranges,
+        transcriptionKind: command.transcriptionKind,
+        targetTrackIds: command.targetTrackIds,
+        ...(command.ranges ? { ranges: command.ranges } : {}),
         language: command.language,
         speakerMode: command.speakerMode,
         providerPolicy: command.providerPolicy,
-        ...(command.providerId ? { providerId: command.providerId } : {}),
       },
     };
   }
@@ -822,13 +856,11 @@ export function mapEditorUiCommand(
       tool: 'export',
       action: 'start',
       request: {
-        format: command.format,
-        grantId: command.grantId,
-        destinationPath: command.destinationPath,
-        ...(command.overwriteGrantId
-          ? { overwriteGrantId: command.overwriteGrantId }
+        exportKind: command.exportKind,
+        destination: command.destination,
+        ...(command.overwriteConfirmation
+          ? { overwriteConfirmation: command.overwriteConfirmation }
           : {}),
-        ...(command.confirmation ? { confirmation: command.confirmation } : {}),
       },
     };
   }
@@ -843,14 +875,14 @@ export function mapEditorUiCommand(
     return {
       tool: 'edit',
       operations: [{
-        operationId: `${context.operationId}:delete`,
+        operationId: `${context.operationId}-delete`,
         type: 'subtitle.delete',
         payload: {
           trackId: durableCommand.trackId,
           subtitleId: durableCommand.subtitleId,
         },
       }, {
-        operationId: `${context.operationId}:insert`,
+        operationId: `${context.operationId}-insert`,
         type: 'subtitle.insert',
         payload: {
           trackId: durableCommand.targetTrackId,

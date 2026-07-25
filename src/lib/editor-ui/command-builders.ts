@@ -1,51 +1,103 @@
-import type { EditorUiCommand, EditorUiSnapshot } from './contracts';
+import type {
+  EditorUiCommand,
+  EditorUiExportDestinationCapability,
+  EditorUiSnapshot,
+} from './contracts';
 import { secondsToNarrativeSample } from './core-operation-mapper';
 
 export const buildEditorialTranscriptionCommand = (
   snapshot: EditorUiSnapshot,
-  providerId: string,
+  endpointCapabilityId = '',
 ): Extract<EditorUiCommand, { type: 'transcription.start' }> | null => {
-  const trackIds = snapshot.project.tracks
+  const targetTrackIds = snapshot.project.tracks
     .filter((track) => track.kind === 'video')
     .map((track) => track.id);
-  const endSample = secondsToNarrativeSample(snapshot.project.durationSeconds);
-  if (trackIds.length === 0 || endSample < 1 || providerId.trim().length === 0) return null;
+  const sourceDurations = new Map<string, number>();
+  for (const track of snapshot.project.tracks) {
+    for (const clip of track.clips) {
+      if (!clip.sourceId) continue;
+      sourceDurations.set(
+        clip.sourceId,
+        Math.max(
+          sourceDurations.get(clip.sourceId) ?? 0,
+          clip.sourceOffsetSeconds + (clip.sourceDurationSeconds ?? clip.durationSeconds),
+        ),
+      );
+    }
+  }
+  const ranges = Array.from(sourceDurations).map(([sourceId, endSeconds]) => ({
+    sourceId,
+    startSample16k: 0,
+    endSample16k: secondsToNarrativeSample(endSeconds),
+  })).filter((range) => range.endSample16k > 0);
+  if (targetTrackIds.length === 0) return null;
+  const normalizedCapabilityId = endpointCapabilityId.trim();
   return {
     type: 'transcription.start',
-    mode: 'editorial',
-    trackIds,
-    ranges: [{ startSample: 0, endSample, sampleRate: 16_000 }],
+    transcriptionKind: 'editorial',
+    targetTrackIds,
+    ...(ranges.length > 0 ? { ranges } : {}),
     language: 'es',
-    speakerMode: 'detect',
-    providerPolicy: 'managed-local-endpoint',
-    providerId: providerId.trim(),
+    speakerMode: 'diarized',
+    providerPolicy: {
+      kind: 'managed-local-endpoint',
+      ...(normalizedCapabilityId
+        ? { endpointCapabilityId: normalizedCapabilityId }
+        : {}),
+    },
   };
 };
 
-export const buildManagedMediaImportCommand = (
-  grantId: string,
-  path: string,
-): Extract<EditorUiCommand, { type: 'media.import' }> | null => (
-  grantId.trim() && path.trim()
-    ? {
-        type: 'media.import',
-        grantId: grantId.trim(),
-        sources: [{ path: path.trim() }],
-        placement: 'append-natural-order',
-      }
-    : null
-);
+type MediaImportCommand = Extract<EditorUiCommand, { type: 'media.import' }>;
 
-export const buildManagedExportCommand = (
-  grantId: string,
-  destinationPath: string,
-): Extract<EditorUiCommand, { type: 'export.start' }> | null => (
-  grantId.trim() && destinationPath.trim()
-    ? {
-        type: 'export.start',
-        format: 'mp4-h264-aac',
-        grantId: grantId.trim(),
-        destinationPath: destinationPath.trim(),
-      }
-    : null
-);
+export function buildManagedMediaImportCommand(
+  mediaHandles: readonly string[],
+  placement: MediaImportCommand['placement'],
+): MediaImportCommand | null;
+/** Legacy UI prompts cannot manufacture verified media handles, so they fail closed. */
+export function buildManagedMediaImportCommand(
+  legacyGrantId: string,
+  legacyPath: string,
+): MediaImportCommand | null;
+export function buildManagedMediaImportCommand(
+  mediaHandlesOrLegacyGrant: readonly string[] | string,
+  placementOrLegacyPath: MediaImportCommand['placement'] | string,
+): MediaImportCommand | null {
+  if (typeof mediaHandlesOrLegacyGrant === 'string'
+    || typeof placementOrLegacyPath === 'string') return null;
+  const mediaHandles = Array.from(new Set(
+    mediaHandlesOrLegacyGrant.map((handle) => handle.trim()).filter(Boolean),
+  ));
+  return mediaHandles.length > 0
+    ? { type: 'media.import', mediaHandles, placement: placementOrLegacyPath }
+    : null;
+}
+
+type ExportCommand = Extract<EditorUiCommand, { type: 'export.start' }>;
+
+export function buildManagedExportCommand(
+  destination: EditorUiExportDestinationCapability,
+  exportKind?: ExportCommand['exportKind'],
+): ExportCommand | null;
+/** Legacy path grants are insufficient because export requires a staged destination capability. */
+export function buildManagedExportCommand(
+  legacyGrantId: string,
+  legacyDestinationPath: string,
+): ExportCommand | null;
+export function buildManagedExportCommand(
+  destinationOrLegacyGrant: EditorUiExportDestinationCapability | string,
+  exportKindOrLegacyPath: ExportCommand['exportKind'] | string = 'mp4-h264-aac',
+): ExportCommand | null {
+  if (typeof destinationOrLegacyGrant === 'string'
+    || !destinationOrLegacyGrant.destinationId.trim()
+    || !destinationOrLegacyGrant.grantId.trim()
+    || !destinationOrLegacyGrant.stagingHandleId.trim()
+    || !destinationOrLegacyGrant.outputName.trim()
+    || !destinationOrLegacyGrant.verifiedParentIdentity.trim()
+    || !destinationOrLegacyGrant.expiresAt.trim()) return null;
+  return {
+    type: 'export.start',
+    exportKind: exportKindOrLegacyPath as ExportCommand['exportKind'],
+    destination: destinationOrLegacyGrant,
+  };
+}
