@@ -112,6 +112,13 @@ export interface ManagedMediaImportRequest {
  * Core's WAL/snapshot/history/source-registration commit.
  */
 export interface CoreMediaImportPort {
+    /**
+     * Optional receipt-first seam. Production resolves a prior import before it inspects or pins
+     * a transient media handle, so a lost response remains replayable after restart or revocation.
+     */
+    replayImport?(request: ManagedMediaImportRequest): Promise<
+        import('../../../src/lib/editor-engine').EditorMediaImportResult | null
+    >;
     importMedia(input: {
         request: EditorMediaImportRequest;
         hydration: EditorAssetHydration;

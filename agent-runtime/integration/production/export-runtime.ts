@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { EditorManifestV4 } from '../../../src/types/video';
 import type { HeadlessRenderSnapshotV1 } from '../../../src/lib/render-plan';
 import type { ArtifactRegistry } from '../../artifacts/artifact-registry';
@@ -19,6 +20,7 @@ import {
     NodeBoundedChromiumWorkerHostPort,
 } from '../../render/node-bounded-chromium-worker-host';
 import { canonicalDigest, canonicalJson } from '../../persistence/canonical-json';
+import type { DurableReceipt } from '../../persistence/managed-filesystem-store';
 import type { CanonicalToolCall, CoordinatorResult, JsonObject } from '../../mcp/contracts';
 import type { ManagedMutationEnvelope } from '../../coordinator/types';
 import type {
@@ -32,6 +34,7 @@ import {
     type ManagedExportMaterial,
     type ManagedExportRequest,
     type ManagedReferenceSourceV1,
+    type ManagedStreamingEntry,
 } from '../export/contracts';
 import {
     createManagedExportDurableJobInput,
@@ -43,8 +46,10 @@ import { NodeFfmpegWebmRenderPort } from '../export/node-webm-renderer';
 import type { PathGrantOutputAuthority } from '../export/path-grant-output-authority';
 import { ManagedRenderSourceAdapter } from '../export/render-source-adapter';
 import type { PathGrantMediaAdapter } from '../media/path-grant-media-adapter';
+import type { ManagedMediaCatalogRecord } from '../media/contracts';
 import type { ProductionResourceBudget } from './resource-budget';
 import { PrivateMp4ScratchAuthority } from './private-mp4-scratch';
+import type { ProductionTranscriptionRuntime } from './transcription-runtime';
 
 type ProductionCoordinator = ManagedCoordinator<
     ManagedCoreEditorState,
@@ -55,6 +60,7 @@ type ProductionCoordinator = ManagedCoordinator<
 export interface ProductionExportRuntime {
     registerJobHandlers(scheduler: DurableJobScheduler): void;
     start(call: CanonicalToolCall): Promise<CoordinatorResult>;
+    close(): Promise<void>;
 }
 
 export function createProductionExportRuntime(input: {
@@ -63,6 +69,7 @@ export function createProductionExportRuntime(input: {
     outputs: PathGrantOutputAuthority;
     budget: ProductionResourceBudget;
     dataRoot: string;
+    transcription: ProductionTranscriptionRuntime;
 }): ProductionExportRuntime {
     const renderSources = new ManagedRenderSourceAdapter(input.media);
     const ffmpegExecutor = new NodeFfmpegResolvedPlanExecutor(
@@ -184,6 +191,7 @@ export function createProductionExportRuntime(input: {
                             job.projectId,
                             exportKindForJob(job.kind),
                             input.coordinator.artifacts,
+                            input.transcription,
                         );
                     },
                 },
@@ -236,6 +244,7 @@ export function createProductionExportRuntime(input: {
                 replayed: result.replayed,
             };
         },
+        close: () => scratch.close(),
     };
 }
 
@@ -251,6 +260,7 @@ async function createExportMaterial(
     projectId: string,
     kind: ManagedExportKind,
     artifacts: ArtifactRegistry,
+    transcription: ProductionTranscriptionRuntime,
 ): Promise<ManagedExportMaterial> {
     const project = coordinator.getProject(projectId);
     const manifest = project.envelope.editor.state.snapshot.manifest;
@@ -259,28 +269,54 @@ async function createExportMaterial(
         return { renderSnapshot: renderSnapshot(manifest, media) };
     }
     if (kind === 'portable-bundle') {
-        const manifestBytes = Buffer.from(canonicalJson(manifest));
+        const transcriptSidecars = await transcription.preparePortableBundleSidecars({
+            projectId,
+            manifest,
+        });
+        const sourceBundle = portableBundleSources(
+            project.envelope.sourceRegistry,
+            transcriptSidecars.manifest,
+            media,
+        );
+        const metadata = {
+            version: '4.0',
+            project: {
+                id: project.envelope.projectId,
+                name: project.envelope.name,
+                thumbnail: null,
+                duration: 0,
+                createdAt: project.envelope.createdAt,
+                updatedAt: project.envelope.updatedAt,
+            },
+            editorManifest: transcriptSidecars.manifest,
+            sourceFiles: sourceBundle.sourceFiles,
+            sourceDigests: sourceBundle.sourceDigests,
+            editorialTranscriptFiles: transcriptSidecars.editorialTranscriptFiles,
+            editorialCoverageFiles: transcriptSidecars.editorialCoverageFiles,
+            editorialChunkFiles: transcriptSidecars.editorialChunkFiles,
+            presets: [],
+        };
+        const metadataBytes = Buffer.from(canonicalJson(metadata, 4 * 1024 * 1024));
         return {
             portableBundle: {
-                entries: [{
-                    name: 'manifest.json',
-                    byteLength: manifestBytes.byteLength,
-                    expectedDigest: canonicalDigest(manifest) as `sha256:${string}`,
-                    stream: async function* () {
-                        yield manifestBytes;
-                    },
-                    revalidate: async () => {
+                entries: [
+                    staticBundleEntry('metadata.json', metadataBytes, async () => {
                         const current = coordinator.getProject(projectId);
-                        if (canonicalDigest(current.envelope.editor.state.snapshot.manifest)
-                            !== canonicalDigest(manifest)) {
+                        if (
+                            canonicalDigest(
+                                current.envelope.editor.state.snapshot.manifest,
+                            ) !== canonicalDigest(manifest)
+                        ) {
                             throw managedError(
                                 'SESSION_REVISION_CONFLICT',
                                 'The project changed during bundle export.',
                                 true,
                             );
                         }
-                    },
-                }],
+                    }),
+                    ...sourceBundle.entries,
+                    ...transcriptSidecars.entries,
+                ],
             },
         };
     }
@@ -304,7 +340,10 @@ async function createExportMaterial(
             },
         };
     }
-    const artifactRecords = await artifacts.list(projectId);
+    const [artifactRecords, receipts] = await Promise.all([
+        artifacts.list(projectId),
+        coordinator.store.readNamespace<DurableReceipt>(projectId, 'receipts'),
+    ]);
     return {
         proof: {
             schemaVersion: 1,
@@ -313,7 +352,7 @@ async function createExportMaterial(
             schemaBundleDigest: canonicalDigest('2026-07-25') as `sha256:${string}`,
             state: project.state,
             sources,
-            operations: [],
+            operations: proofOperations(receipts),
             editSummary: {
                 clips: manifest.videoClips.length,
                 tracks: manifest.videoTracks.length + manifest.audioTracks.length,
@@ -339,6 +378,266 @@ async function createExportMaterial(
             },
         },
     };
+}
+
+const BUNDLE_MEDIA_CHUNK_BYTES = 1024 * 1024;
+
+function portableBundleSources(
+    registry: readonly {
+        sourceId: string;
+        byteLength: number;
+        digest: string;
+        releasedAt?: string;
+    }[],
+    manifest: EditorManifestV4,
+    media: PathGrantMediaAdapter,
+): {
+    readonly entries: readonly ManagedStreamingEntry[];
+    readonly sourceFiles: {
+        readonly video: Record<string, string>;
+        readonly audio: Record<string, string>;
+    };
+    readonly sourceDigests: {
+        readonly video: Record<string, `sha256:${string}`>;
+        readonly audio: Record<string, `sha256:${string}`>;
+    };
+} {
+    const activeBySourceId = new Map(
+        registry
+            .filter((source) => source.releasedAt === undefined)
+            .map((source) => [source.sourceId, source]),
+    );
+    const sourceFiles = {
+        video: {} as Record<string, string>,
+        audio: {} as Record<string, string>,
+    };
+    const sourceDigests = {
+        video: {} as Record<string, `sha256:${string}`>,
+        audio: {} as Record<string, `sha256:${string}`>,
+    };
+    const entries: ManagedStreamingEntry[] = [];
+    const declared = new Set<string>();
+
+    for (const [kind, descriptors] of [
+        ['video', manifest.videoSourceDescriptors],
+        ['audio', manifest.audioSourceDescriptors],
+    ] as const) {
+        for (const descriptor of descriptors) {
+            if (declared.has(descriptor.id)) {
+                throw managedError(
+                    'INVALID_REQUEST',
+                    'The portable bundle manifest reuses a source identifier.',
+                );
+            }
+            declared.add(descriptor.id);
+            const source = activeBySourceId.get(descriptor.id);
+            const record = media.getBySourceId(descriptor.id);
+            if (!source || !record || record.class !== kind) {
+                throw managedError(
+                    'SOURCE_CHANGED',
+                    'A portable bundle source is no longer retained.',
+                    true,
+                );
+            }
+            if (
+                source.byteLength !== record.registeredIdentity.byteLength
+                || source.digest !== record.registeredIdentity.sha256
+            ) {
+                throw managedError(
+                    'SOURCE_CHANGED',
+                    'A portable bundle source identity no longer matches the project.',
+                    true,
+                );
+            }
+            const entryName = 'sources/' + kind + '/'
+                + canonicalDigest({ sourceId: descriptor.id }).slice(7)
+                + '.media';
+            sourceFiles[kind][descriptor.id] = entryName;
+            sourceDigests[kind][descriptor.id] = source.digest as `sha256:${string}`;
+            entries.push(streamingMediaBundleEntry(
+                entryName,
+                source.digest as `sha256:${string}`,
+                source.byteLength,
+                record,
+                media,
+            ));
+        }
+    }
+    return { entries, sourceFiles, sourceDigests };
+}
+
+function streamingMediaBundleEntry(
+    name: string,
+    digest: `sha256:${string}`,
+    byteLength: number,
+    record: ManagedMediaCatalogRecord,
+    media: PathGrantMediaAdapter,
+): ManagedStreamingEntry {
+    return {
+        name,
+        byteLength,
+        expectedDigest: digest,
+        stream: (signal) => streamRetainedMedia(record, media, byteLength, digest, signal),
+        revalidate: async (signal) => {
+            const lease = await media.open(record.handle.handleId, signal);
+            try {
+                await lease.assertCurrent(signal);
+                if (
+                    lease.identity.byteLength !== byteLength
+                    || lease.identity.sha256 !== digest
+                ) {
+                    throw managedError(
+                        'SOURCE_CHANGED',
+                        'A portable bundle source identity changed during export.',
+                        true,
+                    );
+                }
+            } finally {
+                await lease.close();
+            }
+        },
+    };
+}
+
+async function* streamRetainedMedia(
+    record: ManagedMediaCatalogRecord,
+    media: PathGrantMediaAdapter,
+    byteLength: number,
+    digest: `sha256:${string}`,
+    signal?: AbortSignal,
+): AsyncIterable<Uint8Array> {
+    const lease = await media.open(record.handle.handleId, signal);
+    try {
+        await lease.assertCurrent(signal);
+        if (
+            lease.identity.byteLength !== byteLength
+            || lease.identity.sha256 !== digest
+        ) {
+            throw managedError(
+                'SOURCE_CHANGED',
+                'A portable bundle source identity changed during export.',
+                true,
+            );
+        }
+        for (let position = 0; position < byteLength;) {
+            signal?.throwIfAborted();
+            const chunk = Buffer.allocUnsafe(
+                Math.min(BUNDLE_MEDIA_CHUNK_BYTES, byteLength - position),
+            );
+            const read = await lease.fileHandle.read(
+                chunk,
+                0,
+                chunk.byteLength,
+                position,
+            );
+            if (read.bytesRead !== chunk.byteLength) {
+                throw managedError(
+                    'SOURCE_CHANGED',
+                    'A portable bundle source was truncated during export.',
+                    true,
+                );
+            }
+            position += read.bytesRead;
+            yield chunk;
+        }
+        await lease.assertCurrent(signal);
+    } finally {
+        await lease.close();
+    }
+}
+
+function staticBundleEntry(
+    name: string,
+    bytes: Uint8Array,
+    revalidate?: (signal?: AbortSignal) => Promise<void>,
+): ManagedStreamingEntry {
+    const digest = sha256Bytes(bytes);
+    return {
+        name,
+        byteLength: bytes.byteLength,
+        expectedDigest: digest,
+        stream: async function* () {
+            yield* splitBundleBytes(bytes);
+        },
+        revalidate: async (signal) => revalidate?.(signal),
+    };
+}
+
+function* splitBundleBytes(bytes: Uint8Array): Iterable<Uint8Array> {
+    for (let offset = 0; offset < bytes.byteLength; offset += BUNDLE_MEDIA_CHUNK_BYTES) {
+        yield bytes.subarray(offset, Math.min(bytes.byteLength, offset + BUNDLE_MEDIA_CHUNK_BYTES));
+    }
+}
+
+function sha256Bytes(bytes: Uint8Array): `sha256:${string}` {
+    return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function proofOperations(
+    receipts: readonly DurableReceipt[],
+): NonNullable<ManagedExportMaterial['proof']>['operations'] {
+    return receipts
+        .map((receipt) => ({
+            toolName: receipt.toolName,
+            idempotencyKey: receipt.idempotencyKey,
+            requestDigest: receipt.canonicalRequestHash as `sha256:${string}`,
+            resultingSessionRevision: receipt.committedSessionRevision,
+            jobIds: receiptResultIdentifiers(receipt.result, [
+                'jobId',
+                'jobIds',
+            ]),
+            artifactIds: receiptResultIdentifiers(receipt.result, [
+                'artifactId',
+                'artifactIds',
+                'resultArtifactIds',
+            ]),
+            createdAt: receipt.createdAt,
+        }))
+        .sort((left, right) => (
+            left.createdAt.localeCompare(right.createdAt)
+            || left.toolName.localeCompare(right.toolName)
+            || left.idempotencyKey.localeCompare(right.idempotencyKey)
+            || left.requestDigest.localeCompare(right.requestDigest)
+        ))
+        .map((value) => {
+            const { createdAt, ...operation } = value;
+            void createdAt;
+            return operation;
+        });
+}
+
+function receiptResultIdentifiers(
+    value: unknown,
+    fields: readonly string[],
+): readonly string[] {
+    const values = new Set<string>();
+    const visit = (candidate: unknown, depth: number): void => {
+        if (depth > 6 || !candidate || typeof candidate !== 'object') return;
+        if (Array.isArray(candidate)) {
+            candidate.slice(0, 512).forEach((item) => visit(item, depth + 1));
+            return;
+        }
+        for (const [key, item] of Object.entries(candidate as Record<string, unknown>)) {
+            if (fields.includes(key)) {
+                const identifiers = typeof item === 'string'
+                    ? [item]
+                    : Array.isArray(item) ? item : [];
+                for (const identifier of identifiers) {
+                    if (
+                        typeof identifier === 'string'
+                        && /^[A-Za-z0-9:_-]{1,512}$/u.test(identifier)
+                    ) {
+                        values.add(identifier);
+                    }
+                }
+            }
+            if (key === 'data' || key === 'job' || key === 'jobs' || key === 'result') {
+                visit(item, depth + 1);
+            }
+        }
+    };
+    visit(value, 0);
+    return Object.freeze([...values].sort());
 }
 
 function renderSnapshot(

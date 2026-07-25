@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import type { TranscriptionCoverageRecordV2 } from '../../../src/types/editorial';
+import type {
+    Sha256Digest,
+    TranscriptionAcquisitionWindowV2,
+    TranscriptionCoverageRecordV2,
+} from '../../../src/types/editorial';
 import {
     createCanonicalEditorialTranscriptRecord,
     verifyCanonicalEditorialTranscriptRecord,
@@ -12,6 +17,10 @@ import type {
     RangeTranscriptChunkRecordV2,
 } from '../../../src/lib/editorial-transcription/range-orchestrator';
 import {
+    createRangeTranscriptChunkRecord,
+} from '../../../src/lib/editorial-transcription/range-orchestrator';
+import {
+    canonicalizeJson,
     sha256CanonicalJson,
 } from '../../../src/lib/editorial-transcription/canonical-json';
 import type { EditorManifestV4 } from '../../../src/types/video';
@@ -54,9 +63,11 @@ import type {
     PreparedManagedCommitCapability,
 } from '../transcription/contracts';
 import { FilesystemManagedTranscriptionCas } from '../transcription/filesystem-cas';
+import type { ManagedStreamingEntry } from '../export/contracts';
 import {
     createManagedTranscriptionIntegration,
 } from '../transcription/transcription-tool-service';
+import { readJsonFile } from '../../persistence/fs-durable';
 
 type ProductionCoordinator = ManagedCoordinator<
     ManagedCoreEditorState,
@@ -76,6 +87,16 @@ export interface ProductionTranscriptionRuntime {
         readonly records: readonly Readonly<Record<string, unknown>>[];
         readonly signal: AbortSignal;
     }): Promise<PreparedImportedRanges>;
+    /**
+     * Projects private managed range records into the public V4 bundle representation. The
+     * returned entries reload and verify their immutable CAS source while the ZIP writer streams
+     * them, so a portable export never retains media or every transcript body in memory.
+     */
+    preparePortableBundleSidecars(input: {
+        readonly projectId: string;
+        readonly manifest: EditorManifestV4;
+        readonly signal?: AbortSignal;
+    }): Promise<PortableBundleSidecars>;
     validateTranscriptPins(input: {
         readonly projectId: string;
         readonly editor: import('../../coordinator/managed-editor-port')
@@ -96,6 +117,14 @@ interface PreparedImportedRanges {
 interface TranscriptionValidationFinding {
     readonly code: string;
     readonly subjectId?: string;
+}
+
+interface PortableBundleSidecars {
+    readonly manifest: EditorManifestV4;
+    readonly editorialTranscriptFiles: Readonly<Record<string, string>>;
+    readonly editorialCoverageFiles: Readonly<Record<string, string>>;
+    readonly editorialChunkFiles: Readonly<Record<string, string>>;
+    readonly entries: readonly ManagedStreamingEntry[];
 }
 
 export async function createProductionTranscriptionRuntime(
@@ -323,12 +352,439 @@ export async function createProductionTranscriptionRuntime(
             coordinator,
             cas,
         }),
+        preparePortableBundleSidecars: (input) => preparePortableBundleSidecars({
+            ...input,
+            coordinator,
+            cas: filesystemCas,
+        }),
         validateTranscriptPins: (input) => validateTranscriptPins({
             ...input,
             coordinator,
             cas,
         }),
     };
+}
+
+const PORTABLE_SIDECAR_MAX_BYTES = 16 * 1024 * 1024;
+const PORTABLE_SIDECAR_CHUNK_BYTES = 1024 * 1024;
+
+interface PortableChunkReference {
+    readonly originalRecordId: Sha256Digest;
+    readonly exportedRecordId: Sha256Digest;
+    readonly window: TranscriptionAcquisitionWindowV2;
+    readonly sourceFingerprint: Sha256Digest;
+    readonly acquisitionProfileDigest: Sha256Digest;
+}
+
+async function preparePortableBundleSidecars(input: {
+    readonly projectId: string;
+    readonly manifest: EditorManifestV4;
+    readonly signal?: AbortSignal;
+    readonly coordinator: ProductionCoordinator;
+    readonly cas: FilesystemManagedTranscriptionCas;
+}): Promise<PortableBundleSidecars> {
+    input.signal?.throwIfAborted();
+    const manifest = structuredClone(input.manifest);
+    const transcriptFiles: Record<string, string> = {};
+    const coverageFiles: Record<string, string> = {};
+    const chunkFiles: Record<string, string> = {};
+    const entries: ManagedStreamingEntry[] = [];
+    const seenTranscriptIds = new Set<Sha256Digest>();
+    const seenCoverageIds = new Set<Sha256Digest>();
+    const seenChunkIds = new Set<Sha256Digest>();
+
+    for (const descriptor of manifest.editorialTranscriptDescriptors) {
+        input.signal?.throwIfAborted();
+        if (seenTranscriptIds.has(descriptor.recordId)) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The portable bundle manifest reuses an editorial transcript record.',
+            );
+        }
+        seenTranscriptIds.add(descriptor.recordId);
+        const transcriptPath = portableSidecarPath('transcripts', descriptor.recordId);
+        transcriptFiles[descriptor.recordId] = transcriptPath;
+        entries.push(await immutableJsonBundleEntry(
+            transcriptPath,
+            descriptor.recordId,
+            async () => loadEditorialTranscriptRecord(
+                input.coordinator,
+                input.projectId,
+                descriptor.recordId,
+            ),
+        ));
+
+        if (descriptor.version !== 2) continue;
+        if (seenCoverageIds.has(descriptor.coverageRecordId)) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The portable bundle manifest reuses an editorial coverage record.',
+            );
+        }
+        seenCoverageIds.add(descriptor.coverageRecordId);
+        const coverage = await loadCoverageRecord(
+            input.coordinator,
+            input.projectId,
+            descriptor.coverageRecordId,
+        );
+        if (
+            coverage.mergedTranscriptRecordId !== descriptor.recordId
+            || coverage.sourceFingerprint !== descriptor.sourceFingerprint
+            || coverage.acquisitionProfileDigest !== descriptor.acquisitionProfileDigest
+        ) {
+            throw managedError(
+                'SOURCE_CHANGED',
+                'An editorial coverage record no longer matches its descriptor.',
+                true,
+            );
+        }
+        const chunks = await createPortableChunkReferences(
+            coverage,
+            input.cas,
+            input.signal,
+        );
+        const transformedCoverage = await createPortableCoverageRecord(
+            coverage,
+            chunks,
+        );
+        descriptor.coverageRecordId = transformedCoverage.recordId;
+        const coveragePath = portableSidecarPath(
+            'coverage',
+            transformedCoverage.recordId,
+        );
+        coverageFiles[transformedCoverage.recordId] = coveragePath;
+        entries.push(await immutableJsonBundleEntry(
+            coveragePath,
+            transformedCoverage.recordId,
+            async () => {
+                const current = await loadCoverageRecord(
+                    input.coordinator,
+                    input.projectId,
+                    coverage.recordId,
+                );
+                return createPortableCoverageRecord(current, chunks);
+            },
+        ));
+        for (const chunk of chunks) {
+            if (seenChunkIds.has(chunk.exportedRecordId)) {
+                throw managedError(
+                    'INVALID_REQUEST',
+                    'The portable bundle reuses an editorial chunk record.',
+                );
+            }
+            seenChunkIds.add(chunk.exportedRecordId);
+            const chunkPath = portableSidecarPath(
+                'chunks',
+                chunk.exportedRecordId,
+            );
+            chunkFiles[chunk.exportedRecordId] = chunkPath;
+            entries.push(await immutableJsonBundleEntry(
+                chunkPath,
+                chunk.exportedRecordId,
+                async () => createPortableChunkRecord(
+                    chunk,
+                    input.cas,
+                    input.signal,
+                ),
+            ));
+        }
+    }
+
+    return {
+        manifest,
+        editorialTranscriptFiles: Object.freeze(transcriptFiles),
+        editorialCoverageFiles: Object.freeze(coverageFiles),
+        editorialChunkFiles: Object.freeze(chunkFiles),
+        entries: Object.freeze(entries),
+    };
+}
+
+async function loadEditorialTranscriptRecord(
+    coordinator: ProductionCoordinator,
+    projectId: string,
+    recordId: Sha256Digest,
+): Promise<Uint8Array> {
+    const value = await readJsonFile<{
+        readonly recordId?: unknown;
+        readonly body?: unknown;
+    }>(
+        coordinator.store.projectPath(
+            projectId,
+            'transcription/editorial-records',
+            recordId.slice(7) + '.json',
+        ),
+        PORTABLE_SIDECAR_MAX_BYTES,
+    );
+    if (!value || value.recordId !== recordId) {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial transcript record is unavailable for export.',
+            true,
+        );
+    }
+    try {
+        return (await verifyCanonicalEditorialTranscriptRecord(
+            value.body,
+            recordId,
+        )).canonicalBytes;
+    } catch {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial transcript record is invalid for export.',
+            true,
+        );
+    }
+}
+
+async function loadCoverageRecord(
+    coordinator: ProductionCoordinator,
+    projectId: string,
+    recordId: Sha256Digest,
+): Promise<TranscriptionCoverageRecordV2> {
+    const value = await readJsonFile<TranscriptionCoverageRecordV2>(
+        coordinator.store.projectPath(
+            projectId,
+            'transcription/coverage',
+            recordId.slice(7) + '.json',
+        ),
+        PORTABLE_SIDECAR_MAX_BYTES,
+    );
+    if (!value || value.recordId !== recordId) {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial coverage record is unavailable for export.',
+            true,
+        );
+    }
+    try {
+        await verifyTranscriptionCoverageRecordV2(value);
+        return structuredClone(value);
+    } catch {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial coverage record is invalid for export.',
+            true,
+        );
+    }
+}
+
+async function createPortableChunkReferences(
+    coverage: TranscriptionCoverageRecordV2,
+    cas: FilesystemManagedTranscriptionCas,
+    signal?: AbortSignal,
+): Promise<readonly PortableChunkReference[]> {
+    const references: PortableChunkReference[] = [];
+    const originalIds = new Set<Sha256Digest>();
+    for (const window of coverage.acquisitionWindows) {
+        for (const originalRecordId of window.chunkRecordIds) {
+            signal?.throwIfAborted();
+            if (originalIds.has(originalRecordId)) {
+                throw managedError(
+                    'SOURCE_CHANGED',
+                    'An editorial coverage record reuses a private chunk.',
+                    true,
+                );
+            }
+            originalIds.add(originalRecordId);
+            const record = await createPortableChunkRecord(
+                {
+                    originalRecordId,
+                    exportedRecordId: originalRecordId,
+                    window,
+                    sourceFingerprint: coverage.sourceFingerprint as Sha256Digest,
+                    acquisitionProfileDigest: coverage.acquisitionProfileDigest,
+                },
+                cas,
+                signal,
+            );
+            references.push({
+                originalRecordId,
+                exportedRecordId: record.recordId,
+                window: structuredClone(window),
+                sourceFingerprint: coverage.sourceFingerprint as Sha256Digest,
+                acquisitionProfileDigest: coverage.acquisitionProfileDigest,
+            });
+        }
+    }
+    return Object.freeze(references);
+}
+
+async function createPortableChunkRecord(
+    reference: PortableChunkReference,
+    cas: FilesystemManagedTranscriptionCas,
+    signal?: AbortSignal,
+): Promise<RangeTranscriptChunkRecordV2> {
+    signal?.throwIfAborted();
+    const source = await cas.getChunk(reference.originalRecordId);
+    if (
+        !source
+        || source.sourceFingerprint !== reference.sourceFingerprint
+        || source.acquisitionProfileDigest !== reference.acquisitionProfileDigest
+    ) {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial transcript chunk is unavailable for export.',
+            true,
+        );
+    }
+    if (
+        source.windowId !== reference.window.windowId
+        || source.decoded.startSample !== reference.window.decoded.startSample
+        || source.decoded.endSample !== reference.window.decoded.endSample
+    ) {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial transcript chunk no longer matches its coverage window.',
+            true,
+        );
+    }
+    const converted = await createRangeTranscriptChunkRecord({
+        sourceFingerprint: source.sourceFingerprint,
+        acquisitionProfileDigest: source.acquisitionProfileDigest,
+        window: reference.window,
+        localWords: source.words.map((word) => ({
+            text: word.text,
+            startSample: word.startSample - reference.window.decoded.startSample,
+            endSample: word.endSample - reference.window.decoded.startSample,
+            probability: word.probability,
+            speaker: word.speaker
+                ? {
+                    providerSpeakerId: word.speaker.providerSpeakerId,
+                    evidenceKey: word.speaker.evidenceKey,
+                }
+                : null,
+        })),
+    });
+    if (
+        reference.exportedRecordId !== reference.originalRecordId
+        && converted.recordId !== reference.exportedRecordId
+    ) {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'An editorial transcript chunk changed while the bundle was prepared.',
+            true,
+        );
+    }
+    return converted;
+}
+
+async function createPortableCoverageRecord(
+    coverage: TranscriptionCoverageRecordV2,
+    chunks: readonly PortableChunkReference[],
+): Promise<TranscriptionCoverageRecordV2> {
+    const exportedChunks = new Map(
+        chunks.map((chunk) => [chunk.originalRecordId, chunk.exportedRecordId]),
+    );
+    const {
+        recordId: _recordId,
+        version: _version,
+        acquisitionWindows: _acquisitionWindows,
+        ...body
+    } = coverage;
+    void _recordId;
+    void _version;
+    void _acquisitionWindows;
+    return createTranscriptionCoverageRecordV2({
+        ...body,
+        acquisitionWindows: coverage.acquisitionWindows.map((window) => ({
+            ...structuredClone(window),
+            chunkRecordIds: window.chunkRecordIds.map((recordId) => {
+                const exported = exportedChunks.get(recordId);
+                if (!exported) {
+                    throw managedError(
+                        'SOURCE_CHANGED',
+                        'An editorial coverage chunk is unavailable for export.',
+                        true,
+                    );
+                }
+                return exported;
+            }),
+        })),
+    });
+}
+
+async function immutableJsonBundleEntry(
+    name: string,
+    expectedDigest: Sha256Digest,
+    load: () => Promise<Uint8Array | RangeTranscriptChunkRecordV2 | TranscriptionCoverageRecordV2>,
+): Promise<ManagedStreamingEntry> {
+    const initial = await loadCanonicalBundleJson(load);
+    assertPortableSidecarIdentity(initial, expectedDigest);
+    return {
+        name,
+        byteLength: initial.byteLength,
+        expectedDigest,
+        stream: async function* (signal) {
+            signal?.throwIfAborted();
+            const current = await loadCanonicalBundleJson(load);
+            assertPortableSidecarIdentity(current, expectedDigest, initial.byteLength);
+            yield* splitPortableSidecar(current);
+        },
+        revalidate: async (signal) => {
+            signal?.throwIfAborted();
+            const current = await loadCanonicalBundleJson(load);
+            assertPortableSidecarIdentity(current, expectedDigest, initial.byteLength);
+        },
+    };
+}
+
+async function loadCanonicalBundleJson(
+    load: () => Promise<Uint8Array | RangeTranscriptChunkRecordV2 | TranscriptionCoverageRecordV2>,
+): Promise<Uint8Array> {
+    const value = await load();
+    const bytes = value instanceof Uint8Array
+        ? value
+        : Buffer.from(canonicalizeJson(value));
+    if (bytes.byteLength > PORTABLE_SIDECAR_MAX_BYTES) {
+        throw managedError(
+            'PAYLOAD_TOO_LARGE',
+            'A portable bundle sidecar exceeds its bounded export limit.',
+        );
+    }
+    return bytes;
+}
+
+function assertPortableSidecarIdentity(
+    bytes: Uint8Array,
+    expectedDigest: Sha256Digest,
+    expectedLength?: number,
+): void {
+    if (
+        (expectedLength !== undefined && bytes.byteLength !== expectedLength)
+        || canonicalJsonDigest(bytes) !== expectedDigest
+    ) {
+        throw managedError(
+            'SOURCE_CHANGED',
+            'A portable bundle sidecar changed during export.',
+            true,
+        );
+    }
+}
+
+function canonicalJsonDigest(bytes: Uint8Array): Sha256Digest {
+    return ('sha256:' + createHash('sha256')
+        .update(bytes)
+        .digest('hex')) as Sha256Digest;
+}
+
+function* splitPortableSidecar(bytes: Uint8Array): Iterable<Uint8Array> {
+    for (
+        let offset = 0;
+        offset < bytes.byteLength;
+        offset += PORTABLE_SIDECAR_CHUNK_BYTES
+    ) {
+        yield bytes.subarray(
+            offset,
+            Math.min(bytes.byteLength, offset + PORTABLE_SIDECAR_CHUNK_BYTES),
+        );
+    }
+}
+
+function portableSidecarPath(
+    kind: 'transcripts' | 'coverage' | 'chunks',
+    recordId: Sha256Digest,
+): string {
+    return 'editorial/' + kind + '/' + recordId.slice(7) + '.json';
 }
 
 async function prepareImportedRanges(input: {

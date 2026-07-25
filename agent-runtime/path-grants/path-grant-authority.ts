@@ -225,6 +225,15 @@ export class PathGrantAuthority {
         string,
         { sessionKey: string; byteLength: number }
     >();
+    /**
+     * A digest copy can be prepared by competing import transactions. Keep the candidate alive
+     * until every in-process claimant settles so one rejected transaction cannot erase bytes that
+     * another transaction has already accepted.
+     */
+    private readonly pendingRetainedSources = new Map<
+        string,
+        { claims: number; settledClaims: number; accepted: boolean }
+    >();
 
     constructor(private readonly options: PathGrantAuthorityOptions) {
         this.sourceCopyQuotas = options.sourceCopyQuotas ?? DEFAULT_SOURCE_COPY_QUOTAS;
@@ -511,6 +520,15 @@ export class PathGrantAuthority {
                 try {
                     await link(temporary, finalPath);
                     created = true;
+                    this.pendingRetainedSources.set(finalPath, {
+                        claims: 0,
+                        settledClaims: 0,
+                        accepted: false,
+                    });
+                    // The immutable destination owns the bytes now. Drop the staging hard link
+                    // before reopening it so the retained-source invariant remains one inode,
+                    // one managed path even while concurrent publishers race on the digest.
+                    await rm(temporary);
                     await fsyncDirectory(copyRoot);
                 } catch (error) {
                     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
@@ -529,6 +547,9 @@ export class PathGrantAuthority {
                     }
                 }
             }
+            await waitForRetainedSourceReady(finalPath);
+            const candidate = this.pendingRetainedSources.get(finalPath);
+            if (candidate) candidate.claims += 1;
             const handle = await openNoFollow(
                 finalPath,
                 constants.O_RDONLY | constants.O_NONBLOCK,
@@ -556,19 +577,32 @@ export class PathGrantAuthority {
                 await handle.close().catch(() => undefined);
             }
             let settled = false;
+            const settleCandidate = async (accepted: boolean): Promise<void> => {
+                if (settled) return;
+                settled = true;
+                if (!candidate) return;
+                candidate.settledClaims += 1;
+                candidate.accepted = candidate.accepted || accepted;
+                if (!candidate.accepted && candidate.settledClaims >= candidate.claims) {
+                    this.pendingRetainedSources.delete(finalPath);
+                    await rm(finalPath, { force: true });
+                    await fsyncDirectory(copyRoot).catch(() => undefined);
+                } else if (candidate.accepted) {
+                    // Future deduplicated users may safely treat the immutable copy as durable.
+                    this.pendingRetainedSources.delete(finalPath);
+                }
+            };
             return {
                 digest: input.expectedDigest,
                 byteLength: input.expectedBytes,
                 identity,
                 created,
                 accept: () => {
-                    settled = true;
+                    void settleCandidate(true);
                 },
                 reject: async () => {
-                    if (settled || !created) return;
-                    settled = true;
-                    await rm(finalPath, { force: true });
-                    await fsyncDirectory(copyRoot).catch(() => undefined);
+                    if (!created && !candidate) return;
+                    await settleCandidate(false);
                 },
             };
         } finally {
@@ -688,7 +722,16 @@ export class PathGrantAuthority {
         grantId: string,
         scope: PathGrantScope,
         requestedPath: string,
-        options: { signal?: AbortSignal; deadlineMilliseconds?: number } = {},
+        options: {
+            signal?: AbortSignal;
+            deadlineMilliseconds?: number;
+            /**
+             * Only the managed bundle importer sets this internal flag. A published output must
+             * still match a private output-publication journal before its second hard link is
+             * admitted as a read source.
+             */
+            allowKnownPublishedOutput?: boolean;
+        } = {},
     ): Promise<VerifiedReadHandle> {
         const grant = this.resolve(grantId, scope, 'read-root');
         validateAbsolutePath(requestedPath);
@@ -1377,6 +1420,20 @@ export class PathGrantAuthority {
                 } finally {
                     await targetHandle.close();
                 }
+                // Keep a path-private, identity-bound provenance record after the staging link
+                // disappears. It is the only way a later read grant can distinguish this
+                // atomically published bundle from an arbitrary hard link inside the read root.
+                const provenanceRoot = join(
+                    this.options.privateCopyRoot,
+                    'published-output-provenance',
+                );
+                await ensurePrivateDirectory(provenanceRoot);
+                await atomicWriteJson(
+                    join(provenanceRoot, `${journal.publicationId}.json`),
+                    journal,
+                    { mode: 0o600 },
+                );
+                await fsyncDirectory(provenanceRoot);
             }
             await removeIfIdentityMatches(journal.privatePath, journal.finalIdentity);
             await fsyncDirectory(dirname(journal.privatePath));
@@ -1540,17 +1597,31 @@ export class PathGrantAuthority {
     private async materializeSource(
         grant: SessionPathGrantRecord,
         requestedPath: string,
-        options: { signal?: AbortSignal; deadlineMilliseconds?: number },
+        options: {
+            signal?: AbortSignal;
+            deadlineMilliseconds?: number;
+            allowKnownPublishedOutput?: boolean;
+        },
     ): Promise<MaterializedSource> {
         const deadline = deadlineFrom(options.deadlineMilliseconds, 5 * 60 * 1000);
         assertNotCancelled(options.signal, deadline);
-        const bound = await openBoundPath(requestedPath, false);
+        const bound = await openBoundPath(
+            requestedPath,
+            false,
+            options.allowKnownPublishedOutput === true,
+        );
         let temporary: string | undefined;
         let output: FileHandle | undefined;
         let reservation: SourceCopyReservation | undefined;
         try {
             assertContained(grant.canonicalPath, bound.canonicalPath);
             await validateReadRootIdentity(grant);
+            if (options.allowKnownPublishedOutput) {
+                await this.assertKnownPublishedOutput(
+                    bound.canonicalPath,
+                    bound.metadata,
+                );
+            }
             if (grant.identity && bound.canonicalPath === grant.canonicalPath) {
                 validateStoredIdentity(grant.identity, fileIdentity(bound.metadata));
             }
@@ -1628,6 +1699,60 @@ export class PathGrantAuthority {
             if (temporary) await rm(temporary, { force: true }).catch(() => undefined);
             reservation?.release();
         }
+    }
+
+    private async assertKnownPublishedOutput(
+        targetPath: string,
+        metadata: Awaited<ReturnType<FileHandle['stat']>>,
+    ): Promise<void> {
+        const roots = [
+            join(this.options.privateCopyRoot, 'output-publications'),
+            join(this.options.privateCopyRoot, 'published-output-provenance'),
+        ];
+        for (const root of roots) {
+            let names: readonly string[];
+            try {
+                names = await readdir(root);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+                throw error;
+            }
+            if (names.length > 4_096) {
+                throw managedError(
+                    'PAYLOAD_TOO_LARGE',
+                    'The managed output publication catalog is oversized.',
+                );
+            }
+            for (const name of [...names].sort()) {
+                if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+                const journal = await readJsonFile<OutputPublicationJournal>(
+                    join(root, name),
+                    64 * 1024,
+                );
+                if (!journal) continue;
+                try {
+                    validateOutputPublicationJournal(journal);
+                } catch {
+                    continue;
+                }
+                if (
+                    journal.state === 'published'
+                    && journal.targetPath === targetPath
+                    && journal.finalIdentity.device === metadata.dev.toString()
+                    && journal.finalIdentity.inode === metadata.ino.toString()
+                    && journal.finalIdentity.size === toSafeNumber(metadata.size, 'file size')
+                    && journal.finalIdentity.modifiedMilliseconds
+                        === finiteNumber(metadata.mtimeMs, 'file modification time')
+                ) {
+                    validateKnownPublishedReadFile(metadata);
+                    return;
+                }
+            }
+        }
+        throw managedError(
+            'SOURCE_UNREADABLE',
+            'The published output is not retained by managed publication authority.',
+        );
     }
 
     private async reserveSourceCopy(
@@ -1761,7 +1886,11 @@ export async function hashVerifiedRead(
     return { digest: verified.digest, bytes: verified.identity.size };
 }
 
-async function openBoundPath(requestedPath: string, allowDirectory: boolean): Promise<BoundPath> {
+async function openBoundPath(
+    requestedPath: string,
+    allowDirectory: boolean,
+    allowPublishedOutput = false,
+): Promise<BoundPath> {
     validateAbsolutePath(requestedPath);
     const before = await lstat(requestedPath, { bigint: true });
     if (before.isSymbolicLink()) {
@@ -1788,6 +1917,9 @@ async function openBoundPath(requestedPath: string, allowDirectory: boolean): Pr
             if (!allowDirectory) {
                 throw managedError('SOURCE_UNREADABLE', 'Managed sources must be regular files.');
             }
+        } else if (allowPublishedOutput && metadata.isFile()
+            && !metadata.isSymbolicLink() && Number(metadata.nlink) >= 2) {
+            toSafeNumber(metadata.size, 'file size');
         } else {
             validateRegularFile(metadata);
         }
@@ -2024,6 +2156,47 @@ function validatePublishedFile(
         );
     }
     toSafeNumber(metadata.size, 'file size');
+}
+
+function validateKnownPublishedReadFile(
+    metadata: Awaited<ReturnType<FileHandle['stat']>> | Awaited<ReturnType<typeof lstat>>,
+): void {
+    if (!metadata.isFile() || metadata.isSymbolicLink() || Number(metadata.nlink) < 1) {
+        throw managedError(
+            'SOURCE_UNREADABLE',
+            'The managed published output is no longer a regular file.',
+        );
+    }
+    toSafeNumber(metadata.size, 'file size');
+}
+
+async function waitForRetainedSourceReady(path: string): Promise<void> {
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+        const metadata = await lstatOrNull(path);
+        if (!metadata) {
+            throw managedError(
+                'SOURCE_CHANGED',
+                'A concurrent retained source publication disappeared.',
+                true,
+            );
+        }
+        if (metadata.isFile() && !metadata.isSymbolicLink() && Number(metadata.nlink) === 1) {
+            return;
+        }
+        if (!metadata.isFile() || metadata.isSymbolicLink() || Number(metadata.nlink) > 2) {
+            throw managedError(
+                'SOURCE_CHANGED',
+                'A concurrent retained source publication has an invalid identity.',
+                true,
+            );
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    throw managedError(
+        'SOURCE_CHANGED',
+        'A concurrent retained source publication did not settle.',
+        true,
+    );
 }
 
 function validateRecoveredPublishedFile(

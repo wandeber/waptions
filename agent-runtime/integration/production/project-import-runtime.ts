@@ -204,35 +204,46 @@ export function createProductionProjectImportRuntime(input: {
                                 }
                             },
                             accept: async () => {
-                                await ranges.accept();
-                                staged.retained.forEach(
-                                    ({ prepared }) => prepared.accept(),
-                                );
-                                for (const restored of staged.catalogRecords) {
-                                    input.media.restoreCommitted({
-                                        grantId: restored.grantId,
-                                        scope: {
-                                            sessionId:
-                                                project.envelope.sessionId,
-                                            sessionEpoch:
-                                                project.state.sessionEpoch,
-                                        },
-                                        record: restored.record,
-                                    });
-                                }
-                                await input.mediaAssets.register(
-                                    projectId,
-                                    new DurableManagedMediaAssetAuthority({
+                                try {
+                                    await ranges.accept();
+                                    staged.retained.forEach(
+                                        ({ prepared }) => prepared.accept(),
+                                    );
+                                    // The process-wide media probe catalog is intentionally not
+                                    // a project authority. A V4 import can preserve source IDs
+                                    // from another open project, so hydrate its Core head through
+                                    // an isolated capability catalog bound to this session.
+                                    const projectMedia = new PathGrantMediaAdapter(
+                                        input.coordinator.pathGrants,
+                                    );
+                                    for (const restored of staged.catalogRecords) {
+                                        projectMedia.restoreCommitted({
+                                            grantId: restored.grantId,
+                                            scope: {
+                                                sessionId:
+                                                    project.envelope.sessionId,
+                                                sessionEpoch:
+                                                    project.state.sessionEpoch,
+                                            },
+                                            record: restored.record,
+                                        });
+                                    }
+                                    await input.mediaAssets.register(
                                         projectId,
-                                        scope: {
-                                            sessionId:
-                                                project.envelope.sessionId,
-                                            sessionEpoch:
-                                                project.state.sessionEpoch,
-                                        },
-                                        catalog: input.media,
-                                    }),
-                                );
+                                        new DurableManagedMediaAssetAuthority({
+                                            projectId,
+                                            scope: {
+                                                sessionId:
+                                                    project.envelope.sessionId,
+                                                sessionEpoch:
+                                                    project.state.sessionEpoch,
+                                            },
+                                            catalog: projectMedia,
+                                        }),
+                                    );
+                                } catch (error) {
+                                    throw error;
+                                }
                             },
                             reject: async () => {
                                 await Promise.allSettled([

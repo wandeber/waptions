@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -29,6 +30,52 @@ function authority(
 }
 
 describe('PathGrantAuthority', () => {
+    it('keeps a deduplicated retained blob when a competing publication is accepted', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const grants = authority(runtime.path);
+        const bytes = Buffer.from('deduplicated source bytes');
+        const digest: `sha256:${string}` = (
+            'sha256:' + createHash('sha256').update(bytes).digest('hex')
+        ) as `sha256:${string}`;
+        let waiting = 0;
+        let release!: () => void;
+        let ready!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const bothWaiting = new Promise<void>((resolve) => { ready = resolve; });
+        const stream = async function* (): AsyncIterable<Uint8Array> {
+            waiting += 1;
+            if (waiting === 2) ready();
+            await gate;
+            yield bytes;
+        };
+        const input = {
+            sessionId: scope.sessionId,
+            sourceId: 'deduplicated-source',
+            expectedDigest: digest,
+            expectedBytes: bytes.byteLength,
+        };
+        const first = grants.retainVerifiedSourceStream({ ...input, stream: stream() });
+        const second = grants.retainVerifiedSourceStream({ ...input, stream: stream() });
+        await bothWaiting;
+        release();
+        const [rejected, accepted] = await Promise.all([first, second]);
+        await rejected.reject();
+        accepted.accept();
+
+        const retained = await grants.openRetainedSource(
+            scope.sessionId,
+            input.sourceId,
+            digest,
+            bytes.byteLength,
+        );
+        try {
+            expect(await retained.handle.readFile()).toEqual(bytes);
+        } finally {
+            await retained.close();
+        }
+    });
+
     it('materializes an immutable source version that survives later source replacement', async () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);

@@ -93,6 +93,14 @@ export class ManagedMediaToolService {
     }
 
     async import(request: ManagedMediaImportRequest): Promise<ManagedMediaImportResponse> {
+        const replay = await this.core.replayImport?.(request);
+        if (replay) {
+            return {
+                sourceIds: replay.ok ? Object.freeze([...replay.sourceIds]) : [],
+                placedClipIds: replay.ok ? Object.freeze([...replay.placedClipIds]) : [],
+                result: replay,
+            };
+        }
         validateCount(request.mediaHandles.length, 'Media import handles');
         if (new Set(request.mediaHandles).size !== request.mediaHandles.length) {
             throw new ManagedMediaError('INVALID_REQUEST', 'Media import handles must be unique.');

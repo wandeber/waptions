@@ -16,7 +16,9 @@ export class PathGrantProjectImportSourceAuthority implements ManagedProjectImpo
             input.grantId,
             { sessionId: input.sessionId, sessionEpoch: input.sessionEpoch },
             input.path,
-            { signal: input.signal },
+            // Exported bundles are atomically published through a second hard link. The path
+            // authority admits that form only after it matches its private publication journal.
+            { signal: input.signal, allowKnownPublishedOutput: true },
         );
         let closed = false;
         return {

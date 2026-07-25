@@ -98,10 +98,12 @@ export async function createProductionRuntimeComposition(
 ): Promise<ProductionRuntimeComposition> {
     let services: ProductionServices | undefined;
     const mediaAssets = new ProductionMediaAssetAuthority();
-    const coordinator = await ManagedCoordinator.start(
-        options.dataRoot,
-        new CoreEditorPortFactory(mediaAssets),
-        {
+    let coordinator: ProductionCoordinator;
+    try {
+        coordinator = await ManagedCoordinator.start(
+            options.dataRoot,
+            new CoreEditorPortFactory(mediaAssets),
+            {
             configureRuntime: (authority) => {
                 return createProductionServices(
                     options,
@@ -122,8 +124,17 @@ export async function createProductionRuntimeComposition(
                     requireServices(services).prepareMediaCatalog(input)
                 ),
             },
-        },
-    );
+            },
+        );
+    } catch (error) {
+        // Service construction starts the local bridge before project/job recovery. Never leave a
+        // partially composed process holding its fixed private port when recovery rejects.
+        await Promise.allSettled([
+            services?.bridge.close() ?? Promise.resolve(),
+            mediaAssets.close(),
+        ]);
+        throw error;
+    }
     const runtimeServices = requireServices(services);
     const delegated = createDelegatedTools(coordinator, runtimeServices);
     const runtimeAuthorities = createProductionRuntimeAuthorities(
@@ -151,6 +162,7 @@ export async function createProductionRuntimeComposition(
         coordinator,
         runtimeServices.bridge,
         mediaAssets,
+        runtimeServices.export,
     );
     return {
         authority,
@@ -170,6 +182,7 @@ class ProductionCoordinatorAuthority implements ManagedCoordinatorServiceAuthori
         private readonly coordinator: ProductionCoordinator,
         private readonly bridge: ProductionBridgeRuntime,
         private readonly mediaAssets: ProductionMediaAssetAuthority,
+        private readonly exportRuntime: ProductionExportRuntime,
     ) {
         this.epoch = coordinator.epoch;
         this.diagnostics = coordinator.diagnostics;
@@ -205,6 +218,7 @@ class ProductionCoordinatorAuthority implements ManagedCoordinatorServiceAuthori
     async close(): Promise<void> {
         await this.bridge.close();
         await this.coordinator.close();
+        await this.exportRuntime.close();
         await this.mediaAssets.close();
     }
 }
@@ -272,6 +286,7 @@ async function createProductionServices(
         outputs: output,
         budget,
         dataRoot,
+        transcription,
     });
     const projectImport = createProductionProjectImportRuntime({
         coordinator,
@@ -561,6 +576,24 @@ function createDelegatedTools(
                 services.media,
                 services.probes,
                 {
+                    replayImport: async () => {
+                        const replay = await coordinator.replayMutationReceipt<
+                            import('../../../src/lib/editor-engine').EditorMediaImportResult
+                        >(
+                            projectId,
+                            managedRequest(call, {}),
+                        );
+                        if (!replay) return null;
+                        if (!replay.ok) {
+                            throw managedError(
+                                replay.error.code,
+                                replay.error.message,
+                                replay.error.retryable,
+                                replay.error.details,
+                            );
+                        }
+                        return replay.data;
+                    },
                     importMedia: async (input) => {
                         const command: ManagedCoreCommand = {
                             kind: 'import',
@@ -602,10 +635,16 @@ function createDelegatedTools(
                 signal: context.signal,
             });
             const project = coordinator.getProject(projectId);
-            return success({
-                sourceIds: [...response.sourceIds],
-                placedClipIds: [...response.placedClipIds],
-            }, project.state);
+            return {
+                ok: true,
+                data: {
+                    sourceIds: [...response.sourceIds],
+                    placedClipIds: [...response.placedClipIds],
+                },
+                state: project.state,
+                warnings: [],
+                replayed: response.result.ok && response.result.replayed,
+            };
         },
         waptions_media_review: async (call) => enqueueReview(coordinator, call),
         waptions_media_release: async (call) => releaseMedia(coordinator, call),

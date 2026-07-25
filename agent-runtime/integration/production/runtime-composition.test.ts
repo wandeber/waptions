@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -137,7 +137,7 @@ describe('production managed runtime composition', () => {
             'handleId',
         );
 
-        const mediaImport = await invoke(first.adapter, 'waptions_media_import', {
+        const mediaImportRequest = {
             ...mutationBase(state, 'import-probed-media'),
             mediaHandles: [handleId],
             placement: {
@@ -145,11 +145,39 @@ describe('production managed runtime composition', () => {
                 ordering: 'natural',
                 timelineStartFrame: 0,
             },
-        });
+        } satisfies JsonObject;
+        const mediaImport = await invoke(
+            first.adapter,
+            'waptions_media_import',
+            mediaImportRequest,
+        );
         assertUsable(mediaImport);
         state = successState(mediaImport);
         const sourceId = stringItems(mediaImport, 'sourceIds')[0];
         expect(sourceId).toBeTruthy();
+
+        const edited = await invoke(first.adapter, 'waptions_edit_apply', {
+            ...mutationBase(state, 'proof-edit-project-name'),
+            operations: [{
+                operationId: 'proof-edit-project-name-operation',
+                type: 'project.set-name',
+                payload: { name: 'Production composition edited' },
+            }],
+        });
+        assertUsable(edited);
+        state = successState(edited);
+        const undone = await invoke(first.adapter, 'waptions_history_apply', {
+            ...mutationBase(state, 'proof-undo-project-name'),
+            action: { kind: 'undo' },
+        });
+        assertUsable(undone);
+        state = successState(undone);
+        const redone = await invoke(first.adapter, 'waptions_history_apply', {
+            ...mutationBase(state, 'proof-redo-project-name'),
+            action: { kind: 'redo' },
+        });
+        assertUsable(redone);
+        state = successState(redone);
 
         const tracks = await invoke(first.adapter, 'waptions_timeline_query', {
             apiVersion: '2026-07-25',
@@ -336,6 +364,20 @@ describe('production managed runtime composition', () => {
             ok: true,
             replayed: true,
         });
+        // The original probe handle belonged to the stopped runtime. Replay must therefore win
+        // before the importer attempts to resolve or pin it in the recovered process.
+        const replayedMediaImport = await invoke(
+            restarted.adapter,
+            'waptions_media_import',
+            mediaImportRequest,
+        );
+        expect(replayedMediaImport).toMatchObject({
+            ok: true,
+            replayed: true,
+            data: {
+                sourceIds: [sourceId],
+            },
+        });
 
         const recoveredValidation = await invoke(
             restarted.adapter,
@@ -352,9 +394,160 @@ describe('production managed runtime composition', () => {
             valid: true,
             issues: [],
         });
+
+        const reconnectProofPath = join(outputRoot, 'proof-after-reconnect.json');
+        const reconnectProofGrant = await invoke(
+            restarted.adapter,
+            'waptions_path_grant',
+            {
+                ...mutationBase(state, 'grant-proof-after-reconnect'),
+                action: {
+                    kind: 'add',
+                    grantKind: 'write-destination',
+                    path: reconnectProofPath,
+                    outputName: 'proof-after-reconnect.json',
+                    allowCreate: true,
+                    confirmAuthorityExpansion: true,
+                },
+            },
+        );
+        state = successState(reconnectProofGrant);
+        const reconnectProofExport = await invoke(
+            restarted.adapter,
+            'waptions_export_start',
+            {
+                ...mutationBase(state, 'export-proof-after-reconnect'),
+                exportKind: 'proof-record',
+                destination: objectField(
+                    data(reconnectProofGrant),
+                    'destination',
+                ),
+            },
+        );
+        state = successState(reconnectProofExport);
+        expect(await waitForJob(
+            restarted.adapter,
+            state.sessionId,
+            stringData(reconnectProofExport, 'jobId'),
+        )).toMatchObject({ state: 'succeeded' });
+        const reconnectProof = JSON.parse(
+            await readFile(reconnectProofPath, 'utf8'),
+        ) as {
+            value?: {
+                operations?: readonly {
+                    toolName: string;
+                    idempotencyKey: string;
+                    requestDigest: string;
+                }[];
+            };
+        };
+        expect(reconnectProof.value?.operations).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                toolName: 'waptions_project_import',
+                idempotencyKey: 'import-inline-project',
+            }),
+            expect.objectContaining({
+                toolName: 'waptions_edit_apply',
+                idempotencyKey: 'proof-edit-project-name',
+            }),
+            expect.objectContaining({
+                toolName: 'waptions_history_apply',
+                idempotencyKey: 'proof-undo-project-name',
+            }),
+            expect.objectContaining({
+                toolName: 'waptions_history_apply',
+                idempotencyKey: 'proof-redo-project-name',
+            }),
+            expect.objectContaining({
+                toolName: 'waptions_session_open',
+                idempotencyKey: 'recover-composition',
+            }),
+        ]));
+
+        const bundlePath = join(outputRoot, 'composition-round-trip.waptions.zip');
+        const bundleGrant = await invoke(restarted.adapter, 'waptions_path_grant', {
+            ...mutationBase(state, 'grant-round-trip-bundle'),
+            action: {
+                kind: 'add',
+                grantKind: 'write-destination',
+                path: bundlePath,
+                outputName: 'composition-round-trip.waptions.zip',
+                allowCreate: true,
+                confirmAuthorityExpansion: true,
+            },
+        });
+        state = successState(bundleGrant);
+        const bundleExport = await invoke(restarted.adapter, 'waptions_export_start', {
+            ...mutationBase(state, 'export-round-trip-bundle'),
+            exportKind: 'portable-bundle',
+            destination: objectField(data(bundleGrant), 'destination'),
+        });
+        state = successState(bundleExport);
+        expect(await waitForJob(
+            restarted.adapter,
+            state.sessionId,
+            stringData(bundleExport, 'jobId'),
+        )).toMatchObject({
+            kind: 'export:portable-bundle',
+            state: 'succeeded',
+        });
+
+        const targetOpened = await invoke(restarted.adapter, 'waptions_session_open', {
+            apiVersion: '2026-07-25',
+            action: 'create',
+            projectId: 'composition-bundle-target',
+            idempotencyKey: 'open-composition-bundle-target',
+            name: 'Composition bundle target',
+        });
+        let targetState = successState(targetOpened);
+        const bundleReadGrant = await invoke(restarted.adapter, 'waptions_path_grant', {
+            ...mutationBase(targetState, 'grant-round-trip-bundle-read'),
+            action: {
+                kind: 'add',
+                grantKind: 'read-root',
+                path: outputRoot,
+                allowCreate: false,
+                confirmAuthorityExpansion: true,
+            },
+        });
+        targetState = successState(bundleReadGrant);
+        const bundleImport = await invoke(restarted.adapter, 'waptions_project_import', {
+            ...mutationBase(targetState, 'import-round-trip-bundle'),
+            source: {
+                kind: 'bundle-path',
+                grantId: stringField(
+                    objectItems(bundleReadGrant, 'grants')[0],
+                    'grantId',
+                ),
+                path: bundlePath,
+            },
+        });
+        targetState = successState(bundleImport);
+        expect(jobFrom(bundleImport)).toMatchObject({
+            kind: 'bundle-import',
+            state: 'succeeded',
+        });
+        const targetTimeline = await invoke(restarted.adapter, 'waptions_timeline_query', {
+            apiVersion: '2026-07-25',
+            sessionId: targetState.sessionId,
+            entityKind: 'clips',
+        });
+        expect(objectItems(targetTimeline, 'items')).toEqual(expect.arrayContaining([
+            expect.objectContaining({ sourceId }),
+        ]));
+        const targetValidation = await invoke(restarted.adapter, 'waptions_project_validate', {
+            apiVersion: '2026-07-25',
+            sessionId: targetState.sessionId,
+            scopes: ['all'],
+            deep: true,
+        });
+        expect(data(targetValidation)).toMatchObject({
+            valid: true,
+            issues: [],
+        });
         expect(restarted.authority.canGracefullyShutdown()).toBe(true);
         await restarted.adapter.close?.();
-    }, 60_000);
+    }, 90_000);
 });
 
 function runtimeOptions(dataRoot: string) {

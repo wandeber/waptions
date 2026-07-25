@@ -4,6 +4,7 @@ import {
     lstat,
     mkdir,
     open,
+    readdir,
     rm,
     type FileHandle,
 } from 'node:fs/promises';
@@ -44,17 +45,33 @@ interface ScratchRecord {
 export class PrivateMp4ScratchAuthority
 implements NodeStagedOutputHandleResolverPort, Mp4ScratchRenderPort {
     private readonly records = new Map<string, ScratchRecord>();
+    private readonly ready: Promise<void>;
 
     constructor(
         private readonly root: string,
         private readonly renderer: () => HeadlessRenderBackendPort,
-    ) {}
+    ) {
+        this.ready = this.sweepOrphans();
+    }
+
+    async initialize(): Promise<void> {
+        await this.ready;
+    }
+
+    async close(): Promise<void> {
+        await this.ready.catch(() => undefined);
+        await Promise.allSettled(
+            [...this.records.values()].map((record) => this.remove(record)),
+        );
+        await rm(this.root, { recursive: true, force: true });
+    }
 
     async render(input: {
         readonly jobId: string;
         readonly plan: ResolvedRenderPlanV1;
         readonly signal?: AbortSignal;
     }): Promise<RenderedMp4ScratchLease> {
+        await this.ready;
         const record = await this.create(input.jobId, input.signal);
         try {
             const result = await this.renderer().render({
@@ -185,6 +202,18 @@ implements NodeStagedOutputHandleResolverPort, Mp4ScratchRenderPort {
         record.settled = true;
         this.records.delete(record.capability.stagingId);
         await rm(record.root, { recursive: true, force: true });
+    }
+
+    private async sweepOrphans(): Promise<void> {
+        await mkdir(this.root, { recursive: true, mode: 0o700 });
+        const entries = await readdir(this.root, { withFileTypes: true });
+        await Promise.all(entries.map(async (entry) => {
+            // This authority never persists a live scratch lease. Anything present at startup is
+            // an interrupted render and can be removed without touching a user destination.
+            if (entry.isDirectory() && /^[a-f0-9-]{36}$/u.test(entry.name)) {
+                await rm(join(this.root, entry.name), { recursive: true, force: true });
+            }
+        }));
     }
 }
 
