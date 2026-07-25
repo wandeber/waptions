@@ -21,12 +21,12 @@ import type {
   EditorUiDependentTarget,
   EditorUiDurableCommand,
   EditorUiSnapshot,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/contracts';
 import {
-  DEFAULT_EDITOR_UI_SUBTITLE_STYLE,
   secondsToNarrativeSample,
   secondsToOutputSample,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/core-operation-mapper';
+import { DEFAULT_EDITOR_UI_SUBTITLE_STYLE } from '@/lib/editor-ui/contracts';
 import { useEditorSurfaceHost, useEditorUiSnapshot } from './EditorSurfaceProvider';
 
 export function ManagedInspector() {

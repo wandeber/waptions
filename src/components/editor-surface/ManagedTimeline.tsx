@@ -33,12 +33,12 @@ import type {
   EditorUiSnapshot,
   EditorUiTrack,
   EditorUiTrackKind,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/contracts';
 import {
   secondsToOutputSample,
   secondsToProjectFrame,
-  clampEditorUiClipTrimTime,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/core-operation-mapper';
+import { clampEditorUiClipTrimTime } from '@/lib/editor-ui/timeline-geometry';
 import { useEditorSurfaceHost, useEditorUiSnapshot } from './EditorSurfaceProvider';
 
 const TRACK_HEADER_WIDTH = 176;

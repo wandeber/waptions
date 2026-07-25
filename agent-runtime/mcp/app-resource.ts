@@ -34,6 +34,72 @@ const MCP_APP_CSP = {
   baseUriDomains: [],
 };
 
+function createUiMeta(): JsonObject {
+  return {
+    ui: {
+      csp: MCP_APP_CSP,
+      permissions: {},
+      prefersBorder: true,
+    },
+  };
+}
+
+export interface VerifiedMcpAppResourceInput {
+  readonly html: string;
+  readonly uri: string;
+  readonly buildHash: string;
+  readonly mimeType: string;
+  readonly htmlSha256: `sha256:${string}`;
+}
+
+/**
+ * Creates a resource from identity and bytes already authenticated by the
+ * packaged runtime manifest. The content-addressed build hash intentionally is
+ * not recomputed from the final wrapper because the packaging contract hashes
+ * the URI-neutral wrapper plus every canonical payload file.
+ */
+export function createVerifiedMcpAppResource(
+  input: VerifiedMcpAppResourceInput,
+): McpAppResource {
+  if (!input.html.trim()) {
+    throw new Error("The MCP App HTML payload cannot be empty.");
+  }
+  if (
+    !/^[a-f0-9]{64}$/.test(input.buildHash) ||
+    input.uri !==
+      `ui://waptions/editor/v1/${input.buildHash}/index.html` ||
+    input.mimeType !== RESOURCE_MIME_TYPE ||
+    !/^sha256:[a-f0-9]{64}$/.test(input.htmlSha256)
+  ) {
+    throw new Error("The verified MCP App identity is invalid.");
+  }
+  const htmlDigest = createHash("sha256")
+    .update(input.html, "utf8")
+    .digest("hex");
+  if (`sha256:${htmlDigest}` !== input.htmlSha256) {
+    throw new Error("The verified MCP App bytes do not match their digest.");
+  }
+  const canonicalAssets = [
+    {
+      path: "index.html",
+      bytes: Buffer.byteLength(input.html, "utf8"),
+      sha256: input.htmlSha256,
+    },
+  ] as const;
+  const uiMeta = createUiMeta();
+  return {
+    buildHash: input.buildHash,
+    uri: input.uri,
+    mimeType: RESOURCE_MIME_TYPE,
+    html: input.html,
+    htmlSha256: input.htmlSha256,
+    canonicalAssets,
+    payloadManifestSha256: `sha256:${input.buildHash}`,
+    listMeta: uiMeta,
+    readMeta: uiMeta,
+  };
+}
+
 export function createMcpAppResource(html: string): McpAppResource {
   if (!html.trim()) {
     throw new Error("The MCP App HTML payload cannot be empty.");
@@ -52,25 +118,13 @@ export function createMcpAppResource(html: string): McpAppResource {
     .update(JSON.stringify(canonicalAssets), "utf8")
     .digest("hex");
   const uri = `ui://waptions/editor/v1/${buildHash}/index.html`;
-  const uiMeta = {
-    ui: {
-      csp: MCP_APP_CSP,
-      permissions: {},
-      prefersBorder: true,
-    },
-  } satisfies JsonObject;
-
-  return {
+  return createVerifiedMcpAppResource({
+    html,
     buildHash,
     uri,
     mimeType: RESOURCE_MIME_TYPE,
-    html,
     htmlSha256,
-    canonicalAssets,
-    payloadManifestSha256: `sha256:${buildHash}`,
-    listMeta: uiMeta,
-    readMeta: uiMeta,
-  };
+  });
 }
 
 /**

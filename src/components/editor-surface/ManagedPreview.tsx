@@ -11,9 +11,9 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { secondsToProjectFrame } from '@/lib/editor-ui';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { EditorUiClip } from '@/lib/editor-ui';
+import type { EditorUiClip } from '@/lib/editor-ui/contracts';
+import { secondsToProjectFrame } from '@/lib/editor-ui/core-operation-mapper';
 import { useEditorSurfaceHost, useEditorUiSnapshot } from './EditorSurfaceProvider';
 
 const formatTimecode = (seconds: number, fps: number): string => {

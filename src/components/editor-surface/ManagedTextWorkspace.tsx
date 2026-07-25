@@ -11,11 +11,9 @@ import {
   Unlink,
   VolumeX,
 } from 'lucide-react';
-import type { EditorUiNarrativeBlock } from '@/lib/editor-ui';
-import {
-  buildEditorialTranscriptionCommand,
-  secondsToNarrativeSample,
-} from '@/lib/editor-ui';
+import { buildEditorialTranscriptionCommand } from '@/lib/editor-ui/command-builders';
+import type { EditorUiNarrativeBlock } from '@/lib/editor-ui/contracts';
+import { secondsToNarrativeSample } from '@/lib/editor-ui/core-operation-mapper';
 import { useEditorSurfaceHost, useEditorUiSnapshot } from './EditorSurfaceProvider';
 
 export function ManagedTextWorkspace() {

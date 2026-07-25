@@ -90,7 +90,7 @@ const IMMUTABLE_SOURCE_IDENTITY_PATTERN = /^[A-Za-z0-9_-]+$/;
  */
 export function createImmutableVideoSourceFingerprint(
     input: VideoFingerprintInput,
-    importIdentity = crypto.randomUUID(),
+    importIdentity: string = crypto.randomUUID(),
 ): string {
     if (!IMMUTABLE_SOURCE_IDENTITY_PATTERN.test(importIdentity)) {
         throw new Error('Media source import identity must contain only safe ID characters.');

@@ -1,4 +1,4 @@
-import { AnimationStyle, Subtitle } from '@/types/timeline';
+import type { AnimationStyle, Subtitle } from '@/types/timeline';
 
 /**
  * Unified rendering logic for subtitles, shared between preview and export.

@@ -472,6 +472,27 @@ describe('Waptions agent protocol schemas', () => {
         ]));
         expect((contract.provenance as JsonObject).receiptScope)
             .toEqual(['projectId', 'toolName', 'idempotencyKey']);
+        expect((contract.provenance as JsonObject).sourceBuildManifest).toEqual({
+            requiredFields: [
+                'schemaVersion',
+                'sourceCommit',
+                'sourceTree',
+                'packageManager',
+                'buildScript',
+                'app',
+                'buildInputs',
+                'files',
+                'licenses',
+            ],
+            appRequiredFields: [
+                'resourceUri',
+                'buildHash',
+                'mimeType',
+                'indexTemplateSha256',
+                'payloadFiles',
+            ],
+            fileRecordRequiredFields: ['path', 'sha256', 'bytes'],
+        });
     });
 
     it('binds semantic units and public field names to the editor engine', () => {

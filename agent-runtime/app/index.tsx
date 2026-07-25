@@ -2,19 +2,23 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { McpAppEditorHost } from '../../src/components/editor-surface';
+import { McpAppEditorHost } from '../../src/components/editor-surface/hosts';
+import type {
+  EditorUiPresentationMode,
+  EditorUiSnapshot,
+} from '../../src/lib/editor-ui/contracts';
+import { createLocalBridgeMediaResolver } from '../../src/lib/editor-ui/local-bridge-media-resolver';
+import {
+  initializeMcpAppBridge,
+  readMcpUiHostContext,
+  type McpUiHostContext,
+} from '../../src/lib/editor-ui/mcp-app-lifecycle';
+import { fromMcpDisplayMode } from '../../src/lib/editor-ui/mcp-app-transport';
+import { isEditorUiSnapshotProjection } from '../../src/lib/editor-ui/mcp-envelope';
 import {
   createWindowRpcBridge,
-  createLocalBridgeMediaResolver,
-  fromMcpDisplayMode,
-  initializeMcpAppBridge,
-  isEditorUiSnapshotProjection,
-  readMcpUiHostContext,
-  type EditorUiPresentationMode,
   type EditorUiRpcBridge,
-  type EditorUiSnapshot,
-  type McpUiHostContext,
-} from '../../src/lib/editor-ui';
+} from '../../src/lib/editor-ui/rpc-bridge';
 
 interface AppLaunchInput {
   sessionId: string;
@@ -136,7 +140,7 @@ function WaptionsMcpApp({ bridge }: { bridge: EditorUiRpcBridge }) {
   if (tornDown) return null;
   if (!launch) {
     return (
-      <main className="flex h-screen min-h-[260px] items-center justify-center bg-slate-950 p-6 text-slate-300">
+      <main className="editor-shell flex h-screen min-h-[260px] items-center justify-center bg-slate-950 p-6 text-slate-300">
         <section role={launchError ? 'alert' : 'status'} className="max-w-sm text-center">
           <h1 className="text-sm font-semibold">Waptions editor</h1>
           <p className="mt-2 text-xs leading-5 text-slate-500">
@@ -152,7 +156,7 @@ function WaptionsMcpApp({ bridge }: { bridge: EditorUiRpcBridge }) {
     : 'inline';
 
   return (
-    <main className="h-screen min-h-0 overflow-hidden bg-slate-950">
+    <main className="editor-shell h-screen min-h-0 overflow-hidden bg-slate-950">
       <McpAppEditorHost
         sessionId={launch.sessionId}
         viewId={launch.viewId}

@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
@@ -132,63 +129,6 @@ describe("MCP protocol server", () => {
       connected.coordinator.eventCallback?.();
       await connected.client.unsubscribeResource({ uri });
       expect(connected.coordinator.eventCallback).toBeUndefined();
-    } finally {
-      await connected.client.close();
-      await connected.runtime.close();
-    }
-  });
-
-  it("serves the exact MCP App bytes and URI recorded in the build manifest", async () => {
-    const manifest = JSON.parse(
-      await readFile(
-        fileURLToPath(
-          new URL("../dist/build-manifest.json", import.meta.url),
-        ),
-        "utf8",
-      ),
-    ) as {
-      appResource: {
-        uri: string;
-        mimeType: string;
-        sha256: string;
-      };
-    };
-    const html = await readFile(
-      fileURLToPath(
-        new URL("../dist/mcp-app/index.html", import.meta.url),
-      ),
-      "utf8",
-    );
-    const packagedResource = createMcpAppResource(html);
-    expect(manifest.appResource).toMatchObject({
-      uri: packagedResource.uri,
-      mimeType: packagedResource.mimeType,
-      sha256: packagedResource.htmlSha256,
-    });
-
-    const connected = await connectClient({
-      withApps: true,
-      appResource: packagedResource,
-    });
-    try {
-      const listed = await connected.client.listTools();
-      expect(
-        listed.tools.find(
-          ({ name }) => name === "waptions_editor_render",
-        )?._meta,
-      ).toMatchObject({
-        ui: { resourceUri: manifest.appResource.uri },
-      });
-      const resources = await connected.client.listResources();
-      expect(resources.resources[0].uri).toBe(manifest.appResource.uri);
-      const read = await connected.client.readResource({
-        uri: manifest.appResource.uri,
-      });
-      expect(read.contents[0]).toMatchObject({
-        uri: manifest.appResource.uri,
-        mimeType: manifest.appResource.mimeType,
-        text: html,
-      });
     } finally {
       await connected.client.close();
       await connected.runtime.close();

@@ -30,10 +30,12 @@ import {
   buildEditorialTranscriptionCommand,
   buildManagedExportCommand,
   buildManagedMediaImportCommand,
-  type EditorUiController,
-  type EditorUiDurableCommand,
-  type EditorUiSnapshot,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/command-builders';
+import type {
+  EditorUiController,
+  EditorUiDurableCommand,
+  EditorUiSnapshot,
+} from '@/lib/editor-ui/contracts';
 
 const MIN_TIMELINE_HEIGHT = 180;
 const MAX_TIMELINE_HEIGHT = 620;

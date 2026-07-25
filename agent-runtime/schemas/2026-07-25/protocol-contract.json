@@ -38,15 +38,27 @@
     "planTtlSeconds": 900
   },
   "provenance": {
-    "requiredBuildManifestFields": [
-      "resourceUri",
-      "canonicalAssetList",
-      "assetSha256ByPath",
-      "payloadManifestSha256",
-      "serverBundleSha256",
-      "schemaSha256ById",
-      "sourceCommit"
-    ],
+    "sourceBuildManifest": {
+      "requiredFields": [
+        "schemaVersion",
+        "sourceCommit",
+        "sourceTree",
+        "packageManager",
+        "buildScript",
+        "app",
+        "buildInputs",
+        "files",
+        "licenses"
+      ],
+      "appRequiredFields": [
+        "resourceUri",
+        "buildHash",
+        "mimeType",
+        "indexTemplateSha256",
+        "payloadFiles"
+      ],
+      "fileRecordRequiredFields": ["path", "sha256", "bytes"]
+    },
     "receiptScope": ["projectId", "toolName", "idempotencyKey"],
     "canonicalRequestIncludes": [
       "apiVersion",

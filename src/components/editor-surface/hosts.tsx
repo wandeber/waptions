@@ -3,15 +3,15 @@
 import { useEffect, useMemo, useRef } from 'react';
 import {
   createEmptyEditorUiSnapshot,
-  createManagedWebTransport,
-  createMcpAppTransport,
-  ExternalEditorUiController,
   type EditorUiMediaResolver,
   type EditorUiPresentationMode,
-  type EditorUiRpcBridge,
   type EditorUiServices,
   type EditorUiSnapshot,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/contracts';
+import { ExternalEditorUiController } from '@/lib/editor-ui/controller';
+import { createManagedWebTransport } from '@/lib/editor-ui/managed-web-transport';
+import { createMcpAppTransport } from '@/lib/editor-ui/mcp-app-transport';
+import type { EditorUiRpcBridge } from '@/lib/editor-ui/rpc-bridge';
 import { EditorSurface } from './EditorSurface';
 import { EditorSurfaceProvider } from './EditorSurfaceProvider';
 

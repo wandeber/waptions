@@ -1,3 +1,6 @@
+packages:
+  - agent-runtime
+
 # Keep dependency lifecycle scripts blocked by default. PNPM 11 treats any
 # dependency build script that is not listed here as unreviewed and fails the
 # install, so each entry must be an explicit review decision.

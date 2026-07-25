@@ -15,7 +15,7 @@ import type {
   EditorUiMediaResolver,
   EditorUiServices,
   EditorUiSnapshot,
-} from '@/lib/editor-ui';
+} from '@/lib/editor-ui/contracts';
 
 interface EditorSurfaceContextValue {
   controller: EditorUiController;
