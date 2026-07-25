@@ -184,11 +184,12 @@ export function composeMcpEditorUiSnapshot(
     connection: 'connected',
     capabilities: {
       canEdit: true,
-      canImportMedia: true,
+      // MCP Apps cannot acquire verified media or export destination capabilities yet.
+      canImportMedia: false,
       canTranscribe: true,
-      canExport: true,
-      canPresentFullscreen: true,
-      canPresentPictureInPicture: true,
+      canExport: false,
+      canPresentFullscreen: false,
+      canPresentPictureInPicture: false,
       canSubscribeToEvents: true,
     },
     project: {

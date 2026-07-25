@@ -18,6 +18,17 @@ import {
   normalizeMcpFailure,
   type McpToolEnvelope,
 } from './mcp-envelope';
+import {
+  mcpArtifactListDataSchema,
+  mcpEventsReadDataSchema,
+  mcpHistoryGetDataSchema,
+  mcpJobListDataSchema,
+  mcpProjectSummaryDataSchema,
+  mcpTimelineQueryDataSchema,
+  mcpUnknownDataSchema,
+  mcpViewDataSchema,
+  parseMcpToolEnvelope,
+} from './mcp-output-validation';
 import type {
   McpArtifactListData,
   McpEventsReadData,
@@ -31,6 +42,7 @@ import type {
 } from './mcp-projection-contract';
 import { composeMcpEditorUiSnapshot } from './mcp-snapshot-composer';
 import { createWindowRpcBridge, type EditorUiRpcBridge } from './rpc-bridge';
+import type { z } from 'zod';
 
 interface McpToolResult {
   structuredContent?: unknown;
@@ -104,19 +116,36 @@ const toolErrorMessage = (result: McpToolResult): string => (
   ?? 'The Waptions tool returned an error.'
 );
 
+const MAX_STRUCTURED_OUTPUT_BYTES = 1024 * 1024;
+const MAX_PAGINATED_PAGES = 32;
+const MAX_PAGINATED_ROWS = 10_000;
+const MAX_PAGINATED_BYTES = 8 * 1024 * 1024;
+const MAX_SNAPSHOT_ATTEMPTS = 3;
+
+const jsonByteLength = (value: unknown): number => {
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') throw new Error();
+    return new TextEncoder().encode(serialized).byteLength;
+  } catch {
+    throw new Error('The Waptions tool response was not finite JSON.');
+  }
+};
+
 const requiredEnvelope = <Data>(
   result: McpToolResult,
+  toolName: string,
+  dataSchema: z.ZodType<Data>,
 ): McpToolEnvelope<Data> => {
   if (typeof result.structuredContent !== 'object' || result.structuredContent === null) {
     throw new Error(result.isError
       ? toolErrorMessage(result)
       : 'The Waptions tool response did not include an authoritative envelope.');
   }
-  const envelope = result.structuredContent as Partial<McpToolEnvelope<Data>>;
-  if (typeof envelope.ok !== 'boolean') {
-    throw new Error('The Waptions tool response envelope was invalid.');
+  if (jsonByteLength(result.structuredContent) > MAX_STRUCTURED_OUTPUT_BYTES) {
+    throw new Error(`${toolName} returned an oversized authoritative envelope.`);
   }
-  return envelope as McpToolEnvelope<Data>;
+  return parseMcpToolEnvelope(result.structuredContent, dataSchema, toolName);
 };
 
 const sameState = (left: EditorUiStateToken, right: EditorUiStateToken): boolean => (
@@ -133,6 +162,20 @@ const sameState = (left: EditorUiStateToken, right: EditorUiStateToken): boolean
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
+
+class SnapshotConsistencyError extends Error {
+  constructor() {
+    super('The project changed while the editor snapshot was being composed.');
+    this.name = 'SnapshotConsistencyError';
+  }
+}
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted.', 'AbortError');
+};
 
 const isPlaybackData = (value: unknown): value is McpPlaybackData => (
   isRecord(value)
@@ -235,34 +278,68 @@ export function createMcpAppTransport(
   const readTool = async <Data>(
     name: string,
     args: Record<string, unknown>,
+    dataSchema: z.ZodType<Data>,
     states: EditorUiStateToken[],
     signal?: AbortSignal,
   ): Promise<{ data: Data; state: EditorUiStateToken }> => {
-    const envelope = requiredEnvelope<Data>(await callTool(name, args, signal));
+    throwIfAborted(signal);
+    const envelope = requiredEnvelope<Data>(
+      await callTool(name, args, signal),
+      name,
+      dataSchema,
+    );
     if (!envelope.ok) throw new Error(envelope.error.message);
+    if (envelope.state.sessionId !== options.sessionId) {
+      throw new Error(`${name} returned state for another editor session.`);
+    }
     states.push(envelope.state);
     return { data: envelope.data, state: envelope.state };
   };
   const readPaged = async <Data extends { page: McpPage }>(
     name: string,
     args: Record<string, unknown>,
+    dataSchema: z.ZodType<Data>,
+    rowCount: (data: Data) => number,
     states: EditorUiStateToken[],
     signal?: AbortSignal,
   ): Promise<Data[]> => {
     const pages: Data[] = [];
+    const seenCursors = new Set<string>();
+    let totalRows = 0;
+    let totalBytes = 0;
     let cursor: string | undefined;
     do {
+      throwIfAborted(signal);
+      if (pages.length >= MAX_PAGINATED_PAGES) {
+        throw new Error(`${name} exceeded the ${MAX_PAGINATED_PAGES}-page snapshot limit.`);
+      }
       const result = await readTool<Data>(
         name,
         { ...args, ...(cursor ? { cursor } : {}), limit: 500 },
+        dataSchema,
         states,
         signal,
       );
       pages.push(result.data);
-      cursor = result.data.page.hasMore ? result.data.page.nextCursor : undefined;
-      if (result.data.page.hasMore && !cursor) {
+      totalRows += rowCount(result.data);
+      totalBytes += jsonByteLength(result.data);
+      if (totalRows > MAX_PAGINATED_ROWS) {
+        throw new Error(`${name} exceeded the ${MAX_PAGINATED_ROWS}-row snapshot limit.`);
+      }
+      if (totalBytes > MAX_PAGINATED_BYTES) {
+        throw new Error(`${name} exceeded the paginated snapshot byte limit.`);
+      }
+      const nextCursor = result.data.page.hasMore
+        ? result.data.page.nextCursor
+        : undefined;
+      if (result.data.page.hasMore && !nextCursor) {
         throw new Error(`${name} returned an incomplete pagination cursor.`);
       }
+      if (nextCursor && seenCursors.has(nextCursor)) {
+        throw new Error(`${name} returned a repeated pagination cursor.`);
+      }
+      if (nextCursor) seenCursors.add(nextCursor);
+      cursor = nextCursor;
     } while (cursor);
     return pages;
   };
@@ -278,6 +355,8 @@ export function createMcpAppTransport(
         sessionId: options.sessionId,
         section,
       },
+      mcpProjectSummaryDataSchema,
+      (data) => data.references.length,
       states,
       signal,
     );
@@ -301,9 +380,14 @@ export function createMcpAppTransport(
         sessionId: options.sessionId,
         entityKind,
       },
+      mcpTimelineQueryDataSchema,
+      (data) => data.items.length,
       states,
       signal,
     );
+    if (pages.some((page) => page.entityKind !== entityKind)) {
+      throw new Error(`${mapping.timeline} returned another timeline entity kind.`);
+    }
     return {
       entityKind,
       items: pages.flatMap((page) => page.items),
@@ -321,6 +405,8 @@ export function createMcpAppTransport(
         sessionId: options.sessionId,
         direction: 'both',
       },
+      mcpHistoryGetDataSchema,
+      (data) => data.past.length + data.future.length,
       states,
       signal,
     );
@@ -340,6 +426,8 @@ export function createMcpAppTransport(
     const pages = await readPaged<McpJobListData>(
       mapping.jobList,
       { apiVersion: EDITOR_UI_API_VERSION, sessionId: options.sessionId },
+      mcpJobListDataSchema,
+      (data) => data.items.length,
       states,
       signal,
     );
@@ -352,12 +440,17 @@ export function createMcpAppTransport(
     const pages = await readPaged<McpArtifactListData>(
       mapping.artifactList,
       { apiVersion: EDITOR_UI_API_VERSION, sessionId: options.sessionId },
+      mcpArtifactListDataSchema,
+      (data) => data.items.length,
       states,
       signal,
     );
     return { items: pages.flatMap((page) => page.items), page: { hasMore: false } };
   };
-  const readCanonicalSnapshot = async (signal?: AbortSignal): Promise<EditorUiSnapshot> => {
+  const readCanonicalSnapshotAttempt = async (
+    signal?: AbortSignal,
+  ): Promise<EditorUiSnapshot> => {
+    throwIfAborted(signal);
     const states: EditorUiStateToken[] = [];
     const [
       project,
@@ -385,6 +478,7 @@ export function createMcpAppTransport(
           sessionId: options.sessionId,
           viewId: options.viewId,
         },
+        mcpViewDataSchema,
         states,
         signal,
       ),
@@ -393,9 +487,25 @@ export function createMcpAppTransport(
     ]);
     const state = states[0];
     if (!state || states.some((candidate) => !sameState(candidate, state))) {
-      throw new Error('The project changed while the editor snapshot was being composed.');
+      throw new SnapshotConsistencyError();
     }
-    return composeMcpEditorUiSnapshot({
+    if (project.projectId !== state.projectId || sources.projectId !== state.projectId) {
+      throw new Error(`${mapping.project} returned data for another project.`);
+    }
+    if (viewResult.data.view.viewId !== options.viewId) {
+      throw new Error(`${mapping.viewGet} returned another editor view.`);
+    }
+    if (jobs.items.some((job) => (
+      job.projectId !== state.projectId
+      || job.capturedState.sessionId !== options.sessionId
+      || job.capturedState.projectId !== state.projectId
+    ))) {
+      throw new Error(`${mapping.jobList} returned a job for another editor scope.`);
+    }
+    if (artifacts.items.some((artifact) => artifact.projectId !== state.projectId)) {
+      throw new Error(`${mapping.artifactList} returned an artifact for another project.`);
+    }
+    const snapshot = composeMcpEditorUiSnapshot({
       state,
       project,
       sourceReferences: sources.references,
@@ -408,6 +518,29 @@ export function createMcpAppTransport(
       jobs,
       artifacts,
     }, latestSnapshot);
+    return {
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        canImportMedia: false,
+        canExport: false,
+        canPresentFullscreen: availableDisplayModes.has('fullscreen'),
+        canPresentPictureInPicture: availableDisplayModes.has('pip'),
+      },
+    };
+  };
+  const readCanonicalSnapshot = async (signal?: AbortSignal): Promise<EditorUiSnapshot> => {
+    for (let attempt = 1; attempt <= MAX_SNAPSHOT_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
+      try {
+        return await readCanonicalSnapshotAttempt(signal);
+      } catch (error) {
+        if (!(error instanceof SnapshotConsistencyError) || attempt === MAX_SNAPSHOT_ATTEMPTS) {
+          throw error;
+        }
+      }
+    }
+    throw new SnapshotConsistencyError();
   };
   const mutationEnvelope = (request: EditorUiCommandRequest) => ({
     apiVersion: EDITOR_UI_API_VERSION,
@@ -497,7 +630,11 @@ export function createMcpAppTransport(
         routeArguments(request, route),
         signal,
       );
-      let envelope = requiredEnvelope<Record<string, unknown>>(result);
+      let envelope = requiredEnvelope<Record<string, unknown>>(
+        result,
+        toolName,
+        mcpUnknownDataSchema,
+      );
       const actualPlaybackRevision = route.tool === 'playback'
         ? playbackConflictRevision(envelope)
         : null;
@@ -517,10 +654,21 @@ export function createMcpAppTransport(
           routeArguments(request, route),
           signal,
         );
-        envelope = requiredEnvelope<Record<string, unknown>>(result);
+        envelope = requiredEnvelope<Record<string, unknown>>(
+          result,
+          toolName,
+          mcpUnknownDataSchema,
+        );
+      }
+      const responseState = envelope.state;
+      if (responseState && (
+        responseState.sessionId !== options.sessionId
+        || responseState.projectId !== latestSnapshot.stateToken.projectId
+      )) {
+        throw new Error(`${toolName} returned state for another editor scope.`);
       }
       if (!envelope.ok) return normalizeMcpFailure(envelope, request.commandId);
-      const stateToken = envelope.committedState ?? envelope.state;
+      const stateToken = envelope.state;
       const viewData = route.tool === 'view' && isRecord(envelope.data.view)
         ? envelope.data as unknown as McpViewData
         : null;
@@ -574,12 +722,40 @@ export function createMcpAppTransport(
         afterCursor: cursor,
         limit,
       }, signal);
-      const envelope = requiredEnvelope<McpEventsReadData>(result);
+      const envelope = requiredEnvelope<McpEventsReadData>(
+        result,
+        mapping.events,
+        mcpEventsReadDataSchema,
+      );
       if (!envelope.ok) {
         if (envelope.error.code === 'EVENT_CURSOR_EXPIRED') {
           return { events: [], cursorExpired: true };
         }
         throw new Error(envelope.error.message);
+      }
+      const projectId = latestSnapshot.stateToken.projectId;
+      if (envelope.state.sessionId !== options.sessionId
+        || envelope.state.projectId !== projectId) {
+        throw new Error(`${mapping.events} returned state for another editor scope.`);
+      }
+      const seenEventCursors = new Set<string>();
+      let previousSequence = -1;
+      for (const event of envelope.data.events) {
+        if (event.state.sessionId !== options.sessionId
+          || event.state.projectId !== projectId
+          || event.state.eventCursor !== event.cursor) {
+          throw new Error(`${mapping.events} returned an event for another editor scope.`);
+        }
+        if (seenEventCursors.has(event.cursor) || event.sequence <= previousSequence) {
+          throw new Error(`${mapping.events} returned unordered or duplicate events.`);
+        }
+        seenEventCursors.add(event.cursor);
+        previousSequence = event.sequence;
+      }
+      const lastCursor = envelope.data.events.at(-1)?.cursor ?? cursor;
+      if (envelope.data.nextCursor !== lastCursor
+        || (envelope.data.hasMore && envelope.data.events.length === 0)) {
+        throw new Error(`${mapping.events} returned an inconsistent event cursor.`);
       }
       return {
         events: normalizeMcpEvents(envelope.data, cursor),

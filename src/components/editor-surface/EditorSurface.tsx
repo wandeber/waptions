@@ -289,7 +289,16 @@ function ManagedEditorHeader() {
       label: 'Authorized absolute media path',
     });
     const command = path ? buildManagedMediaImportCommand(grantId, path) : null;
-    if (command) await controller.dispatch(command);
+    if (!command) {
+      if (path) {
+        services.notify(
+          'Import requires a verified media handle supplied by the editor host.',
+          'warning',
+        );
+      }
+      return;
+    }
+    await controller.dispatch(command);
   };
   const transcribe = async () => {
     const providerId = await services.requestText({
@@ -300,7 +309,11 @@ function ManagedEditorHeader() {
     const command = providerId
       ? buildEditorialTranscriptionCommand(snapshot, providerId)
       : null;
-    if (command) await controller.dispatch(command);
+    if (!command) {
+      if (providerId) services.notify('No video track is available to transcribe.', 'warning');
+      return;
+    }
+    await controller.dispatch(command);
   };
   const exportProject = async () => {
     const grantId = await services.requestText({
@@ -314,7 +327,16 @@ function ManagedEditorHeader() {
       initialValue: `${snapshot.project.name || 'waptions-export'}.mp4`,
     });
     const command = path ? buildManagedExportCommand(grantId, path) : null;
-    if (command) await controller.dispatch(command);
+    if (!command) {
+      if (path) {
+        services.notify(
+          'Export requires a verified staged destination supplied by the editor host.',
+          'warning',
+        );
+      }
+      return;
+    }
+    await controller.dispatch(command);
   };
   return (
     <header className="flex h-12 flex-none items-center gap-1.5 border-b border-slate-800 bg-slate-950 px-2">

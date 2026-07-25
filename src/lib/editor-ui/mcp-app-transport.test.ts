@@ -79,6 +79,16 @@ const success = (data: Record<string, unknown> = {}, nextState = state) => ({
   },
 });
 
+const withState = (
+  result: ReturnType<typeof success>,
+  nextState: EditorUiStateToken,
+): ReturnType<typeof success> => ({
+  structuredContent: {
+    ...result.structuredContent,
+    state: nextState,
+  },
+});
+
 const canonicalSnapshotResponses = () => [
   success({
     projectId: 'project',
@@ -172,6 +182,7 @@ describe('createMcpAppTransport', () => {
       sessionId: 'session',
       viewId: 'view',
       initialSnapshot: createEmptyEditorUiSnapshot({ sessionId: 'session' }),
+      availableDisplayModes: ['inline', 'fullscreen'],
     });
 
     const snapshot = await transport.readSnapshot();
@@ -188,6 +199,12 @@ describe('createMcpAppTransport', () => {
         }],
       },
       view: { revision: 12 },
+      capabilities: {
+        canImportMedia: false,
+        canExport: false,
+        canPresentFullscreen: true,
+        canPresentPictureInPicture: false,
+      },
     });
     expect(bridge.requests.map((request) => (
       request.params as { name: string }
@@ -223,6 +240,218 @@ describe('createMcpAppTransport', () => {
     expect(JSON.stringify(projectArguments)).not.toContain('projection');
     expect(JSON.stringify(projectArguments)).not.toContain('viewId');
     expectCanonicalToolInputs(bridge.requests);
+  });
+
+  it('retries an inconsistent canonical snapshot as one bounded unit', async () => {
+    const bridge = new MockBridge();
+    const inconsistentResponses = canonicalSnapshotResponses();
+    inconsistentResponses[3] = withState(inconsistentResponses[3]!, {
+      ...state,
+      documentRevision: state.documentRevision + 1,
+    });
+    bridge.responses.push(...inconsistentResponses, ...canonicalSnapshotResponses());
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+
+    await expect(transport.readSnapshot()).resolves.toMatchObject({
+      stateToken: state,
+      connection: 'connected',
+    });
+    expect(bridge.requests).toHaveLength(20);
+
+    const boundedBridge = new MockBridge();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const attemptResponses = canonicalSnapshotResponses();
+      attemptResponses[3] = withState(attemptResponses[3]!, {
+        ...state,
+        documentRevision: state.documentRevision + 1,
+      });
+      boundedBridge.responses.push(...attemptResponses);
+    }
+    const boundedTransport = createMcpAppTransport({
+      bridge: boundedBridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+    await expect(boundedTransport.readSnapshot()).rejects.toThrow(
+      'The project changed while the editor snapshot was being composed.',
+    );
+    expect(boundedBridge.requests).toHaveLength(30);
+  });
+
+  it('does not start a snapshot attempt after its signal is aborted', async () => {
+    const bridge = new MockBridge();
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(transport.readSnapshot(abort.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(bridge.requests).toEqual([]);
+  });
+
+  it('rejects repeated page cursors and output data outside the closed projection', async () => {
+    const bridge = new MockBridge();
+    const responses = canonicalSnapshotResponses();
+    const projectData = responses[0]!.structuredContent.data;
+    responses[0] = success({
+      ...projectData,
+      page: { hasMore: true, nextCursor: 'repeated-cursor' },
+    });
+    bridge.responses.push(
+      ...responses,
+      success({
+        ...projectData,
+        page: { hasMore: true, nextCursor: 'repeated-cursor' },
+      }),
+    );
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+
+    await expect(transport.readSnapshot()).rejects.toThrow(
+      'waptions_project_get returned a repeated pagination cursor.',
+    );
+
+    const invalidBridge = new MockBridge();
+    const invalidResponses = canonicalSnapshotResponses();
+    invalidResponses[0] = success({
+      ...invalidResponses[0]!.structuredContent.data,
+      page: undefined,
+    });
+    invalidBridge.responses.push(...invalidResponses);
+    const invalidTransport = createMcpAppTransport({
+      bridge: invalidBridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+    await expect(invalidTransport.readSnapshot()).rejects.toThrow(
+      'waptions_project_get returned an invalid authoritative envelope.',
+    );
+  });
+
+  it('bounds paginated snapshots by page, row, and aggregate byte counts', async () => {
+    const pageBridge = new MockBridge();
+    const pageResponses = canonicalSnapshotResponses();
+    const projectData = pageResponses[0]!.structuredContent.data;
+    pageResponses[0] = success({
+      ...projectData,
+      page: { hasMore: true, nextCursor: 'page-1' },
+    });
+    pageBridge.responses.push(...pageResponses);
+    for (let page = 1; page < 32; page += 1) {
+      pageBridge.responses.push(success({
+        ...projectData,
+        page: { hasMore: true, nextCursor: `page-${page + 1}` },
+      }));
+    }
+    const pageTransport = createMcpAppTransport({
+      bridge: pageBridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+    await expect(pageTransport.readSnapshot()).rejects.toThrow(
+      'waptions_project_get exceeded the 32-page snapshot limit.',
+    );
+
+    const rowBridge = new MockBridge();
+    const rowResponses = canonicalSnapshotResponses();
+    const clipData = rowResponses[3]!.structuredContent.data;
+    const fullPage = Array.from({ length: 500 }, (_, index) => ({
+      id: `clip-${index}`,
+      kind: 'video-clip',
+    }));
+    rowResponses[3] = success({
+      ...clipData,
+      items: fullPage,
+      page: { hasMore: true, nextCursor: 'clips-1' },
+    });
+    rowBridge.responses.push(...rowResponses);
+    for (let page = 1; page <= 20; page += 1) {
+      rowBridge.responses.push(success({
+        ...clipData,
+        items: page === 20 ? [{ id: 'overflow-clip', kind: 'video-clip' }] : fullPage,
+        page: page === 20
+          ? { hasMore: false }
+          : { hasMore: true, nextCursor: `clips-${page + 1}` },
+      }));
+    }
+    const rowTransport = createMcpAppTransport({
+      bridge: rowBridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+    await expect(rowTransport.readSnapshot()).rejects.toThrow(
+      'waptions_timeline_query exceeded the 10000-row snapshot limit.',
+    );
+
+    const byteBridge = new MockBridge();
+    const byteResponses = canonicalSnapshotResponses();
+    const historyData = byteResponses[6]!.structuredContent.data;
+    const operationIds = Array.from({ length: 256 }, (_, index) => (
+      `operation${index.toString().padStart(3, '0')}${'x'.repeat(115)}`
+    ));
+    const historyEntries = Array.from({ length: 16 }, (_, index) => ({
+      entryId: `entry-${index}`,
+      label: `Entry ${index}`,
+      category: 'test',
+      occurredAt: '2026-07-25T12:00:00.000Z',
+      operationIds,
+      fromRevision: index,
+      toRevision: index + 1,
+    }));
+    byteResponses[6] = success({
+      ...historyData,
+      currentIndex: 0,
+      past: historyEntries,
+      page: { hasMore: true, nextCursor: 'history-1' },
+    });
+    byteBridge.responses.push(...byteResponses);
+    for (let page = 1; page <= 20; page += 1) {
+      byteBridge.responses.push(success({
+        ...historyData,
+        currentIndex: 0,
+        past: historyEntries,
+        page: { hasMore: true, nextCursor: `history-${page + 1}` },
+      }));
+    }
+    const byteTransport = createMcpAppTransport({
+      bridge: byteBridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+    await expect(byteTransport.readSnapshot()).rejects.toThrow(
+      'waptions_history_get exceeded the paginated snapshot byte limit.',
+    );
+  });
+
+  it('rejects snapshot data correlated to another project', async () => {
+    const bridge = new MockBridge();
+    const responses = canonicalSnapshotResponses();
+    responses[1] = success({
+      ...responses[1]!.structuredContent.data,
+      projectId: 'another-project',
+    });
+    bridge.responses.push(...responses);
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+    });
+
+    await expect(transport.readSnapshot()).rejects.toThrow(
+      'waptions_project_get returned data for another project.',
+    );
   });
 
   it('emits exact canonical edit, history, playback, view, import, transcription, and export inputs', async () => {
@@ -399,6 +628,46 @@ describe('createMcpAppTransport', () => {
     expectCanonicalToolInputs(bridge.requests);
   });
 
+  it('uses current state rather than replay receipt state after a mutation', async () => {
+    const bridge = new MockBridge();
+    const currentState = {
+      ...state,
+      sessionRevision: state.sessionRevision + 1,
+      documentRevision: state.documentRevision + 1,
+      eventCursor: 'cursor-5',
+    };
+    bridge.responses.push({
+      structuredContent: {
+        ok: true,
+        data: {},
+        state: currentState,
+        committedState: state,
+        warnings: [],
+        replayed: true,
+      },
+    });
+    const initialSnapshot = createEmptyEditorUiSnapshot({
+      sessionId: 'session',
+      projectId: 'project',
+    });
+    initialSnapshot.stateToken = state;
+    const transport = createMcpAppTransport({
+      bridge,
+      sessionId: 'session',
+      viewId: 'view',
+      initialSnapshot,
+    });
+
+    await expect(transport.execute({
+      commandId: 'replayed-edit',
+      command: { type: 'video-clip.delete', clipId: 'clip' },
+      expected,
+    })).resolves.toMatchObject({
+      ok: true,
+      stateToken: currentState,
+    });
+  });
+
   it('keeps unsupported view-only fields local and does not emit an invalid view patch', async () => {
     const bridge = new MockBridge();
     const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
@@ -475,7 +744,11 @@ describe('createMcpAppTransport', () => {
 
   it('maps canonical failures and event pages', async () => {
     const bridge = new MockBridge();
-    const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
+    const snapshot = createEmptyEditorUiSnapshot({
+      sessionId: 'session',
+      projectId: 'project',
+    });
+    snapshot.stateToken = state;
     bridge.responses.push(
       {
         structuredContent: {

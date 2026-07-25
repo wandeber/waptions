@@ -63,6 +63,55 @@ describe('managed editor command builders', () => {
     });
   });
 
+  it('uses the source duration as an absolute range end and ignores non-target tracks', () => {
+    const snapshot = createEmptyEditorUiSnapshot({ sessionId: 'session' });
+    snapshot.project.tracks = [
+      {
+        id: 'video-track',
+        kind: 'video',
+        name: 'Video',
+        clips: [{
+          id: 'trimmed-video',
+          trackId: 'video-track',
+          sourceId: 'video-source',
+          kind: 'video',
+          label: 'Trimmed video',
+          startSeconds: 0,
+          durationSeconds: 5,
+          sourceOffsetSeconds: 10,
+          sourceDurationSeconds: 20,
+          linkedTargetIds: [],
+        }],
+        locked: false,
+        height: 96,
+      },
+      {
+        id: 'audio-track',
+        kind: 'audio',
+        name: 'Audio',
+        clips: [{
+          id: 'audio',
+          trackId: 'audio-track',
+          sourceId: 'audio-source',
+          kind: 'audio',
+          label: 'Audio',
+          startSeconds: 0,
+          durationSeconds: 30,
+          sourceOffsetSeconds: 0,
+          linkedTargetIds: [],
+        }],
+        locked: false,
+        height: 72,
+      },
+    ];
+
+    expect(buildEditorialTranscriptionCommand(snapshot)?.ranges).toEqual([{
+      sourceId: 'video-source',
+      startSample16k: 0,
+      endSample16k: 320_000,
+    }]);
+  });
+
   it('builds capability-backed import/export requests and rejects legacy paths', () => {
     expect(buildManagedMediaImportCommand(
       [' media-handle '],
