@@ -181,15 +181,23 @@ describe('resolved V4 render plan', () => {
 
     it('uses the durable V4 render background and preserves black for legacy manifests', () => {
         const legacy = createResolvedRenderPlan(createHeadlessRenderSnapshotFixture());
-        const configured = createResolvedRenderPlan(createHeadlessRenderSnapshotFixture({
-            renderBackground: { color: '#12ABef' },
-        }));
+        const configuredSnapshot = createHeadlessRenderSnapshotFixture();
+        Object.assign(configuredSnapshot.manifest, { renderBackgroundColor: '#12abef' });
+        const configured = createResolvedRenderPlan(configuredSnapshot);
 
         expect(legacy.backgroundColor).toBe('#000000');
         expect(configured.backgroundColor).toBe('#12abef');
-        expect(() => createResolvedRenderPlan(createHeadlessRenderSnapshotFixture({
-            renderBackground: { color: 'not-a-color' },
-        }))).toThrow(/render background/i);
+        for (const invalidColor of ['#12ABef', 'not-a-color', undefined]) {
+            const invalid = createHeadlessRenderSnapshotFixture();
+            Object.assign(invalid.manifest, { renderBackgroundColor: invalidColor });
+            expect(() => createResolvedRenderPlan(invalid)).toThrow(/renderBackgroundColor/i);
+        }
+
+        const parallelField = createHeadlessRenderSnapshotFixture();
+        Object.assign(parallelField.manifest, {
+            renderBackground: { color: '#123456' },
+        });
+        expect(() => createResolvedRenderPlan(parallelField)).toThrow(/unsupported root field/i);
     });
 
     it('keeps rational frame-rate audio boundaries exact and excludes no-audio sources', () => {

@@ -44,15 +44,8 @@ export interface HeadlessMediaIdentity {
 export interface HeadlessRenderSnapshotV1 {
     version: 1;
     snapshotId: string;
-    manifest: EditorManifestV4 & EditorManifestRenderBackgroundV1;
+    manifest: EditorManifestV4;
     sourceIdentities: HeadlessMediaIdentity[];
-}
-
-/** Backward-compatible V4 extension owned by Core and changed by `render.set-background`. */
-export interface EditorManifestRenderBackgroundV1 {
-    renderBackground?: {
-        color: string;
-    };
 }
 
 export interface ResolvedRenderSourceV1 extends HeadlessMediaIdentity {
@@ -133,14 +126,11 @@ export function createResolvedRenderPlan(
     }
 
     const snapshot = cloneAndFreeze(input) as HeadlessRenderSnapshotV1;
-    // Until Core's backward-compatible V4 validator owns this field, validate the established
-    // graph and the render-background extension independently.
-    const {
-        renderBackground: _renderBackground,
-        ...manifestGraph
-    } = snapshot.manifest;
-    void _renderBackground;
-    const validation = validateEditorManifestV4(manifestGraph as EditorManifestV4);
+    // This isolated baseline predates Core's canonical field. Omit only that coordinated field
+    // from the legacy validator, then validate its exact lowercase value at the read boundary.
+    const manifestGraph = { ...snapshot.manifest } as Record<string, unknown>;
+    delete manifestGraph.renderBackgroundColor;
+    const validation = validateEditorManifestV4(manifestGraph);
     if (!validation.valid) {
         const detail = validation.issues
             .map((issue) => `${issue.path}: ${issue.message}`)
@@ -364,13 +354,18 @@ function resolveSourceIdentity(
 }
 
 function resolveRenderBackgroundColor(
-    manifest: EditorManifestV4 & EditorManifestRenderBackgroundV1,
+    manifest: EditorManifestV4,
 ): string {
-    const color = manifest.renderBackground?.color ?? LEGACY_RENDER_BACKGROUND_COLOR;
-    if (!/^#[0-9a-f]{6}$/i.test(color)) {
-        throw new Error('The V4 render background must be a six-digit hexadecimal color.');
+    if (!Object.prototype.hasOwnProperty.call(manifest, 'renderBackgroundColor')) {
+        return LEGACY_RENDER_BACKGROUND_COLOR;
     }
-    return color.toLowerCase();
+    const color = Reflect.get(manifest, 'renderBackgroundColor');
+    if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/.test(color)) {
+        throw new Error(
+            'The V4 renderBackgroundColor must be a canonical lowercase hexadecimal color.',
+        );
+    }
+    return color;
 }
 
 function cloneAndFreeze(value: unknown): unknown {

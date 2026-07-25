@@ -5,7 +5,6 @@ import type {
     VideoSourceDescriptorV3,
 } from '@/types/video';
 import type {
-    EditorManifestRenderBackgroundV1,
     HeadlessMediaIdentity,
     HeadlessRenderSnapshotV1,
 } from '../render-plan';
@@ -41,7 +40,7 @@ export const TEST_SUBTITLE_STYLE: AnimationStyle = {
 };
 
 export function createHeadlessRenderSnapshotFixture(
-    overrides: Partial<EditorManifestV4 & EditorManifestRenderBackgroundV1> = {},
+    overrides: Partial<EditorManifestV4> = {},
 ): HeadlessRenderSnapshotV1 {
     const red = videoSource({
         id: 'video-red',

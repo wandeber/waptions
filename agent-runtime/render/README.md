@@ -34,17 +34,16 @@ same port with descriptor/range capabilities. Neither adapter adds paths or brow
 to the render plan. This contract is the migration point for P3A to remove `src/lib/export.ts`'s
 current independent timeline and `BlobSource(file)` interpretation.
 
-The V4-compatible manifest extension consumed here is:
+The canonical V4 manifest field consumed here is:
 
 ```ts
-interface EditorManifestRenderBackgroundV1 {
-  renderBackground?: { color: string };
-}
+renderBackgroundColor: string;
 ```
 
-Missing `renderBackground` means legacy black (`#000000`). Core must add this exact field to the V4
-validator and persistence contract for `render.set-background`; headless temporarily validates the
-established V4 graph and this extension independently.
+`renderBackgroundColor` is a lowercase six-digit hexadecimal color. Only legacy manifests where
+the field is absent default to black (`#000000`); an explicitly invalid, undefined, or noncanonical
+value fails closed. This isolated baseline predates the Core field, so headless temporarily reads
+and validates it structurally without defining a second durable manifest extension.
 
 ## Capabilities and resource authority
 
@@ -78,13 +77,16 @@ forced worker/process termination path.
 The following owners must provide concrete host bindings; this package defines narrow ports because
 those runtime components are not present at this baseline:
 
-- Core: add `renderBackground?: { color: string }` to `EditorManifestV4`, canonical validation,
-  persistence, history, and `render.set-background`.
+- Core: merge its coordinated `renderBackgroundColor: string` field into this isolated baseline's
+  `EditorDocumentV4`/`EditorManifestV4` types and validator. Headless can then use the typed field
+  directly without changing its read-boundary semantics.
 - Coordinator/media: issue path-free source identities and implement `RenderMediaByteSourcePort`
   over the shared verified media registry/range source.
 - Coordinator/resources: inject its one global decoded-memory/decoder budget into both backends.
 - Coordinator/paths: resolve grant/capability IDs to an already-open `NodeStagedDestinationHandle`
   and perform descriptor-bound create-only publication with parent/target revalidation.
+- Shared contracts: replace the local media-identity and staged-destination imports with the final
+  Core/Runtime-owned types when those integration commits land; do not create parallel adapters.
 - Chromium host: bind the platform frame renderer used by
   `CanonicalResolvedRenderStreamProducer` to `renderResolvedPlanFrame`, load deterministic fonts by
   verified identity, and launch the fixed raw H.264/AAC encoder worker behind

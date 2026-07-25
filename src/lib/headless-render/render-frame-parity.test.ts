@@ -104,9 +104,9 @@ describe('resolved frame compositor parity', () => {
     });
 
     it('paints the durable V4 background during gaps and legacy black by default', () => {
-        const configured = createResolvedRenderPlan(createHeadlessRenderSnapshotFixture({
-            renderBackground: { color: '#123456' },
-        }));
+        const configuredSnapshot = createHeadlessRenderSnapshotFixture();
+        Object.assign(configuredSnapshot.manifest, { renderBackgroundColor: '#123456' });
+        const configured = createResolvedRenderPlan(configuredSnapshot);
         const configuredContext = createRecordingContext();
         renderResolvedPlanFrame(configuredContext.context, configured, 80, null);
 
