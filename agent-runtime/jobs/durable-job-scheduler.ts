@@ -17,6 +17,7 @@ export type DurableJobState =
     | 'cancelled'
     | 'succeeded'
     | 'failed'
+    | 'stale'
     | 'interrupted';
 
 export type JobBoundaryState =
@@ -25,6 +26,7 @@ export type JobBoundaryState =
     | 'cancelled'
     | 'succeeded'
     | 'failed'
+    | 'stale'
     | 'interrupted';
 
 export interface DurableJobRecord<Input = unknown, Checkpoint = unknown, Result = unknown> {
@@ -103,7 +105,7 @@ export interface JobSchedulerOptions {
     onTransition?(record: DurableJobRecord): Promise<void> | void;
 }
 
-const TERMINAL = new Set<DurableJobState>(['cancelled', 'succeeded', 'failed']);
+const TERMINAL = new Set<DurableJobState>(['cancelled', 'succeeded', 'failed', 'stale']);
 
 export class DurableJobScheduler {
     private readonly handlers = new Map<string, DurableJobHandler>();
@@ -406,15 +408,23 @@ export class DurableJobScheduler {
             } catch (error) {
                 const cancelled = controller.signal.aborted
                     || (error instanceof DOMException && error.name === 'AbortError');
+                const managedFailure = asManagedRuntimeError(error);
+                const stale = !cancelled && (
+                    managedFailure.code === 'REVISION_CONFLICT'
+                    || managedFailure.code === 'SESSION_REVISION_CONFLICT'
+                    || managedFailure.code === 'AUDIO_REVISION_CONFLICT'
+                    || managedFailure.code === 'NARRATIVE_REVISION_CONFLICT'
+                    || managedFailure.code === 'SOURCE_CHANGED'
+                );
                 const current = this.jobs.get(running.jobId) ?? running;
                 const terminal: DurableJobRecord = {
                     ...current,
                     sequence: current.sequence + 1,
-                    state: cancelled ? 'cancelled' : 'failed',
-                    stage: cancelled ? 'cancelled' : 'failed',
+                    state: cancelled ? 'cancelled' : stale ? 'stale' : 'failed',
+                    stage: cancelled ? 'cancelled' : stale ? 'stale' : 'failed',
                     updatedAt: new Date().toISOString(),
                     finishedAt: new Date().toISOString(),
-                    ...(!cancelled ? { error: asManagedRuntimeError(error).toJSON() } : {}),
+                    ...(!cancelled ? { error: managedFailure.toJSON() } : {}),
                 };
                 await this.persist(terminal);
                 this.jobs.set(terminal.jobId, terminal);

@@ -315,6 +315,17 @@ export class ManagedCoordinator<
         return Array.from(this.projects.values()).map((project) => summary(project.envelope));
     }
 
+    resolveProjectId(sessionId: string): string {
+        this.assertOpen();
+        const matching = Array.from(this.projects.values()).find(
+            ({ envelope }) => envelope.sessionId === sessionId,
+        );
+        if (!matching) {
+            throw managedError('SESSION_NOT_FOUND', 'The managed session does not exist.');
+        }
+        return matching.envelope.projectId;
+    }
+
     getProject(projectId: string): {
         envelope: ManagedProjectEnvelopeV1<State>;
         state: StateToken;
