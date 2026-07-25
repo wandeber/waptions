@@ -47,6 +47,15 @@ export interface SessionPathGrantRecord {
     authorityMac: string;
 }
 
+export interface PreparedPathGrantMutation {
+    record: SessionPathGrantRecord;
+    /**
+     * Publish the validated authority only after its durable WAL transaction commits.
+     * Repeating commit for the same prepared record is safe.
+     */
+    commit(): SessionPathGrantRecord;
+}
+
 export interface PathGrantScope {
     sessionId: string;
     sessionEpoch: string;
@@ -242,6 +251,22 @@ export class PathGrantAuthority {
         requestedPath: string,
         overwriteConfirmed = false,
     ): Promise<SessionPathGrantRecord> {
+        return (await this.prepareCreate(
+            sessionId,
+            sessionEpoch,
+            kind,
+            requestedPath,
+            overwriteConfirmed,
+        )).commit();
+    }
+
+    async prepareCreate(
+        sessionId: string,
+        sessionEpoch: string,
+        kind: PathGrantKind,
+        requestedPath: string,
+        overwriteConfirmed = false,
+    ): Promise<PreparedPathGrantMutation> {
         void overwriteConfirmed;
         validateScope({ sessionId, sessionEpoch });
         validateAbsolutePath(requestedPath);
@@ -319,11 +344,17 @@ export class PathGrantAuthority {
             ...unsigned,
             authorityMac: this.mac(unsigned),
         };
-        this.grants.set(record.grantId, record);
-        return structuredClone(record);
+        return this.preparedMutation(record);
     }
 
     revoke(grantId: string, scope: PathGrantScope): SessionPathGrantRecord {
+        return this.prepareRevoke(grantId, scope).commit();
+    }
+
+    prepareRevoke(
+        grantId: string,
+        scope: PathGrantScope,
+    ): PreparedPathGrantMutation {
         const grant = this.resolve(grantId, scope);
         const revoked = grant.revokedAt
             ? grant
@@ -331,8 +362,7 @@ export class PathGrantAuthority {
                 { ...grant, revokedAt: new Date().toISOString() },
                 this.options.authoritySecret,
             );
-        this.grants.set(grantId, revoked);
-        return structuredClone(revoked);
+        return this.preparedMutation(revoked, grant.authorityMac);
     }
 
     async releaseSourceCopies(sessionId: string, digests: readonly string[]): Promise<void> {
@@ -989,6 +1019,34 @@ export class PathGrantAuthority {
             throw managedError('PATH_NOT_GRANTED', 'The requested path capability is not active.');
         }
         return grant;
+    }
+
+    private preparedMutation(
+        record: SessionPathGrantRecord,
+        expectedAuthorityMac?: string,
+    ): PreparedPathGrantMutation {
+        const prepared = structuredClone(record);
+        return {
+            record: structuredClone(prepared),
+            commit: () => {
+                const current = this.grants.get(prepared.grantId);
+                if (current?.authorityMac === prepared.authorityMac) {
+                    return structuredClone(current);
+                }
+                if (
+                    expectedAuthorityMac === undefined
+                        ? current !== undefined
+                        : current?.authorityMac !== expectedAuthorityMac
+                ) {
+                    throw managedError(
+                        'PATH_IDENTITY_CHANGED',
+                        'The prepared path grant authority changed before publication.',
+                    );
+                }
+                this.grants.set(prepared.grantId, structuredClone(prepared));
+                return structuredClone(prepared);
+            },
+        };
     }
 
     private mac(record: Omit<SessionPathGrantRecord, 'authorityMac'> | SessionPathGrantRecord): string {

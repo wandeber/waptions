@@ -714,19 +714,23 @@ export class ManagedCoordinator<
         overwriteConfirmed = false,
     ): Promise<ManagedMutationResult<{ grant: SessionPathGrantRecord }>> {
         return this.mutateRegistry(projectId, request, async (envelope) => {
-            const grant = await this.pathGrants.create(
+            const prepared = await this.pathGrants.prepareCreate(
                 envelope.sessionId,
                 this.epoch,
                 kind,
                 path,
                 overwriteConfirmed,
             );
+            const grant = prepared.record;
             return {
                 update: (current) => ({ ...current, grantRevision: current.grantRevision + 1 }),
                 writes: [{ relativePath: `grants/${grant.grantId}.json`, value: grant }],
                 result: { grant },
                 eventKind: 'grant.changed',
                 eventData: { action: 'granted', kind },
+                afterCommit: () => {
+                    prepared.commit();
+                },
             };
         });
     }
@@ -740,16 +744,20 @@ export class ManagedCoordinator<
             const grants = await this.store.readNamespace<SessionPathGrantRecord>(projectId, 'grants');
             const existing = grants.find((grant) => grant.grantId === grantId);
             if (!existing) throw managedError('NOT_FOUND', 'The managed path grant does not exist.');
-            const grant = this.pathGrants.revoke(existing.grantId, {
+            const prepared = this.pathGrants.prepareRevoke(existing.grantId, {
                 sessionId: existing.sessionId,
                 sessionEpoch: existing.sessionEpoch,
             });
+            const grant = prepared.record;
             return {
                 update: (envelope) => ({ ...envelope, grantRevision: envelope.grantRevision + 1 }),
                 writes: [{ relativePath: `grants/${grant.grantId}.json`, value: grant }],
                 result: { grant },
                 eventKind: 'grant.changed',
                 eventData: { action: 'revoked', kind: grant.kind },
+                afterCommit: () => {
+                    prepared.commit();
+                },
             };
         });
     }
