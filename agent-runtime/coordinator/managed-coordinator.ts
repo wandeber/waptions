@@ -1103,18 +1103,35 @@ export class ManagedCoordinator<
             nextSnapshot.reachableSourceIds,
             input.receipt.value,
         );
-        await this.commit(loaded, nextEnvelope, [
-            {
-                relativePath: `core/commits/${canonicalDigest(
-                    input.transaction.walTransactionId,
-                ).slice(7)}.json`,
-                value: input,
-            },
-            this.store.receiptWrite(receipt),
-            ...(event ? [this.events.write(event)] : []),
-            ...await this.store.receiptRetentionDeletes(projectId),
-            ...(event ? await this.events.retentionDeletes(projectId) : []),
-        ]);
+        // The probe handle is not durable authority. Reopen each retained private source copy and
+        // verify its immutable digest immediately before the single Core WAL transaction.
+        const retainedHandles: VerifiedReadHandle[] = [];
+        try {
+            for (const source of additions) {
+                const handle = await this.pathGrants.openRetainedSource(
+                    loaded.envelope.sessionId,
+                    source.sourceId,
+                    source.digest,
+                    source.byteLength,
+                );
+                retainedHandles.push(handle);
+                await handle.verifyUnchanged();
+            }
+            await this.commit(loaded, nextEnvelope, [
+                {
+                    relativePath: `core/commits/${canonicalDigest(
+                        input.transaction.walTransactionId,
+                    ).slice(7)}.json`,
+                    value: input,
+                },
+                this.store.receiptWrite(receipt),
+                ...(event ? [this.events.write(event)] : []),
+                ...await this.store.receiptRetentionDeletes(projectId),
+                ...(event ? await this.events.retentionDeletes(projectId) : []),
+            ]);
+        } finally {
+            await Promise.allSettled(retainedHandles.map((handle) => handle.close()));
+        }
         active.committedResult = structuredClone(result);
         active.committedSnapshot = structuredClone(nextSnapshot);
         active.committed = true;
