@@ -28,12 +28,20 @@ import { usePlaybackStore } from '@/stores/playback-store';
 import { useProjectStore } from '@/stores/project-store';
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { Subtitle } from '@/types/timeline';
+import {
+    EditorSurface,
+    EditorSurfaceProvider,
+} from '@/components/editor-surface';
+import { createStandaloneEditorUiController } from '@/lib/editor-ui';
 
 export function Editor() {
+    const [controller] = useState(() => createStandaloneEditorUiController());
     return (
-        <EditorTransactionProvider>
-            <EditorContent />
-        </EditorTransactionProvider>
+        <EditorSurfaceProvider controller={controller}>
+            <EditorTransactionProvider>
+                <EditorSurface nativeContent={<EditorContent />} />
+            </EditorTransactionProvider>
+        </EditorSurfaceProvider>
     );
 }
 
