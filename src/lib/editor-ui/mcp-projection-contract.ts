@@ -12,6 +12,40 @@ export interface McpGraphReference {
   startFrame?: number;
   endFrame?: number;
   label?: string;
+  sourceId?: string;
+  sourceKind?: 'video-source' | 'audio-source' | 'video-source-audio';
+  sourceStartSeconds?: number;
+  sourceEndSeconds?: number;
+  sourceStartSample?: number;
+  sourceEndSample?: number;
+  timelineDurationSamples?: number;
+  sourceStartFrame?: number;
+  sourceEndFrame?: number;
+  muted?: boolean;
+  solo?: boolean;
+  locked?: boolean;
+  visible?: boolean;
+  gainDb?: number;
+  audioLinkState?: 'linked' | 'detached';
+  audioMuted?: boolean;
+  audioGainDb?: number;
+  text?: string;
+  blockId?: string;
+  clipId?: string;
+  coreStartSample?: number;
+  coreEndSample?: number;
+  sourceWordIds?: string[];
+  sourceWordCount?: number;
+  transcriptRecordId?: string;
+  anchorBlockId?: string;
+  targetKind?: 'video-clip' | 'audio-clip' | 'subtitle';
+  targetTrackId?: string;
+  targetId?: string;
+  associationKind?: 'overlap' | 'transcript-bound';
+  followPolicy?: 'none' | 'follow';
+  relativeStartOutputSample?: number;
+  relativeEndOutputSample?: number;
+  revision?: number;
 }
 
 export interface McpProjectSummaryData {

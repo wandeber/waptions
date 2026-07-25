@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
     createEditorEngine,
     EditorCommandError,
+    type EditorCommandErrorCode,
     type EditorAssetHydration,
     type EditorCommandBatchRequest,
     type EditorCommandPlan,
@@ -14,8 +15,11 @@ import {
     type EditorMediaImportResult,
     type EditorPersistenceCommit,
     type EditorPersistencePort,
+    type EditorialTranscriptionPublicationHydration,
+    type EditorialTranscriptionPublicationRequest,
     type HistoryJumpRequest,
     type HistoryMutationRequest,
+    type SubtitleTranscriptionPublicationRequest,
 } from '../../src/lib/editor-engine';
 import type { ResolvedEditorialTranscriptMapV1 } from '../../src/types/editorial';
 import type { EditorManifestV4 } from '../../src/types/video';
@@ -86,7 +90,7 @@ export function createEmptyManagedCoreSnapshot(
         history: {
             past: [],
             future: [],
-            currentIndex: -1,
+            currentIndex: 0,
         },
         assetReferences: {
             videoSourceIds: [],
@@ -238,6 +242,23 @@ class CoreEditorPort implements ManagedEditorPort<
         return this.managed.state.sessionState.eventSequence;
     }
 
+    prepareEditorialTranscriptionPublication(
+        request: EditorialTranscriptionPublicationRequest,
+        hydration?: EditorialTranscriptionPublicationHydration,
+    ): Promise<EditorPersistenceCommit> {
+        return this.prepareDetachedTranscriptionPublication(
+            (engine) => engine.publishEditorialTranscription(request, hydration),
+        );
+    }
+
+    prepareSubtitleTranscriptionPublication(
+        request: SubtitleTranscriptionPublicationRequest,
+    ): Promise<EditorPersistenceCommit> {
+        return this.prepareDetachedTranscriptionPublication(
+            (engine) => engine.publishSubtitleTranscription(request),
+        );
+    }
+
     rebaseSession(
         snapshot: ManagedEditorSnapshot<ManagedCoreEditorState>,
         session: {
@@ -257,7 +278,12 @@ class CoreEditorPort implements ManagedEditorPort<
         return wrapManagedSnapshot(state);
     }
 
-    private createEngine(state: ManagedCoreEditorState): EditorEngine {
+    private createEngine(
+        state: ManagedCoreEditorState,
+        detached?: {
+            commit(commit: EditorPersistenceCommit): Promise<void>;
+        },
+    ): EditorEngine {
         validateManagedCoreState(state);
         const projectId = state.snapshot.projectId;
         return createEditorEngine({
@@ -271,8 +297,12 @@ class CoreEditorPort implements ManagedEditorPort<
             closePorts: false,
             ports: {
                 persistence: {
-                    getReceipt: (...args) => this.persistence.getReceipt(...args),
-                    commit: (commit) => this.commitFromCore(commit),
+                    getReceipt: detached
+                        ? async () => null
+                        : (...args) => this.persistence.getReceipt(...args),
+                    commit: detached
+                        ? detached.commit
+                        : (commit) => this.commitFromCore(commit),
                 },
                 assets: {
                     hydrate: (request) => this.resolveAssetHydration(request),
@@ -287,9 +317,53 @@ class CoreEditorPort implements ManagedEditorPort<
                     },
                 },
                 ids: new StableManagedEditorIdGenerator(`managed-${projectId}`),
-                events: { emit: (event) => this.publication.publish(event) },
+                events: {
+                    emit: detached
+                        ? () => undefined
+                        : (event) => this.publication.publish(event),
+                },
             },
         });
+    }
+
+    private async prepareDetachedTranscriptionPublication(
+        publish: (engine: EditorEngine) => Promise<{
+            ok: boolean;
+            error?: {
+                code: string;
+                message: string;
+                retryable: boolean;
+                details?: unknown;
+            };
+        }>,
+    ): Promise<EditorPersistenceCommit> {
+        let captured: EditorPersistenceCommit | null = null;
+        const engine = this.createEngine(structuredClone(this.managed.state), {
+            commit: async (commit) => {
+                if (captured) {
+                    throw new Error('Detached Core transcription prepared more than one commit.');
+                }
+                captured = structuredClone(commit);
+            },
+        });
+        try {
+            const result = await publish(engine);
+            if (!result.ok) {
+                throw new EditorCommandError(
+                    (result.error?.code ?? 'INTERNAL_ERROR') as EditorCommandErrorCode,
+                    result.error?.message ?? 'Core rejected the detached transcription publication.',
+                    {
+                        retryable: result.error?.retryable ?? false,
+                    },
+                );
+            }
+            if (!captured) {
+                throw new Error('Detached Core transcription returned without an exact commit.');
+            }
+            return captured;
+        } finally {
+            await engine.close();
+        }
     }
 
     private async resolveAssetHydration(request: {

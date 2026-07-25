@@ -14,6 +14,7 @@ import type {
     ReadToolCall,
 } from '../mcp/contracts';
 import type {
+    CoordinatorCallContext,
     CoordinatorEventSubscription,
     ManagedCoordinatorAdapter,
 } from '../server/coordinator-adapter';
@@ -53,9 +54,13 @@ describe('coordinator control protocol', () => {
             {
                 signal: new AbortController().signal,
                 deadlineAt: Date.now() + 1_000,
+                connectionId: 'connection_test',
             },
         )).resolves.toMatchObject({ ok: true });
         expect(adapter.readCalls).toEqual([call]);
+        expect(adapter.readContexts).toEqual([
+            expect.objectContaining({ connectionId: 'connection_test' }),
+        ]);
 
         await expect(handler(
             {
@@ -364,11 +369,16 @@ describe('attachOrStartMcpCoordinator', () => {
 
 class RecordingCoordinator implements ManagedCoordinatorAdapter {
     readonly readCalls: ReadToolCall[] = [];
+    readonly readContexts: CoordinatorCallContext[] = [];
     eventCallback: (() => void) | undefined;
     readonly subscriptionClose = vi.fn(async () => undefined);
 
-    async executeRead(call: ReadToolCall): Promise<CoordinatorResult> {
+    async executeRead(
+        call: ReadToolCall,
+        context: CoordinatorCallContext,
+    ): Promise<CoordinatorResult> {
         this.readCalls.push(call);
+        this.readContexts.push(context);
         return success();
     }
 

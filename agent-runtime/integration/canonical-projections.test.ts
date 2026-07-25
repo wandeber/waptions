@@ -166,6 +166,20 @@ describe("canonical runtime projections", () => {
       ...record,
       kind: "private-maintenance-job",
     })).toThrow(CanonicalProjectionError);
+
+    for (
+      const kind of [
+        "export:mp4-h264-aac",
+        "export:webm",
+        "export:portable-bundle",
+        "export:reference-snapshot",
+        "export:proof-record",
+      ] as const
+    ) {
+      const exportJob = projectJobRecord({ ...record, kind });
+      expect(exportJob.kind).toBe(kind);
+      expectCanonicalOutput("waptions_job_get", { job: exportJob });
+    }
   });
 
   it("projects artifact metadata with an opaque path-free storage reference", () => {

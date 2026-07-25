@@ -8,8 +8,11 @@ import type {
     EditorEngineSnapshot,
     EditorPersistenceCommit,
     EditorPersistencePort,
+    EditorialTranscriptionPublicationRequest,
+    SubtitleTranscriptionPublicationRequest,
 } from '../../src/lib/editor-engine';
 import type { ManagedMutationEnvelope } from '../coordinator/types';
+import { canonicalDigest } from '../persistence/canonical-json';
 
 export interface FakeEditorState {
     values: readonly string[];
@@ -30,12 +33,12 @@ export function fakeSnapshot(
     projectId = 'fake-project',
     eventSequence = 0,
 ): ManagedEditorSnapshot<FakeEditorState> {
+    const manifest = fakeManifest(values, values.length);
     return {
         state: { values: [...values], projectId, eventSequence },
         documentRevision: values.length,
         audioGraphRevision: 0,
-        narrativeRevision: 0,
-        manifestDigest: `fake:${values.join(',')}`,
+        manifestDigest: canonicalDigest(manifest, 32 * 1024 * 1024),
         historyRevision: values.length,
         reachableSourceIds: [],
         transcriptRecordIds: [],
@@ -102,7 +105,70 @@ class FakeEditorPort implements ManagedEditorPort<FakeEditorState, FakeEditorCom
         this.current = structuredClone(snapshot);
     }
 
+    prepareEditorialTranscriptionPublication(
+        request: EditorialTranscriptionPublicationRequest,
+    ): Promise<EditorPersistenceCommit> {
+        return Promise.resolve(this.fakeTranscriptionCommit(
+            'editorial',
+            request.idempotencyKey,
+            request.sessionEpoch,
+            request.expected.sessionRevision,
+        ));
+    }
+
+    prepareSubtitleTranscriptionPublication(
+        request: SubtitleTranscriptionPublicationRequest,
+    ): Promise<EditorPersistenceCommit> {
+        return Promise.resolve(this.fakeTranscriptionCommit(
+            'subtitle',
+            request.idempotencyKey,
+            request.sessionEpoch,
+            request.expected.sessionRevision,
+        ));
+    }
+
     async close(): Promise<void> {}
+
+    private fakeTranscriptionCommit(
+        kind: 'editorial' | 'subtitle',
+        idempotencyKey: string,
+        sessionEpoch: string,
+        sessionRevision: number,
+    ): EditorPersistenceCommit {
+        const append = `${kind}-transcription`;
+        const next = fakeSnapshot(
+            [...this.current.state.values, append],
+            this.current.state.projectId,
+            this.current.state.eventSequence + 1,
+        );
+        const commit = fakeEditorCommit(
+            this.current.state.projectId,
+            {
+                apiVersion: '2026-07-25',
+                sessionId: `session-${this.current.state.projectId}`,
+                sessionEpoch,
+                expected: {
+                    sessionRevision,
+                    documentRevision: this.current.documentRevision,
+                    audioGraphRevision: this.current.audioGraphRevision,
+                },
+                idempotencyKey,
+                toolName: 'waptions_edit_apply',
+                canonicalRequestHash: `sha256:${'a'.repeat(64)}`,
+                command: { append },
+            },
+            this.current,
+            next,
+        );
+        return {
+            ...commit,
+            transcriptionPublication: {
+                schemaVersion: 1,
+                kind,
+                records: [],
+            },
+        };
+    }
 }
 
 export const fakeEditorPortFactory: ManagedEditorPortFactory<
@@ -190,6 +256,7 @@ export function fakeEditorCommit(
             redo: { videoSourceIds: [], audioSourceIds: [] },
         },
         sourceRegistrations: { videoSources: [], audioSources: [] },
+        transcriptionPublication: null,
         event: noOp
             ? null
             : {
@@ -222,53 +289,57 @@ function fakeEngineSnapshot(
     managed: ManagedEditorSnapshot<FakeEditorState>,
     sessionRevision: number,
 ): EditorEngineSnapshot {
+    const manifest = fakeManifest(managed.state.values, managed.documentRevision);
     return {
         projectId,
         project: { name: 'Fake project' },
-        manifest: {
-            version: 4,
-            revision: managed.documentRevision,
-            audioGraphRevision: 0,
-            renderProfile: {
-                fps: { numerator: 30, denominator: 1 },
-                width: 1_920,
-                height: 1_080,
-                audioSampleRate: 48_000,
-                isFrameRateLocked: true,
-                isCanvasSizeLocked: true,
-            },
-            renderBackgroundColor: '#000000',
-            subtitleTracks: [],
-            videoSourceDescriptors: [],
-            videoClips: [],
-            videoTracks: managed.state.values.map((value, index) => ({
-                id: `fake-video-track-${index}`,
-                name: value,
-                visible: true,
-                locked: false,
-            })),
-            audioSourceDescriptors: [],
-            audioTracks: [],
-            activeSubtitleTrackId: null,
-            transcriptionByTrackId: {},
-            globalEditingMode: 'ripple',
-            editorialTranscriptDescriptors: [],
-            narrative: null,
-            dependentLinks: [],
-        },
+        manifest,
         revisions: {
             sessionEpoch: request.sessionEpoch,
             sessionRevision,
             documentRevision: managed.documentRevision,
             audioGraphRevision: 0,
-            narrativeRevision: 0,
         },
-        history: { past: [], future: [], currentIndex: -1 },
+        history: { past: [], future: [], currentIndex: 0 },
         assetReferences: {
             videoSourceIds: [],
             audioSourceIds: [],
             transcriptRecordIds: [],
         },
+    };
+}
+
+function fakeManifest(values: readonly string[], revision: number): EditorEngineSnapshot['manifest'] {
+    return {
+        version: 4,
+        revision,
+        audioGraphRevision: 0,
+        renderProfile: {
+            fps: { numerator: 30, denominator: 1 },
+            width: 1_920,
+            height: 1_080,
+            audioSampleRate: 48_000,
+            isFrameRateLocked: true,
+            isCanvasSizeLocked: true,
+        },
+        renderBackgroundColor: '#000000',
+        subtitleTracks: [],
+        videoSourceDescriptors: [],
+        videoClips: [],
+        videoTracks: values.map((value, index) => ({
+            id: `fake-video-track-${index}`,
+            name: value,
+            visible: true,
+            locked: false,
+        })),
+        audioSourceDescriptors: [],
+        audioTracks: [],
+        activeSubtitleTrackId: null,
+        transcriptionByTrackId: {},
+        globalEditingMode: 'ripple',
+        editorialTranscriptDescriptors: [],
+        narrative: null,
+        dependentLinks: [],
     };
 }
 
@@ -281,7 +352,7 @@ export function fakeSnapshotFromCommit(
         documentRevision: commit.sessionState.documentRevision,
         audioGraphRevision: commit.sessionState.audioGraphRevision,
         ...(commit.sessionState.narrativeRevision === undefined
-            ? { narrativeRevision: undefined }
+            ? {}
             : { narrativeRevision: commit.sessionState.narrativeRevision }),
         historyRevision: commit.sessionState.sessionRevision,
     };

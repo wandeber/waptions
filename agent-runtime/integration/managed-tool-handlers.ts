@@ -16,11 +16,15 @@ import type {
   EditorManifestV4,
   RenderProfile,
 } from "../../src/types/video.js";
+import type { ArtifactRecord } from "../artifacts/artifact-registry.js";
 import type {
   ManagedMutationEnvelope,
   ManagedMutationResult,
   ManagedProjectEnvelopeV1,
 } from "../coordinator/types.js";
+import type {
+  ManagedViewPresence,
+} from "../coordinator/view-presence-store.js";
 import {
   ManagedCoordinator,
   type ManagedSessionOpenInput,
@@ -34,6 +38,10 @@ import type {
   StateToken,
   ToolWarning,
 } from "../mcp/contracts.js";
+import {
+  STABLE_ERROR_CODES,
+  type StableErrorCode,
+} from "../mcp/constants.js";
 import type { SessionPathGrantRecord } from "../path-grants/path-grant-authority.js";
 import { canonicalDigest } from "../persistence/canonical-json.js";
 import type { CoordinatorCallContext } from "../server/coordinator-adapter.js";
@@ -91,6 +99,7 @@ export interface ManagedEditorRenderAuthority {
     request: ManagedMutationEnvelope,
     input: {
       viewId: string;
+      participantId: string;
       presentation: "inline" | "fullscreen" | "picture-in-picture";
       capabilityTtlSeconds?: number;
     },
@@ -98,10 +107,117 @@ export interface ManagedEditorRenderAuthority {
   ): Promise<CoordinatorResult>;
 }
 
+export interface ManagedStagedOutputDestinationCapabilityV1 {
+  schemaVersion: 1;
+  destinationId: string;
+  grantId: string;
+  stagingHandleId: string;
+  mode: "create-only";
+  outputName: string;
+  verifiedParentIdentity: string;
+  expiresAt: string;
+  overwriteConfirmationId?: string;
+}
+
+/**
+ * The export authority owns the ephemeral staging registry. A successful call
+ * returns a fresh capability that is already consumable by export_start.
+ */
+export interface ManagedStagedOutputAuthority {
+  stageWriteDestination(
+    projectId: string,
+    input: {
+      grantId: string;
+      outputName: string;
+    },
+    context: CoordinatorCallContext,
+  ): Promise<ManagedStagedOutputDestinationCapabilityV1>;
+}
+
+export interface ManagedProjectValidationIssue {
+  code: string;
+  path: string;
+  message: string;
+}
+
+/**
+ * Deep validation needs access to hydrated sources and coordinator-owned
+ * persistence/CAS state that this projection layer intentionally cannot open.
+ */
+export interface ManagedProjectValidationAuthority {
+  validateProject(
+    projectId: string,
+    input: {
+      manifest: EditorManifestV4;
+      scopes: readonly string[];
+      deep: boolean;
+      state: StateToken;
+    },
+    context: CoordinatorCallContext,
+  ): Promise<{
+    valid: boolean;
+    issues: readonly ManagedProjectValidationIssue[];
+    jobId?: string;
+  }>;
+}
+
+export interface ManagedArtifactAccessAuthority {
+  readRange(
+    projectId: string,
+    artifact: ArtifactRecord,
+    offset: number,
+    endExclusive: number,
+    context: CoordinatorCallContext,
+  ): Promise<{
+    bytes: Uint8Array;
+    start: number;
+    endExclusive: number;
+    totalBytes: number;
+    digest: string;
+  }>;
+  canonicalLocalPath?(
+    projectId: string,
+    artifact: ArtifactRecord,
+    context: CoordinatorCallContext,
+  ): Promise<string>;
+  signedRangeUrl?(
+    projectId: string,
+    artifact: ArtifactRecord,
+    context: CoordinatorCallContext,
+  ): Promise<{
+    signedRangeUrl: string;
+    expiresAt: string;
+  }>;
+}
+
+export interface ManagedDiagnosticsAuthority {
+  readDiagnostics(
+    projectId: string,
+    sections: readonly string[],
+    context: CoordinatorCallContext,
+  ): Promise<{
+    diagnosticsRevision: number;
+    currentBytes: number;
+    peakBytes: number;
+    reservedDecoderPixelBytes: number;
+    leasedDecoderPixelBytes: number;
+    decoderSessions: number;
+    queueLengths: Readonly<Record<string, number>>;
+    evictions: number;
+    cancellations: number;
+    lateResultDisposals: number;
+    leakedResourceAssertions: readonly string[];
+  }>;
+}
+
 export interface ManagedToolHandlerDependencies {
   coordinator: ManagedCoreCoordinator;
   delegated: ManagedDelegatedToolPort;
   editorRender: ManagedEditorRenderAuthority;
+  stagedOutput?: ManagedStagedOutputAuthority;
+  projectValidation?: ManagedProjectValidationAuthority;
+  artifactAccess?: ManagedArtifactAccessAuthority;
+  diagnostics?: ManagedDiagnosticsAuthority;
 }
 
 interface DurableViewRecord {
@@ -119,7 +235,6 @@ interface DurableViewRecord {
   scrollLeft: number;
   focusedPanel?: string;
   presentation: "inline" | "fullscreen" | "picture-in-picture";
-  participantIds: string[];
 }
 
 interface GraphReference {
@@ -129,27 +244,64 @@ interface GraphReference {
   startFrame?: number;
   endFrame?: number;
   label?: string;
+  sourceId?: string;
+  sourceKind?: "video-source" | "audio-source" | "video-source-audio";
+  sourceStartSeconds?: number;
+  sourceEndSeconds?: number;
+  sourceStartSample?: number;
+  sourceEndSample?: number;
+  timelineDurationSamples?: number;
+  sourceStartFrame?: number;
+  sourceEndFrame?: number;
+  muted?: boolean;
+  solo?: boolean;
+  locked?: boolean;
+  visible?: boolean;
+  gainDb?: number;
+  audioLinkState?: "linked" | "detached";
+  audioMuted?: boolean;
+  audioGainDb?: number;
+  text?: string;
+  blockId?: string;
+  clipId?: string;
+  coreStartSample?: number;
+  coreEndSample?: number;
+  sourceWordIds?: string[];
+  sourceWordCount?: number;
+  transcriptRecordId?: string;
+  anchorBlockId?: string;
+  targetKind?: "video-clip" | "audio-clip" | "subtitle";
+  targetTrackId?: string;
+  targetId?: string;
+  associationKind?: "overlap" | "transcript-bound";
+  followPolicy?: "none" | "follow";
+  relativeStartOutputSample?: number;
+  relativeEndOutputSample?: number;
+  revision?: number;
 }
+
+const MAX_PUBLIC_ARTIFACT_RANGE_BYTES = 1024 * 1024;
 
 export function createManagedToolHandlers(
   dependencies: ManagedToolHandlerDependencies,
 ): CanonicalToolRouterDependencies["handlers"] {
   const { coordinator, delegated } = dependencies;
+  const participantProjects = new Map<string, string>();
 
   return {
     waptions_session_list: (call, context) =>
       sessionList(coordinator, call, context),
     waptions_session_open: (call, context) =>
-      sessionOpen(dependencies, call, context),
+      sessionOpen(dependencies, call, context, participantProjects),
     waptions_session_manage: (call, context) =>
-      sessionManage(coordinator, call, context),
+      sessionManage(coordinator, call, context, participantProjects),
     waptions_path_grant: (call, context) =>
-      pathGrant(coordinator, call, context),
+      pathGrant(dependencies, call, context),
     waptions_project_get: (call, context) =>
       projectGet(coordinator, call, context),
     waptions_project_import: delegated.waptions_project_import,
     waptions_project_validate: (call, context) =>
-      projectValidate(coordinator, call, context),
+      projectValidate(dependencies, call, context),
     waptions_media_probe: delegated.waptions_media_probe,
     waptions_media_import: delegated.waptions_media_import,
     waptions_media_review: delegated.waptions_media_review,
@@ -175,7 +327,7 @@ export function createManagedToolHandlers(
     waptions_artifact_list: (call, context) =>
       artifactList(coordinator, call, context),
     waptions_artifact_get: (call, context) =>
-      artifactGet(coordinator, call, context),
+      artifactGet(dependencies, call, context),
     waptions_events_read: (call, context) =>
       eventsRead(coordinator, call, context),
     waptions_view_get: (call, context) =>
@@ -185,9 +337,9 @@ export function createManagedToolHandlers(
     waptions_playback_control: (call, context) =>
       playbackControl(coordinator, call, context),
     waptions_diagnostics_get: (call, context) =>
-      diagnosticsGet(coordinator, call, context),
+      diagnosticsGet(dependencies, call, context),
     waptions_editor_render: (call, context) =>
-      editorRender(dependencies, call, context),
+      editorRender(dependencies, call, context, participantProjects),
   };
 }
 
@@ -215,6 +367,7 @@ async function sessionOpen(
   dependencies: ManagedToolHandlerDependencies,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
+  participantProjects: Map<string, string>,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
   const request = call.request;
@@ -242,6 +395,13 @@ async function sessionOpen(
     ...(name === undefined ? {} : { name }),
     ...(initialSnapshot === undefined ? {} : { initialSnapshot }),
   });
+  if (result.ok) {
+    dependencies.coordinator.bindParticipant(
+      connectionIdForContext(context),
+      result.data.participantId,
+    );
+    participantProjects.set(result.data.participantId, projectId);
+  }
   return managedMutationResult(result, (data) => ({
     action: data.action,
     created: data.created,
@@ -258,6 +418,7 @@ async function sessionManage(
   coordinator: ManagedCoreCoordinator,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
+  participantProjects: Map<string, string>,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
   const request = call.request;
@@ -265,31 +426,100 @@ async function sessionManage(
   const kind = requiredString(action, "kind");
   const projectId = projectIdForCall(coordinator, call);
   if (kind === "detach") {
-    return failure(
-      "Detach is host-local and this runtime has no durable detach authority.",
-      coordinator.getProject(projectId).state,
+    const connectionId = connectionIdForContext(context);
+    const result = await coordinator.mutateRegistry(
+      projectId,
+      managedRequest(call, { action: kind }),
+      () => {
+        const participantId = coordinator.participantForConnection(
+          connectionId,
+        );
+        if (
+          participantId === null
+          || participantProjects.get(participantId) !== projectId
+        ) {
+          throw managedError(
+            "SESSION_NOT_FOUND",
+            "The caller is not attached to this managed project.",
+          );
+        }
+        return {
+          update: (current) => current,
+          result: {
+            action: "detach",
+            status: "detached",
+          },
+          afterCommit: () => {
+            coordinator.detachConnection(connectionId);
+          },
+        };
+      },
     );
+    return managedMutationResult(result, (data) => data);
+  }
+  if (kind === "rename") {
+    const current = coordinator.getProject(projectId);
+    if (
+      current.envelope.archivedAt !== undefined
+      || current.envelope.deletedAt !== undefined
+    ) {
+      return failure(
+        "Only an active project may be renamed.",
+        current.state,
+      );
+    }
+    const translatedId = canonicalDigest({
+      toolName: call.toolName,
+      idempotencyKey: requiredString(request, "idempotencyKey"),
+      requestHash: call.requestHash,
+    }).slice(7, 39);
+    const coreBatch: EditorCommandBatchRequest = {
+      apiVersion: "2026-07-25",
+      toolName: "waptions_edit_apply",
+      sessionEpoch: requiredString(request, "sessionEpoch"),
+      expected: expectedRevisions(request),
+      idempotencyKey: `session-rename-${translatedId}`,
+      operations: [{
+        operationId: `session-rename-${translatedId}`,
+        type: "project.set-name",
+        payload: { name: requiredString(action, "name") },
+      }],
+      history: {
+        label: "Rename project",
+        category: "project.rename",
+      },
+    };
+    const command: ManagedCoreCommand = {
+      kind: "dispatch",
+      request: coreBatch,
+    };
+    const publicRequest = managedRequest(call, command);
+    const coreRequest: ManagedMutationEnvelope<ManagedCoreCommand> = {
+      ...publicRequest,
+      toolName: "waptions_edit_apply",
+      idempotencyKey: coreBatch.idempotencyKey,
+    };
+    const result = await coordinator.renameProjectThroughCore(
+      projectId,
+      publicRequest,
+      coreRequest,
+      command,
+    );
+    return managedMutationResult(result, (data) => data);
   }
   const mutation = managedRequest(call, { action: kind });
   const result = await coordinator.mutateRegistry(
     projectId,
     mutation,
     (envelope) => {
+      assertSessionManageTransition(envelope, kind);
       const now = new Date().toISOString();
       return {
         update: (current) => {
           switch (kind) {
-            case "rename":
-              return { ...current, name: requiredString(action, "name") };
             case "archive":
               return { ...current, archivedAt: now };
             case "restore":
-              if (current.deletedAt !== undefined) {
-                throw managedError(
-                  "INVALID_REQUEST",
-                  "A tombstoned project cannot be restored.",
-                );
-              }
               return {
                 ...current,
                 archivedAt: undefined,
@@ -338,11 +568,12 @@ async function sessionManage(
 }
 
 async function pathGrant(
-  coordinator: ManagedCoreCoordinator,
+  dependencies: ManagedToolHandlerDependencies,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
+  const { coordinator } = dependencies;
   const request = call.request;
   const action = requiredObject(request, "action");
   const kind = requiredString(action, "kind");
@@ -351,6 +582,16 @@ async function pathGrant(
 
   if (kind === "add") {
     const publicKind = requiredString(action, "grantKind");
+    const outputName = publicKind === "write-destination"
+      ? requiredString(action, "outputName")
+      : undefined;
+    if (outputName !== undefined && dependencies.stagedOutput === undefined) {
+      throw managedError(
+        "COORDINATOR_UNAVAILABLE",
+        "The managed export staging authority is unavailable.",
+        true,
+      );
+    }
     if (
       publicKind === "write-destination"
       && requiredBoolean(action, "allowCreate") === false
@@ -401,7 +642,33 @@ async function pathGrant(
         };
       },
     );
-    return managedMutationResult(result, (data) => data);
+    const projected = managedMutationResult(result, (data) => data);
+    if (!projected.ok || outputName === undefined) return projected;
+    const grant = (projected.data.grants as unknown as Array<
+      { grantId: string }
+    >)[0];
+    if (!grant) {
+      throw managedError(
+        "INTERNAL_ERROR",
+        "The managed destination grant result is missing.",
+      );
+    }
+    const destination = await dependencies.stagedOutput!.stageWriteDestination(
+      projectId,
+      {
+        grantId: grant.grantId,
+        outputName,
+      },
+      context,
+    );
+    validateStagedOutputCapability(destination, grant.grantId, outputName);
+    return {
+      ...projected,
+      data: {
+        ...projected.data,
+        destination: structuredClone(destination) as unknown as JsonObject,
+      },
+    };
   }
 
   if (kind === "revoke") {
@@ -466,34 +733,32 @@ async function pathGrant(
   if (kind !== "inspect") {
     throw managedError("INVALID_REQUEST", "The path grant action is invalid.");
   }
-  const result = await coordinator.mutateRegistry(
-    projectId,
-    mutation,
-    async (envelope) => {
-      const requestedGrantId = optionalString(action, "grantId");
-      const grants = (
-        await coordinator.store.readNamespace<SessionPathGrantRecord>(
-          projectId,
-          "grants",
-        )
-      ).filter((grant) =>
-        requestedGrantId === undefined || grant.grantId === requestedGrantId
-      );
-      return {
-        update: (current) => current,
-        result: {
-          action: "inspect",
-          grants: grants.map(projectPathGrant),
-        },
-        eventKind: "project.snapshot" as const,
-        eventData: {
-          manifestDigest: envelope.editor.manifestDigest,
-          reason: "refreshed",
-        },
-      };
-    },
+  const captured = coordinator.getProject(projectId);
+  assertMutationMatchesCapturedProject(coordinator, call, captured);
+  const requestedGrantId = optionalString(action, "grantId");
+  const grants = (
+    await coordinator.store.readNamespace<SessionPathGrantRecord>(
+      projectId,
+      "grants",
+    )
+  ).filter((grant) =>
+    requestedGrantId === undefined || grant.grantId === requestedGrantId
   );
-  return managedMutationResult(result, (data) => data);
+  const afterRead = coordinator.getProject(projectId);
+  if (
+    afterRead.envelope.grantRevision !== captured.envelope.grantRevision
+    || afterRead.envelope.eventSequence !== captured.envelope.eventSequence
+  ) {
+    throw managedError(
+      "REVISION_CONFLICT",
+      "The managed path grants changed while they were being inspected.",
+      true,
+    );
+  }
+  return success({
+    action: "inspect",
+    grants: grants.map(projectPathGrant),
+  }, captured.state);
 }
 
 async function projectGet(
@@ -530,27 +795,43 @@ async function projectGet(
 }
 
 async function projectValidate(
-  coordinator: ManagedCoreCoordinator,
+  dependencies: ManagedToolHandlerDependencies,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
+  const { coordinator } = dependencies;
   const { envelope, state } = projectForCall(coordinator, call);
   const scopes = optionalStringArray(call.request, "scopes")
     ?? ["structural"];
-  const unsupportedScopes = scopes.filter((scope) => scope !== "structural");
-  if (unsupportedScopes.length > 0) {
-    return failure(
-      `Synchronous validation does not support scopes: ${
-        unsupportedScopes.join(", ")
-      }.`,
-      state,
+  const deep = call.request.deep === true;
+  if (dependencies.projectValidation !== undefined) {
+    const validation = await dependencies.projectValidation.validateProject(
+      envelope.projectId,
+      {
+        manifest: structuredClone(envelope.editor.state.snapshot.manifest),
+        scopes,
+        deep,
+        state: projectStateToken(state),
+      },
+      context,
     );
+    assertCapturedProjectRead(coordinator, envelope, "project validation");
+    const issues = validation.issues.slice(0, 500).map(validationIssue);
+    return success({
+      valid: validation.valid,
+      issues,
+      ...(validation.jobId === undefined
+        ? {}
+        : { jobId: boundedIdentity(validation.jobId, "validation job") }),
+    }, state);
   }
-  if (call.request.deep === true) {
-    return failure(
-      "Deep validation is unavailable in the synchronous managed runtime.",
+  if (deep || scopes.some((scope) => scope !== "structural")) {
+    return stableFailure(
+      "COORDINATOR_UNAVAILABLE",
+      "Authoritative deep project validation is unavailable.",
       state,
+      true,
     );
   }
   const validation = validateEditorManifestV4(
@@ -822,31 +1103,165 @@ async function artifactList(
   const { envelope, state } = projectForCall(coordinator, call);
   const artifacts = (await coordinator.artifacts.list(envelope.projectId))
     .map(projectArtifactRecord);
+  assertCapturedAuxiliaryRead(
+    coordinator,
+    envelope,
+    "artifactRevision",
+    "artifacts",
+  );
   const page = paginate(artifacts, call.request);
   return success({ items: page.items, page: page.page }, state);
 }
 
 async function artifactGet(
-  coordinator: ManagedCoreCoordinator,
+  dependencies: ManagedToolHandlerDependencies,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
+  const { coordinator } = dependencies;
   const presentation = requiredString(call.request, "presentation");
-  if (presentation !== "metadata") {
-    throw managedError(
-      "INVALID_REQUEST",
-      "Only metadata artifact presentation is available at this boundary.",
-    );
-  }
   const { envelope, state } = projectForCall(coordinator, call);
   const artifact = await coordinator.artifacts.get(
     envelope.projectId,
     requiredString(call.request, "artifactId"),
   );
+  const projected = projectArtifactRecord(artifact);
+  if (presentation === "inline-range") {
+    if (dependencies.artifactAccess === undefined) {
+      return stableFailure(
+        "COORDINATOR_UNAVAILABLE",
+        "The managed artifact range authority is unavailable.",
+        state,
+        true,
+      );
+    }
+    const offset = requiredSafeInteger(call.request, "offset");
+    const maxBytes = requiredSafeInteger(call.request, "maxBytes");
+    if (
+      offset < 0
+      || offset > artifact.byteLength
+      || maxBytes <= 0
+      || maxBytes > MAX_PUBLIC_ARTIFACT_RANGE_BYTES
+    ) {
+      return stableFailure(
+        "INVALID_REQUEST",
+        `Artifact ranges are limited to ${MAX_PUBLIC_ARTIFACT_RANGE_BYTES} bytes.`,
+        state,
+      );
+    }
+    const nextOffset = Math.min(artifact.byteLength, offset + maxBytes);
+    const bytes = offset === nextOffset
+      ? new Uint8Array()
+      : validateArtifactRange(
+        await dependencies.artifactAccess.readRange(
+          envelope.projectId,
+          artifact,
+          offset,
+          nextOffset,
+          context,
+        ),
+        artifact,
+        offset,
+        nextOffset,
+      );
+    assertCapturedAuxiliaryRead(
+      coordinator,
+      envelope,
+      "artifactRevision",
+      "artifact",
+    );
+    const encoded = encodeArtifactRange(artifact.mediaType, bytes);
+    return success({
+      presentation: "inline-range",
+      artifact: projected,
+      mediaType: artifact.mediaType,
+      encoding: encoded.encoding,
+      data: encoded.data,
+      nextOffset,
+      done: nextOffset === artifact.byteLength,
+      digest: artifact.digest,
+    }, state);
+  }
+  if (presentation === "local-path") {
+    if (dependencies.artifactAccess?.canonicalLocalPath === undefined) {
+      return stableFailure(
+        "COORDINATOR_UNAVAILABLE",
+        "The managed artifact local-path authority is unavailable.",
+        state,
+        true,
+      );
+    }
+    const canonicalLocalPath =
+      await dependencies.artifactAccess.canonicalLocalPath(
+        envelope.projectId,
+        artifact,
+        context,
+      );
+    assertCapturedAuxiliaryRead(
+      coordinator,
+      envelope,
+      "artifactRevision",
+      "artifact",
+    );
+    return success({
+      presentation: "local-path",
+      artifact: projected,
+      canonicalLocalPath,
+    }, state);
+  }
+  if (presentation === "signed-range-url") {
+    if (dependencies.artifactAccess?.signedRangeUrl === undefined) {
+      return stableFailure(
+        "COORDINATOR_UNAVAILABLE",
+        "The managed artifact signed-range authority is unavailable.",
+        state,
+        true,
+      );
+    }
+    const signed = await dependencies.artifactAccess.signedRangeUrl(
+      envelope.projectId,
+      artifact,
+      context,
+    );
+    if (
+      !signed.signedRangeUrl.startsWith("http://localhost:59941/")
+      || !isIsoTimestamp(signed.expiresAt)
+    ) {
+      throw managedError(
+        "INTERNAL_ERROR",
+        "The managed artifact authority returned an invalid signed range.",
+      );
+    }
+    assertCapturedAuxiliaryRead(
+      coordinator,
+      envelope,
+      "artifactRevision",
+      "artifact",
+    );
+    return success({
+      presentation: "signed-range-url",
+      artifact: projected,
+      signedRangeUrl: signed.signedRangeUrl,
+      expiresAt: signed.expiresAt,
+    }, state);
+  }
+  if (presentation !== "metadata") {
+    return stableFailure(
+      "INVALID_REQUEST",
+      "The artifact presentation is invalid.",
+      state,
+    );
+  }
+  assertCapturedAuxiliaryRead(
+    coordinator,
+    envelope,
+    "artifactRevision",
+    "artifact",
+  );
   return success({
     presentation: "metadata",
-    artifact: projectArtifactRecord(artifact),
+    artifact: projected,
   }, state);
 }
 
@@ -864,19 +1279,25 @@ async function eventsRead(
     optionalString(call.request, "afterCursor"),
     limit,
   );
-  const hasMore = page.events.length === limit
+  const boundedEvents = page.events.filter((event) =>
+    event.sequence <= envelope.eventSequence
+  );
+  const nextCursor = boundedEvents.at(-1)?.cursor
+    ?? optionalString(call.request, "afterCursor")
+    ?? coordinator.events.cursor(envelope.projectId, envelope.sessionId, 0);
+  const hasMore = boundedEvents.length === limit
     ? (
       await coordinator.events.read(
         envelope.projectId,
         envelope.sessionId,
-        page.nextCursor,
+        nextCursor,
         1,
       )
-    ).events.length > 0
+    ).events.some((event) => event.sequence <= envelope.eventSequence)
     : false;
   return success({
-    events: page.events.map(projectEventRecord),
-    nextCursor: page.nextCursor,
+    events: boundedEvents.map(projectEventRecord),
+    nextCursor,
     hasMore,
   }, state);
 }
@@ -887,16 +1308,19 @@ async function viewGet(
   context: CoordinatorCallContext,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
-  const { envelope, state } = projectForCall(coordinator, call);
-  const view = await findDurableView(
+  const viewId = requiredString(call.request, "viewId");
+  const captured = await captureDurableView(
     coordinator,
-    envelope.projectId,
-    requiredString(call.request, "viewId"),
+    projectIdForCall(coordinator, call),
+    viewId,
   );
-  if (!view) throw managedError("NOT_FOUND", "The durable view does not exist.");
   return success({
-    view: projectDurableView(view, renderProfile(envelope)),
-  }, state);
+    view: projectDurableView(
+      captured.view,
+      renderProfile(captured.envelope),
+      captured.presence,
+    ),
+  }, captured.state);
 }
 
 async function viewUpdate(
@@ -918,7 +1342,18 @@ async function viewUpdate(
     request,
     async (envelope) => {
       const existing = await findDurableView(coordinator, projectId, viewId);
-      const current = existing ?? initialDurableView(projectId, viewId);
+      if (!existing) {
+        throw managedError(
+          "NOT_FOUND",
+          "The durable view does not exist. Attach it through editor_render first.",
+        );
+      }
+      const presence = requireAttachedViewPresence(
+        coordinator,
+        projectId,
+        viewId,
+      );
+      const current = existing;
       if (current.viewRevision !== expectedViewRevision) {
         throw managedError(
           "REVISION_CONFLICT",
@@ -936,7 +1371,11 @@ async function viewUpdate(
         patch,
         renderProfile(envelope),
       );
-      const projected = projectDurableView(next, renderProfile(envelope));
+      const projected = projectDurableView(
+        next,
+        renderProfile(envelope),
+        coordinator.presence.list(projectId),
+      );
       return {
         update: (project) => project,
         writes: [{
@@ -949,6 +1388,16 @@ async function viewUpdate(
           viewId,
           viewRevision: next.viewRevision,
           changedFields: viewChangedFields(patch),
+        },
+        afterCommit: () => {
+          coordinator.presence.update(presence.viewId, {
+            selectedIds: next.selectedIds,
+            playheadSample: next.playheadSample,
+            viewport: {
+              zoom: next.zoom,
+              scrollLeft: next.scrollLeft,
+            },
+          });
         },
       };
     },
@@ -970,94 +1419,144 @@ async function playbackControl(
   );
   const action = requiredObject(call.request, "action");
   const actionKind = requiredString(action, "kind");
-  const request = managedRequest(call, { viewId, action });
-  const result = await coordinator.mutateRegistry(
-    projectId,
-    request,
-    async (envelope) => {
-      if (envelope.playback.revision !== expectedPlaybackRevision) {
-        throw managedError(
-          "REVISION_CONFLICT",
-          "The durable playback revision changed.",
-          false,
-          {
-            domain: "playback",
-            expectedRevision: expectedPlaybackRevision,
-            actualRevision: envelope.playback.revision,
-          },
-        );
-      }
-      const existingView = await findDurableView(
-        coordinator,
-        projectId,
-        viewId,
+  const captured = await captureDurableView(coordinator, projectId, viewId);
+  const playback = captured.envelope.playback;
+  const viewer = requireAttachedViewPresence(coordinator, projectId, viewId);
+  if (actionKind === "follow" || actionKind === "unfollow") {
+    if (playback.revision !== expectedPlaybackRevision) {
+      return playbackRevisionConflict(
+        captured.state,
+        expectedPlaybackRevision,
+        playback.revision,
       );
-      if (!existingView) {
-        throw managedError("NOT_FOUND", "The durable view does not exist.");
-      }
-      const profile = renderProfile(envelope);
-      const nextView: DurableViewRecord = {
-        ...existingView,
-        followPresenter: actionKind === "follow"
-          ? true
-          : actionKind === "unfollow"
-          ? false
-          : existingView.followPresenter,
-        heartbeatAt: new Date().toISOString(),
-        viewRevision: ["follow", "unfollow"].includes(actionKind)
-          ? existingView.viewRevision + 1
-          : existingView.viewRevision,
-      };
-      const playback = {
-        ...envelope.playback,
-        ...playbackPatch(actionKind, action, viewId, profile, envelope),
-        revision: envelope.playback.revision + 1,
-      };
-      return {
-        update: (project) => ({ ...project, playback }),
-        ...(["follow", "unfollow"].includes(actionKind)
-          ? {
-              writes: [{
-                relativePath: durableViewRelativePath(viewId),
-                value: nextView,
-              }],
-            }
-          : {}),
-        result: {
-          playback: projectPlaybackData(playback, profile, nextView),
-        },
-        eventKind: "project.mutated" as const,
-        eventData: {
-          commandId: requiredString(call.request, "idempotencyKey"),
-          operationIds: [],
-          affectedIds: [viewId],
-        },
-      };
-    },
+    }
+    const followPresenter = actionKind === "follow";
+    if (viewer.followPresenter !== followPresenter) {
+      coordinator.presence.update(viewId, { followPresenter });
+    }
+    const current = coordinator.getProject(projectId);
+    return success(
+      {
+        ...projectPlaybackData(
+          current.envelope.playback,
+          renderProfile(current.envelope),
+          coordinator.presence.list(projectId).find((item) =>
+            item.viewId === viewId
+          ),
+        ),
+      },
+      current.state,
+    );
+  }
+  const ownershipFailure = playbackOwnershipFailure(
+    coordinator,
+    projectId,
+    viewId,
+    actionKind,
+    playback.presenterViewId,
   );
-  return managedMutationResult(result, ({ playback }) => ({ ...playback }));
+  if (ownershipFailure !== undefined) {
+    return failure(ownershipFailure, captured.state);
+  }
+  const update = playbackPatch(
+    actionKind,
+    action,
+    viewId,
+    renderProfile(captured.envelope),
+    captured.envelope,
+  );
+  const result = await coordinator.updatePlayback(
+    projectId,
+    managedRequest(call, { viewId, action }),
+    expectedPlaybackRevision,
+    update,
+  );
+  return managedMutationResult(result, ({ playback: updated }) => ({
+    ...projectPlaybackData(
+      updated,
+      renderProfile(coordinator.getProject(projectId).envelope),
+      coordinator.presence.list(projectId).find((item) =>
+        item.viewId === viewId
+      ),
+    ),
+  }));
 }
 
 async function diagnosticsGet(
-  coordinator: ManagedCoreCoordinator,
+  dependencies: ManagedToolHandlerDependencies,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
 ): Promise<CoordinatorResult> {
   context.signal.throwIfAborted();
-  const { state } = projectForCall(coordinator, call);
-  return failure(
-    "Canonical diagnostics are unavailable because the runtime does not "
-      + "expose every required metric or an authoritative diagnostics revision.",
-    state,
+  const { envelope, state } = projectForCall(dependencies.coordinator, call);
+  if (dependencies.diagnostics === undefined) {
+    return stableFailure(
+      "COORDINATOR_UNAVAILABLE",
+      "The authoritative managed diagnostics source is unavailable.",
+      state,
+      true,
+    );
+  }
+  const diagnostics = await dependencies.diagnostics.readDiagnostics(
+    envelope.projectId,
+    optionalStringArray(call.request, "sections") ?? ["all"],
+    context,
   );
+  return success({
+    diagnosticsRevision: publicCounter(
+      diagnostics.diagnosticsRevision,
+      "diagnostics revision",
+    ),
+    currentBytes: publicCounter(diagnostics.currentBytes, "current bytes"),
+    peakBytes: publicCounter(diagnostics.peakBytes, "peak bytes"),
+    reservedDecoderPixelBytes: publicCounter(
+      diagnostics.reservedDecoderPixelBytes,
+      "reserved decoder pixel bytes",
+    ),
+    leasedDecoderPixelBytes: publicCounter(
+      diagnostics.leasedDecoderPixelBytes,
+      "leased decoder pixel bytes",
+    ),
+    decoderSessions: publicCounter(
+      diagnostics.decoderSessions,
+      "decoder sessions",
+    ),
+    queueLengths: projectQueueLengths(diagnostics.queueLengths),
+    evictions: publicCounter(diagnostics.evictions, "evictions"),
+    cancellations: publicCounter(
+      diagnostics.cancellations,
+      "cancellations",
+    ),
+    lateResultDisposals: publicCounter(
+      diagnostics.lateResultDisposals,
+      "late result disposals",
+    ),
+    leakedResourceAssertions: diagnostics.leakedResourceAssertions.slice(
+      0,
+      128,
+    ).map((assertion) => assertion.slice(0, 512)),
+  }, state);
 }
 
 async function editorRender(
   dependencies: ManagedToolHandlerDependencies,
   call: CanonicalToolCall,
   context: CoordinatorCallContext,
+  participantProjects: Map<string, string>,
 ): Promise<CoordinatorResult> {
   const projectId = projectIdForCall(dependencies.coordinator, call);
+  const participantId = dependencies.coordinator.participantForConnection(
+    connectionIdForContext(context),
+  );
+  if (
+    participantId === null
+    || participantProjects.get(participantId) !== projectId
+  ) {
+    return failure(
+      "The caller is not attached to this managed project.",
+      dependencies.coordinator.getProject(projectId).state,
+    );
+  }
   const presentation = requiredString(
     call.request,
     "presentation",
@@ -1070,6 +1569,7 @@ async function editorRender(
     }),
     {
       viewId: requiredString(call.request, "viewId"),
+      participantId,
       presentation,
       ...(optionalNumber(call.request, "capabilityTtlSeconds") === undefined
         ? {}
@@ -1101,12 +1601,21 @@ function failure(
   message: string,
   state?: StateToken,
 ): CoordinatorResult {
+  return stableFailure("INVALID_REQUEST", message, state);
+}
+
+function stableFailure(
+  code: StableErrorCode,
+  message: string,
+  state?: StateToken,
+  retryable = false,
+): CoordinatorResult {
   return {
     ok: false,
     error: {
-      code: "INVALID_REQUEST",
+      code,
       message,
-      retryable: false,
+      retryable,
     },
     ...(state ? { state: projectStateToken(state) } : {}),
   };
@@ -1117,12 +1626,16 @@ function managedMutationResult<Result>(
   project: (data: Result) => Readonly<Record<string, unknown>>,
 ): CoordinatorResult {
   if (!result.ok) {
+    const code = canonicalRuntimeErrorCode(result.error.code);
     return {
       ok: false,
       error: {
-        code: result.error.code,
+        code,
         message: result.error.message,
-        retryable: result.error.retryable,
+        retryable: canonicalRuntimeErrorRetryable(
+          result.error.code,
+          result.error.retryable,
+        ),
       },
       ...(result.state
         ? { state: projectStateToken(result.state) }
@@ -1147,15 +1660,38 @@ function coreFailure(
   result: Extract<EditorCommandPlan | EditorCommandResult, { ok: false }>,
   state: StateToken,
 ): CoordinatorResult {
+  const code = canonicalRuntimeErrorCode(result.error.code);
   return {
     ok: false,
     error: {
-      code: result.error.code,
+      code,
       message: result.error.message,
-      retryable: result.error.retryable,
+      retryable: canonicalRuntimeErrorRetryable(
+        result.error.code,
+        result.error.retryable,
+      ),
     },
     state: projectStateToken(state),
   };
+}
+
+function canonicalRuntimeErrorCode(code: string): StableErrorCode {
+  if (code === "STALE_TRANSCRIPTION_PUBLICATION") {
+    return "REVISION_CONFLICT";
+  }
+  return (STABLE_ERROR_CODES as readonly string[]).includes(code)
+    ? code as StableErrorCode
+    : "INTERNAL_ERROR";
+}
+
+function canonicalRuntimeErrorRetryable(
+  code: string,
+  retryable: boolean,
+): boolean {
+  if (code === "STALE_TRANSCRIPTION_PUBLICATION") return true;
+  return (STABLE_ERROR_CODES as readonly string[]).includes(code)
+    ? retryable
+    : false;
 }
 
 function toolWarning(
@@ -1436,18 +1972,26 @@ function timelineReferences(
         kind: "video-track",
         trackId: track.id,
         label: boundedLabel(track.name),
+        visible: track.visible,
+        locked: track.locked,
       })),
       ...manifest.audioTracks.map((track) => ({
         id: track.id,
         kind: "audio-track",
         trackId: track.id,
         label: boundedLabel(track.name),
+        muted: track.muted,
+        solo: track.solo,
+        locked: track.locked,
+        gainDb: track.gainDb,
       })),
       ...manifest.subtitleTracks.map((track) => ({
         id: track.id,
         kind: "subtitle-track",
         trackId: track.id,
         label: boundedLabel(track.name),
+        visible: track.isVisible,
+        locked: track.isLocked,
       })),
     ];
   }
@@ -1460,6 +2004,17 @@ function timelineReferences(
         startFrame: clip.timelineStartFrame,
         endFrame: clip.timelineStartFrame
           + getVideoClipDurationFramesV4(clip, manifest.renderProfile),
+        sourceId: clip.sourceId,
+        sourceKind: "video-source" as const,
+        sourceStartSeconds: clip.sourceStart,
+        sourceEndSeconds: clip.sourceEnd,
+        ...(clip.audio === null
+          ? {}
+          : {
+              audioLinkState: clip.audio.linkState,
+              audioMuted: clip.audio.muted,
+              audioGainDb: clip.audio.gainDb,
+            }),
       })),
       ...manifest.audioTracks.flatMap((track) =>
         track.clips.map((clip) => {
@@ -1469,11 +2024,46 @@ function timelineReferences(
             manifest.videoSourceDescriptors,
             manifest.audioSourceDescriptors,
           );
+          let sourceProjection: Pick<
+            GraphReference,
+            | "sourceId"
+            | "sourceKind"
+            | "sourceStartSample"
+            | "sourceEndSample"
+            | "timelineDurationSamples"
+            | "sourceStartSeconds"
+            | "sourceEndSeconds"
+          >;
+          if ("sourceStartSample" in clip) {
+            const imported = clip;
+            sourceProjection = {
+              sourceId: imported.source.audioSourceId,
+              sourceKind: "audio-source",
+              sourceStartSample: imported.sourceStartSample,
+              sourceEndSample: imported.sourceEndSample,
+              ...(imported.timelineDurationSamples === undefined
+                ? {}
+                : {
+                    timelineDurationSamples: imported.timelineDurationSamples,
+                  }),
+            };
+          } else {
+            const detached = clip;
+            sourceProjection = {
+              sourceId: detached.source.videoSourceId,
+              sourceKind: "video-source-audio",
+              sourceStartSeconds: detached.sourceStart,
+              sourceEndSeconds: detached.sourceEnd,
+            };
+          }
           return {
             id: clip.id,
             kind: "audio-clip",
             trackId: track.id,
             startFrame: clip.timelineStartFrame,
+            muted: clip.muted,
+            gainDb: clip.gainDb,
+            ...sourceProjection,
             ...(durationFrames === null
               ? {}
               : {
@@ -1504,6 +2094,7 @@ function timelineReferences(
           startFrame,
           endFrame: Math.max(startFrame + 1, endFrame),
           label: boundedLabel(subtitle.text),
+          text: subtitle.text.slice(0, 4_096),
         };
       })
     );
@@ -1513,12 +2104,38 @@ function timelineReferences(
     return narrative
       ? narrative.blockIds.flatMap((blockId) => {
           const block = narrative.blocks[blockId];
+          const clip = block === undefined
+            ? undefined
+            : manifest.videoClips.find((candidate) =>
+              candidate.id === block.clipId
+            );
           return block
             ? [{
                 id: block.id,
                 kind: `narrative-${block.kind}`,
                 trackId: block.trackId,
                 startFrame: block.timelineStartFrame,
+                ...(clip === undefined
+                  ? {}
+                  : {
+                      endFrame: block.timelineStartFrame
+                        + getVideoClipDurationFramesV4(
+                          clip,
+                          manifest.renderProfile,
+                        ),
+                    }),
+                blockId: block.id,
+                clipId: block.clipId,
+                sourceId: block.sourceId,
+                sourceKind: "video-source" as const,
+                coreStartSample: block.coreStartSample,
+                coreEndSample: block.coreEndSample,
+                sourceStartFrame: block.materialization.sourceStartFrame,
+                sourceEndFrame: block.materialization.sourceEndFrame,
+                sourceWordIds: block.sourceWordIds.slice(0, 512),
+                sourceWordCount: block.sourceWordIds.length,
+                transcriptRecordId: block.transcriptRecordId,
+                revision: block.revision,
               }]
             : [];
         })
@@ -1534,17 +2151,38 @@ function timelineReferences(
                 id: wordId,
                 kind: "narrative-word",
                 trackId: block.trackId,
+                blockId: block.id,
+                sourceId: block.sourceId,
+                sourceKind: "video-source" as const,
+                transcriptRecordId: block.transcriptRecordId,
               }))
             : [];
         })
       : [];
   }
   if (entityKind === "links") {
-    return manifest.dependentLinks.map((link) => ({
-      id: link.id,
-      kind: `link:${link.target.kind}`,
-      label: boundedLabel(link.followPolicy),
-    }));
+    return manifest.dependentLinks.map((link) => {
+      const targetId = link.target.kind === "subtitle"
+        ? link.target.subtitleId
+        : link.target.clipId;
+      const targetTrackId = link.target.kind === "video-clip"
+        ? undefined
+        : link.target.trackId;
+      return {
+        id: link.id,
+        kind: `link:${link.target.kind}`,
+        label: boundedLabel(link.followPolicy),
+        anchorBlockId: link.anchorBlockId,
+        targetKind: link.target.kind,
+        ...(targetTrackId === undefined ? {} : { targetTrackId }),
+        targetId,
+        associationKind: link.association.kind,
+        followPolicy: link.followPolicy,
+        relativeStartOutputSample: link.relativeStartOutputSample,
+        relativeEndOutputSample: link.relativeEndOutputSample,
+        revision: link.revision,
+      };
+    });
   }
   if (entityKind === "content-boundary") {
     const references = [
@@ -1582,26 +2220,56 @@ async function findDurableView(
   ).find((view) => view.viewId === viewId);
 }
 
-function initialDurableView(
+async function captureDurableView(
+  coordinator: ManagedCoreCoordinator,
   projectId: string,
   viewId: string,
-): DurableViewRecord {
-  const now = new Date().toISOString();
-  return {
-    schemaVersion: 1,
-    projectId,
-    viewId,
-    viewRevision: 0,
-    connectedAt: now,
-    heartbeatAt: now,
-    followPresenter: false,
-    selectedIds: [],
-    playheadSample: 0,
-    zoom: 1,
-    scrollLeft: 0,
-    presentation: "inline",
-    participantIds: [viewId],
-  };
+): Promise<{
+  envelope: ManagedProjectEnvelopeV1<ManagedCoreEditorState>;
+  state: StateToken;
+  view: DurableViewRecord;
+  presence: ManagedViewPresence[];
+}> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const captured = coordinator.getProject(projectId);
+    const view = await findDurableView(coordinator, projectId, viewId);
+    const afterRead = coordinator.getProject(projectId);
+    if (
+      captured.envelope.eventSequence !== afterRead.envelope.eventSequence
+      || captured.envelope.editor.manifestDigest
+        !== afterRead.envelope.editor.manifestDigest
+    ) {
+      continue;
+    }
+    if (!view) {
+      throw managedError(
+        "NOT_FOUND",
+        "The durable view does not exist. Attach it through editor_render first.",
+      );
+    }
+    const presence = coordinator.presence.list(projectId);
+    if (
+      !presence.some((item) =>
+        item.viewId === viewId && item.participantId !== undefined
+      )
+    ) {
+      throw managedError(
+        "NOT_FOUND",
+        "The durable view is not attached to this coordinator.",
+      );
+    }
+    return {
+      envelope: captured.envelope,
+      state: captured.state,
+      view,
+      presence,
+    };
+  }
+  throw managedError(
+    "COORDINATOR_UNAVAILABLE",
+    "The durable view changed while it was being read.",
+    true,
+  );
 }
 
 function applyViewPatch(
@@ -1667,6 +2335,7 @@ function projectSelection(
 function projectDurableView(
   view: DurableViewRecord,
   profile: RenderProfile,
+  presence: readonly ManagedViewPresence[],
 ): ReturnType<typeof projectViewSnapshot> {
   return projectViewSnapshot(
     {
@@ -1685,7 +2354,11 @@ function projectDurableView(
     },
     profile,
     {
-      participantIds: view.participantIds,
+      participantIds: Array.from(
+        new Set(presence.flatMap((item) =>
+          item.participantId === undefined ? [] : [item.participantId]
+        )),
+      ),
       ...(view.selectionKind === undefined
         ? {}
         : { selectionKind: view.selectionKind }),
@@ -1759,6 +2432,328 @@ function playbackPatch(
         "The playback action is invalid.",
       );
   }
+}
+
+function requireAttachedViewPresence(
+  coordinator: ManagedCoreCoordinator,
+  projectId: string,
+  viewId: string,
+): ManagedViewPresence {
+  const presence = coordinator.presence.list(projectId).find((item) =>
+    item.viewId === viewId && item.participantId !== undefined
+  );
+  if (!presence) {
+    throw managedError(
+      "NOT_FOUND",
+      "The durable view is not attached to this coordinator.",
+    );
+  }
+  return presence;
+}
+
+function playbackOwnershipFailure(
+  coordinator: ManagedCoreCoordinator,
+  projectId: string,
+  viewId: string,
+  actionKind: string,
+  presenterViewId: string | null,
+): string | undefined {
+  if (actionKind === "claim-presenter") {
+    const presenterIsAttached = presenterViewId !== null
+      && coordinator.presence.list(projectId).some((item) =>
+        item.viewId === presenterViewId
+      );
+    if (
+      presenterViewId !== null
+      && presenterViewId !== viewId
+      && presenterIsAttached
+    ) {
+      return "Another attached view owns presenter playback.";
+    }
+    return undefined;
+  }
+  if (actionKind === "release-presenter") {
+    if (presenterViewId !== null && presenterViewId !== viewId) {
+      return "Only the presenter view may release presenter playback.";
+    }
+    return undefined;
+  }
+  if (presenterViewId !== viewId) {
+    return "Claim presenter ownership before controlling shared playback.";
+  }
+  return undefined;
+}
+
+function playbackRevisionConflict(
+  state: StateToken,
+  expectedRevision: number,
+  actualRevision: number,
+): CoordinatorResult {
+  return {
+    ok: false,
+    error: {
+      code: "REVISION_CONFLICT",
+      message: "The durable playback revision changed.",
+      retryable: false,
+      details: {
+        domain: "playback",
+        expectedRevision,
+        actualRevision,
+      },
+    },
+    state: projectStateToken(state),
+  };
+}
+
+function assertSessionManageTransition(
+  envelope: ManagedProjectEnvelopeV1<ManagedCoreEditorState>,
+  kind: string,
+): void {
+  if (envelope.deletedAt !== undefined) {
+    throw managedError(
+      "INVALID_REQUEST",
+      "A tombstoned project cannot transition to another lifecycle state.",
+    );
+  }
+  if (kind === "archive" && envelope.archivedAt !== undefined) {
+    throw managedError("INVALID_REQUEST", "The project is already archived.");
+  }
+  if (kind === "restore" && envelope.archivedAt === undefined) {
+    throw managedError("INVALID_REQUEST", "Only an archived project may be restored.");
+  }
+}
+
+function assertMutationMatchesCapturedProject(
+  coordinator: ManagedCoreCoordinator,
+  call: CanonicalToolCall,
+  captured: ReturnType<ManagedCoreCoordinator["getProject"]>,
+): void {
+  const expected = expectedRevisions(call.request);
+  if (requiredString(call.request, "sessionEpoch") !== coordinator.epoch) {
+    throw managedError(
+      "SESSION_EPOCH_MISMATCH",
+      "The managed coordinator restarted; refresh state before inspecting grants.",
+      true,
+    );
+  }
+  if (
+    expected.sessionRevision !== captured.state.sessionRevision
+    || expected.documentRevision !== captured.state.documentRevision
+    || (
+      expected.audioGraphRevision !== undefined
+      && expected.audioGraphRevision !== captured.state.audioGraphRevision
+    )
+    || (
+      expected.narrativeRevision !== undefined
+      && expected.narrativeRevision !== captured.state.narrativeRevision
+    )
+  ) {
+    throw managedError(
+      "REVISION_CONFLICT",
+      "The managed project changed before the grants were inspected.",
+      true,
+    );
+  }
+}
+
+function assertCapturedAuxiliaryRead(
+  coordinator: ManagedCoreCoordinator,
+  captured: ManagedProjectEnvelopeV1<ManagedCoreEditorState>,
+  revision: "artifactRevision" | "grantRevision",
+  label: string,
+): void {
+  const current = coordinator.getProject(captured.projectId).envelope;
+  if (
+    current[revision] !== captured[revision]
+    || current.eventSequence !== captured.eventSequence
+  ) {
+    throw managedError(
+      "REVISION_CONFLICT",
+      `The managed ${label} changed while it was being read.`,
+      true,
+    );
+  }
+}
+
+function assertCapturedProjectRead(
+  coordinator: ManagedCoreCoordinator,
+  captured: ManagedProjectEnvelopeV1<ManagedCoreEditorState>,
+  label: string,
+): void {
+  const current = coordinator.getProject(captured.projectId).envelope;
+  const revisionKeys = [
+    "sessionRevision",
+    "grantRevision",
+    "artifactRevision",
+    "jobRevision",
+    "sourceRegistryRevision",
+    "eventSequence",
+  ] as const;
+  if (
+    revisionKeys.some((key) => current[key] !== captured[key])
+    || current.playback.revision !== captured.playback.revision
+    || current.editor.documentRevision !== captured.editor.documentRevision
+    || current.editor.audioGraphRevision !== captured.editor.audioGraphRevision
+    || current.editor.narrativeRevision !== captured.editor.narrativeRevision
+  ) {
+    throw managedError(
+      "REVISION_CONFLICT",
+      `The managed ${label} changed while it was being read.`,
+      true,
+    );
+  }
+}
+
+function validationIssue(
+  issue: ManagedProjectValidationIssue,
+): ManagedProjectValidationIssue {
+  return {
+    code: boundedRequiredText(issue.code, 128, "validation issue code"),
+    path: boundedRequiredText(issue.path, 512, "validation issue path"),
+    message: boundedRequiredText(
+      issue.message,
+      1_024,
+      "validation issue message",
+    ),
+  };
+}
+
+function validateStagedOutputCapability(
+  capability: ManagedStagedOutputDestinationCapabilityV1,
+  grantId: string,
+  outputName: string,
+): void {
+  if (
+    capability.schemaVersion !== 1
+    || capability.mode !== "create-only"
+    || capability.grantId !== grantId
+    || capability.outputName !== outputName
+    || !isIsoTimestamp(capability.expiresAt)
+    || Date.parse(capability.expiresAt) <= Date.now()
+  ) {
+    throw managedError(
+      "INTERNAL_ERROR",
+      "The export staging authority returned an invalid destination capability.",
+    );
+  }
+  for (
+    const [label, value] of [
+      ["destination", capability.destinationId],
+      ["staging handle", capability.stagingHandleId],
+      ["verified parent identity", capability.verifiedParentIdentity],
+    ] as const
+  ) {
+    boundedIdentity(value, label);
+  }
+}
+
+function validateArtifactRange(
+  range: Awaited<ReturnType<ManagedArtifactAccessAuthority["readRange"]>>,
+  artifact: ArtifactRecord,
+  start: number,
+  endExclusive: number,
+): Uint8Array {
+  if (
+    !(range.bytes instanceof Uint8Array)
+    || range.start !== start
+    || range.endExclusive !== endExclusive
+    || range.totalBytes !== artifact.byteLength
+    || range.digest !== artifact.digest
+    || range.bytes.byteLength !== endExclusive - start
+  ) {
+    throw managedError(
+      "INTERNAL_ERROR",
+      "The managed artifact authority returned an invalid byte range.",
+    );
+  }
+  return range.bytes;
+}
+
+function encodeArtifactRange(
+  mediaType: string,
+  bytes: Uint8Array,
+): { encoding: "utf8" | "base64"; data: string } {
+  const normalizedMediaType = mediaType.split(";", 1)[0].trim().toLowerCase();
+  const mayUseUtf8 = normalizedMediaType.startsWith("text/")
+    || normalizedMediaType === "application/json"
+    || normalizedMediaType.endsWith("+json");
+  if (mayUseUtf8) {
+    try {
+      return {
+        encoding: "utf8",
+        data: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      };
+    } catch {
+      // A byte-bounded chunk can split a UTF-8 sequence; base64 preserves it exactly.
+    }
+  }
+  return {
+    encoding: "base64",
+    data: Buffer.from(bytes).toString("base64"),
+  };
+}
+
+function boundedIdentity(value: string, label: string): string {
+  return boundedRequiredText(value, 256, label);
+}
+
+function publicCounter(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw managedError(
+      "INTERNAL_ERROR",
+      `The managed ${label} is invalid.`,
+    );
+  }
+  return value;
+}
+
+function projectQueueLengths(
+  queueLengths: Readonly<Record<string, number>>,
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(queueLengths).map(([name, length]) => [
+      boundedRequiredText(name, 64, "diagnostics queue name"),
+      publicCounter(length, `diagnostics queue ${name}`),
+    ]),
+  );
+}
+
+function boundedRequiredText(
+  value: string,
+  maximumLength: number,
+  label: string,
+): string {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > maximumLength
+  ) {
+    throw managedError(
+      "INTERNAL_ERROR",
+      `The managed ${label} is invalid.`,
+    );
+  }
+  return value;
+}
+
+function isIsoTimestamp(value: string): boolean {
+  return typeof value === "string"
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
+function connectionIdForContext(context: CoordinatorCallContext): string {
+  const connectionId = (
+    context as CoordinatorCallContext & { connectionId?: unknown }
+  ).connectionId;
+  if (typeof connectionId !== "string" || connectionId.length === 0) {
+    throw managedError(
+      "COORDINATOR_UNAVAILABLE",
+      "The managed caller connection identity is unavailable.",
+      true,
+    );
+  }
+  return connectionId;
 }
 
 function renderProfile(
@@ -1852,6 +2847,17 @@ function requiredNumber(
   const value = record[key];
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw managedError("INVALID_REQUEST", `${key} must be a finite number.`);
+  }
+  return value;
+}
+
+function requiredSafeInteger(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): number {
+  const value = requiredNumber(record, key);
+  if (!Number.isSafeInteger(value)) {
+    throw managedError("INVALID_REQUEST", `${key} must be a safe integer.`);
   }
   return value;
 }

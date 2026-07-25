@@ -9,6 +9,12 @@ import type {
 
 export interface CoordinatorCallContext {
   signal: AbortSignal;
+  /**
+   * Opaque identity of the private coordinator IPC connection. It is never
+   * accepted from a public tool request and exists only to bind a durable
+   * session participant to the caller that opened it.
+   */
+  connectionId?: string;
 }
 
 export interface CoordinatorEventSubscription {

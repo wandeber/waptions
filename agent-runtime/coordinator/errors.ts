@@ -84,5 +84,19 @@ export function managedError(
 
 export function asManagedRuntimeError(error: unknown): ManagedRuntimeError {
     if (error instanceof ManagedRuntimeError) return error;
+    if (
+        error
+        && typeof error === 'object'
+        && (error as { code?: unknown }).code === 'STALE_TRANSCRIPTION_PUBLICATION'
+    ) {
+        const message = (error as { message?: unknown }).message;
+        return managedError(
+            'REVISION_CONFLICT',
+            typeof message === 'string'
+                ? message.slice(0, 512)
+                : 'The transcription publication is stale.',
+            true,
+        );
+    }
     return managedError('INTERNAL_ERROR', 'The managed editor operation failed.', false);
 }

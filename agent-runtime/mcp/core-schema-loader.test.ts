@@ -373,6 +373,20 @@ describe("canonical Core public tool schemas", () => {
       true,
     );
     expectInput(
+      "waptions_path_grant",
+      mutationBase({
+        action: {
+          kind: "add",
+          grantKind: "write-destination",
+          path: "/tmp/output.mp4",
+          outputName: "output.mp4",
+          allowCreate: true,
+          confirmAuthorityExpansion: true,
+        },
+      }),
+      true,
+    );
+    expectInput(
       "waptions_media_import",
       mutationBase({
         mediaHandles: ["media-handle-1"],
@@ -423,6 +437,37 @@ describe("canonical Core public tool schemas", () => {
       true,
     );
     expectInput(
+      "waptions_artifact_get",
+      {
+        apiVersion: "2026-07-25",
+        sessionId: "session-1",
+        artifactId: "artifact-1",
+        presentation: "inline-range",
+        offset: 0,
+        maxBytes: 1_048_576,
+      },
+      true,
+    );
+    for (
+      const kind of [
+        "export:mp4-h264-aac",
+        "export:webm",
+        "export:portable-bundle",
+        "export:reference-snapshot",
+        "export:proof-record",
+      ]
+    ) {
+      expectInput(
+        "waptions_job_list",
+        {
+          apiVersion: "2026-07-25",
+          sessionId: "session-1",
+          kind,
+        },
+        true,
+      );
+    }
+    expectInput(
       "waptions_playback_control",
       mutationBase({
         viewId: "view-1",
@@ -447,6 +492,31 @@ describe("canonical Core public tool schemas", () => {
     expectInput(
       "waptions_path_grant",
       mutationBase({ action: "inspect" }),
+      false,
+    );
+    expectInput(
+      "waptions_path_grant",
+      mutationBase({
+        action: {
+          kind: "add",
+          grantKind: "write-destination",
+          path: "/tmp/output.mp4",
+          allowCreate: true,
+          confirmAuthorityExpansion: true,
+        },
+      }),
+      false,
+    );
+    expectInput(
+      "waptions_artifact_get",
+      {
+        apiVersion: "2026-07-25",
+        sessionId: "session-1",
+        artifactId: "artifact-1",
+        presentation: "inline-range",
+        offset: 0,
+        maxBytes: 1_048_577,
+      },
       false,
     );
     expectInput(

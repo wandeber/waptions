@@ -223,6 +223,11 @@ export const WAPTIONS_JOB_KINDS = [
     'headless-project-validation',
     'final-video-export',
     'cleanup-verification',
+    'export:mp4-h264-aac',
+    'export:webm',
+    'export:portable-bundle',
+    'export:reference-snapshot',
+    'export:proof-record',
 ] as const;
 
 export interface WaptionsJobRecordV1 {

@@ -268,7 +268,6 @@
                     "grantKind": {
                       "enum": [
                         "read-root",
-                        "write-destination",
                         "overwrite-file"
                       ]
                     },
@@ -277,6 +276,41 @@
                     },
                     "allowCreate": {
                       "type": "boolean"
+                    },
+                    "confirmAuthorityExpansion": {
+                      "const": true
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "grantKind",
+                    "path",
+                    "outputName",
+                    "allowCreate",
+                    "confirmAuthorityExpansion"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "add"
+                    },
+                    "grantKind": {
+                      "const": "write-destination"
+                    },
+                    "path": {
+                      "$ref": "common.schema.json#/$defs/CanonicalPath"
+                    },
+                    "outputName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255,
+                      "pattern": "^[^/\\\\\\u0000]+$"
+                    },
+                    "allowCreate": {
+                      "const": true
                     },
                     "confirmAuthorityExpansion": {
                       "const": true
@@ -1056,23 +1090,52 @@
           "$ref": "#/$defs/SessionReadBase"
         },
         {
-          "type": "object",
-          "required": [
-            "artifactId",
-            "presentation"
-          ],
-          "properties": {
-            "artifactId": {
-              "$ref": "common.schema.json#/$defs/OpaqueId"
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "artifactId",
+                "presentation"
+              ],
+              "properties": {
+                "artifactId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueId"
+                },
+                "presentation": {
+                  "enum": [
+                    "metadata",
+                    "local-path",
+                    "signed-range-url"
+                  ]
+                }
+              }
             },
-            "presentation": {
-              "enum": [
-                "metadata",
-                "local-path",
-                "signed-range-url"
-              ]
+            {
+              "type": "object",
+              "required": [
+                "artifactId",
+                "presentation",
+                "offset",
+                "maxBytes"
+              ],
+              "properties": {
+                "artifactId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueId"
+                },
+                "presentation": {
+                  "const": "inline-range"
+                },
+                "offset": {
+                  "$ref": "common.schema.json#/$defs/SafeInteger"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1048576
+                }
+              }
             }
-          }
+          ]
         }
       ],
       "unevaluatedProperties": false
@@ -1591,6 +1654,9 @@
           "items": {
             "$ref": "session.schema.json#/$defs/SessionPathGrant"
           }
+        },
+        "destination": {
+          "$ref": "common.schema.json#/$defs/StagedOutputDestinationCapabilityV1"
         }
       }
     },
@@ -1697,6 +1763,130 @@
         "label": {
           "type": "string",
           "maxLength": 512
+        },
+        "sourceId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "sourceKind": {
+          "enum": [
+            "video-source",
+            "audio-source",
+            "video-source-audio"
+          ]
+        },
+        "sourceStartSeconds": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "sourceEndSeconds": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "sourceStartSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "sourceEndSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "timelineDurationSamples": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "sourceStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "sourceEndFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "muted": {
+          "type": "boolean"
+        },
+        "solo": {
+          "type": "boolean"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "gainDb": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "audioLinkState": {
+          "enum": [
+            "linked",
+            "detached"
+          ]
+        },
+        "audioMuted": {
+          "type": "boolean"
+        },
+        "audioGainDb": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "coreStartSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "coreEndSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "sourceWordIds": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "sourceWordCount": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "transcriptRecordId": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "anchorBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "targetKind": {
+          "enum": [
+            "video-clip",
+            "audio-clip",
+            "subtitle"
+          ]
+        },
+        "targetTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "targetId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "associationKind": {
+          "enum": [
+            "overlap",
+            "transcript-bound"
+          ]
+        },
+        "followPolicy": {
+          "enum": [
+            "none",
+            "follow"
+          ]
+        },
+        "relativeStartOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "relativeEndOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "revision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
         }
       }
     },
@@ -1739,11 +1929,201 @@
         }
       }
     },
+    "MediaProbeVideoStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "codec",
+        "width",
+        "height",
+        "frameRate"
+      ],
+      "properties": {
+        "index": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "profile": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "pixelFormat": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "width": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "height": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "frameRate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "numerator",
+            "denominator"
+          ],
+          "properties": {
+            "numerator": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            },
+            "denominator": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            }
+          }
+        },
+        "durationUs": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "bitRate": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "MediaProbeAudioStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "codec",
+        "sampleRate",
+        "channels"
+      ],
+      "properties": {
+        "index": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "profile": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sampleRate": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "channels": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "channelLayout": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "durationUs": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "bitRate": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "MediaProbeMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "containerFormats",
+        "durationUs",
+        "videoStreams",
+        "audioStreams"
+      ],
+      "properties": {
+        "containerFormats": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "containerLongName": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "durationUs": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "startTimeUs": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "bitRate": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "videoStreams": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/MediaProbeVideoStream"
+          }
+        },
+        "audioStreams": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/MediaProbeAudioStream"
+          }
+        },
+        "primaryVideoStreamIndex": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "primaryAudioStreamIndex": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "MediaProbeInventoryItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handle",
+        "displayName",
+        "mediaClass",
+        "mimeType",
+        "metadata"
+      ],
+      "properties": {
+        "handle": {
+          "$ref": "common.schema.json#/$defs/VerifiedMediaHandleV1"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "mediaClass": {
+          "enum": [
+            "video",
+            "audio"
+          ]
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "metadata": {
+          "$ref": "#/$defs/MediaProbeMetadata"
+        }
+      }
+    },
     "MediaProbeData": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "handles",
+        "media",
         "jobIds"
       ],
       "properties": {
@@ -1752,6 +2132,13 @@
           "maxItems": 256,
           "items": {
             "$ref": "common.schema.json#/$defs/VerifiedMediaHandleV1"
+          }
+        },
+        "media": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/MediaProbeInventoryItem"
           }
         },
         "jobIds": {
@@ -2188,6 +2575,52 @@
             },
             "expiresAt": {
               "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "presentation",
+            "artifact",
+            "mediaType",
+            "encoding",
+            "data",
+            "nextOffset",
+            "done",
+            "digest"
+          ],
+          "properties": {
+            "presentation": {
+              "const": "inline-range"
+            },
+            "artifact": {
+              "$ref": "session.schema.json#/$defs/ArtifactRecordV1"
+            },
+            "mediaType": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "encoding": {
+              "enum": [
+                "utf8",
+                "base64"
+              ]
+            },
+            "data": {
+              "type": "string",
+              "maxLength": 1398104
+            },
+            "nextOffset": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "done": {
+              "type": "boolean"
+            },
+            "digest": {
+              "$ref": "common.schema.json#/$defs/Sha256Digest"
             }
           }
         }

@@ -3,6 +3,9 @@ import type {
     EditorIdempotencyReceipt,
     EditorPersistenceCommit,
     EditorPersistencePort,
+    EditorialTranscriptionPublicationHydration,
+    EditorialTranscriptionPublicationRequest,
+    SubtitleTranscriptionPublicationRequest,
 } from '../../src/lib/editor-engine';
 import type { ManagedMutationEnvelope } from './types';
 
@@ -47,6 +50,18 @@ export interface ManagedEditorPort<State = unknown, Command = unknown, Result = 
         replayed: boolean,
     ): Result;
     editorEventSequence?(): number;
+    /**
+     * Runs Core's transcription pipeline against a detached clone and captures its exact commit
+     * without mutating or publishing the live editor. The coordinator revalidates this commit at
+     * the terminal job boundary.
+     */
+    prepareEditorialTranscriptionPublication?(
+        request: EditorialTranscriptionPublicationRequest,
+        hydration?: EditorialTranscriptionPublicationHydration,
+    ): Promise<EditorPersistenceCommit>;
+    prepareSubtitleTranscriptionPublication?(
+        request: SubtitleTranscriptionPublicationRequest,
+    ): Promise<EditorPersistenceCommit>;
     rebaseSession?(
         snapshot: ManagedEditorSnapshot<State>,
         session: {

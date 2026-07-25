@@ -78,17 +78,32 @@ export function createCoordinatorControlHandler(
             case 'coordinator.execute-read':
                 return coordinator.executeRead(
                     readCallParam(request.params, schemas, validator),
-                    { signal: context.signal },
+                    {
+                        signal: context.signal,
+                        ...(context.connectionId
+                            ? { connectionId: context.connectionId }
+                            : {}),
+                    },
                 );
             case 'coordinator.resolve-receipt-scope':
                 return coordinator.resolveReceiptScope(
                     mutationCallParam(request.params, schemas, validator),
-                    { signal: context.signal },
+                    {
+                        signal: context.signal,
+                        ...(context.connectionId
+                            ? { connectionId: context.connectionId }
+                            : {}),
+                    },
                 );
             case 'coordinator.execute-mutation':
                 return coordinator.executeMutation(
                     scopedMutationCallParam(request.params, schemas, validator),
-                    { signal: context.signal },
+                    {
+                        signal: context.signal,
+                        ...(context.connectionId
+                            ? { connectionId: context.connectionId }
+                            : {}),
+                    },
                 );
             case 'coordinator.execute-session-open':
                 {
@@ -105,7 +120,12 @@ export function createCoordinatorControlHandler(
                     }
                     return coordinator.executeSessionOpen(
                         call,
-                        { signal: context.signal },
+                        {
+                            signal: context.signal,
+                            ...(context.connectionId
+                                ? { connectionId: context.connectionId }
+                                : {}),
+                        },
                     );
                 }
             case 'coordinator.wait-for-events':

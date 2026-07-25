@@ -159,6 +159,57 @@ export class ManagedEventLog {
         }
     }
 
+    /**
+     * Replays events made durable by in-process WAL recovery before the coordinator accepts a
+     * later mutation. Subscribers de-duplicate by sequence, so retrying recovery remains safe.
+     */
+    async publishDurableRange(
+        projectId: string,
+        sessionId: string,
+        afterSequence: number,
+        throughSequence: number,
+    ): Promise<void> {
+        if (
+            !Number.isSafeInteger(afterSequence)
+            || !Number.isSafeInteger(throughSequence)
+            || afterSequence < 0
+            || throughSequence < afterSequence
+        ) {
+            throw managedError('INVALID_REQUEST', 'The recovered event range is invalid.');
+        }
+        if (afterSequence === throughSequence) return;
+        const events = (await this.store.readNamespace<ManagedEvent>(projectId, 'events'))
+            .filter((event) => (
+                event.sequence > afterSequence
+                && event.sequence <= throughSequence
+            ));
+        let expectedSequence = afterSequence + 1;
+        for (const event of events) {
+            if (
+                event.sequence !== expectedSequence
+                || event.state.projectId !== projectId
+                || event.state.sessionId !== sessionId
+                || event.cursor !== this.cursor(projectId, sessionId, event.sequence)
+                || event.state.eventCursor !== event.cursor
+            ) {
+                throw managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'The recovered durable event sequence is incomplete or invalid.',
+                    true,
+                );
+            }
+            this.publish(event);
+            expectedSequence += 1;
+        }
+        if (expectedSequence !== throughSequence + 1) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The recovered durable event sequence is incomplete or invalid.',
+                true,
+            );
+        }
+    }
+
     subscribe(projectId: string, sessionId: string, afterCursor?: string): EventSubscription {
         const sequence = afterCursor ? this.parseCursor(projectId, sessionId, afterCursor) : 0;
         const key = scopeKey(projectId, sessionId);

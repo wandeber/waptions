@@ -25,6 +25,7 @@ import type {
     StateToken,
 } from './types';
 import type { EditorCommandFailure } from '../../src/lib/editor-engine';
+import { DurableJobScheduler } from '../jobs/durable-job-scheduler';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
@@ -87,6 +88,32 @@ describe('ManagedCoordinator', () => {
         const replacement = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
         expect(replacement.epoch).not.toBe(first.epoch);
         await replacement.close();
+    });
+
+    it('configures coordinator-owned runtime services before handler registration and recovery', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const order: string[] = [];
+        const recover = vi.spyOn(DurableJobScheduler.prototype, 'recover')
+            .mockImplementation(async () => {
+                order.push('recover');
+            });
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory, {
+            configureRuntime: async (configured) => {
+                expect(configured.pathGrants).toBeDefined();
+                expect(configured.artifacts).toBeDefined();
+                expect(configured.store).toBeDefined();
+                order.push('configure');
+            },
+            registerJobHandlers: (scheduler) => {
+                expect(scheduler).toBeDefined();
+                order.push('register');
+            },
+        });
+
+        expect(order).toEqual(['configure', 'register', 'recover']);
+        recover.mockRestore();
+        await coordinator.close();
     });
 
     it('replays a lost response before stale epoch and revision guards after restart', async () => {
@@ -175,6 +202,61 @@ describe('ManagedCoordinator', () => {
         await recovered.close();
     });
 
+    it('publishes a post-marker recovered event before any later event to active long-polls', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        let fired = false;
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory, {
+            persistenceFaultInjector: {
+                hit: (point) => {
+                    if (!fired && point === 'transaction:committed') {
+                        fired = true;
+                        throw new Error('lost response after marker');
+                    }
+                },
+            },
+        });
+        const created = await coordinator.createSession(
+            'Ordered recovery',
+            fakeProjectSnapshot('ordered-recovery-project'),
+            {
+            projectId: 'ordered-recovery-project',
+            sessionId: 'ordered-recovery-session',
+            },
+        );
+        const subscription = coordinator.events.subscribe(
+            'ordered-recovery-project',
+            'ordered-recovery-session',
+            created.state.eventCursor,
+        );
+        const firstRead = subscription.next();
+        const firstRequest = editorMutationRequest(created.state, 'ordered-recovery-one', {
+            append: 'one',
+        });
+        expect((await coordinator.mutateEditor(
+            'ordered-recovery-project',
+            firstRequest,
+        )).ok).toBe(false);
+        const replay = await coordinator.mutateEditor(
+            'ordered-recovery-project',
+            firstRequest,
+        );
+        expect(replay.ok).toBe(true);
+        if (!replay.ok) throw new Error('The recovered mutation receipt was not replayed.');
+        const recoveredEvent = await firstRead;
+        expect(recoveredEvent.sequence).toBe(1);
+
+        const second = await coordinator.mutateEditor(
+            'ordered-recovery-project',
+            editorMutationRequest(replay.state, 'ordered-recovery-two', { append: 'two' }),
+        );
+        expect(second.ok).toBe(true);
+        const laterEvent = await subscription.next();
+        expect(laterEvent.sequence).toBe(2);
+        subscription.close();
+        await coordinator.close();
+    });
+
     it('serializes concurrent clients and rejects the stale second mutation', async () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
@@ -202,6 +284,64 @@ describe('ManagedCoordinator', () => {
         expect(rejected.ok).toBe(false);
         if (!rejected.ok) expect(rejected.error.code).toBe('SESSION_REVISION_CONFLICT');
         expect(coordinator.getProject('concurrent-project').envelope.editor.state.values).toHaveLength(1);
+        await coordinator.close();
+    });
+
+    it('revalidates media authority before Core and commits it only after the WAL', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
+        const created = await coordinator.createSession(
+            'Core media boundary',
+            fakeProjectSnapshot('core-media-boundary-project'),
+            {
+                projectId: 'core-media-boundary-project',
+                sessionId: 'core-media-boundary-session',
+            },
+        );
+        const request = editorMutationRequest(
+            created.state,
+            'core-media-boundary',
+            { append: 'imported' },
+        );
+        const order: string[] = [];
+        const result = await coordinator.importMediaThroughCore(
+            'core-media-boundary-project',
+            request,
+            { append: 'imported' },
+            {
+                revalidate: () => {
+                    expect(
+                        coordinator.getProject('core-media-boundary-project').state.sessionRevision,
+                    ).toBe(0);
+                    order.push('revalidate');
+                },
+                commitAuthority: () => {
+                    expect(
+                        coordinator.getProject('core-media-boundary-project')
+                            .envelope.editor.state.values,
+                    ).toEqual(['imported']);
+                    order.push('commit-authority');
+                },
+            },
+        );
+        expect(result.ok).toBe(true);
+        expect(order).toEqual(['revalidate', 'commit-authority']);
+
+        const replayRevalidate = vi.fn();
+        const replayCommit = vi.fn();
+        const replay = await coordinator.importMediaThroughCore(
+            'core-media-boundary-project',
+            request,
+            { append: 'ignored-on-replay' },
+            {
+                revalidate: replayRevalidate,
+                commitAuthority: replayCommit,
+            },
+        );
+        expect(replay).toMatchObject({ ok: true, replayed: true });
+        expect(replayRevalidate).not.toHaveBeenCalled();
+        expect(replayCommit).not.toHaveBeenCalled();
         await coordinator.close();
     });
 
@@ -260,6 +400,76 @@ describe('ManagedCoordinator', () => {
         );
         expect(replay.ok).toBe(true);
         if (replay.ok) expect(replay.replayed).toBe(true);
+        await coordinator.close();
+    });
+
+    it('reconciles prepared grant creation and revocation after post-marker recovery', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        let armed = false;
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory, {
+            persistenceFaultInjector: {
+                hit: (point) => {
+                    if (armed && point === 'transaction:committed') {
+                        armed = false;
+                        throw new Error('lost grant response after marker');
+                    }
+                },
+            },
+        });
+        const created = await coordinator.createSession('Grant recovery', fakeSnapshot(), {
+            projectId: 'grant-recovery-project',
+            sessionId: 'grant-recovery-session',
+        });
+        const root = join(runtime.path, 'grant-recovery-root');
+        const source = join(root, 'source.txt');
+        await mkdir(root);
+        await writeFile(source, 'durable source');
+        const grantRequest = mutationRequest(created.state, 'grant-recovery') as never;
+        armed = true;
+        expect((await coordinator.grantPath(
+            'grant-recovery-project',
+            grantRequest,
+            'read-root',
+            root,
+        )).ok).toBe(false);
+        const grantReplay = await coordinator.grantPath(
+            'grant-recovery-project',
+            grantRequest,
+            'read-root',
+            root,
+        );
+        expect(grantReplay.ok).toBe(true);
+        if (!grantReplay.ok) throw new Error('The durable grant was not replayed.');
+        const scope = {
+            sessionId: 'grant-recovery-session',
+            sessionEpoch: coordinator.epoch,
+        };
+        const handle = await coordinator.pathGrants.openRead(
+            grantReplay.data.grant.grantId,
+            scope,
+            source,
+        );
+        await handle.close();
+
+        const revokeRequest = mutationRequest(grantReplay.state, 'grant-revoke') as never;
+        armed = true;
+        expect((await coordinator.revokePathGrant(
+            'grant-recovery-project',
+            revokeRequest,
+            grantReplay.data.grant.grantId,
+        )).ok).toBe(false);
+        const revokeReplay = await coordinator.revokePathGrant(
+            'grant-recovery-project',
+            revokeRequest,
+            grantReplay.data.grant.grantId,
+        );
+        expect(revokeReplay.ok).toBe(true);
+        await expect(coordinator.pathGrants.openRead(
+            grantReplay.data.grant.grantId,
+            scope,
+            source,
+        )).rejects.toMatchObject({ code: 'PATH_NOT_GRANTED' });
         await coordinator.close();
     });
 
@@ -563,6 +773,111 @@ describe('ManagedCoordinator', () => {
         expect(transact).toHaveBeenCalledTimes(1);
         await coordinator.close();
     });
+
+    it.each([
+        ['previous manifest', (commit: ReturnType<typeof fakeEditorCommit>) => {
+            commit.previous.manifest.renderBackgroundColor = '#ffffff';
+        }],
+        ['transaction revision', (commit: ReturnType<typeof fakeEditorCommit>) => {
+            commit.transaction.toDocumentRevision += 1;
+        }],
+        ['session revision projection', (commit: ReturnType<typeof fakeEditorCommit>) => {
+            commit.sessionState.audioGraphRevision += 1;
+        }],
+        ['receipt command identity', (commit: ReturnType<typeof fakeEditorCommit>) => {
+            commit.receipt.value.result.commandId = 'wrong-command';
+        }],
+        ['event revisions', (commit: ReturnType<typeof fakeEditorCommit>) => {
+            if (commit.event) commit.event.revisions.sessionRevision += 1;
+        }],
+        ['history projection', (commit: ReturnType<typeof fakeEditorCommit>) => {
+            commit.next.history.currentIndex += 1;
+        }],
+    ])('rejects an invalid Core %s before creating a WAL transaction', async (_, corrupt) => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const factory: ManagedEditorPortFactory<
+            FakeEditorState,
+            FakeEditorCommand,
+            FakeEditorResult
+        > = {
+            create: async (initial, persistence) => {
+                let current = structuredClone(initial);
+                return {
+                    snapshot: () => structuredClone(current),
+                    dispatch: async ({ command, request }) => {
+                        const next = fakeSnapshot(
+                            [...current.state.values, command.append],
+                            current.state.projectId,
+                            current.state.eventSequence + 1,
+                        );
+                        const commit = fakeEditorCommit(
+                            current.state.projectId,
+                            request,
+                            current,
+                            next,
+                        );
+                        corrupt(commit);
+                        await persistence.commit(commit);
+                        current = fakeSnapshotFromCommit(commit);
+                        return fakeEditorResultFromCommit(commit, command.append);
+                    },
+                    snapshotFromCommit: fakeSnapshotFromCommit,
+                    hydrate: async (snapshot) => {
+                        current = structuredClone(snapshot);
+                    },
+                    close: async () => undefined,
+                };
+            },
+        };
+        const coordinator = await ManagedCoordinator.start(runtime.path, factory);
+        const created = await coordinator.createSession('Invalid Core commit', fakeSnapshot(), {
+            projectId: 'invalid-core-commit-project',
+            sessionId: 'invalid-core-commit-session',
+        });
+        const transact = vi.spyOn(coordinator.store, 'transact');
+        const result = await coordinator.mutateEditor(
+            'invalid-core-commit-project',
+            editorMutationRequest(created.state, 'invalid-core-commit'),
+        );
+        expect(result.ok).toBe(false);
+        expect(transact).not.toHaveBeenCalled();
+        await coordinator.close();
+    });
+
+    it('mutates a near-limit editor head without duplicating the full Core commit in the WAL', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const largeValue = 'x'.repeat(28 * 1024 * 1024);
+        const initial = fakeSnapshot([largeValue], 'near-limit-project');
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
+        const created = await coordinator.createSession('Near limit', initial, {
+            projectId: 'near-limit-project',
+            sessionId: 'near-limit-session',
+        });
+        const result = await coordinator.mutateEditor(
+            'near-limit-project',
+            editorMutationRequest(created.state, 'near-limit', { append: 'small' }),
+        );
+        expect(result.ok).toBe(true);
+        expect(await coordinator.store.readNamespace(
+            'near-limit-project',
+            'core/commits',
+        )).toEqual([]);
+        const evidence = await coordinator.store.readNamespace<Record<string, unknown>>(
+            'near-limit-project',
+            'core/commit-evidence',
+        );
+        expect(evidence).toHaveLength(1);
+        expect(evidence[0]).toMatchObject({
+            schemaVersion: 1,
+            projectId: 'near-limit-project',
+            operationCount: 1,
+        });
+        expect(evidence[0]).not.toHaveProperty('previous');
+        expect(evidence[0]).not.toHaveProperty('next');
+        await coordinator.close();
+    }, 60_000);
 
     it('persists a Core no-op receipt without advancing state or emitting an event', async () => {
         const runtime = await temporaryRuntime();
@@ -1053,6 +1368,255 @@ describe('ManagedCoordinator', () => {
             granted.data.grant.grantId,
             'atomic-output-session',
         )).toBeNull();
+        await coordinator.close();
+    });
+
+    it('publishes terminal Core and coverage transcription writes with the succeeded job', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const accepted = vi.fn();
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory, {
+            transcriptionPublicationAuthority: {
+                prepare: async () => ({
+                    writes: [{
+                        relativePath: 'transcription/descriptors/editorial.json',
+                        value: { schemaVersion: 1, transcriptRecordId: `sha256:${'5'.repeat(64)}` },
+                    }],
+                    verify: () => true,
+                    accept: accepted,
+                    reject: vi.fn(),
+                }),
+            },
+        });
+        const created = await coordinator.createSession(
+            'Atomic transcription',
+            fakeProjectSnapshot('atomic-transcription-project'),
+            {
+            projectId: 'atomic-transcription-project',
+            sessionId: 'atomic-transcription-session',
+            },
+        );
+        const inputDigest = `sha256:${'1'.repeat(64)}`;
+        const sourceFingerprint = `sha256:${'2'.repeat(64)}`;
+        const profileDigest = `sha256:${'3'.repeat(64)}`;
+        const coverageRecordId = `sha256:${'4'.repeat(64)}`;
+        const transcriptRecordId = `sha256:${'5'.repeat(64)}`;
+        const coverageAccepted = vi.fn();
+        const coreCapability = await coordinator.prepareEditorialTranscriptionPublication(
+            'atomic-transcription-project',
+            {
+                sessionEpoch: coordinator.epoch,
+                expected: {
+                    sessionRevision: created.state.sessionRevision,
+                    documentRevision: created.state.documentRevision,
+                    audioGraphRevision: created.state.audioGraphRevision,
+                },
+                idempotencyKey: 'atomic-core-transcription',
+            } as never,
+        );
+        coordinator.jobs.register('editorial-transcription', {
+            run: async () => ({
+                result: { publicationId: 'core-publication' },
+                artifactIds: [],
+                terminalPublication: {
+                    artifacts: [],
+                    transcription: {
+                        schemaVersion: 1 as const,
+                        proposalId: 'transcription-proposal:atomic',
+                        projectId: 'atomic-transcription-project',
+                        kind: 'editorial-transcription',
+                        inputDigest,
+                        preparedCorePublication: coreCapability,
+                        preparedCoverageUpdates: [{
+                            capabilityId: 'coverage-publication',
+                            projectId: 'atomic-transcription-project',
+                            kind: 'coverage' as const,
+                            sourceFingerprint,
+                            acquisitionProfileDigest: profileDigest,
+                            expectedCoverageRecordIds: [],
+                            coverageRecordId,
+                            pinRecordIds: [transcriptRecordId],
+                            durableWrites: () => [
+                                {
+                                    relativePath: `transcription/coverage/${
+                                        coverageRecordId.slice(7)
+                                    }.json`,
+                                    value: { schemaVersion: 1, recordId: coverageRecordId },
+                                },
+                                {
+                                    relativePath: 'transcription/coverage-heads/family.json',
+                                    value: {
+                                        schemaVersion: 1,
+                                        sourceFingerprint,
+                                        acquisitionProfileDigest: profileDigest,
+                                        expectedCoverageRecordIds: [],
+                                        coverageRecordIds: [coverageRecordId],
+                                    },
+                                },
+                            ],
+                            accept: coverageAccepted,
+                            reject: vi.fn(),
+                        }],
+                        stagedArtifacts: [],
+                        transcriptRecordIds: [transcriptRecordId],
+                        coverageRecordIds: [coverageRecordId],
+                        chunkRecordIds: [],
+                        sourceIds: ['source-1'],
+                    },
+                },
+            }),
+        });
+        const transact = vi.spyOn(coordinator.store, 'transact');
+        const enqueued = await coordinator.enqueueJob(
+            'atomic-transcription-project',
+            mutationRequest(created.state, 'atomic-transcription-job'),
+            {
+                kind: 'editorial-transcription',
+                input: {},
+                inputDigest,
+                cancellable: true,
+                resumable: true,
+            },
+        );
+        expect(enqueued.ok).toBe(true);
+        if (!enqueued.ok) throw new Error('The transcription job was not enqueued.');
+        await waitFor(() => coordinator.jobs.get(enqueued.data.job.jobId)?.state === 'succeeded');
+
+        const transaction = transact.mock.calls.map(([input]) => input).find((input) => (
+            input.writes?.some((write) => (
+                write.relativePath === 'transcription/descriptors/editorial.json'
+            ))
+        ));
+        expect(transaction?.writes?.map((write) => write.relativePath)).toEqual(
+            expect.arrayContaining([
+                'transcription/descriptors/editorial.json',
+                'transcription/coverage-heads/family.json',
+                `jobs/${enqueued.data.job.jobId}.json`,
+                expect.stringMatching(/^events\/.+\.json$/),
+            ]),
+        );
+        expect(accepted).toHaveBeenCalledTimes(1);
+        expect(coverageAccepted).toHaveBeenCalledTimes(1);
+        expect(
+            coordinator.getProject('atomic-transcription-project').envelope.editor.state.values,
+        ).toEqual(['editorial-transcription']);
+        await coordinator.close();
+    });
+
+    it('rejects a losing terminal transcription CAS as a retryable revision conflict', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory, {
+            transcriptionPublicationAuthority: {
+                prepare: async () => ({
+                    writes: [],
+                    verify: () => true,
+                }),
+            },
+        });
+        const created = await coordinator.createSession(
+            'Stale transcription',
+            fakeProjectSnapshot('stale-transcription-project'),
+            {
+            projectId: 'stale-transcription-project',
+            sessionId: 'stale-transcription-session',
+            },
+        );
+        const inputDigest = `sha256:${'6'.repeat(64)}`;
+        const expectedCoverageRecordId = `sha256:${'7'.repeat(64)}`;
+        const nextCoverageRecordId = `sha256:${'8'.repeat(64)}`;
+        const transcriptRecordId = `sha256:${'9'.repeat(64)}`;
+        const coverageRejected = vi.fn();
+        const coreCapability = await coordinator.prepareSubtitleTranscriptionPublication(
+            'stale-transcription-project',
+            {
+                sessionEpoch: coordinator.epoch,
+                expected: {
+                    sessionRevision: created.state.sessionRevision,
+                    documentRevision: created.state.documentRevision,
+                    audioGraphRevision: created.state.audioGraphRevision,
+                },
+                idempotencyKey: 'stale-core-transcription',
+            } as never,
+        );
+        const rejected = vi.fn(coreCapability.reject);
+        const observedCoreCapability = {
+            ...coreCapability,
+            reject: rejected,
+        };
+        coordinator.jobs.register('subtitle-transcription', {
+            run: async () => ({
+                result: { publicationId: 'stale-core-publication' },
+                artifactIds: [],
+                terminalPublication: {
+                    artifacts: [],
+                    transcription: {
+                        schemaVersion: 1 as const,
+                        proposalId: 'transcription-proposal:stale',
+                        projectId: 'stale-transcription-project',
+                        kind: 'subtitle-transcription',
+                        inputDigest,
+                        preparedCorePublication: observedCoreCapability,
+                        preparedCoverageUpdates: [{
+                            capabilityId: 'stale-coverage-publication',
+                            projectId: 'stale-transcription-project',
+                            kind: 'coverage' as const,
+                            sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+                            acquisitionProfileDigest: `sha256:${'b'.repeat(64)}`,
+                            expectedCoverageRecordIds: [expectedCoverageRecordId],
+                            coverageRecordId: nextCoverageRecordId,
+                            pinRecordIds: [transcriptRecordId],
+                            durableWrites: () => [{
+                                relativePath: 'transcription/coverage-heads/stale-family.json',
+                                value: {
+                                    schemaVersion: 1,
+                                    sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+                                    acquisitionProfileDigest: `sha256:${'b'.repeat(64)}`,
+                                    expectedCoverageRecordIds: [expectedCoverageRecordId],
+                                    coverageRecordIds: [nextCoverageRecordId],
+                                },
+                            }],
+                            accept: vi.fn(),
+                            reject: coverageRejected,
+                        }],
+                        stagedArtifacts: [],
+                        transcriptRecordIds: [transcriptRecordId],
+                        coverageRecordIds: [nextCoverageRecordId],
+                        chunkRecordIds: [],
+                        sourceIds: ['source-1'],
+                    },
+                },
+            }),
+        });
+        const enqueued = await coordinator.enqueueJob(
+            'stale-transcription-project',
+            mutationRequest(created.state, 'stale-transcription-job'),
+            {
+                kind: 'subtitle-transcription',
+                input: {},
+                inputDigest,
+                cancellable: true,
+                resumable: true,
+            },
+        );
+        expect(enqueued.ok).toBe(true);
+        if (!enqueued.ok) throw new Error('The transcription job was not enqueued.');
+        await waitFor(() => coordinator.jobs.get(enqueued.data.job.jobId)?.state === 'stale');
+
+        expect(coordinator.jobs.get(enqueued.data.job.jobId)?.error).toMatchObject({
+            code: 'REVISION_CONFLICT',
+            retryable: true,
+        });
+        expect(rejected).toHaveBeenCalledTimes(1);
+        expect(coverageRejected).toHaveBeenCalledTimes(1);
+        await expect(readFile(join(
+            runtime.path,
+            'projects',
+            'stale-transcription-project',
+            'transcription',
+            'descriptors',
+            'subtitle.json',
+        ))).rejects.toMatchObject({ code: 'ENOENT' });
         await coordinator.close();
     });
 

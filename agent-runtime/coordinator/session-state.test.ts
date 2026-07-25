@@ -21,9 +21,35 @@ describe('managed session state', () => {
         const result = await coordinator.updatePlayback(
             'presenter-project',
             mutationRequest(created.state, 'presenter') as never,
+            0,
             { presenterViewId: 'view-a', playing: true, outputSample: 480 },
         );
         expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('The playback mutation failed.');
+        const noOp = await coordinator.updatePlayback(
+            'presenter-project',
+            mutationRequest(result.state, 'presenter-no-op') as never,
+            1,
+            { presenterViewId: 'view-a', playing: true, outputSample: 480 },
+        );
+        expect(noOp.ok).toBe(true);
+        if (!noOp.ok) throw new Error('The playback no-op failed.');
+        expect(noOp.data.playback.revision).toBe(1);
+        expect((await coordinator.events.read(
+            'presenter-project',
+            'presenter-session',
+            undefined,
+        )).events).toHaveLength(1);
+        const stale = await coordinator.updatePlayback(
+            'presenter-project',
+            mutationRequest(noOp.state, 'presenter-stale') as never,
+            0,
+            { playing: false },
+        );
+        expect(stale).toMatchObject({
+            ok: false,
+            error: { code: 'REVISION_CONFLICT', retryable: true },
+        });
         expect(coordinator.presence.list('presenter-project')[0].followPresenter).toBe(true);
         coordinator.presence.detach('view-a');
         expect(coordinator.getProject('presenter-project').envelope.playback.presenterViewId).toBe('view-a');
@@ -37,6 +63,26 @@ describe('managed session state', () => {
             outputSample: 480,
         });
         await recovered.close();
+    });
+
+    it('detaches only views owned by the last connection for one participant', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
+        coordinator.bindParticipant('connection-a', 'participant-a');
+        coordinator.bindParticipant('connection-b', 'participant-a');
+        coordinator.bindParticipant('connection-c', 'participant-b');
+        coordinator.presence.attach('project-a', 'view-a', 'participant-a');
+        coordinator.presence.attach('project-a', 'view-b', 'participant-b');
+
+        expect(coordinator.detachConnection('connection-a')).toEqual([]);
+        expect(coordinator.presence.list('project-a').map((view) => view.viewId))
+            .toEqual(['view-a', 'view-b']);
+        expect(coordinator.detachConnection('connection-b')).toEqual(['view-a']);
+        expect(coordinator.presence.list('project-a').map((view) => view.viewId))
+            .toEqual(['view-b']);
+        expect(coordinator.participantForConnection('connection-c')).toBe('participant-b');
+        await coordinator.close();
     });
 
     it('retains sources rooted by editor history, jobs, and receipts during GC planning', () => {

@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { managedError, type ManagedRuntimeErrorShape, asManagedRuntimeError } from '../coordinator/errors';
 import type { StateToken } from '../coordinator/types';
-import type { ManagedFilesystemStore } from '../persistence/managed-filesystem-store';
+import type {
+    DurableWrite,
+    ManagedFilesystemStore,
+} from '../persistence/managed-filesystem-store';
 import { atomicWriteJson } from '../persistence/fs-durable';
 import { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
 import { canonicalJson } from '../persistence/canonical-json';
@@ -61,6 +64,44 @@ export type DurableJobEnqueueInput<Input = unknown> = Omit<
     | 'createdAt' | 'updatedAt'
 >;
 
+export interface DurableJobTerminalCommitCapability {
+    readonly capabilityId: string;
+    readonly projectId: string;
+    readonly kind: string;
+    durableWrites(): readonly DurableWrite[];
+    accept(): Promise<void> | void;
+    reject(): Promise<void> | void;
+}
+
+export interface DurableJobTerminalCoverageCapability
+    extends DurableJobTerminalCommitCapability {
+    readonly kind: 'coverage';
+    readonly sourceFingerprint: string;
+    readonly acquisitionProfileDigest: string;
+    readonly expectedCoverageRecordIds: readonly string[];
+    readonly coverageRecordId: string;
+    readonly pinRecordIds: readonly string[];
+}
+
+/**
+ * Process-local transcription proposal. Only bounded identities are serializable; the prepared
+ * capabilities remain in memory until the coordinator consumes or rejects the terminal boundary.
+ */
+export interface DurableJobTerminalTranscriptionPublication {
+    readonly schemaVersion: 1;
+    readonly proposalId: string;
+    readonly projectId: string;
+    readonly kind: string;
+    readonly inputDigest: string;
+    readonly preparedCorePublication: DurableJobTerminalCommitCapability;
+    readonly preparedCoverageUpdates: readonly DurableJobTerminalCoverageCapability[];
+    readonly stagedArtifacts: readonly StagedArtifact[];
+    readonly transcriptRecordIds: readonly string[];
+    readonly coverageRecordIds: readonly string[];
+    readonly chunkRecordIds: readonly string[];
+    readonly sourceIds: readonly string[];
+}
+
 export interface DurableJobTerminalPublication {
     /**
      * Staged artifacts whose bounded registry writes must share the terminal job transaction.
@@ -68,6 +109,7 @@ export interface DurableJobTerminalPublication {
      */
     artifacts: readonly StagedArtifact[];
     outputs?: readonly StagedOutputPublication[];
+    transcription?: DurableJobTerminalTranscriptionPublication;
 }
 
 export interface JobExecutionContext<Checkpoint> {
@@ -471,13 +513,10 @@ export class DurableJobScheduler {
             return;
         }
         if (terminalPublication) {
-            await Promise.allSettled([
-                ...terminalPublication.artifacts.map((artifact) => artifact.reject()),
-                ...(terminalPublication.outputs ?? []).map((output) => output.reject()),
-            ]);
+            await rejectTerminalPublication(terminalPublication);
             throw managedError(
                 'INTERNAL_ERROR',
-                'Terminal artifact publication requires a coordinator transaction hook.',
+                'Terminal publication requires a coordinator transaction hook.',
             );
         }
         const path = this.store.projectPath(record.projectId, 'jobs', `${record.jobId}.json`);
@@ -588,6 +627,7 @@ function validateTerminalPublication(
         (
             publication.artifacts.length === 0
             && (publication.outputs?.length ?? 0) === 0
+            && publication.transcription === undefined
         )
         || publication.artifacts.length > 64
         || (publication.outputs?.length ?? 0) > 16
@@ -600,7 +640,7 @@ function validateTerminalPublication(
             || !output.record.sessionId
         ))
     ) {
-        throw managedError('INVALID_REQUEST', 'The terminal artifact publication is invalid.');
+        throw managedError('INVALID_REQUEST', 'The terminal publication is invalid.');
     }
     const publishedIds = publication.artifacts.map((artifact) => artifact.record.artifactId);
     if (
@@ -613,14 +653,136 @@ function validateTerminalPublication(
             'Terminal artifact identifiers do not match the staged publication.',
         );
     }
+    validateTerminalTranscriptionPublication(publication.transcription);
 }
 
 async function rejectTerminalPublication(
     publication: DurableJobTerminalPublication | undefined,
 ): Promise<void> {
     if (!publication || !Array.isArray(publication.artifacts)) return;
+    const transcription = publication.transcription;
     await Promise.allSettled([
         ...publication.artifacts.map((artifact) => artifact.reject()),
         ...(publication.outputs ?? []).map((output) => output.reject()),
+        ...(isTerminalTranscriptionPublication(transcription)
+            ? [
+                Promise.resolve().then(
+                    () => transcription.preparedCorePublication.reject(),
+                ),
+                ...transcription.preparedCoverageUpdates.map(
+                    (update) => Promise.resolve().then(() => update.reject()),
+                ),
+                ...transcription.stagedArtifacts.map(
+                    (artifact) => Promise.resolve().then(() => artifact.reject()),
+                ),
+            ]
+            : []),
     ]);
+}
+
+function validateTerminalTranscriptionPublication(
+    value: DurableJobTerminalTranscriptionPublication | undefined,
+): void {
+    if (value === undefined) return;
+    if (!isTerminalTranscriptionPublication(value)) {
+        throw managedError(
+            'INVALID_REQUEST',
+            'The terminal transcription publication is invalid.',
+        );
+    }
+    const capabilities = [
+        value.preparedCorePublication,
+        ...value.preparedCoverageUpdates,
+    ];
+    if (
+        value.schemaVersion !== 1
+        || !isOpaqueIdentity(value.proposalId, 256)
+        || !isOpaqueIdentity(value.projectId, 128)
+        || !isOpaqueIdentity(value.kind, 128)
+        || !isDigest(value.inputDigest)
+        || value.preparedCoverageUpdates.length > 256
+        || value.stagedArtifacts.length > 64
+        || capabilities.some((capability) => (
+            capability.projectId !== value.projectId
+            || !isOpaqueIdentity(capability.capabilityId, 256)
+        ))
+        || new Set(capabilities.map((capability) => capability.capabilityId)).size
+            !== capabilities.length
+        || value.preparedCoverageUpdates.some((coverage) => (
+            !isDigest(coverage.sourceFingerprint)
+            || !isDigest(coverage.acquisitionProfileDigest)
+            || !isDigest(coverage.coverageRecordId)
+            || !isDigestList(coverage.expectedCoverageRecordIds, 10_000)
+            || !isDigestList(coverage.pinRecordIds, 10_000)
+        ))
+        || value.stagedArtifacts.some((artifact) => (
+            artifact.record.projectId !== value.projectId
+            || !artifact.record.artifactId
+        ))
+        || !isDigestList(value.transcriptRecordIds, 10_000)
+        || !isDigestList(value.coverageRecordIds, 10_000)
+        || !isDigestList(value.chunkRecordIds, 100_000)
+        || !isIdentityList(value.sourceIds, 10_000)
+    ) {
+        throw managedError(
+            'INVALID_REQUEST',
+            'The terminal transcription publication is invalid.',
+        );
+    }
+}
+
+function isTerminalTranscriptionPublication(
+    value: unknown,
+): value is DurableJobTerminalTranscriptionPublication {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const publication = value as Partial<DurableJobTerminalTranscriptionPublication>;
+    const core = publication.preparedCorePublication;
+    return Boolean(
+        core
+        && typeof core === 'object'
+        && !Array.isArray(core)
+        && typeof core.durableWrites === 'function'
+        && typeof core.accept === 'function'
+        && typeof core.reject === 'function'
+        && Array.isArray(publication.preparedCoverageUpdates)
+        && publication.preparedCoverageUpdates.every((coverage) => (
+            coverage
+            && typeof coverage === 'object'
+            && !Array.isArray(coverage)
+            && coverage.kind === 'coverage'
+            && typeof coverage.durableWrites === 'function'
+            && typeof coverage.accept === 'function'
+            && typeof coverage.reject === 'function'
+            && Array.isArray(coverage.expectedCoverageRecordIds)
+            && Array.isArray(coverage.pinRecordIds)
+        ))
+        && Array.isArray(publication.stagedArtifacts)
+        && Array.isArray(publication.transcriptRecordIds)
+        && Array.isArray(publication.coverageRecordIds)
+        && Array.isArray(publication.chunkRecordIds)
+        && Array.isArray(publication.sourceIds)
+    );
+}
+
+function isDigest(value: unknown): value is string {
+    return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+
+function isDigestList(values: readonly string[], maximum: number): boolean {
+    return values.length <= maximum
+        && new Set(values).size === values.length
+        && values.every(isDigest);
+}
+
+function isIdentityList(values: readonly string[], maximum: number): boolean {
+    return values.length <= maximum
+        && new Set(values).size === values.length
+        && values.every((value) => isOpaqueIdentity(value, 256));
+}
+
+function isOpaqueIdentity(value: unknown, maximum: number): value is string {
+    return typeof value === 'string'
+        && value.length > 0
+        && value.length <= maximum
+        && !/[\u0000-\u001f\u007f]/.test(value);
 }

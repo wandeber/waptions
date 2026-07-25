@@ -59,7 +59,9 @@ export function mutationRequest(
             sessionRevision: token.sessionRevision,
             documentRevision: token.documentRevision,
             audioGraphRevision: token.audioGraphRevision,
-            narrativeRevision: token.narrativeRevision,
+            ...(token.narrativeRevision === undefined
+                ? {}
+                : { narrativeRevision: token.narrativeRevision }),
         },
         idempotencyKey: key,
         toolName: 'waptions_edit_apply',

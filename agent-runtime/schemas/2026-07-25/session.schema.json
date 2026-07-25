@@ -401,7 +401,12 @@
         "bundle-export",
         "headless-project-validation",
         "final-video-export",
-        "cleanup-verification"
+        "cleanup-verification",
+        "export:mp4-h264-aac",
+        "export:webm",
+        "export:portable-bundle",
+        "export:reference-snapshot",
+        "export:proof-record"
       ]
     },
     "JobState": {

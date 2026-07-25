@@ -1,6 +1,7 @@
 export interface ManagedViewPresence {
     viewId: string;
     projectId: string;
+    participantId?: string;
     viewRevision: number;
     connectedAt: string;
     heartbeatAt: string;
@@ -17,11 +18,12 @@ export interface ManagedViewPresence {
 export class ViewPresenceStore {
     private readonly views = new Map<string, ManagedViewPresence>();
 
-    attach(projectId: string, viewId: string): ManagedViewPresence {
+    attach(projectId: string, viewId: string, participantId = `unbound:${viewId}`): ManagedViewPresence {
         const now = new Date().toISOString();
         const presence: ManagedViewPresence = {
             viewId,
             projectId,
+            participantId,
             viewRevision: 0,
             connectedAt: now,
             heartbeatAt: now,
@@ -34,7 +36,10 @@ export class ViewPresenceStore {
 
     update(
         viewId: string,
-        update: Partial<Omit<ManagedViewPresence, 'viewId' | 'projectId' | 'connectedAt'>>,
+        update: Partial<Omit<
+            ManagedViewPresence,
+            'viewId' | 'projectId' | 'participantId' | 'connectedAt'
+        >>,
     ): ManagedViewPresence {
         const current = this.views.get(viewId);
         if (!current) throw new Error('Managed view is not attached.');
@@ -51,6 +56,16 @@ export class ViewPresenceStore {
 
     detach(viewId: string): void {
         this.views.delete(viewId);
+    }
+
+    detachParticipant(participantId: string): string[] {
+        const detached: string[] = [];
+        for (const [viewId, view] of this.views) {
+            if (view.participantId !== participantId) continue;
+            this.views.delete(viewId);
+            detached.push(viewId);
+        }
+        return detached;
     }
 
     list(projectId: string): ManagedViewPresence[] {

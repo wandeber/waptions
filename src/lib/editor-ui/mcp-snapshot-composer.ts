@@ -67,15 +67,35 @@ const clipFromReference = (
 ): EditorUiClip => {
   const startFrame = reference.startFrame ?? 0;
   const endFrame = Math.max(startFrame, reference.endFrame ?? startFrame);
+  const sourceOffsetSeconds = reference.sourceStartSeconds
+    ?? (reference.sourceStartSample !== undefined
+      ? reference.sourceStartSample / 48_000
+      : (reference.sourceStartFrame ?? 0) / fps);
+  const sourceEndSeconds = reference.sourceEndSeconds
+    ?? (reference.sourceEndSample !== undefined
+      ? reference.sourceEndSample / 48_000
+      : reference.sourceEndFrame !== undefined
+        ? reference.sourceEndFrame / fps
+        : undefined);
   return {
     id: reference.id,
     trackId: track.id,
+    ...(reference.sourceId ? { sourceId: reference.sourceId } : {}),
     kind: inferClipKind(reference, track.kind),
     label: reference.label ?? reference.id,
     startSeconds: startFrame / fps,
     durationSeconds: (endFrame - startFrame) / fps,
-    sourceOffsetSeconds: 0,
+    sourceOffsetSeconds,
+    ...(sourceEndSeconds !== undefined
+      ? { sourceDurationSeconds: Math.max(0, sourceEndSeconds) }
+      : {}),
+    ...(reference.audioLinkState
+      ? { hasLinkedAudio: reference.audioLinkState === 'linked' }
+      : {}),
     linkedTargetIds: [],
+    ...(reference.muted !== undefined ? { muted: reference.muted } : {}),
+    ...(reference.gainDb !== undefined ? { gainDb: reference.gainDb } : {}),
+    ...(reference.text !== undefined ? { text: reference.text } : {}),
   };
 };
 
@@ -144,7 +164,11 @@ export function composeMcpEditorUiSnapshot(
       kind,
       name: reference.label ?? reference.id,
       clips: [],
-      locked: false,
+      locked: reference.locked ?? false,
+      ...(reference.visible !== undefined ? { visible: reference.visible } : {}),
+      ...(reference.muted !== undefined ? { muted: reference.muted } : {}),
+      ...(reference.solo !== undefined ? { solo: reference.solo } : {}),
+      ...(reference.gainDb !== undefined ? { gainDb: reference.gainDb } : {}),
       height: previous?.view.trackHeights[reference.id]
         ?? (kind === 'video' ? 96 : 72),
       ...(kind === 'subtitle' ? { subtitleStyle: DEFAULT_EDITOR_UI_SUBTITLE_STYLE } : {}),
@@ -211,14 +235,16 @@ export function composeMcpEditorUiSnapshot(
         const endFrame = Math.max(startFrame, reference.endFrame ?? startFrame);
         return {
           id: reference.id,
-          clipId: null,
+          clipId: reference.clipId ?? null,
           kind: reference.kind.toLowerCase().includes('silence') ? 'silence' : 'speech',
-          text: reference.label ?? '',
-          sourceStartSample16k: Math.round((startFrame / fps) * 16_000),
-          sourceEndSample16k: Math.round((endFrame / fps) * 16_000),
+          text: reference.text ?? reference.label ?? '',
+          sourceStartSample16k: reference.coreStartSample
+            ?? Math.round((startFrame / fps) * 16_000),
+          sourceEndSample16k: reference.coreEndSample
+            ?? Math.round((endFrame / fps) * 16_000),
           startSeconds: startFrame / fps,
           durationSeconds: (endFrame - startFrame) / fps,
-          linkedTargetIds: [],
+          linkedTargetIds: reference.targetId ? [reference.targetId] : [],
         };
       }),
       history,

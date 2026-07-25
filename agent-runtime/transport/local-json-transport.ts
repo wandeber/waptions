@@ -45,6 +45,8 @@ export interface LocalTransportOptions {
 export interface LocalTransportRequestContext {
     signal: AbortSignal;
     deadlineAt: number;
+    /** Server-generated identity for this authenticated private IPC connection. */
+    connectionId?: string;
 }
 
 export type LocalTransportEndpoint = CoordinatorControlEndpoint;
@@ -198,6 +200,7 @@ export class LocalJsonTransportServer {
             return;
         }
         this.sockets.add(socket);
+        const connectionId = `connection_${randomBytes(24).toString('base64url')}`;
         this.notifyResources();
         socket.setNoDelay(true);
         let authenticated = false;
@@ -316,7 +319,11 @@ export class LocalJsonTransportServer {
             // Requests intentionally execute concurrently. The coordinator itself serializes
             // project mutations, while independent reads may complete out of order.
             const handlerExecution = Promise.resolve().then(() => (
-                this.handler(request, { signal: controller.signal, deadlineAt })
+                this.handler(request, {
+                    signal: controller.signal,
+                    deadlineAt,
+                    connectionId,
+                })
             ));
             void raceWithAbort(
                 handlerExecution,
