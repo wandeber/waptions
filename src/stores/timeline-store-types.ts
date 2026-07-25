@@ -197,6 +197,8 @@ export interface TimelineStore {
     redoStack: TimelineHistoryEntry[];
     historySequence: number;
     historyBytes: number;
+    /** Adapter-owned in-flight commands keep history controls stable without projecting graph state. */
+    standalonePendingCommandCount: number;
 
     cuts: Cut[];
     detectionProgress: number;

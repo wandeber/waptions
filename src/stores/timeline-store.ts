@@ -162,6 +162,17 @@ import type {
     ActivateNarrativeRequest,
     TimelineV4CommandResult,
 } from './timeline-v4-command-types';
+import { getStandaloneEditorEngineBridge } from './standalone-editor-engine-registry';
+import {
+    mapStandaloneGlobalEditingMode,
+    mapStandaloneLinkCommand,
+    mapStandaloneNarrativeCommand,
+    mapStandaloneOrdinaryCommand,
+    mapStandaloneSubtitleOrderReplacement,
+    mapStandaloneSubtitleReplacement,
+    createStandaloneSemanticOperation,
+    standaloneUnsupportedBoundary,
+} from './standalone-editor-operation-mapping';
 
 export type {
     AudioClipEditableSettings,
@@ -571,6 +582,21 @@ const projectSubtitleTracksV4 = (tracks: readonly SubtitleTrack[]): SubtitleTrac
     })
 );
 
+const standaloneDirectOptions = (
+    state: TimelineStore,
+    label: string,
+    command: string,
+) => ({
+    history: { label, category: 'standalone-compatibility' },
+    selectionBefore: cloneTransientSelection(state.transientSelection),
+    selectionAfter: cloneTransientSelection(state.transientSelection),
+    compatibilityResult: {
+        kind: 'success' as const,
+        command,
+        playhead: { kind: 'keep' as const, reason: 'non-structural' as const },
+    },
+});
+
 /**
  * Builds a runtime-only narrative selection after proving every requested identity against the
  * current owned block and hydrated immutable transcript body. The caller receives `null` instead
@@ -825,12 +851,61 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         history: TimelineHistoryMetadata;
     }): TimelineV4CommandResult => {
         const before = buildEditorDocumentFromState(input.state);
+        const requestedSubtitleTracks = projectSubtitleTracksV4(input.tracks);
         const planned = planTimelineSubtitleReplacementV4Command(before, {
-            subtitleTracks: projectSubtitleTracksV4(input.tracks),
+            subtitleTracks: requestedSubtitleTracks,
             activeSubtitleTrackId: input.activeTrackId,
             transientSelection: cloneTransientSelection(input.transientSelection),
             label: input.history.label,
         });
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine && planned.kind === 'noop') {
+            const ordering = mapStandaloneSubtitleOrderReplacement(
+                before,
+                requestedSubtitleTracks,
+            );
+            if (ordering.length === 0) return timelineCommandNoop();
+            return standaloneEngine.enqueueOperations(ordering, {
+                history: {
+                    label: input.history.label,
+                    category: 'subtitle',
+                },
+                selectionBefore: before.transientSelection,
+                selectionAfter: cloneTransientSelection(input.transientSelection),
+                compatibilityResult: {
+                    kind: 'success',
+                    command: 'replace-subtitles',
+                    playhead: { kind: 'keep', reason: 'non-structural' },
+                    targetTransforms: [],
+                },
+            });
+        }
+        if (standaloneEngine && planned.kind === 'success') {
+            const mapped = mapStandaloneSubtitleReplacement({
+                before,
+                planned,
+                requestedSubtitleTracks,
+            });
+            if (!Array.isArray(mapped)) {
+                if (mapped.kind === 'error') standaloneEngine.reportUnsupported(mapped);
+                return mapped;
+            }
+            if (mapped.length === 0) return timelineCommandNoop();
+            return standaloneEngine.enqueueOperations(mapped, {
+                history: {
+                    label: input.history.label,
+                    category: 'subtitle',
+                },
+                selectionBefore: before.transientSelection,
+                selectionAfter: planned.document.transientSelection,
+                compatibilityResult: {
+                    kind: 'success',
+                    command: planned.command,
+                    playhead: planned.playhead,
+                    targetTransforms: structuredClone(planned.targetTransforms),
+                },
+            });
+        }
         return commitOrdinaryPlan({
             state: input.state,
             before,
@@ -874,6 +949,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     redoStack: [],
     historySequence: 0,
     historyBytes: 0,
+    standalonePendingCommandCount: 0,
 
     rawTranscription: null,
     transcriptionGroups: null,
@@ -890,6 +966,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     undo: async () => {
         const state = discardActiveDragPreview();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            await standaloneEngine.undo();
+            return;
+        }
         const { history, redoStack } = state;
         if (history.length === 0) return;
 
@@ -940,6 +1021,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     redo: async () => {
         const state = discardActiveDragPreview();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            await standaloneEngine.redo();
+            return;
+        }
         const { history, redoStack } = state;
         if (redoStack.length === 0) return;
 
@@ -984,6 +1070,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     jumpToHistoryEntry: async (entryId) => {
         const state = discardActiveDragPreview();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            await standaloneEngine.jumpToHistory(entryId, 'after');
+            return;
+        }
         const chronological = [...state.history, ...[...state.redoStack].reverse()];
         const targetCount = entryId === null
             ? 0
@@ -1090,6 +1181,42 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             backgroundOffsetY: 0
         };
 
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            if (state.activeTrackId) {
+                standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                    code: 'unsupported-active-subtitle-track',
+                    message: 'Adding and activating another subtitle track requires a durable active-track operation.',
+                    ids: [state.activeTrackId, id],
+                }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+                return '';
+            }
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.add', {
+                    trackKind: 'subtitle',
+                    trackId: id,
+                    name: name || `Capa ${state.tracks.length + 1}`,
+                }),
+                createStandaloneSemanticOperation('subtitle.set-track-style', {
+                    trackId: id,
+                    style: defaultStyle,
+                }),
+                createStandaloneSemanticOperation('subtitle-track.set-unlinked-video-policy', {
+                    trackId: id,
+                    policy: 'preserve-absolute',
+                }),
+            ], {
+                history: { label: 'Add subtitle track', category: 'track' },
+                selectionBefore: state.transientSelection,
+                selectionAfter: state.transientSelection,
+                compatibilityResult: {
+                    kind: 'success',
+                    command: 'add-subtitle-track',
+                    playhead: { kind: 'keep', reason: 'non-structural' },
+                },
+            });
+            return id;
+        }
         commitDurableMutation(state, {
             tracks: [...state.tracks, {
                 id,
@@ -1122,14 +1249,41 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         delete transcriptionByTrackId[id];
         const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, nextActiveId);
         const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, nextTracks);
+        const nextSelection = state.transientSelection.kind === 'subtitles'
+            ? transientSubtitleSelection(nextTracks, selectedSubtitleIds, nextActiveId)
+            : state.transientSelection;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            if (state.transcriptionByTrackId[id]) {
+                standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                    code: 'unsupported-transcription-provenance',
+                    message: 'Deleting a transcribed track requires atomic provenance removal.',
+                    ids: [id],
+                }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+                return;
+            }
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.delete', {
+                    trackKind: 'subtitle',
+                    trackId: id,
+                    policy: 'delete-contents',
+                }),
+            ], {
+                ...standaloneDirectOptions(
+                    state,
+                    'Remove subtitle track',
+                    'remove-subtitle-track',
+                ),
+                selectionAfter: nextSelection,
+            });
+            return;
+        }
 
         commitDurableMutation(state, {
             tracks: nextTracks,
             activeTrackId: nextActiveId,
             selectedSubtitleIds,
-            transientSelection: state.transientSelection.kind === 'subtitles'
-                ? transientSubtitleSelection(nextTracks, selectedSubtitleIds, nextActiveId)
-                : state.transientSelection,
+            transientSelection: nextSelection,
             transcriptionByTrackId,
             rawTranscription: cloneSubtitles(legacy?.raw ?? null),
             transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
@@ -1146,6 +1300,25 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         if (!track || Object.entries(styleUpdates).every(([key, value]) => (
             Object.is(track.style[key as keyof AnimationStyle], value)
         ))) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('subtitle.set-track-style', {
+                    trackId: id,
+                    style: { ...track.style, ...styleUpdates },
+                }),
+            ], {
+                history: { label: 'Edit subtitle style', category: 'subtitle' },
+                selectionBefore: state.transientSelection,
+                selectionAfter: state.transientSelection,
+                compatibilityResult: {
+                    kind: 'success',
+                    command: 'edit-subtitle-style',
+                    playhead: { kind: 'keep', reason: 'non-structural' },
+                },
+            });
+            return;
+        }
         commitDurableMutation(state, {
             tracks: state.tracks.map((track) => track.id === id
                 ? { ...track, style: { ...track.style, ...styleUpdates } }
@@ -1157,6 +1330,26 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const state = get();
         const track = state.tracks.find((item) => item.id === id);
         if (!track || track.name === name) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.rename', {
+                    trackKind: 'subtitle',
+                    trackId: id,
+                    name,
+                }),
+            ], {
+                history: { label: 'Rename subtitle track', category: 'track' },
+                selectionBefore: state.transientSelection,
+                selectionAfter: state.transientSelection,
+                compatibilityResult: {
+                    kind: 'success',
+                    command: 'rename-subtitle-track',
+                    playhead: { kind: 'keep', reason: 'non-structural' },
+                },
+            });
+            return;
+        }
         commitDurableMutation(state, {
             tracks: state.tracks.map((track) => track.id === id ? { ...track, name } : track),
         }, { history: { label: 'Rename subtitle track', mergeKey: `subtitle-track-name:${id}` } });
@@ -1457,6 +1650,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             redoStack: [],
             historySequence: 0,
             historyBytes: 0,
+            standalonePendingCommandCount: 0,
             lastSelectedId: null,
             isVideoSelected: false,
             isDragging: false,
@@ -1482,6 +1676,18 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         }
 
         const state = get();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-source-registration',
+                message: 'Source File registration requires a typed engine setup transaction.',
+                ids: [
+                    ...videoSources.map((source) => source.id),
+                    ...audioSources.map((source) => source.id),
+                ],
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+            return;
+        }
         const firstCandidateVideoSource = videoSources[0]
             ?? state.videoSources.find((source) => source.id === candidate.videoClips?.[0]?.sourceId);
         const hasAudioInput = audioSources.length > 0 || (candidate.audioTracks?.length ?? 0) > 0;
@@ -1693,6 +1899,29 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             gainDb: 0,
             clips: [independentClip],
         };
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.add', {
+                    trackKind: 'audio',
+                    trackId,
+                    name: audioTrack.name,
+                }),
+                createStandaloneSemanticOperation('video-clip.detach-audio', {
+                    clipId,
+                    audioTrackId: trackId,
+                    detachedClipId,
+                }),
+            ], {
+                ...standaloneDirectOptions(
+                    state,
+                    'Separate embedded audio',
+                    'detach-video-clip-audio',
+                ),
+                selectionAfter: { kind: 'audio-clip', trackId, clipId: detachedClipId },
+            });
+            return;
+        }
         const patch: Partial<TimelineStore> = {
             videoClips: state.videoClips.map((item) => item.id === clipId
                 ? { ...item, audio: item.audio ? { ...item.audio, linkState: 'detached' } : null }
@@ -1746,6 +1975,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     reorderVideoClips: (orderedClipIds) => {
         const state = get();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            // Core defines video order from timeline placement. Preserve the legacy void method as
+            // the same stable no-op without misreporting an expected request as persistence failure.
+            return;
+        }
         const planningState = getOrdinaryPlanningState(state);
         const before = buildEditorDocumentFromState(planningState);
         commitOrdinaryPlan({
@@ -1769,6 +2004,21 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         };
         const result = addVideoTrackMembership(state.videoTracks, track, insertionIndex);
         if (!result.changed) return '';
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            const beforeTrackId = insertionIndex === undefined
+                ? undefined
+                : state.videoTracks[insertionIndex]?.id;
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.add', {
+                    trackKind: 'video',
+                    trackId: id,
+                    name: track.name,
+                    ...(beforeTrackId ? { beforeTrackId } : {}),
+                }),
+            ], standaloneDirectOptions(state, 'Add video track', 'add-video-track'));
+            return id;
+        }
         commitDurableMutation(state, { videoTracks: result.videoTracks }, {
             history: { label: 'Add video track' },
         });
@@ -1779,6 +2029,17 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const state = get();
         const result = removeEmptyVideoTrackMembership(state.videoTracks, trackId);
         if (!result.changed) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.delete', {
+                    trackKind: 'video',
+                    trackId,
+                    policy: 'empty-only',
+                }),
+            ], standaloneDirectOptions(state, 'Remove video track', 'remove-video-track'));
+            return;
+        }
         commitDurableMutation(state, { videoTracks: result.videoTracks }, {
             history: { label: 'Remove video track' },
         });
@@ -1853,6 +2114,48 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             planned.document.videoTracks = planned.document.videoTracks.filter((track) => (
                 occupiedTrackIds.has(track.id)
             ));
+            const standaloneEngine = getStandaloneEditorEngineBridge();
+            if (standaloneEngine) {
+                const mapped = mapStandaloneOrdinaryCommand({
+                    before,
+                    planned,
+                    request: {
+                        target: { kind: 'video-clip', clipId },
+                        action: {
+                            kind: 'move',
+                            targetTrackId: id,
+                            targetStart: targetStartFrame,
+                        },
+                    },
+                });
+                if (!Array.isArray(mapped)) {
+                    if (mapped.kind === 'error') standaloneEngine.reportUnsupported(mapped);
+                    return mapped;
+                }
+                const beforeTrackId = before.videoTracks[insertionIndex]?.id;
+                return standaloneEngine.enqueueOperations([
+                    createStandaloneSemanticOperation('track.add', {
+                        trackKind: 'video',
+                        trackId: id,
+                        name: name?.trim() || `Video ${planningState.videoTracks.length + 1}`,
+                        ...(beforeTrackId ? { beforeTrackId } : {}),
+                    }),
+                    ...mapped,
+                ], {
+                    history: {
+                        label: planned.label,
+                        category: 'ordinary-timeline',
+                    },
+                    selectionBefore: before.transientSelection,
+                    selectionAfter: planned.document.transientSelection,
+                    compatibilityResult: {
+                        kind: 'success',
+                        command: planned.command,
+                        playhead: planned.playhead,
+                        targetTransforms: structuredClone(planned.targetTransforms),
+                    },
+                });
+            }
         }
         return commitOrdinaryPlan({ state, before, planned });
     },
@@ -2010,10 +2313,22 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const state = get();
         const id = requestedId ?? crypto.randomUUID();
         if (!isSafeVideoId(id) || state.audioTracks.some((track) => track.id === id)) return '';
+        const trackName = name?.trim() || `Audio ${state.audioTracks.length + 1}`;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.add', {
+                    trackKind: 'audio',
+                    trackId: id,
+                    name: trackName,
+                }),
+            ], standaloneDirectOptions(state, 'Add audio track', 'add-audio-track'));
+            return id;
+        }
         commitDurableMutation(state, {
             audioTracks: [...state.audioTracks, {
                 id,
-                name: name?.trim() || `Audio ${state.audioTracks.length + 1}`,
+                name: trackName,
                 muted: false,
                 solo: false,
                 locked: false,
@@ -2031,6 +2346,17 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const impact: AudioGraphMutationImpact = track.clips.length > 0
             ? 'invalidate-transcription'
             : 'preserve-transcription';
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.delete', {
+                    trackKind: 'audio',
+                    trackId,
+                    policy: 'delete-contents',
+                }),
+            ], standaloneDirectOptions(state, 'Remove audio track', 'remove-audio-track'));
+            return;
+        }
         commitDurableMutation(state, {
             audioTracks: state.audioTracks.filter((item) => item.id !== trackId),
             transientSelection: state.transientSelection.kind === 'audio-clip'
@@ -2049,6 +2375,17 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const track = state.audioTracks.find((item) => item.id === trackId);
         const nextName = name.trim();
         if (!track || track.locked || !nextName || track.name === nextName) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.rename', {
+                    trackKind: 'audio',
+                    trackId,
+                    name: nextName,
+                }),
+            ], standaloneDirectOptions(state, 'Rename audio track', 'rename-audio-track'));
+            return;
+        }
         commitDurableMutation(state, {
             audioTracks: state.audioTracks.map((item) => item.id === trackId ? { ...item, name: nextName } : item),
         }, { history: { label: 'Rename audio track', mergeKey: `audio-track-name:${trackId}` } });
@@ -2087,6 +2424,56 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         // discriminated scalar schema, so direct equality keeps no-op updates off the durable
         // mutation path without serializing objects on every pointer event.
         if (audioClipsEqual(candidateClip, located.clip)) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            if (candidateClip.muted !== located.clip.muted) {
+                standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                    code: 'unsupported-audio-clip-mute',
+                    message: 'Core has no independent audio clip mute operation.',
+                    ids: [clipId],
+                }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+                return;
+            }
+            const operations = [];
+            if (candidateClip.gainDb !== located.clip.gainDb) {
+                operations.push(createStandaloneSemanticOperation('audio-clip.set-gain', {
+                    clipId,
+                    gainDb: candidateClip.gainDb,
+                }));
+            }
+            if ('sourceStartSample' in candidateClip) {
+                const source = state.audioSources.find(
+                    (value) => value.id === candidateClip.source.audioSourceId,
+                );
+                if (!source) return;
+                operations.push(createStandaloneSemanticOperation('audio-clip.set-fades', {
+                    clipId,
+                    fadeInOutputSamples48k: Math.round(
+                        candidateClip.fadeInSamples * 48_000 / source.nativeSampleRate,
+                    ),
+                    fadeOutOutputSamples48k: Math.round(
+                        candidateClip.fadeOutSamples * 48_000 / source.nativeSampleRate,
+                    ),
+                }));
+            } else {
+                operations.push(createStandaloneSemanticOperation('audio-clip.set-fades', {
+                    clipId,
+                    fadeInOutputSamples48k: frameToOutputSample(
+                        candidateClip.fadeInFrames,
+                        state.renderProfile.fps,
+                    ),
+                    fadeOutOutputSamples48k: frameToOutputSample(
+                        candidateClip.fadeOutFrames,
+                        state.renderProfile.fps,
+                    ),
+                }));
+            }
+            standaloneEngine.enqueueOperations(
+                operations,
+                standaloneDirectOptions(state, 'Edit audio clip mix', 'edit-audio-clip-mix'),
+            );
+            return;
+        }
         const audioTracks = state.audioTracks.map((track) => track.id === located.track.id
             ? { ...track, clips: track.clips.map((clip) => clip.id === clipId ? candidateClip : clip) }
             : track);
@@ -2108,6 +2495,29 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const nextGainDb = Math.min(12, Math.max(-60,
             Number.isFinite(updates.gainDb) ? updates.gainDb! : track.gainDb));
         if (nextMuted === track.muted && nextSolo === track.solo && nextGainDb === track.gainDb) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            const operations = [];
+            if (nextMuted !== track.muted || nextSolo !== track.solo) {
+                operations.push(createStandaloneSemanticOperation('track.set-state', {
+                    trackKind: 'audio',
+                    trackId,
+                    muted: nextMuted,
+                    solo: nextSolo,
+                }));
+            }
+            if (nextGainDb !== track.gainDb) {
+                operations.push(createStandaloneSemanticOperation('audio-track.set-gain', {
+                    trackId,
+                    gainDb: nextGainDb,
+                }));
+            }
+            standaloneEngine.enqueueOperations(
+                operations,
+                standaloneDirectOptions(state, 'Edit audio track mix', 'edit-audio-track-mix'),
+            );
+            return;
+        }
         const impact: AudioGraphMutationImpact = nextMuted !== track.muted || nextSolo !== track.solo
             ? 'invalidate-transcription'
             : 'preserve-transcription';
@@ -2125,6 +2535,21 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const state = get();
         const track = state.audioTracks.find((item) => item.id === trackId);
         if (!track || track.locked === locked) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('track.set-state', {
+                    trackKind: 'audio',
+                    trackId,
+                    locked,
+                }),
+            ], standaloneDirectOptions(
+                state,
+                locked ? 'Lock audio track' : 'Unlock audio track',
+                'set-audio-track-lock',
+            ));
+            return;
+        }
         commitDurableMutation(state, {
             audioTracks: state.audioTracks.map((item) => item.id === trackId ? { ...item, locked } : item),
         }, { history: { label: locked ? 'Lock audio track' : 'Unlock audio track' } });
@@ -2162,6 +2587,16 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             && audio.fadeInFrames === current.fadeInFrames
             && audio.fadeOutFrames === current.fadeOutFrames
         ) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('video-clip.set-audio', {
+                    clipId,
+                    audio,
+                }),
+            ], standaloneDirectOptions(state, 'Edit embedded audio', 'edit-video-clip-audio'));
+            return;
+        }
         const impact: AudioGraphMutationImpact = audio.muted !== current.muted
             ? 'invalidate-transcription'
             : 'preserve-transcription';
@@ -2196,6 +2631,24 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                 && policy !== 'remove-with-deleted-video-range')) return;
         const track = state.tracks.find((item) => item.id === trackId);
         if (!track || track.isLocked || track.unlinkedVideoEditResponse === policy) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.enqueueOperations([
+                createStandaloneSemanticOperation('subtitle-track.set-unlinked-video-policy', {
+                    trackId,
+                    policy: policy === 'stay-absolute'
+                        ? 'preserve-absolute'
+                        : policy === 'follow-project-ripple'
+                            ? 'ripple-with-video-edit'
+                            : 'remove-with-deleted-video-range',
+                }),
+            ], standaloneDirectOptions(
+                state,
+                'Change subtitle video edit response',
+                'set-subtitle-video-policy',
+            ));
+            return;
+        }
         commitDurableMutation(state, {
             tracks: state.tracks.map((item) => item.id === trackId
                 ? {
@@ -2211,6 +2664,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     setTrackTranscriptionState: (trackId, provenance) => {
         const state = get();
         if (!state.tracks.some((track) => track.id === trackId)) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-transcription-provenance',
+                message: 'Transcription provenance requires a typed engine publication transaction.',
+                ids: [trackId],
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+            return;
+        }
         const transcriptionByTrackId = { ...state.transcriptionByTrackId };
         if (provenance) {
             transcriptionByTrackId[trackId] = {
@@ -2253,6 +2715,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                 track,
             );
         if (!track || !guardIsCurrent) {
+            return false;
+        }
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-transcription-publication',
+                message: 'Transcription results and provenance require a typed engine publication transaction.',
+                ids: [trackId],
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
             return false;
         }
 
@@ -2307,6 +2778,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
         const targetTrack = state.tracks.find((track) => track.id === targetTrackId);
         if (!targetTrack) return false;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-transcription-publication',
+                message: 'Diarized transcription results and provenance require a typed engine publication transaction.',
+                ids: [targetTrackId],
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+            return false;
+        }
         const targetInspection = inspectDiarizationProvenance(state.transcriptionByTrackId[targetTrackId]);
         // The guard normally rejects this state before the command starts. Keep a second explicit
         // check at the mutation boundary so direct callers can never overwrite future metadata.
@@ -2445,6 +2925,18 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     activateNarrative: async (request) => {
         const state = discardActiveDragPreview();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            const unsupported = standaloneUnsupportedBoundary({
+                code: 'unsupported-transcript-registration',
+                message: 'Narrative activation requires typed transcript descriptor publication.',
+                ids: [...request.selectedTrackIds],
+            });
+            standaloneEngine.reportUnsupported(
+                unsupported as Extract<TimelineV4CommandResult, { kind: 'error' }>,
+            );
+            return unsupported;
+        }
         const before = buildEditorDocumentFromState(state);
         const explicitGuardError = validateRequestedNarrativeGuard(before, request);
         if (explicitGuardError) return explicitGuardError;
@@ -2655,6 +3147,22 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             discoverNewOverlaps: false,
         });
         if (integrated.kind !== 'success') return integrated;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            return standaloneEngine.dispatchOperations([
+                createStandaloneSemanticOperation('narrative.release-tracks', {
+                    trackIds: [...trackIds],
+                }),
+            ], {
+                history: {
+                    label: planned.history.label ?? 'Release controlled tracks',
+                    category: 'narrative',
+                },
+                selectionBefore: before.transientSelection,
+                selectionAfter: integrated.document.transientSelection,
+                compatibilityResult: toTimelineCommandSuccess(planned),
+            });
+        }
         try {
             const committed = commitV4CommandDocument({
                 state,
@@ -2694,6 +3202,21 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             discoverNewOverlaps: false,
         });
         if (integrated.kind !== 'success') return integrated;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            return standaloneEngine.dispatchOperations(
+                mapStandaloneNarrativeCommand(request),
+                {
+                    history: {
+                        label: planned.history.label ?? planned.command,
+                        category: 'narrative',
+                    },
+                    selectionBefore: before.transientSelection,
+                    selectionAfter: integrated.document.transientSelection,
+                    compatibilityResult: toTimelineCommandSuccess(planned),
+                },
+            );
+        }
         try {
             const committed = commitV4CommandDocument({
                 state,
@@ -2714,6 +3237,25 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const before = buildEditorDocumentFromState(state);
         const planned = planTimelineEditorialLinkCommand({ document: before, request });
         if (planned.kind !== 'success') return planned;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            return standaloneEngine.enqueueOperations(
+                mapStandaloneLinkCommand(request),
+                {
+                    history: {
+                        label: planned.history.label ?? planned.command,
+                        category: 'editorial-link',
+                    },
+                    selectionBefore: before.transientSelection,
+                    selectionAfter: planned.document.transientSelection,
+                    compatibilityResult: {
+                        kind: 'success',
+                        command: planned.command,
+                        playhead: { kind: 'keep', reason: 'non-structural' },
+                    },
+                },
+            );
+        }
         try {
             const committed = commitV4CommandDocument({
                 state,
@@ -2737,10 +3279,33 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     executeOrdinaryV4Command: (request) => {
         const state = get();
         const before = buildEditorDocumentFromState(getOrdinaryPlanningState(state));
+        const planned = planTimelineOrdinaryV4Command(before, request);
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine && planned.kind === 'success') {
+            const mapped = mapStandaloneOrdinaryCommand({ before, planned, request });
+            if (!Array.isArray(mapped)) {
+                if (mapped.kind === 'error') standaloneEngine.reportUnsupported(mapped);
+                return mapped;
+            }
+            return standaloneEngine.enqueueOperations(mapped, {
+                history: {
+                    label: planned.label,
+                    category: 'ordinary-timeline',
+                },
+                selectionBefore: before.transientSelection,
+                selectionAfter: planned.document.transientSelection,
+                compatibilityResult: {
+                    kind: 'success',
+                    command: planned.command,
+                    playhead: planned.playhead,
+                    targetTransforms: structuredClone(planned.targetTransforms),
+                },
+            });
+        }
         return commitOrdinaryPlan({
             state,
             before,
-            planned: planTimelineOrdinaryV4Command(before, request),
+            planned,
         });
     },
 
@@ -2753,6 +3318,21 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             mode,
         });
         if (planned.kind !== 'success') return planned;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            return standaloneEngine.enqueueOperations(
+                mapStandaloneGlobalEditingMode(mode),
+                {
+                    history: {
+                        label: planned.history.label ?? 'Change editing mode',
+                        category: 'narrative',
+                    },
+                    selectionBefore: before.transientSelection,
+                    selectionAfter: planned.document.transientSelection,
+                    compatibilityResult: toTimelineCommandSuccess(planned),
+                },
+            );
+        }
         try {
             const committed = commitV4CommandDocument({
                 state,
@@ -2828,6 +3408,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                 transientSelection,
                 history: { label: 'Replace subtitle tracks' },
             });
+            return;
+        }
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-subtitle-track-catalog-replacement',
+                message: 'Replacing the subtitle track catalogue requires typed track and provenance operations.',
+                ids: normalizedTracks.map((track) => track.id),
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
             return;
         }
 
@@ -2963,6 +3552,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             ? id
             : (state.tracks.length > 0 ? state.tracks[0].id : null);
         if (activeTrackId === state.activeTrackId) return;
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-active-subtitle-track',
+                message: 'Core has no durable active subtitle track operation.',
+                ids: activeTrackId ? [activeTrackId] : [],
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+            return;
+        }
         const legacy = getLegacyTranscriptionForTrack(state.transcriptionByTrackId, activeTrackId);
         commitDurableMutation(state, {
             activeTrackId,
@@ -3266,6 +3864,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     setTranscriptionState: (groups, containerIds, raw) => {
         const state = get();
+        const standaloneEngine = getStandaloneEditorEngineBridge();
+        if (standaloneEngine) {
+            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                code: 'unsupported-transcription-provenance',
+                message: 'Transcription grouping and provenance require a typed engine publication transaction.',
+                ids: state.activeTrackId ? [state.activeTrackId] : [],
+            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+            return;
+        }
         const nextRaw = raw !== undefined ? raw : state.rawTranscription;
         const transcriptionByTrackId = { ...state.transcriptionByTrackId };
         if (state.activeTrackId) {

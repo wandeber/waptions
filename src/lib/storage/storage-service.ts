@@ -51,6 +51,17 @@ import {
     migrateTimelineHistoryV3ToV4,
     projectEditorDocumentHistoryV4,
 } from './editor-history-storage-v4';
+import type {
+    EditorIdempotencyReceipt,
+    EditorPersistenceCommit,
+} from '@/lib/editor-engine/editor-ports';
+import type { EditorMutationToolName } from '@/lib/editor-engine/editor-command';
+import type {
+    EditorEngineSnapshot,
+    EditorHistoryState,
+} from '@/lib/editor-engine/editor-engine-types';
+import type { EditorEngineEvent } from '@/lib/editor-engine/editor-events';
+import type { TransientMediaSelectionV4 } from '@/types/video';
 
 export const EDITOR_DOCUMENT_V2_KEY = 'editor-document-v2';
 export const EDITOR_DOCUMENT_V3_KEY = 'editor-document-v3';
@@ -61,6 +72,32 @@ export const EDITOR_DOCUMENT_V3_TOMBSTONE = Object.freeze({
     migratedToVersion: 4,
 } as const);
 export const VIDEO_SOURCE_KEY_PREFIX = 'source:';
+export const STANDALONE_EDITOR_ENGINE_HEAD_KEY = 'editor-engine:standalone-head:v1';
+export const STANDALONE_EDITOR_ENGINE_RECEIPT_INDEX_KEY = 'editor-engine:receipt-index:v1';
+export const STANDALONE_EDITOR_ENGINE_RECEIPT_PREFIX = 'editor-engine:receipt:v1:';
+const STANDALONE_EDITOR_ENGINE_RECEIPT_LIMIT = 1_000;
+
+export interface StandaloneEditorSelectionHistoryV1 {
+    before: TransientMediaSelectionV4;
+    after: TransientMediaSelectionV4;
+}
+
+export interface StandaloneEditorEngineHeadV1 {
+    schemaVersion: 1;
+    snapshot: EditorEngineSnapshot;
+    history: EditorHistoryState;
+    sessionState: EditorPersistenceCommit['sessionState'];
+    transaction: EditorPersistenceCommit['transaction'];
+    event: EditorEngineEvent | null;
+    transcriptPins: EditorPersistenceCommit['transcriptPins'];
+    pinGeneration: number;
+    selectionByHistoryEntryId: Record<string, StandaloneEditorSelectionHistoryV1>;
+}
+
+interface StandaloneEditorReceiptIndexV1 {
+    schemaVersion: 1;
+    keys: string[];
+}
 
 export type EditorPersistentAsset =
     | { kind: 'video-source'; asset: VideoSourceAssetV3 }
@@ -236,6 +273,75 @@ export class StorageService {
         // If quota or cloning fails, IndexedDB aborts the whole batch and the prior v3/v2/v1
         // project remains intact and reopenable.
         await this.getProjectDbAdapter<unknown>(projectId).batch(operations);
+    }
+
+    async loadStandaloneEditorEngineHead(
+        projectId: string,
+    ): Promise<StandaloneEditorEngineHeadV1 | null> {
+        const value = await this.getProjectDbAdapter<unknown>(projectId)
+            .get(STANDALONE_EDITOR_ENGINE_HEAD_KEY);
+        return isStandaloneEditorEngineHead(value) ? structuredClone(value) : null;
+    }
+
+    async getStandaloneEditorEngineReceipt(
+        projectId: string,
+        toolName: EditorMutationToolName,
+        idempotencyKey: string,
+    ): Promise<EditorIdempotencyReceipt | null> {
+        const value = await this.getProjectDbAdapter<unknown>(projectId).get(
+            standaloneEditorReceiptKey(toolName, idempotencyKey),
+        );
+        return isEditorIdempotencyReceipt(value, toolName, idempotencyKey)
+            ? structuredClone(value)
+            : null;
+    }
+
+    /**
+     * Commits the Core engine head and its public V4 manifest in the same project transaction.
+     *
+     * Files are registered by the existing setup/import transaction before an engine can refer to
+     * them. Engine mutations therefore write only descriptor/history/session/event/receipt state.
+     */
+    async commitStandaloneEditorEngineHead(input: {
+        projectId: string;
+        head: StandaloneEditorEngineHeadV1;
+        receipt: EditorIdempotencyReceipt;
+    }): Promise<void> {
+        const adapter = this.getProjectDbAdapter<unknown>(input.projectId);
+        const receiptKey = standaloneEditorReceiptKey(
+            input.receipt.toolName,
+            input.receipt.idempotencyKey,
+        );
+        const rawIndex = await adapter.get(STANDALONE_EDITOR_ENGINE_RECEIPT_INDEX_KEY);
+        const priorKeys = isStandaloneEditorReceiptIndex(rawIndex) ? rawIndex.keys : [];
+        const keys = [...priorKeys.filter((key) => key !== receiptKey), receiptKey];
+        const deletedKeys = keys.length > STANDALONE_EDITOR_ENGINE_RECEIPT_LIMIT
+            ? keys.slice(0, keys.length - STANDALONE_EDITOR_ENGINE_RECEIPT_LIMIT)
+            : [];
+        const retainedKeys = keys.slice(-STANDALONE_EDITOR_ENGINE_RECEIPT_LIMIT);
+        await adapter.batch<unknown>([
+            {
+                type: 'put',
+                key: EDITOR_DOCUMENT_V4_KEY,
+                value: structuredClone(input.head.snapshot.manifest),
+            },
+            { type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: EDITOR_DOCUMENT_V3_TOMBSTONE },
+            {
+                type: 'put',
+                key: STANDALONE_EDITOR_ENGINE_HEAD_KEY,
+                value: structuredClone(input.head),
+            },
+            { type: 'put', key: receiptKey, value: structuredClone(input.receipt) },
+            {
+                type: 'put',
+                key: STANDALONE_EDITOR_ENGINE_RECEIPT_INDEX_KEY,
+                value: {
+                    schemaVersion: 1,
+                    keys: retainedKeys,
+                } satisfies StandaloneEditorReceiptIndexV1,
+            },
+            ...deletedKeys.map((key) => ({ type: 'delete' as const, key })),
+        ]);
     }
 
     /** Writes one WAL step and its complete index together before the slower manifest checkpoint. */
@@ -789,6 +895,53 @@ function upgradeLegacyMediaFingerprints(
     return changed
         ? { document: { ...document, videoSources, audioSources }, changed }
         : { document, changed };
+}
+
+function standaloneEditorReceiptKey(
+    toolName: EditorMutationToolName,
+    idempotencyKey: string,
+): string {
+    return `${STANDALONE_EDITOR_ENGINE_RECEIPT_PREFIX}${encodeURIComponent(toolName)}:${encodeURIComponent(idempotencyKey)}`;
+}
+
+function isStandaloneEditorReceiptIndex(value: unknown): value is StandaloneEditorReceiptIndexV1 {
+    return Boolean(
+        value
+        && typeof value === 'object'
+        && (value as { schemaVersion?: unknown }).schemaVersion === 1
+        && Array.isArray((value as { keys?: unknown }).keys)
+        && (value as { keys: unknown[] }).keys.every((key) => typeof key === 'string'),
+    );
+}
+
+function isEditorIdempotencyReceipt(
+    value: unknown,
+    toolName: EditorMutationToolName,
+    idempotencyKey: string,
+): value is EditorIdempotencyReceipt {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as Partial<EditorIdempotencyReceipt>;
+    return candidate.toolName === toolName
+        && candidate.idempotencyKey === idempotencyKey
+        && typeof candidate.requestHash === 'string'
+        && Boolean(candidate.result && typeof candidate.result === 'object');
+}
+
+function isStandaloneEditorEngineHead(value: unknown): value is StandaloneEditorEngineHeadV1 {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as Partial<StandaloneEditorEngineHeadV1>;
+    return candidate.schemaVersion === 1
+        && Boolean(candidate.snapshot && typeof candidate.snapshot === 'object')
+        && Boolean(candidate.history && typeof candidate.history === 'object')
+        && Boolean(candidate.sessionState && typeof candidate.sessionState === 'object')
+        && Boolean(candidate.transaction && typeof candidate.transaction === 'object')
+        && Boolean(candidate.transcriptPins && typeof candidate.transcriptPins === 'object')
+        && Number.isSafeInteger(candidate.pinGeneration)
+        && (candidate.pinGeneration ?? -1) >= 0
+        && Boolean(
+            candidate.selectionByHistoryEntryId
+            && typeof candidate.selectionByHistoryEntryId === 'object',
+        );
 }
 
 export const storageService = new StorageService();

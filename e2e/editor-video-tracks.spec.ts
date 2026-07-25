@@ -303,6 +303,11 @@ test.describe('video track editing', () => {
     await expect(videoRows(page)).toHaveCount(2);
     await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
     await expect(videoRows(page)).toHaveCount(2);
+    // Track creation and its queued undo keep the same row count. Wait for the authoritative
+    // engine projection instead of treating that unchanged count as command completion.
+    await expect(page.locator(
+      '[data-testid="timeline-video-clip"][data-dragging="true"]',
+    )).toHaveCount(0);
 
     await pointerDragToNewTrack(page, videoRows(page).nth(1).getByTestId('timeline-video-clip'), 2);
     // The emptied source lane is removed in the same transaction, so creating the new lane keeps
@@ -333,7 +338,11 @@ test.describe('video track editing', () => {
     );
     const subtitleRowCount = await subtitleRows.count();
     await trackControlsHeader.getByRole('button', { name: 'Add subtitle track' }).click();
-    await expect(subtitleRows).toHaveCount(subtitleRowCount + 1);
+    // The loaded project is engine-owned. Core cannot yet atomically add a second subtitle track
+    // and make it the durable active track, so the compatibility adapter must fail closed instead
+    // of partially creating a lane with different selection behavior.
+    await expect(subtitleRows).toHaveCount(subtitleRowCount);
+    await expect(page.getByTestId('persistence-status-error')).toBeVisible();
 
     expect(failures.errors).toEqual([]);
   });

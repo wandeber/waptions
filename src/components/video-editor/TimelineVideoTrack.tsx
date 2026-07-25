@@ -131,6 +131,7 @@ function ClipBlock({
         narrative,
         dependentLinks,
         videoTracks,
+        standalonePendingCommandCount,
     } = useTimelineStore(useShallow((state) => ({
         projectFps: state.projectFps,
         renderProfile: state.renderProfile,
@@ -141,6 +142,7 @@ function ClipBlock({
         narrative: state.narrative,
         dependentLinks: state.dependentLinks,
         videoTracks: state.videoTracks,
+        standalonePendingCommandCount: state.standalonePendingCommandCount,
     })));
     const clipRef = useRef<HTMLDivElement>(null);
     const [trimPreview, setTrimPreview] = useState<TrimDraft | null>(null);
@@ -433,7 +435,7 @@ function ClipBlock({
                 tabIndex={0}
                 role="button"
                 data-testid="timeline-video-clip"
-                data-dragging={movePreview ? 'true' : 'false'}
+                data-dragging={movePreview || standalonePendingCommandCount > 0 ? 'true' : 'false'}
                 data-drag-invalid={movePreview?.invalid ? 'true' : 'false'}
                 data-preview-start-frame={previewTimelineStartFrame}
                 className={`absolute bottom-1 top-1 touch-none select-none overflow-hidden rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-200 ${movePreview ? 'cursor-grabbing opacity-80' : 'cursor-grab'} ${movePreview?.invalid

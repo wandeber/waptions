@@ -19,20 +19,20 @@ const UNLINKED_RESPONSE_PRESENTATION: Record<UnlinkedVideoEditResponse, {
     'follow-project-ripple': {
         label: 'follow ripple',
         ariaLabel: 'follow project ripple',
-        title: 'Unlinked cues follow uncontrolled video ripple. Click to keep them absolute.',
-        next: 'stay-absolute',
+        title: 'Unlinked cues follow uncontrolled video ripple. Click to remove cues overlapping deleted video.',
+        next: 'remove-with-deleted-video-range',
     },
     'stay-absolute': {
         label: 'stay absolute',
         ariaLabel: 'stay absolute',
-        title: 'Unlinked cues stay absolute during uncontrolled video edits. Click to remove cues overlapping deleted video.',
-        next: 'remove-with-deleted-video-range',
+        title: 'Unlinked cues stay absolute during uncontrolled video edits. Click to make them follow ripple.',
+        next: 'follow-project-ripple',
     },
     'remove-with-deleted-video-range': {
         label: 'remove in deleted range',
         ariaLabel: 'remove with deleted video range',
-        title: 'Unlinked cues overlapping deleted video are removed. Click to make them follow ripple.',
-        next: 'follow-project-ripple',
+        title: 'Unlinked cues overlapping deleted video are removed. Click to keep them absolute.',
+        next: 'stay-absolute',
     },
 };
 

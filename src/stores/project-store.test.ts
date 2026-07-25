@@ -19,6 +19,7 @@ import {
 } from '@/types/editorial.test-fixtures';
 import { timelineEditorialRuntime } from './timeline-editorial-runtime';
 import type { EditorialTranscriptRepository } from '@/lib/storage/editorial-transcript-repository';
+import { StandaloneEditorEngineAdapter } from './standalone-editor-engine-adapter';
 
 const project = (id: string): TProject => ({
     id,
@@ -140,6 +141,59 @@ describe('project persistence lifecycle integration', () => {
         expect(settle.mock.invocationCallOrder[0]).toBeLessThan(loadProject.mock.invocationCallOrder[0]);
         expect(useProjectStore.getState().persistenceError).toBe(recoveredFailure);
         expect(useProjectStore.getState().activeProject?.id).toBe(id);
+    });
+
+    it('reconciles an interrupted project rename from the authoritative engine head', async () => {
+        const id = 'project_interrupted_rename';
+        const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+        Object.defineProperty(globalThis, 'indexedDB', {
+            configurable: true,
+            value: {},
+        });
+        try {
+            vi.spyOn(storageService, 'loadProject').mockResolvedValue(project(id));
+            vi.spyOn(storageService, 'loadEditorDocument').mockResolvedValue(
+                createEditorDocumentV4Fixture({
+                    narrative: null,
+                    editorialTranscriptDescriptors: [],
+                    videoSources: [],
+                    videoClips: [],
+                    videoTracks: [{
+                        id: 'video_track_empty',
+                        name: 'Video 1',
+                        visible: true,
+                        locked: false,
+                    }],
+                    audioSources: [],
+                    audioTracks: [],
+                    subtitleTracks: [],
+                    activeSubtitleTrackId: null,
+                }) as never,
+            );
+            vi.spyOn(storageService, 'loadAllProjects').mockResolvedValue([]);
+            const saveProject = vi.spyOn(storageService, 'saveProject').mockResolvedValue();
+            vi.spyOn(StandaloneEditorEngineAdapter, 'create').mockResolvedValue({
+                getSnapshot: () => ({ project: { name: 'Engine authoritative name' } }),
+                close: vi.fn(async () => undefined),
+            } as unknown as StandaloneEditorEngineAdapter);
+
+            await useProjectStore.getState().loadProject(id);
+
+            expect(useProjectStore.getState().activeProject).toMatchObject({
+                id,
+                name: 'Engine authoritative name',
+            });
+            expect(saveProject.mock.calls.some(([saved]) => (
+                saved.id === id && saved.name === 'Engine authoritative name'
+            ))).toBe(true);
+        } finally {
+            useProjectStore.getState().closeProject();
+            if (indexedDbDescriptor) {
+                Object.defineProperty(globalThis, 'indexedDB', indexedDbDescriptor);
+            } else {
+                Reflect.deleteProperty(globalThis, 'indexedDB');
+            }
+        }
     });
 
     it('keeps a document read failure separate from recovered persistence state', async () => {

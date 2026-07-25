@@ -43,7 +43,9 @@ async function rewriteRenderBackground(
           keysRequest.onsuccess = () => {
             keysRequest.result
               .map(String)
-              .filter((key) => key.startsWith('editor-history:') || key.startsWith('editor-recovery:'))
+              .filter((key) => key.startsWith('editor-history:')
+                || key.startsWith('editor-recovery:')
+                || key.startsWith('editor-engine:'))
               .forEach((key) => store.delete(key));
           };
         };

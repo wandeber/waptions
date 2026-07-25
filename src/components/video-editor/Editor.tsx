@@ -62,6 +62,7 @@ function EditorContent() {
         redo,
         history,
         redoStack,
+        standalonePendingCommandCount,
         selectedSubtitleIds,
         clearSelection,
         copySelection,
@@ -84,6 +85,7 @@ function EditorContent() {
         redo: state.redo,
         history: state.history,
         redoStack: state.redoStack,
+        standalonePendingCommandCount: state.standalonePendingCommandCount,
         selectedSubtitleIds: state.selectedSubtitleIds,
         clearSelection: state.clearSelection,
         copySelection: state.copySelection,
@@ -256,7 +258,9 @@ function EditorContent() {
                 onUndo={handleUndo}
                 onRedo={handleRedo}
                 onHistoryPointerDown={handleHistoryPointerDown}
-                canUndo={history.length > 0 || hasPendingUndoableDraft}
+                canUndo={history.length > 0
+                    || hasPendingUndoableDraft
+                    || standalonePendingCommandCount > 0}
                 canRedo={redoStack.length > 0}
                 onCopy={copySelection}
                 onPaste={() => pasteSelection(usePlaybackStore.getState().currentTime)}

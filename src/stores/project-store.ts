@@ -28,6 +28,13 @@ import { projectEditorDocumentHistoryV4 } from '@/lib/storage/editor-history-sto
 import { timelineEditorialRuntime } from './timeline-editorial-runtime';
 import { createMediabunnyEditorialPcmWindowDecoder } from '@/lib/editorial-transcription/pcm-window-decoder';
 import { approximateSecondsAsRationalDuration } from './timeline-editorial-runtime';
+import { StandaloneEditorEngineAdapter } from './standalone-editor-engine-adapter';
+import {
+    getStandaloneEditorEngineBridge,
+    setStandaloneEditorEngineBridge,
+    StandaloneEditorUnsupportedError,
+} from './standalone-editor-engine-registry';
+import { mapStandaloneProjectName } from './standalone-editor-operation-mapping';
 
 // Bounded quiet-boundary decoding resolves the currently mounted immutable source by fingerprint.
 // The closure reads Files only on demand and never copies them into the runtime service, history,
@@ -45,7 +52,11 @@ const editorPcmWindowDecoder = createMediabunnyEditorialPcmWindowDecoder({
 });
 timelineEditorialRuntime.configure({ quietWindowDecoder: editorPcmWindowDecoder });
 
-export type PersistenceRetryKind = 'editor-document' | 'project-save' | 'recovery-load';
+export type PersistenceRetryKind =
+    | 'editor-document'
+    | 'project-save'
+    | 'recovery-load'
+    | 'standalone-engine';
 export type ProjectLoadErrorKind = 'not-found' | 'unreadable';
 
 export interface ProjectLoadError {
@@ -104,6 +115,81 @@ interface ProjectStore {
 
 let latestProjectLoadRequest = 0;
 let latestProjectRouteIntent = 0;
+let activeStandaloneEditorAdapter: StandaloneEditorEngineAdapter | null = null;
+
+const closeStandaloneEditorAdapter = async (): Promise<void> => {
+    const adapter = activeStandaloneEditorAdapter;
+    activeStandaloneEditorAdapter = null;
+    setStandaloneEditorEngineBridge(null);
+    await adapter?.close().catch(() => undefined);
+};
+
+const attachStandaloneEditorAdapter = async (
+    project: TProject,
+): Promise<StandaloneEditorEngineAdapter | null> => {
+    if (typeof indexedDB === 'undefined') return null;
+    const adapter = await StandaloneEditorEngineAdapter.create({
+        projectId: project.id,
+        projectName: project.name,
+        state: useTimelineStore.getState(),
+        onError: (error) => {
+            if (useProjectStore.getState().activeProject?.id !== project.id) return;
+            useProjectStore.setState({
+                persistenceStatus: 'error',
+                persistenceError: error,
+                persistenceRetryKind: error instanceof StandaloneEditorUnsupportedError
+                    ? null
+                    : 'standalone-engine',
+            });
+        },
+        onProjection: async ({ revision, projectName }) => {
+            const projectStore = useProjectStore.getState();
+            if (projectStore.activeProject?.id !== project.id) return;
+            projectStore.checkDirty(revision);
+            if (projectStore.activeProject.name !== projectName) {
+                const context = {
+                    projectId: project.id,
+                    generation: projectStore.persistenceGeneration,
+                };
+                const authoritativeProject = {
+                    ...projectStore.activeProject,
+                    name: projectName,
+                };
+                useProjectStore.setState({ activeProject: authoritativeProject });
+                try {
+                    await enqueueProjectMetadataWrite(
+                        context,
+                        authoritativeProject,
+                        (current) => ({
+                            ...current,
+                            name: projectName,
+                            updatedAt: new Date(),
+                        }),
+                    );
+                } catch (error) {
+                    if (isProjectContextActive(useProjectStore.getState(), context)) {
+                        useProjectStore.setState({
+                            persistenceStatus: 'error',
+                            persistenceError: error,
+                            persistenceRetryKind: 'project-save',
+                        });
+                    }
+                    return;
+                }
+            } else if (projectStore.persistenceRetryKind === 'project-save') {
+                return;
+            }
+            useProjectStore.setState({
+                persistenceStatus: 'saved',
+                persistenceError: null,
+                persistenceRetryKind: null,
+            });
+        },
+    });
+    activeStandaloneEditorAdapter = adapter;
+    setStandaloneEditorEngineBridge(adapter);
+    return adapter;
+};
 
 class ProjectNotFoundError extends Error {
     constructor(projectId: string) {
@@ -318,6 +404,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         // A newly created editor is a real project switch. Clear the previous session credential/
         // body cache before installing the new persistence and transcript publication guards.
+        await closeStandaloneEditorAdapter();
         await timelineEditorialRuntime.detachProject().catch(() => undefined);
         if (previous.activeProject) {
             editorPersistenceRegistry.close(previous.activeProject.id, previous.persistenceGeneration);
@@ -370,6 +457,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             return newProject.id;
         } catch (error) {
             editorPersistenceRegistry.close(newProject.id, attachment.generation);
+            await closeStandaloneEditorAdapter();
             await timelineEditorialRuntime.detachProject().catch(() => undefined);
             setTimelinePersistenceBinding(null);
             // Project discovery is created before the first document flush. If that flush fails,
@@ -488,6 +576,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             if (!isLatestRequest()) return;
 
             const previous = get();
+            await closeStandaloneEditorAdapter();
             await timelineEditorialRuntime.detachProject().catch(() => undefined);
             if (!isLatestRequest()) return;
             const attachment = attachProjectPersistence(id);
@@ -534,14 +623,39 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 }
             }
 
-            const visiblePersistenceFailure = recoveredPersistenceFailure
+            const standaloneAdapter = await attachStandaloneEditorAdapter(project);
+            if (!isLatestRequest()) {
+                if (activeStandaloneEditorAdapter === standaloneAdapter) {
+                    await closeStandaloneEditorAdapter();
+                }
+                return;
+            }
+            const engineProjectName = standaloneAdapter?.getSnapshot().project.name;
+            const authoritativeProject = engineProjectName && engineProjectName !== project.name
+                ? { ...project, name: engineProjectName }
+                : project;
+            let metadataReconciliationFailure: unknown = null;
+            if (authoritativeProject !== project) {
+                try {
+                    await storageService.saveProject(authoritativeProject);
+                } catch (error) {
+                    metadataReconciliationFailure = error;
+                }
+                if (!isLatestRequest()) return;
+            }
+            const visiblePersistenceFailure = metadataReconciliationFailure
+                ?? recoveredPersistenceFailure
                 ?? attachment.coordinator.observeFailure();
             set({
-                activeProject: project,
+                activeProject: authoritativeProject,
                 persistenceGeneration: attachment.generation,
                 persistenceStatus: null,
                 persistenceError: visiblePersistenceFailure,
-                persistenceRetryKind: visiblePersistenceFailure ? 'editor-document' : null,
+                persistenceRetryKind: metadataReconciliationFailure
+                    ? 'project-save'
+                    : visiblePersistenceFailure
+                        ? 'editor-document'
+                        : null,
                 isSaving: false,
                 projectLoadError: null,
                 recoveryDocumentRevision: null,
@@ -644,13 +758,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }
 
         set({ isSaving: true });
-        const timelineStore = useTimelineStore.getState();
         const context = { projectId: activeProject.id, generation: persistenceGeneration };
-        const persistencePayload = createTimelinePersistencePayload(
-            timelineStore,
-            getPersistentAssets(timelineStore),
-        );
-        const { manifest, sourceAssets } = persistencePayload;
         const isStillActive = () => isProjectContextActive(get(), context);
 
         try {
@@ -658,6 +766,32 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 ...project,
                 updatedAt: new Date(),
             }));
+            const standaloneEngine = getStandaloneEditorEngineBridge();
+            if (standaloneEngine) {
+                await standaloneEngine.flush();
+                if (!isStillActive()) return;
+                const currentProject = get().activeProject!;
+                const currentRevision = useTimelineStore.getState().revision;
+                set({
+                    lastSavedIdentity: createProjectSaveIdentity(
+                        currentProject,
+                        persistenceGeneration,
+                        currentRevision,
+                    ),
+                    isDirty: false,
+                    persistenceStatus: 'saved',
+                    persistenceError: null,
+                    persistenceRetryKind: null,
+                });
+                await get().loadAllProjects();
+                return;
+            }
+            const timelineStore = useTimelineStore.getState();
+            const persistencePayload = createTimelinePersistencePayload(
+                timelineStore,
+                getPersistentAssets(timelineStore),
+            );
+            const { manifest, sourceAssets } = persistencePayload;
             editorPersistenceRegistry.enqueue(
                 context.projectId,
                 persistenceGeneration,
@@ -696,7 +830,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 set({
                     persistenceStatus: 'error',
                     persistenceError: coordinatorFailure ?? error,
-                    persistenceRetryKind: coordinatorFailure ? 'editor-document' : 'project-save',
+                    persistenceRetryKind: getStandaloneEditorEngineBridge()
+                        ? 'standalone-engine'
+                        : coordinatorFailure
+                            ? 'editor-document'
+                            : 'project-save',
                 });
             }
             console.error('Failed to save project:', error);
@@ -708,6 +846,22 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     retryPersistence: async () => {
         const { activeProject, persistenceGeneration, persistenceRetryKind } = get();
         if (!activeProject || !persistenceGeneration || !persistenceRetryKind) return;
+        if (persistenceRetryKind === 'standalone-engine') {
+            set({ isSaving: true });
+            try {
+                const retried = await getStandaloneEditorEngineBridge()?.retryLastFailure();
+                if (retried) {
+                    set({
+                        persistenceStatus: 'saved',
+                        persistenceError: null,
+                        persistenceRetryKind: null,
+                    });
+                }
+            } finally {
+                set({ isSaving: false });
+            }
+            return;
+        }
         if (persistenceRetryKind === 'project-save') {
             // Metadata failures happen before the coordinator retains a document request. Running
             // the normal save path again captures the latest project and manifest for this exact
@@ -937,6 +1091,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     closeProject: () => {
         invalidateProjectLoadRequests();
         const { activeProject, persistenceGeneration } = get();
+        const adapter = activeStandaloneEditorAdapter;
+        activeStandaloneEditorAdapter = null;
+        setStandaloneEditorEngineBridge(null);
+        void adapter?.close().catch(() => undefined);
         if (activeProject) editorPersistenceRegistry.close(activeProject.id, persistenceGeneration);
         void timelineEditorialRuntime.detachProject().catch(() => undefined);
         setTimelinePersistenceBinding(null);
@@ -967,18 +1125,37 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         const context = { projectId: activeProject.id, generation: persistenceGeneration };
 
         try {
-            const updatedProject = await enqueueProjectMetadataWrite(
-                context,
-                activeProject,
-                (project) => ({ ...project, name, updatedAt: new Date() }),
-            );
+            const standaloneEngine = getStandaloneEditorEngineBridge();
+            if (standaloneEngine) {
+                const selection = useTimelineStore.getState().transientSelection;
+                const result = await standaloneEngine.dispatchOperations(
+                    mapStandaloneProjectName(name),
+                    {
+                        history: { label: 'Rename project', category: 'project' },
+                        selectionBefore: selection,
+                        selectionAfter: selection,
+                        compatibilityResult: {
+                            kind: 'success',
+                            command: 'rename-project',
+                            playhead: { kind: 'keep', reason: 'non-structural' },
+                        },
+                    },
+                );
+                if (result.kind === 'error') throw new Error(result.error.message);
+            } else {
+                await enqueueProjectMetadataWrite(
+                    context,
+                    activeProject,
+                    (project) => ({ ...project, name, updatedAt: new Date() }),
+                );
+            }
             if (!isProjectContextActive(get(), context)) return;
-            if (get().activeProject?.name !== updatedProject.name) return;
+            if (get().activeProject?.name !== name) return;
             set((state) => ({
                 lastSavedIdentity: state.lastSavedIdentity
                     && state.lastSavedIdentity.projectId === context.projectId
                     && state.lastSavedIdentity.generation === context.generation
-                    ? { ...state.lastSavedIdentity, projectName: updatedProject.name }
+                    ? { ...state.lastSavedIdentity, projectName: name }
                     : state.lastSavedIdentity,
             }));
             get().checkDirty();
