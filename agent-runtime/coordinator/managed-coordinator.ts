@@ -80,7 +80,7 @@ interface CoordinatorEpochRecord {
     startedAt: string;
 }
 
-interface LoadedProject<State, Command, Result extends Record<string, unknown>> {
+interface LoadedProject<State, Command, Result extends object> {
     envelope: ManagedProjectEnvelopeV1<State>;
     port: ManagedEditorPort<State, Command, Result>;
     poisoned: boolean;
@@ -135,7 +135,7 @@ type RegistryMutationFactory<State, Result extends Record<string, unknown>> = (
 export class ManagedCoordinator<
     State = unknown,
     Command = unknown,
-    Result extends Record<string, unknown> = Record<string, unknown>,
+    Result extends object = Record<string, unknown>,
 > {
     readonly epoch: string;
     readonly store: ManagedFilesystemStore;
@@ -209,7 +209,7 @@ export class ManagedCoordinator<
     static async start<
         State = unknown,
         Command = unknown,
-        Result extends Record<string, unknown> = Record<string, unknown>,
+        Result extends object = Record<string, unknown>,
     >(
         dataRoot: string,
         portFactory: ManagedEditorPortFactory<State, Command, Result>,
@@ -1420,7 +1420,7 @@ export class ManagedCoordinator<
         });
     }
 
-    private async resolveReceipt<ReceiptResult extends Record<string, unknown>>(
+    private async resolveReceipt<ReceiptResult extends object>(
         projectId: string,
         request: ManagedMutationEnvelope,
     ): Promise<ManagedMutationResult<ReceiptResult> | null> {
