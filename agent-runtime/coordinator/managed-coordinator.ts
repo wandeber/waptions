@@ -1,26 +1,41 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ArtifactRegistry, type ArtifactRecord } from '../artifacts/artifact-registry';
+import {
+    ArtifactRegistry,
+    type ArtifactQuotaPolicy,
+    type ArtifactRecord,
+} from '../artifacts/artifact-registry';
 import type { Readable } from 'node:stream';
 import { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
 import {
     getProcessDecodedMemoryBudget,
     type ProcessDecodedMemoryBudget,
 } from '../diagnostics/decoded-memory-budget';
-import { ManagedEventLog, type ManagedEvent, type ManagedEventKind } from '../events/event-log';
+import {
+    ManagedEventLog,
+    type ManagedEvent,
+    type ManagedEventData,
+    type ManagedEventKind,
+} from '../events/event-log';
 import {
     DurableJobScheduler,
+    type DurableJobEnqueueInput,
     type DurableJobRecord,
+    type DurableJobTerminalPublication,
     type JobSchedulerOptions,
     toJobBoundaryState,
 } from '../jobs/durable-job-scheduler';
 import {
     PathGrantAuthority,
+    type OutputPublicationRecord,
     type PathGrantKind,
+    type RenderStagingQuotaPolicy,
     type SessionPathGrantRecord,
+    type SourceCopyQuotaPolicy,
+    type VerifiedReadHandle,
 } from '../path-grants/path-grant-authority';
-import { canonicalDigest } from '../persistence/canonical-json';
+import { canonicalDigest, canonicalJson } from '../persistence/canonical-json';
 import { atomicWriteFile, atomicWriteJson } from '../persistence/fs-durable';
 import type { PersistenceFaultInjector } from '../persistence/fs-durable';
 import {
@@ -66,6 +81,9 @@ export interface ManagedCoordinatorOptions {
     scheduler?: JobSchedulerOptions;
     persistenceFaultInjector?: PersistenceFaultInjector;
     decodedMemoryLimitBytes?: number;
+    artifactQuotas?: ArtifactQuotaPolicy;
+    sourceCopyQuotas?: SourceCopyQuotaPolicy;
+    renderStagingQuotas?: RenderStagingQuotaPolicy;
 }
 
 export interface RegistryMutation<State, Result extends Record<string, unknown>> {
@@ -73,7 +91,9 @@ export interface RegistryMutation<State, Result extends Record<string, unknown>>
     writes?: readonly DurableWrite[];
     result: Result;
     eventKind: ManagedEventKind;
-    eventSummary: Readonly<Record<string, string | number | boolean | null>>;
+    eventData: ManagedEventData;
+    afterCommit?(): void | Promise<void>;
+    onReject?(): void | Promise<void>;
 }
 
 type RegistryMutationFactory<State, Result extends Record<string, unknown>> = (
@@ -92,7 +112,7 @@ export class ManagedCoordinator<
     readonly diagnostics: RuntimeDiagnostics;
     readonly decodedMemoryBudget: ProcessDecodedMemoryBudget;
     readonly jobs: DurableJobScheduler;
-    readonly pathGrants = new PathGrantAuthority();
+    readonly pathGrants: PathGrantAuthority;
     readonly presence = new ViewPresenceStore();
 
     private readonly projects = new Map<string, LoadedProject<State, Command, Result>>();
@@ -100,6 +120,8 @@ export class ManagedCoordinator<
     private readonly activeEditorRequests = new Map<string, {
         request: ManagedMutationEnvelope<Command>;
         committed: boolean;
+        committedResult?: Result;
+        committedSnapshot?: ManagedEditorSnapshot<State>;
     }>();
     private closed = false;
     private closing = false;
@@ -115,14 +137,35 @@ export class ManagedCoordinator<
     ) {
         this.store = store;
         this.epoch = epoch;
-        this.events = new ManagedEventLog(store, secret);
-        this.artifacts = new ArtifactRegistry(store, secret);
         this.diagnostics = new RuntimeDiagnostics();
+        this.events = new ManagedEventLog(
+            store,
+            secret,
+            undefined,
+            undefined,
+            undefined,
+            { diagnostics: this.diagnostics },
+        );
+        this.artifacts = new ArtifactRegistry(
+            store,
+            secret,
+            this.diagnostics,
+            options.artifactQuotas,
+        );
+        this.pathGrants = new PathGrantAuthority({
+            privateCopyRoot: join(store.coordinatorRoot, 'source-copies'),
+            authoritySecret: secret,
+            diagnostics: this.diagnostics,
+            sourceCopyQuotas: options.sourceCopyQuotas,
+            renderStagingQuotas: options.renderStagingQuotas,
+        });
         this.decodedMemoryBudget = getProcessDecodedMemoryBudget(options.decodedMemoryLimitBytes);
         const externalTransition = options.scheduler?.onTransition;
         this.jobs = new DurableJobScheduler(store, this.diagnostics, {
             ...options.scheduler,
-            persistTransition: (record) => this.recordJobTransition(record),
+            persistTransition: (record, publication) => (
+                this.recordJobTransition(record, publication)
+            ),
             onTransition: externalTransition,
         });
     }
@@ -164,6 +207,14 @@ export class ManagedCoordinator<
                 // blobs that no committed artifact registry entry references.
                 await coordinator.artifacts.cleanupExpired(projectId);
             }
+            await coordinator.pathGrants.cleanupSourceCopies(
+                Array.from(coordinator.projects.values()).map(({ envelope }) => ({
+                    sessionId: envelope.sessionId,
+                    digests: envelope.sourceRegistry
+                        .filter((source) => source.releasedAt === undefined)
+                        .map((source) => source.digest),
+                })),
+            );
             await coordinator.jobs.recover(projectIds);
             return coordinator;
         } catch (error) {
@@ -178,8 +229,20 @@ export class ManagedCoordinator<
         ids: { projectId?: string; sessionId?: string } = {},
     ): Promise<{ project: ManagedSessionSummary; state: StateToken }> {
         this.assertOpen();
+        validateEditorSnapshot(snapshot);
         const projectId = ids.projectId ?? randomUUID();
         const sessionId = ids.sessionId ?? randomUUID();
+        if (
+            this.projects.has(projectId)
+            || Array.from(this.projects.values()).some((project) => (
+                project.envelope.sessionId === sessionId
+            ))
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The managed project or session identifier is already active.',
+            );
+        }
         const now = new Date().toISOString();
         const envelope: ManagedProjectEnvelopeV1<State> = {
             schemaVersion: MANAGED_RUNTIME_SCHEMA_VERSION,
@@ -209,10 +272,19 @@ export class ManagedCoordinator<
             lastCoordinatorEpoch: this.epoch,
             recoveryCount: 0,
         };
-        await this.store.createProject(envelope);
+        validateProjectEnvelope(envelope);
         const port = await this.portFactory.create(snapshot, this.persistencePort(projectId));
-        this.projects.set(projectId, { envelope, port, poisoned: false });
-        return { project: summary(envelope), state: this.stateToken(envelope) };
+        try {
+            // Adapter acceptance precedes publication so a rejected snapshot cannot poison the
+            // durable project set or make the next coordinator start fail.
+            await port.hydrate(snapshot);
+            await this.store.createProject(envelope);
+            this.projects.set(projectId, { envelope, port, poisoned: false });
+            return { project: summary(envelope), state: this.stateToken(envelope) };
+        } catch (error) {
+            await port.close().catch(() => undefined);
+            throw error;
+        }
     }
 
     listSessions(): ManagedSessionSummary[] {
@@ -228,30 +300,106 @@ export class ManagedCoordinator<
         return { envelope: structuredClone(loaded.envelope), state: this.stateToken(loaded.envelope) };
     }
 
+    async openRetainedSource(
+        projectId: string,
+        sourceId: string,
+    ): Promise<VerifiedReadHandle> {
+        const loaded = this.requireProject(projectId);
+        const source = loaded.envelope.sourceRegistry.find((candidate) => (
+            candidate.sourceId === sourceId && !candidate.releasedAt
+        ));
+        if (!source) {
+            throw managedError('NOT_FOUND', 'The retained managed source does not exist.');
+        }
+        return this.pathGrants.openRetainedSource(
+            loaded.envelope.sessionId,
+            source.sourceId,
+            source.digest,
+            source.byteLength,
+        );
+    }
+
     async mutateEditor(
         projectId: string,
         request: ManagedMutationEnvelope<Command>,
     ): Promise<ManagedMutationResult<Result>> {
         return this.serialized(projectId, async () => {
-            const loaded = this.requireProject(projectId);
+            let loaded = this.projects.get(projectId);
+            let active: {
+                request: ManagedMutationEnvelope<Command>;
+                committed: boolean;
+                committedResult?: Result;
+                committedSnapshot?: ManagedEditorSnapshot<State>;
+            } | undefined;
             try {
                 const replay = await this.resolveReceipt<Result>(projectId, request);
                 if (replay) return replay;
+                loaded = this.requireProject(projectId);
                 this.validateNewMutation(loaded.envelope, request);
-                const active = { request, committed: false };
-                this.activeEditorRequests.set(projectId, active);
-                const result = await loaded.port.dispatch({ command: request.command, request });
-                return {
-                    ok: true,
-                    data: { ...result, replayed: false },
-                    state: this.stateToken(loaded.envelope),
-                    warnings: [],
+                const before = loaded.port.snapshot();
+                validateEditorSnapshot(before);
+                active = {
+                    request,
+                    committed: false,
                 };
+                this.activeEditorRequests.set(projectId, active);
+                let result: Result;
+                try {
+                    result = await loaded.port.dispatch({ command: request.command, request });
+                } catch (error) {
+                    if (!active.committed) throw error;
+                    return this.restoreCommittedEditorState(loaded, active, [
+                        'Core threw after its durable commit; the committed result is authoritative.',
+                    ]);
+                }
+                if (!active.committed) {
+                    validateManagedResult(result);
+                    const after = loaded.port.snapshot();
+                    validateEditorSnapshot(after);
+                    if (canonicalDigest(after) !== canonicalDigest(before)) {
+                        await loaded.port.hydrate(before);
+                    }
+                    throw managedError(
+                        'INTERNAL_ERROR',
+                        'Core returned without its required atomic persistence commit.',
+                    );
+                }
+                const warnings: string[] = [];
+                try {
+                    validateManagedResult(result);
+                    if (
+                        canonicalDigest(active.committedResult) !== canonicalDigest(result)
+                        || canonicalDigest(active.committedSnapshot)
+                            !== canonicalDigest(loaded.port.snapshot())
+                    ) {
+                        warnings.push(
+                            'Core returned state that differs from its durable commit; '
+                                + 'the committed result was restored.',
+                        );
+                        await loaded.port.hydrate(active.committedSnapshot!);
+                    }
+                } catch {
+                    warnings.push(
+                        'Core returned invalid state after its durable commit; '
+                            + 'the committed result was restored.',
+                    );
+                    try {
+                        await loaded.port.hydrate(active.committedSnapshot!);
+                    } catch {
+                        loaded.poisoned = true;
+                    }
+                }
+                return this.committedEditorResult(loaded, active, warnings);
             } catch (error) {
+                if (active?.committed && loaded) {
+                    return this.restoreCommittedEditorState(loaded, active, [
+                        'Core failed after its durable commit; the committed result is authoritative.',
+                    ]);
+                }
                 return {
                     ok: false,
                     error: asManagedRuntimeError(error).toJSON(),
-                    state: this.stateToken(loaded.envelope),
+                    ...(loaded ? { state: this.stateToken(loaded.envelope) } : {}),
                 };
             } finally {
                 this.activeEditorRequests.delete(projectId);
@@ -265,12 +413,17 @@ export class ManagedCoordinator<
         factory: RegistryMutationFactory<State, RegistryResult>,
     ): Promise<ManagedMutationResult<RegistryResult>> {
         return this.serialized(projectId, async () => {
-            const loaded = this.requireProject(projectId);
+            let loaded = this.projects.get(projectId);
+            let mutation: RegistryMutation<State, RegistryResult> | undefined;
+            let committed = false;
             try {
                 const replay = await this.resolveReceipt<RegistryResult>(projectId, request);
                 if (replay) return replay;
+                loaded = this.requireProject(projectId);
                 this.validateNewMutation(loaded.envelope, request);
-                const mutation = await factory(structuredClone(loaded.envelope));
+                mutation = await factory(structuredClone(loaded.envelope));
+                validateManagedResult(mutation.result);
+                canonicalJson(mutation.eventData, 48 * 1024);
                 const updated = mutation.update(structuredClone(loaded.envelope));
                 const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
                     ...updated,
@@ -280,7 +433,17 @@ export class ManagedCoordinator<
                     updatedAt: new Date().toISOString(),
                     lastCoordinatorEpoch: this.epoch,
                 };
-                const event = this.createEvent(nextEnvelope, mutation.eventKind, mutation.eventSummary);
+                if (
+                    nextEnvelope.projectId !== loaded.envelope.projectId
+                    || nextEnvelope.sessionId !== loaded.envelope.sessionId
+                ) {
+                    throw managedError(
+                        'INVALID_REQUEST',
+                        'A registry mutation cannot change project authority.',
+                    );
+                }
+                validateEditorSnapshot(nextEnvelope.editor);
+                const event = this.createEvent(nextEnvelope, mutation.eventKind, mutation.eventData);
                 const receipt = this.createReceipt(
                     projectId,
                     request,
@@ -295,7 +458,9 @@ export class ManagedCoordinator<
                     ...await this.store.receiptRetentionDeletes(projectId),
                     ...await this.events.retentionDeletes(projectId),
                 ]);
+                committed = true;
                 this.events.publish(event);
+                await Promise.resolve(mutation.afterCommit?.()).catch(() => undefined);
                 return {
                     ok: true,
                     data: { ...mutation.result, replayed: false },
@@ -303,10 +468,24 @@ export class ManagedCoordinator<
                     warnings: [],
                 };
             } catch (error) {
+                if (!committed && mutation?.onReject) {
+                    await Promise.resolve(mutation.onReject()).catch(() => undefined);
+                }
+                if (committed && mutation && loaded) {
+                    await Promise.resolve(mutation.afterCommit?.()).catch(() => undefined);
+                    return {
+                        ok: true,
+                        data: { ...mutation.result, replayed: false },
+                        state: this.stateToken(loaded.envelope),
+                        warnings: [
+                            'A post-commit callback failed; the durable mutation remains authoritative.',
+                        ],
+                    };
+                }
                 return {
                     ok: false,
                     error: asManagedRuntimeError(error).toJSON(),
-                    state: this.stateToken(loaded.envelope),
+                    ...(loaded ? { state: this.stateToken(loaded.envelope) } : {}),
                 };
             }
         });
@@ -322,6 +501,7 @@ export class ManagedCoordinator<
         return this.mutateRegistry(projectId, request, async (envelope) => {
             const grant = await this.pathGrants.create(
                 envelope.sessionId,
+                this.epoch,
                 kind,
                 path,
                 overwriteConfirmed,
@@ -331,7 +511,7 @@ export class ManagedCoordinator<
                 writes: [{ relativePath: `grants/${grant.grantId}.json`, value: grant }],
                 result: { grant },
                 eventKind: 'grant.changed',
-                eventSummary: { action: 'granted', kind },
+                eventData: { action: 'granted', kind },
             };
         });
     }
@@ -345,13 +525,16 @@ export class ManagedCoordinator<
             const grants = await this.store.readNamespace<SessionPathGrantRecord>(projectId, 'grants');
             const existing = grants.find((grant) => grant.grantId === grantId);
             if (!existing) throw managedError('NOT_FOUND', 'The managed path grant does not exist.');
-            const grant = this.pathGrants.revoke(existing);
+            const grant = this.pathGrants.revoke(existing.grantId, {
+                sessionId: existing.sessionId,
+                sessionEpoch: existing.sessionEpoch,
+            });
             return {
                 update: (envelope) => ({ ...envelope, grantRevision: envelope.grantRevision + 1 }),
                 writes: [{ relativePath: `grants/${grant.grantId}.json`, value: grant }],
                 result: { grant },
                 eventKind: 'grant.changed',
-                eventSummary: { action: 'revoked', kind: grant.kind },
+                eventData: { action: 'revoked', kind: grant.kind },
             };
         });
     }
@@ -366,7 +549,7 @@ export class ManagedCoordinator<
                 update: (envelope) => ({ ...envelope, archivedAt }),
                 result: { archivedAt },
                 eventKind: 'project.changed',
-                eventSummary: { action: 'archived' },
+                eventData: { action: 'archived', archivedAt },
             };
         });
     }
@@ -385,7 +568,7 @@ export class ManagedCoordinator<
                 }),
                 result: { deletedAt },
                 eventKind: 'project.changed',
-                eventSummary: { action: 'tombstoned' },
+                eventData: { action: 'tombstoned', deletedAt },
             };
         });
     }
@@ -399,16 +582,25 @@ export class ManagedCoordinator<
             source: AsyncIterable<Uint8Array> | Readable;
             expiresAt?: string;
             sourceIds?: readonly string[];
+            sourceIdentity: string;
+            signal?: AbortSignal;
+            deadlineMilliseconds?: number;
         },
     ): Promise<ManagedMutationResult<{ artifact: ArtifactRecord }>> {
         return this.mutateRegistry(projectId, request, async () => {
+            boundedIdentity(input.sourceIdentity);
             // Staging happens only after epoch-independent receipt resolution and all guards.
             const staged = await this.artifacts.stage(
                 projectId,
                 input.kind,
                 input.mediaType,
                 input.source,
-                { expiresAt: input.expiresAt, sourceIds: input.sourceIds },
+                {
+                    expiresAt: input.expiresAt,
+                    sourceIds: input.sourceIds,
+                    signal: input.signal,
+                    deadlineMilliseconds: input.deadlineMilliseconds,
+                },
             );
             return {
                 update: (envelope) => ({
@@ -418,10 +610,52 @@ export class ManagedCoordinator<
                 writes: [staged.registryWrite],
                 result: { artifact: staged.record },
                 eventKind: 'artifact.created',
-                eventSummary: {
+                eventData: {
                     artifactId: staged.record.artifactId,
                     kind: staged.record.kind,
+                    contentDigest: staged.record.digest,
                     byteLength: staged.record.byteLength,
+                },
+                afterCommit: staged.accept,
+                onReject: staged.reject,
+            };
+        });
+    }
+
+    async enqueueJob<Input>(
+        projectId: string,
+        request: ManagedMutationEnvelope,
+        input: Omit<DurableJobEnqueueInput<Input>, 'projectId' | 'capturedState'>,
+    ): Promise<ManagedMutationResult<{ job: DurableJobRecord<Input> }>> {
+        return this.mutateRegistry(projectId, request, (envelope) => {
+            const job = this.jobs.prepareEnqueue({
+                ...input,
+                projectId,
+                capturedState: this.stateToken(envelope),
+            });
+            const adopt = async () => {
+                await this.jobs.acceptEnqueued(job);
+            };
+            return {
+                update: (current) => ({
+                    ...current,
+                    jobRevision: current.jobRevision + 1,
+                }),
+                writes: [{
+                    relativePath: `jobs/${job.jobId}.json`,
+                    value: job,
+                }],
+                result: { job },
+                eventKind: 'job.changed',
+                eventData: jobEventData(job),
+                afterCommit: adopt,
+                onReject: async () => {
+                    await this.store.recoverProject(projectId);
+                    const durable = (await this.store.readNamespace<DurableJobRecord>(
+                        projectId,
+                        'jobs',
+                    )).find((candidate) => candidate.jobId === job.jobId);
+                    if (durable) await this.jobs.acceptEnqueued(durable);
                 },
             };
         });
@@ -458,11 +692,7 @@ export class ManagedCoordinator<
                 update: (currentEnvelope) => ({ ...currentEnvelope, playback }),
                 result: { playback },
                 eventKind: update.presenterViewId !== undefined ? 'presenter.changed' : 'playback.changed',
-                eventSummary: {
-                    action: update.presenterViewId !== undefined ? 'presenter-updated' : 'playback-updated',
-                    playing: playback.playing,
-                    outputSample: playback.outputSample,
-                },
+                eventData: { action: 'updated', playback },
             };
         });
     }
@@ -482,30 +712,55 @@ export class ManagedCoordinator<
         request: ManagedMutationEnvelope,
         plan: SourceReleasePlan,
     ): Promise<ManagedMutationResult<{ releasedSourceIds: readonly string[] }>> {
-        return this.mutateRegistry(projectId, request, () => ({
-            update: (envelope) => {
-                if (envelope.sessionRevision !== plan.sessionRevision) {
-                    throw managedError(
-                        'SESSION_REVISION_CONFLICT',
-                        'Source reachability changed after the release dry run.',
-                        true,
-                    );
-                }
-                const released = new Set(plan.releasableSourceIds);
-                return {
-                    ...envelope,
-                    sourceRegistryRevision: envelope.sourceRegistryRevision + 1,
-                    sourceRegistry: envelope.sourceRegistry.map((source) => (
+        return this.mutateRegistry(projectId, request, async (envelope) => {
+            if (plan.projectId !== projectId || envelope.sessionRevision !== plan.sessionRevision) {
+                throw managedError(
+                    'SESSION_REVISION_CONFLICT',
+                    'Source reachability changed after the release dry run.',
+                    true,
+                );
+            }
+            const [jobs, receipts, artifacts] = await Promise.all([
+                this.store.readNamespace<{ state: string; input?: unknown; checkpoint?: unknown }>(
+                    projectId,
+                    'jobs',
+                ),
+                this.store.readNamespace<DurableReceipt>(projectId, 'receipts'),
+                this.store.readNamespace<ArtifactRecord>(projectId, 'artifacts'),
+            ]);
+            // The client-provided plan is a confirmation token only. Recompute ownership under the
+            // same project serialization immediately before the single atomic commit.
+            const effectivePlan = evaluateSourceRelease(envelope, jobs, receipts, artifacts);
+            const releasedSourceIds = effectivePlan.releasableSourceIds;
+            const released = new Set(releasedSourceIds);
+            const retainedDigests = new Set(
+                envelope.sourceRegistry
+                    .filter((source) => !released.has(source.sourceId) && !source.releasedAt)
+                    .map((source) => source.digest),
+            );
+            const releasedDigests = envelope.sourceRegistry
+                .filter((source) => released.has(source.sourceId))
+                .map((source) => source.digest)
+                .filter((digest) => !retainedDigests.has(digest));
+            return {
+                update: (current) => ({
+                    ...current,
+                    sourceRegistryRevision: current.sourceRegistryRevision + 1,
+                    sourceRegistry: current.sourceRegistry.map((source) => (
                         released.has(source.sourceId)
                             ? { ...source, releasedAt: new Date().toISOString() }
                             : source
                     )),
-                };
-            },
-            result: { releasedSourceIds: plan.releasableSourceIds },
-            eventKind: 'source.changed',
-            eventSummary: { action: 'released', count: plan.releasableSourceIds.length },
-        }));
+                }),
+                result: { releasedSourceIds },
+                eventKind: 'source.changed',
+                eventData: { action: 'released', releasedSourceIds },
+                afterCommit: () => this.pathGrants.releaseSourceCopies(
+                    envelope.sessionId,
+                    releasedDigests,
+                ),
+            };
+        });
     }
 
     async close(): Promise<void> {
@@ -528,32 +783,113 @@ export class ManagedCoordinator<
 
     private async loadProject(projectId: string): Promise<void> {
         await this.store.recoverProject(projectId);
+        const recoveryOutcome = this.store.consumeRecoveryOutcome(projectId);
         const recovered = await this.store.readProject<State>(projectId);
         if (!recovered) return;
+        const grantEntries = await this.store.readNamespaceEntries<unknown>(projectId, 'grants');
+        const durableOutputs = await this.store.readNamespace<OutputPublicationRecord>(
+            projectId,
+            'outputs',
+        );
+        const restorableGrants: SessionPathGrantRecord[] = [];
+        const quarantinedGrantWrites: DurableWrite[] = [];
+        const seenGrantIds = new Set<string>();
+        for (const entry of grantEntries) {
+            try {
+                this.pathGrants.validateRestorable(entry.value);
+                const grant = entry.value;
+                if (
+                    entry.name !== `${grant.grantId}.json`
+                    || grant.sessionId !== recovered.sessionId
+                    || seenGrantIds.has(grant.grantId)
+                    || this.pathGrants.hasRegisteredGrant(grant.grantId)
+                ) {
+                    throw managedError(
+                        'PATH_NOT_GRANTED',
+                        'The durable path grant does not belong to this session.',
+                    );
+                }
+                seenGrantIds.add(grant.grantId);
+                restorableGrants.push(grant);
+            } catch {
+                // V1 grants were not issuer-authenticated or epoch-bound. Quarantine every
+                // unsupported/invalid record in the same recovery transaction instead of
+                // publishing a recovery revision that the next restart cannot load.
+                quarantinedGrantWrites.push({
+                    relativePath: `grants/${entry.name}`,
+                    delete: true as const,
+                });
+            }
+        }
+        if (Array.from(this.projects.values()).some((project) => (
+            project.envelope.sessionId === recovered.sessionId
+        ))) {
+            throw managedError('INVALID_REQUEST', 'The durable session identifier is duplicated.');
+        }
+        const interruptedJobIds = (await this.store.readNamespace<DurableJobRecord>(
+            projectId,
+            'jobs',
+        ))
+            .filter((job) => (
+                job.state === 'running'
+                || job.state === 'cancelling'
+                || job.state === 'interrupted'
+            ))
+            .map((job) => job.jobId)
+            .slice(0, 256);
+        validateEditorSnapshot(recovered.editor);
+        const port = await this.portFactory.create(
+            recovered.editor,
+            this.persistencePort(projectId),
+        );
+        try {
+            // Adapter acceptance precedes even the recovery event publication. One incompatible
+            // project therefore cannot advance durable state and poison every subsequent restart.
+            await port.hydrate(recovered.editor);
+        } catch (error) {
+            await port.close().catch(() => undefined);
+            throw error;
+        }
         const envelope: ManagedProjectEnvelopeV1<State> = {
             ...recovered,
             sessionRevision: recovered.sessionRevision + 1,
             eventSequence: recovered.eventSequence + 1,
+            grantRevision: recovered.grantRevision + (quarantinedGrantWrites.length > 0 ? 1 : 0),
             recoveryCount: recovered.recoveryCount + 1,
             lastCoordinatorEpoch: this.epoch,
             updatedAt: new Date().toISOString(),
         };
         const event = this.createEvent(envelope, 'session.recovered', {
-            action: 'recovered',
-            recoveryCount: envelope.recoveryCount,
+            previousEpoch: recovered.lastCoordinatorEpoch,
+            newEpoch: this.epoch,
+            outcome: recoveryOutcome,
+            interruptedJobIds,
         });
-        await this.store.transact({
-            baseSessionRevision: recovered.sessionRevision,
-            envelope,
-            writes: [
-                this.events.write(event),
-                ...await this.events.retentionDeletes(projectId),
-            ],
-        });
-        const port = await this.portFactory.create(envelope.editor, this.persistencePort(projectId));
-        await port.hydrate(envelope.editor);
-        this.projects.set(projectId, { envelope, port, poisoned: false });
-        this.events.publish(event);
+        validateProjectEnvelope(envelope);
+        try {
+            await this.store.transact({
+                baseSessionRevision: recovered.sessionRevision,
+                envelope,
+                writes: [
+                    this.events.write(event),
+                    ...await this.events.retentionDeletes(projectId),
+                    ...quarantinedGrantWrites,
+                ],
+            });
+            for (const grant of restorableGrants) this.pathGrants.register(grant);
+            this.projects.set(projectId, { envelope, port, poisoned: false });
+            this.events.publish(event);
+            await Promise.allSettled(durableOutputs.map(async (output) => {
+                const pending = await this.pathGrants.recoverOutputPublication(
+                    output.grantId,
+                    recovered.sessionId,
+                );
+                await pending?.accept();
+            }));
+        } catch (error) {
+            await port.close().catch(() => undefined);
+            throw error;
+        }
     }
 
     private persistencePort(projectId: string): ManagedEditorPersistencePort<State, Result> {
@@ -576,6 +912,20 @@ export class ManagedCoordinator<
         }
         if (active.committed) {
             throw managedError('INTERNAL_ERROR', 'Core attempted more than one atomic commit.', false);
+        }
+        validateEditorSnapshot(input.next);
+        validateManagedResult(input.result);
+        if (
+            !input.semanticLabel
+            || input.semanticLabel.length > 200
+            || input.next.documentRevision <= loaded.envelope.editor.documentRevision
+            || input.next.audioGraphRevision < loaded.envelope.editor.audioGraphRevision
+            || input.next.historyRevision < loaded.envelope.editor.historyRevision
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'Core produced an invalid editor transition.',
+            );
         }
         if (input.baseDocumentRevision !== loaded.envelope.editor.documentRevision) {
             throw managedError(
@@ -611,12 +961,17 @@ export class ManagedCoordinator<
             ...await this.store.receiptRetentionDeletes(projectId),
             ...await this.events.retentionDeletes(projectId),
         ]);
+        active.committedResult = structuredClone(input.result);
+        active.committedSnapshot = structuredClone(input.next);
         active.committed = true;
         this.events.publish(event);
         return { state: this.stateToken(nextEnvelope) };
     }
 
-    private async recordJobTransition(record: DurableJobRecord): Promise<void> {
+    private async recordJobTransition(
+        record: DurableJobRecord,
+        terminalPublication?: DurableJobTerminalPublication,
+    ): Promise<void> {
         if (this.closed || !this.projects.has(record.projectId)) return;
         await this.serialized(record.projectId, async () => {
             const loaded = this.projects.get(record.projectId);
@@ -628,29 +983,64 @@ export class ManagedCoordinator<
                     true,
                 );
             }
+            const artifacts = terminalPublication?.artifacts ?? [];
+            const outputs = terminalPublication?.outputs ?? [];
+            if (
+                artifacts.some((artifact) => artifact.record.projectId !== record.projectId)
+                || new Set(artifacts.map((artifact) => artifact.record.artifactId)).size
+                    !== artifacts.length
+                || outputs.some((output) => (
+                    output.record.sessionId !== loaded.envelope.sessionId
+                ))
+                || new Set(outputs.map((output) => output.record.publicationId)).size
+                    !== outputs.length
+            ) {
+                await Promise.allSettled([
+                    ...artifacts.map((artifact) => artifact.reject()),
+                    ...outputs.map((output) => output.reject()),
+                ]);
+                throw managedError(
+                    'INVALID_REQUEST',
+                    'Terminal publications do not belong to the durable job project.',
+                );
+            }
             const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
                 ...loaded.envelope,
                 sessionRevision: loaded.envelope.sessionRevision + 1,
                 jobRevision: loaded.envelope.jobRevision + 1,
+                artifactRevision: loaded.envelope.artifactRevision + (artifacts.length > 0 ? 1 : 0),
                 eventSequence: loaded.envelope.eventSequence + 1,
                 updatedAt: new Date().toISOString(),
             };
-            const event = this.createEvent(nextEnvelope, 'job.changed', {
-                jobId: record.jobId,
-                kind: record.kind,
-                state: toJobBoundaryState(record.state),
-                stage: record.stage,
-                sequence: record.sequence,
-            });
-            await this.commit(loaded, nextEnvelope, [
-                {
-                    relativePath: `jobs/${record.jobId}.json`,
-                    value: record,
-                },
-                this.events.write(event),
-                ...await this.events.retentionDeletes(record.projectId),
-            ]);
-            this.events.publish(event);
+            const event = this.createEvent(nextEnvelope, 'job.changed', jobEventData(record));
+            let committed = false;
+            try {
+                await this.commit(loaded, nextEnvelope, [
+                    ...artifacts.map((artifact) => artifact.registryWrite),
+                    ...outputs.map((output) => output.registryWrite),
+                    {
+                        relativePath: `jobs/${record.jobId}.json`,
+                        value: record,
+                    },
+                    this.events.write(event),
+                    ...await this.events.retentionDeletes(record.projectId),
+                ]);
+                committed = true;
+                this.events.publish(event);
+                for (const artifact of artifacts) artifact.accept();
+                await Promise.all(outputs.map((output) => output.accept()));
+            } catch (error) {
+                if (committed) {
+                    for (const artifact of artifacts) artifact.accept();
+                    await Promise.allSettled(outputs.map((output) => output.accept()));
+                    return;
+                }
+                await Promise.allSettled([
+                    ...artifacts.map((artifact) => artifact.reject()),
+                    ...outputs.map((output) => output.reject()),
+                ]);
+                throw error;
+            }
         });
     }
 
@@ -658,26 +1048,95 @@ export class ManagedCoordinator<
         projectId: string,
         request: ManagedMutationEnvelope,
     ): Promise<ManagedMutationResult<ReceiptResult> | null> {
-        const receipt = await this.store.readReceipt<ReceiptResult>(
+        let receipt = await this.store.readReceipt<ReceiptResult>(
             projectId,
             request.toolName,
             request.idempotencyKey,
         );
+        const loadedBeforeRecovery = this.projects.get(projectId);
+        if (loadedBeforeRecovery?.poisoned) {
+            // A persistence exception may be a lost response after the durable marker. Repair WAL
+            // before applying any new guards, then retry the exact receipt lookup.
+            await this.store.recoverProject(projectId);
+            const durable = await this.store.readProject<State>(projectId);
+            if (durable) {
+                validateProjectEnvelope(durable);
+                loadedBeforeRecovery.envelope = durable;
+                try {
+                    await loadedBeforeRecovery.port.hydrate(durable.editor);
+                    loadedBeforeRecovery.poisoned = false;
+                } catch {
+                    loadedBeforeRecovery.poisoned = true;
+                }
+            }
+            receipt ??= await this.store.readReceipt<ReceiptResult>(
+                projectId,
+                request.toolName,
+                request.idempotencyKey,
+            );
+        }
         if (!receipt) return null;
-        const requestHash = canonicalDigest(request);
-        if (receipt.requestHash !== requestHash) {
+        if (receipt.canonicalRequestHash !== request.canonicalRequestHash) {
             throw managedError(
                 'IDEMPOTENCY_KEY_CONFLICT',
                 'The idempotency key was already used with a different request.',
             );
         }
-        const loaded = this.requireProject(projectId);
+        if (this.closed || this.closing) {
+            throw managedError('COORDINATOR_UNAVAILABLE', 'The coordinator is closing or closed.', true);
+        }
+        const loaded = this.projects.get(projectId);
+        if (!loaded) throw managedError('SESSION_NOT_FOUND', 'The managed project is not open.');
         return {
             ok: true,
             data: { ...receipt.result, replayed: true },
             state: this.stateToken(loaded.envelope),
             warnings: [],
         };
+    }
+
+    private committedEditorResult(
+        loaded: LoadedProject<State, Command, Result>,
+        active: {
+            committed: boolean;
+            committedResult?: Result;
+            committedSnapshot?: ManagedEditorSnapshot<State>;
+        },
+        warnings: readonly string[],
+    ): ManagedMutationResult<Result> {
+        if (!active.committed || !active.committedResult || !active.committedSnapshot) {
+            throw managedError('INTERNAL_ERROR', 'Core commit bookkeeping is incomplete.');
+        }
+        return {
+            ok: true,
+            data: { ...active.committedResult, replayed: false },
+            state: this.stateToken(loaded.envelope),
+            warnings,
+        };
+    }
+
+    private async restoreCommittedEditorState(
+        loaded: LoadedProject<State, Command, Result>,
+        active: {
+            committed: boolean;
+            committedResult?: Result;
+            committedSnapshot?: ManagedEditorSnapshot<State>;
+        },
+        warnings: readonly string[],
+    ): Promise<ManagedMutationResult<Result>> {
+        const nextWarnings = [...warnings];
+        try {
+            if (!active.committedSnapshot) {
+                throw new Error('The committed editor snapshot is unavailable.');
+            }
+            await loaded.port.hydrate(active.committedSnapshot);
+        } catch {
+            loaded.poisoned = true;
+            nextWarnings.push(
+                'The live editor could not restore its committed head and requires recovery.',
+            );
+        }
+        return this.committedEditorResult(loaded, active, nextWarnings);
     }
 
     private validateNewMutation(
@@ -692,6 +1151,7 @@ export class ManagedCoordinator<
             || request.idempotencyKey.length > 200
             || !request.toolName
             || request.toolName.length > 200
+            || !/^sha256:[a-f0-9]{64}$/.test(request.canonicalRequestHash)
         ) {
             throw managedError('INVALID_REQUEST', 'Mutation identity fields are empty or oversized.');
         }
@@ -733,11 +1193,11 @@ export class ManagedCoordinator<
         retainedSourceIds: readonly string[],
     ): DurableReceipt<ReceiptResult> {
         return {
-            schemaVersion: 1,
+            schemaVersion: 2,
             projectId,
             toolName: request.toolName,
             idempotencyKey: request.idempotencyKey,
-            requestHash: canonicalDigest(request),
+            canonicalRequestHash: request.canonicalRequestHash,
             result,
             committedSessionRevision,
             createdAt: new Date().toISOString(),
@@ -748,17 +1208,17 @@ export class ManagedCoordinator<
     private createEvent(
         envelope: ManagedProjectEnvelopeV1<State>,
         kind: ManagedEventKind,
-        eventSummary: Readonly<Record<string, string | number | boolean | null>>,
+        eventData: ManagedEventData,
     ): ManagedEvent {
+        const state = this.stateToken(envelope);
         return {
             schemaVersion: 1,
-            projectId: envelope.projectId,
-            sessionId: envelope.sessionId,
+            cursor: state.eventCursor,
+            type: kind,
+            occurredAt: new Date().toISOString(),
+            state,
             sequence: envelope.eventSequence,
-            kind,
-            createdAt: new Date().toISOString(),
-            sessionRevision: envelope.sessionRevision,
-            summary: eventSummary,
+            data: eventData,
         };
     }
 
@@ -768,6 +1228,7 @@ export class ManagedCoordinator<
         writes: readonly DurableWrite[],
     ): Promise<void> {
         try {
+            validateProjectEnvelope(nextEnvelope);
             await this.store.transact({
                 envelope: nextEnvelope,
                 baseSessionRevision: loaded.envelope.sessionRevision,
@@ -864,4 +1325,118 @@ function summary<State>(envelope: ManagedProjectEnvelopeV1<State>): ManagedSessi
         archived: envelope.archivedAt !== undefined,
         recovered: envelope.recoveryCount > 0,
     };
+}
+
+function validateEditorSnapshot<State>(snapshot: ManagedEditorSnapshot<State>): void {
+    canonicalJson(snapshot, 32 * 1024 * 1024);
+    for (const [name, value] of Object.entries({
+        documentRevision: snapshot.documentRevision,
+        audioGraphRevision: snapshot.audioGraphRevision,
+        historyRevision: snapshot.historyRevision,
+        ...(snapshot.narrativeRevision === undefined
+            ? {}
+            : { narrativeRevision: snapshot.narrativeRevision }),
+    })) {
+        if (!Number.isSafeInteger(value) || value < 0) {
+            throw managedError('INVALID_REQUEST', `The editor ${name} is invalid.`);
+        }
+    }
+    if (!snapshot.manifestDigest || snapshot.manifestDigest.length > 200) {
+        throw managedError('INVALID_REQUEST', 'The editor manifest digest is invalid.');
+    }
+    validateStringSet(snapshot.reachableSourceIds, 'reachable source');
+    validateStringSet(snapshot.transcriptRecordIds, 'transcript record');
+}
+
+function validateProjectEnvelope<State>(envelope: ManagedProjectEnvelopeV1<State>): void {
+    canonicalJson(envelope, 64 * 1024 * 1024);
+    validateEditorSnapshot(envelope.editor);
+    for (const [name, value] of Object.entries({
+        sessionRevision: envelope.sessionRevision,
+        eventSequence: envelope.eventSequence,
+        receiptRevision: envelope.receiptRevision,
+        jobRevision: envelope.jobRevision,
+        artifactRevision: envelope.artifactRevision,
+        grantRevision: envelope.grantRevision,
+        sourceRegistryRevision: envelope.sourceRegistryRevision,
+        recoveryCount: envelope.recoveryCount,
+        playbackRevision: envelope.playback.revision,
+        playbackOutputSample: envelope.playback.outputSample,
+    })) {
+        if (!Number.isSafeInteger(value) || value < 0) {
+            throw managedError('INVALID_REQUEST', `The managed project ${name} is invalid.`);
+        }
+    }
+    if (
+        !Number.isFinite(envelope.playback.rate)
+        || envelope.playback.rate <= 0
+        || envelope.playback.rate > 16
+        || !Number.isFinite(envelope.playback.masterVolume)
+        || envelope.playback.masterVolume < 0
+        || envelope.playback.masterVolume > 4
+    ) {
+        throw managedError('INVALID_REQUEST', 'The managed project playback state is invalid.');
+    }
+    const sourceIds = new Set<string>();
+    for (const source of envelope.sourceRegistry) {
+        if (
+            !source.sourceId
+            || source.sourceId.length > 200
+            || sourceIds.has(source.sourceId)
+            || !Number.isSafeInteger(source.byteLength)
+            || source.byteLength < 0
+            || !source.digest
+            || source.digest.length > 256
+            || !source.immutableVersion
+            || source.immutableVersion.length > 256
+            || !source.readGrantId
+            || source.readGrantId.length > 200
+            || !source.streamSignature
+            || source.streamSignature.length > 512
+            || !Number.isFinite(Date.parse(source.registeredAt))
+            || (
+                source.releasedAt !== undefined
+                && !Number.isFinite(Date.parse(source.releasedAt))
+            )
+        ) {
+            throw managedError('INVALID_REQUEST', 'A managed source registry record is invalid.');
+        }
+        sourceIds.add(source.sourceId);
+    }
+}
+
+function validateManagedResult(value: unknown): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw managedError('INVALID_REQUEST', 'The managed mutation result must be an object.');
+    }
+    canonicalJson(value, 768 * 1024);
+}
+
+function validateStringSet(values: readonly string[], label: string): void {
+    if (values.length > 100_000 || new Set(values).size !== values.length) {
+        throw managedError('INVALID_REQUEST', `The editor ${label} list is invalid.`);
+    }
+    if (values.some((value) => !value || value.length > 200)) {
+        throw managedError('INVALID_REQUEST', `An editor ${label} identifier is invalid.`);
+    }
+}
+
+function jobEventData(record: DurableJobRecord): Readonly<Record<string, unknown>> {
+    return {
+        jobId: record.jobId,
+        kind: record.kind,
+        state: toJobBoundaryState(record.state),
+        stage: record.stage,
+        jobSequence: record.sequence,
+        ...(record.fraction === undefined ? {} : { fraction: record.fraction }),
+        ...(record.message === undefined ? {} : { message: record.message }),
+    };
+}
+
+function boundedIdentity(value: string): string {
+    const normalized = value?.trim();
+    if (!normalized || normalized.length > 256) {
+        throw managedError('INVALID_REQUEST', 'The artifact source identity is invalid.');
+    }
+    return normalized;
 }

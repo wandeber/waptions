@@ -7,6 +7,8 @@ import { atomicWriteJson } from '../persistence/fs-durable';
 import { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
 import { canonicalJson } from '../persistence/canonical-json';
 import { MANAGED_JOB_JSON_MAX_BYTES } from '../persistence/managed-filesystem-store';
+import type { StagedArtifact } from '../artifacts/artifact-registry';
+import type { StagedOutputPublication } from '../path-grants/path-grant-authority';
 
 export type DurableJobState =
     | 'queued'
@@ -20,9 +22,8 @@ export type DurableJobState =
 export type JobBoundaryState =
     | 'queued'
     | 'running'
-    | 'cancel_requested'
-    | 'completed'
     | 'cancelled'
+    | 'succeeded'
     | 'failed'
     | 'interrupted';
 
@@ -52,6 +53,21 @@ export interface DurableJobRecord<Input = unknown, Checkpoint = unknown, Result 
     error?: ManagedRuntimeErrorShape;
 }
 
+export type DurableJobEnqueueInput<Input = unknown> = Omit<
+    DurableJobRecord<Input>,
+    'schemaVersion' | 'jobId' | 'sequence' | 'state' | 'stage' | 'resultArtifactIds'
+    | 'createdAt' | 'updatedAt'
+>;
+
+export interface DurableJobTerminalPublication {
+    /**
+     * Staged artifacts whose bounded registry writes must share the terminal job transaction.
+     * Blob cleanup remains owned by each staged artifact's accept/reject callbacks.
+     */
+    artifacts: readonly StagedArtifact[];
+    outputs?: readonly StagedOutputPublication[];
+}
+
 export interface JobExecutionContext<Checkpoint> {
     signal: AbortSignal;
     checkpoint: Checkpoint | undefined;
@@ -67,6 +83,7 @@ export interface DurableJobHandler<Input = unknown, Checkpoint = unknown, Result
     run(input: Input, context: JobExecutionContext<Checkpoint>): Promise<{
         result: Result;
         artifactIds?: readonly string[];
+        terminalPublication?: DurableJobTerminalPublication;
     }>;
     cleanup?(record: DurableJobRecord<Input, Checkpoint, Result>): Promise<void>;
 }
@@ -74,7 +91,10 @@ export interface DurableJobHandler<Input = unknown, Checkpoint = unknown, Result
 export interface JobSchedulerOptions {
     globalConcurrency?: number;
     concurrencyByKind?: Readonly<Record<string, number>>;
-    persistTransition?(record: DurableJobRecord): Promise<void>;
+    persistTransition?(
+        record: DurableJobRecord,
+        terminalPublication?: DurableJobTerminalPublication,
+    ): Promise<void>;
     onTransition?(record: DurableJobRecord): Promise<void> | void;
 }
 
@@ -143,12 +163,17 @@ export class DurableJobScheduler {
     }
 
     async enqueue<Input>(
-        record: Omit<
-            DurableJobRecord<Input>,
-            'schemaVersion' | 'jobId' | 'sequence' | 'state' | 'stage' | 'resultArtifactIds'
-            | 'createdAt' | 'updatedAt'
-        >,
+        record: DurableJobEnqueueInput<Input>,
     ): Promise<DurableJobRecord<Input>> {
+        const job = this.prepareEnqueue(record);
+        await this.persist(job);
+        await this.acceptEnqueued(job);
+        return job;
+    }
+
+    prepareEnqueue<Input>(
+        record: DurableJobEnqueueInput<Input>,
+    ): DurableJobRecord<Input> {
         if (this.closed) throw new Error('The job scheduler is closed.');
         if (!this.handlers.has(record.kind)) {
             throw managedError('INVALID_REQUEST', `No managed job handler is registered for ${record.kind}.`);
@@ -166,12 +191,27 @@ export class DurableJobScheduler {
             createdAt: now,
             updatedAt: now,
         };
-        await this.persist(job);
+        validateJobValue(job, 'job record', MANAGED_JOB_JSON_MAX_BYTES);
+        return job;
+    }
+
+    async acceptEnqueued<Input>(job: DurableJobRecord<Input>): Promise<void> {
+        if (this.closed) throw new Error('The job scheduler is closed.');
+        const existing = this.jobs.get(job.jobId);
+        if (existing) {
+            if (
+                canonicalJson(existing, MANAGED_JOB_JSON_MAX_BYTES)
+                === canonicalJson(job, MANAGED_JOB_JSON_MAX_BYTES)
+            ) {
+                return;
+            }
+            throw managedError('INVALID_REQUEST', 'The durable job is already active.');
+        }
+        validateJobValue(job, 'job record', MANAGED_JOB_JSON_MAX_BYTES);
         this.jobs.set(job.jobId, job);
         await this.notify(job);
         this.refreshDiagnostics();
         void this.drain();
-        return job;
     }
 
     get(jobId: string): DurableJobRecord | null {
@@ -254,7 +294,9 @@ export class DurableJobScheduler {
         try {
             while (!this.closed) {
                 const next = Array.from(this.jobs.values()).find((job) => (
-                    job.state === 'queued' && this.canStart(job.kind)
+                    job.state === 'queued'
+                    && !this.executions.has(job.jobId)
+                    && this.canStart(job.kind)
                 ));
                 if (!next) break;
                 const execution = this.execute(next).finally(() => {
@@ -319,25 +361,42 @@ export class DurableJobScheduler {
                         await this.notify(running);
                     },
                 });
-                if (controller.signal.aborted || this.jobs.get(running.jobId)?.state === 'cancelling') {
-                    throw controller.signal.reason ?? new DOMException('Cancelled', 'AbortError');
+                const terminalPublication = output?.terminalPublication;
+                let publicationTransferred = false;
+                try {
+                    if (
+                        controller.signal.aborted
+                        || this.jobs.get(running.jobId)?.state === 'cancelling'
+                    ) {
+                        throw controller.signal.reason ?? new DOMException('Cancelled', 'AbortError');
+                    }
+                    validateJobValue(output.result, 'job result', 1024 * 1024);
+                    validateArtifactIds(output.artifactIds ?? []);
+                    validateTerminalPublication(
+                        terminalPublication,
+                        output.artifactIds ?? [],
+                    );
+                    const succeeded: DurableJobRecord = {
+                        ...running,
+                        sequence: running.sequence + 1,
+                        state: 'succeeded',
+                        stage: 'complete',
+                        fraction: 1,
+                        result: output.result,
+                        resultArtifactIds: [...(output.artifactIds ?? [])],
+                        updatedAt: new Date().toISOString(),
+                        finishedAt: new Date().toISOString(),
+                    };
+                    await this.persist(succeeded, terminalPublication);
+                    publicationTransferred = true;
+                    this.jobs.set(succeeded.jobId, succeeded);
+                    await this.notify(succeeded);
+                } catch (error) {
+                    if (!publicationTransferred) {
+                        await rejectTerminalPublication(terminalPublication);
+                    }
+                    throw error;
                 }
-                validateJobValue(output.result, 'job result', 1024 * 1024);
-                validateArtifactIds(output.artifactIds ?? []);
-                const succeeded: DurableJobRecord = {
-                    ...running,
-                    sequence: running.sequence + 1,
-                    state: 'succeeded',
-                    stage: 'complete',
-                    fraction: 1,
-                    result: output.result,
-                    resultArtifactIds: [...(output.artifactIds ?? [])],
-                    updatedAt: new Date().toISOString(),
-                    finishedAt: new Date().toISOString(),
-                };
-                await this.persist(succeeded);
-                this.jobs.set(succeeded.jobId, succeeded);
-                await this.notify(succeeded);
             } catch (error) {
                 const cancelled = controller.signal.aborted
                     || (error instanceof DOMException && error.name === 'AbortError');
@@ -376,11 +435,24 @@ export class DurableJobScheduler {
         }
     }
 
-    private async persist(record: DurableJobRecord): Promise<void> {
+    private async persist(
+        record: DurableJobRecord,
+        terminalPublication?: DurableJobTerminalPublication,
+    ): Promise<void> {
         validateJobValue(record, 'job record', MANAGED_JOB_JSON_MAX_BYTES);
         if (this.options.persistTransition) {
-            await this.options.persistTransition(record);
+            await this.options.persistTransition(record, terminalPublication);
             return;
+        }
+        if (terminalPublication) {
+            await Promise.allSettled([
+                ...terminalPublication.artifacts.map((artifact) => artifact.reject()),
+                ...(terminalPublication.outputs ?? []).map((output) => output.reject()),
+            ]);
+            throw managedError(
+                'INTERNAL_ERROR',
+                'Terminal artifact publication requires a coordinator transaction hook.',
+            );
         }
         const path = this.store.projectPath(record.projectId, 'jobs', `${record.jobId}.json`);
         await atomicWriteJson(path, record, { faultPrefix: 'job' });
@@ -394,7 +466,13 @@ export class DurableJobScheduler {
     }
 
     private async notify(record: DurableJobRecord): Promise<void> {
-        await this.options.onTransition?.(record);
+        try {
+            await this.options.onTransition?.(record);
+        } catch {
+            // The durable transition is already authoritative. Observers may report degraded
+            // telemetry, but they must never reverse a committed job or consume scheduler capacity.
+            this.diagnostics.record('observerFailures');
+        }
     }
 
     private refreshDiagnostics(): void {
@@ -433,14 +511,7 @@ function boundedMessage(value: string | undefined): string | undefined {
 }
 
 export function toJobBoundaryState(state: DurableJobState): JobBoundaryState {
-    switch (state) {
-        case 'cancelling':
-            return 'cancel_requested';
-        case 'succeeded':
-            return 'completed';
-        default:
-            return state;
-    }
+    return state === 'cancelling' ? 'running' : state;
 }
 
 function validateJobValue(value: unknown, label: string, maximumBytes: number): void {
@@ -472,4 +543,58 @@ function validateArtifactIds(ids: readonly string[]): void {
     ) {
         throw managedError('INVALID_REQUEST', 'Job artifact identifiers are invalid or oversized.');
     }
+}
+
+function validateTerminalPublication(
+    publication: DurableJobTerminalPublication | undefined,
+    artifactIds: readonly string[],
+): void {
+    if (!publication) {
+        if (artifactIds.length > 0) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'Terminal artifact identifiers require an atomic artifact publication.',
+            );
+        }
+        return;
+    }
+    if (
+        (
+            publication.artifacts.length === 0
+            && (publication.outputs?.length ?? 0) === 0
+        )
+        || publication.artifacts.length > 64
+        || (publication.outputs?.length ?? 0) > 16
+        || publication.artifacts.some((artifact) => (
+            !artifact.record.artifactId
+            || artifact.record.projectId.length === 0
+        ))
+        || publication.outputs?.some((output) => (
+            !output.record.publicationId
+            || !output.record.sessionId
+        ))
+    ) {
+        throw managedError('INVALID_REQUEST', 'The terminal artifact publication is invalid.');
+    }
+    const publishedIds = publication.artifacts.map((artifact) => artifact.record.artifactId);
+    if (
+        publishedIds.length !== artifactIds.length
+        || publishedIds.some((artifactId, index) => artifactId !== artifactIds[index])
+        || new Set(publishedIds).size !== publishedIds.length
+    ) {
+        throw managedError(
+            'INVALID_REQUEST',
+            'Terminal artifact identifiers do not match the staged publication.',
+        );
+    }
+}
+
+async function rejectTerminalPublication(
+    publication: DurableJobTerminalPublication | undefined,
+): Promise<void> {
+    if (!publication || !Array.isArray(publication.artifacts)) return;
+    await Promise.allSettled([
+        ...publication.artifacts.map((artifact) => artifact.reject()),
+        ...(publication.outputs ?? []).map((output) => output.reject()),
+    ]);
 }

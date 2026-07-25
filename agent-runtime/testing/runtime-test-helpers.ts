@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ManagedMutationEnvelope, ManagedProjectEnvelopeV1, StateToken } from '../coordinator/types';
 import { MANAGED_RUNTIME_API_VERSION, MANAGED_RUNTIME_SCHEMA_VERSION } from '../coordinator/types';
+import { canonicalDigest } from '../persistence/canonical-json';
 import { fakeSnapshot, type FakeEditorCommand, type FakeEditorState } from './fake-editor-port';
 
 export async function temporaryRuntime(): Promise<{ path: string; cleanup(): Promise<void> }> {
@@ -50,7 +51,7 @@ export function mutationRequest(
     key: string,
     command: FakeEditorCommand = { append: key },
 ): ManagedMutationEnvelope<FakeEditorCommand> {
-    return {
+    const request = {
         apiVersion: MANAGED_RUNTIME_API_VERSION,
         sessionId: token.sessionId,
         sessionEpoch: token.sessionEpoch,
@@ -63,5 +64,9 @@ export function mutationRequest(
         idempotencyKey: key,
         toolName: 'waptions_test_append',
         command,
+    };
+    return {
+        ...request,
+        canonicalRequestHash: canonicalDigest(request),
     };
 }

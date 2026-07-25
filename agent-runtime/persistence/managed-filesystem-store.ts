@@ -16,11 +16,11 @@ import {
 } from './fs-durable';
 
 export interface DurableReceipt<Result = unknown> {
-    schemaVersion: 1;
+    schemaVersion: 2;
     projectId: string;
     toolName: string;
     idempotencyKey: string;
-    requestHash: string;
+    canonicalRequestHash: string;
     result: Result;
     committedSessionRevision: number;
     createdAt: string;
@@ -51,6 +51,17 @@ export interface StoreTransactionInput<State = unknown> {
     writes?: readonly DurableWrite[];
 }
 
+export interface DurableNamespaceEntry<T> {
+    name: string;
+    value: T;
+}
+
+export type ManagedRecoveryOutcome =
+    | 'clean'
+    | 'wal-replayed'
+    | 'wal-rolled-back'
+    | 'degraded';
+
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export const MANAGED_STATE_JSON_MAX_BYTES = 64 * 1024 * 1024;
 export const MANAGED_WAL_JSON_MAX_BYTES = 80 * 1024 * 1024;
@@ -69,6 +80,7 @@ export const MANAGED_METADATA_JSON_MAX_BYTES = 256 * 1024;
 export class ManagedFilesystemStore {
     readonly projectsRoot: string;
     readonly coordinatorRoot: string;
+    private readonly recoveryOutcomes = new Map<string, ManagedRecoveryOutcome>();
 
     constructor(
         readonly dataRoot: string,
@@ -94,8 +106,9 @@ export class ManagedFilesystemStore {
         }
     }
 
-    async recoverProject(projectId: string): Promise<void> {
+    async recoverProject(projectId: string): Promise<ManagedRecoveryOutcome> {
         const walRoot = this.projectPath(projectId, 'wal');
+        let outcome: ManagedRecoveryOutcome = 'clean';
         let entries: string[] = [];
         try {
             entries = await readdir(walRoot);
@@ -116,6 +129,7 @@ export class ManagedFilesystemStore {
             if (!transaction) continue;
             if (!await isRegularFile(markerPath)) {
                 await rm(walPath, { force: true });
+                outcome = combineRecoveryOutcome(outcome, 'wal-rolled-back');
                 continue;
             }
             const expectedMarker = `${canonicalDigest(transaction, MANAGED_WAL_JSON_MAX_BYTES)}\n`;
@@ -123,8 +137,21 @@ export class ManagedFilesystemStore {
                 throw new Error('Managed transaction commit marker is corrupt.');
             }
             await this.replay(transaction);
+            outcome = combineRecoveryOutcome(outcome, 'wal-replayed');
             await this.cleanupWal(walPath, markerPath);
         }
+        const combined = combineRecoveryOutcome(
+            this.recoveryOutcomes.get(projectId) ?? 'clean',
+            outcome,
+        );
+        this.recoveryOutcomes.set(projectId, combined);
+        return combined;
+    }
+
+    consumeRecoveryOutcome(projectId: string): ManagedRecoveryOutcome {
+        const outcome = this.recoveryOutcomes.get(projectId) ?? 'clean';
+        this.recoveryOutcomes.delete(projectId);
+        return outcome;
     }
 
     async listProjectIds(): Promise<string[]> {
@@ -274,6 +301,14 @@ export class ManagedFilesystemStore {
     }
 
     async readNamespace<T>(projectId: string, namespace: string): Promise<T[]> {
+        return (await this.readNamespaceEntries<T>(projectId, namespace))
+            .map((entry) => entry.value);
+    }
+
+    async readNamespaceEntries<T>(
+        projectId: string,
+        namespace: string,
+    ): Promise<DurableNamespaceEntry<T>[]> {
         const root = this.projectPath(projectId, namespace);
         let names: string[] = [];
         try {
@@ -282,13 +317,13 @@ export class ManagedFilesystemStore {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
             throw error;
         }
-        const values: T[] = [];
+        const values: DurableNamespaceEntry<T>[] = [];
         for (const name of names.filter((entry) => entry.endsWith('.json')).sort()) {
             const value = await readJsonFile<T>(
                 safeJoin(root, name),
                 namespaceJsonLimit(namespace),
             );
-            if (value) values.push(value);
+            if (value) values.push({ name, value });
         }
         return values;
     }
@@ -400,4 +435,13 @@ async function isRegularFile(path: string): Promise<boolean> {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
         throw error;
     }
+}
+
+function combineRecoveryOutcome(
+    current: ManagedRecoveryOutcome,
+    next: ManagedRecoveryOutcome,
+): ManagedRecoveryOutcome {
+    if (current === 'clean') return next;
+    if (next === 'clean' || current === next) return current;
+    return 'degraded';
 }

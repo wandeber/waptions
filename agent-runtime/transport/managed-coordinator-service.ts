@@ -7,10 +7,14 @@ import {
     LocalJsonTransportServer,
     type LocalTransportRequest,
     type LocalTransportEndpoint,
+    type LocalTransportOptions,
+    type LocalTransportRequestContext,
 } from './local-json-transport';
+import type { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
 
 export interface ManagedCoordinatorServiceAuthority {
     readonly epoch: string;
+    readonly diagnostics?: RuntimeDiagnostics;
     canGracefullyShutdown(): boolean;
     close(): Promise<void>;
 }
@@ -31,6 +35,10 @@ export interface ManagedCoordinatorServiceOptions {
      * running, or unflushed work remains.
      */
     idleShutdownMilliseconds?: number;
+    transport?: Omit<
+        LocalTransportOptions,
+        'onConnectionCountChanged' | 'onResourceStateChanged' | 'onDiagnostic'
+    >;
 }
 
 /**
@@ -41,45 +49,82 @@ export class ManagedCoordinatorService {
     private readonly transport: LocalJsonTransportServer;
     private idleTimer: ReturnType<typeof setTimeout> | null = null;
     private connectionCount = 0;
+    private inFlightCount = 0;
+    private queuedBytes = 0;
     private closed = false;
 
     private constructor(
         private readonly dataRoot: string,
         private readonly authority: ManagedCoordinatorServiceAuthority,
         secret: string,
-        handler: (request: LocalTransportRequest) => Promise<unknown>,
+        handler: (
+            request: LocalTransportRequest,
+            context: LocalTransportRequestContext,
+        ) => Promise<unknown>,
         private readonly options: ManagedCoordinatorServiceOptions,
     ) {
         this.transport = new LocalJsonTransportServer(dataRoot, secret, handler, {
+            ...options.transport,
             onConnectionCountChanged: (count) => this.onConnectionCountChanged(count),
+            onResourceStateChanged: (state) => {
+                this.inFlightCount = state.inFlight;
+                this.queuedBytes = state.queuedBytes;
+                authority.diagnostics?.set('ipcConnections', state.connections);
+                authority.diagnostics?.set('ipcInFlight', state.inFlight);
+                authority.diagnostics?.set('ipcQueuedBytes', state.queuedBytes);
+                this.scheduleIdleShutdown();
+            },
+            onDiagnostic: (kind) => {
+                authority.diagnostics?.record(
+                    kind === 'aborted'
+                        ? 'abortedOperations'
+                        : kind === 'deadline'
+                            ? 'deadlineExceeded'
+                            : 'limitRejections',
+                );
+            },
         });
     }
 
     static async start(
         dataRoot: string,
         authority: ManagedCoordinatorServiceAuthority,
-        handler: (request: LocalTransportRequest) => Promise<unknown>,
+        handler: (
+            request: LocalTransportRequest,
+            context: LocalTransportRequestContext,
+        ) => Promise<unknown>,
         options: ManagedCoordinatorServiceOptions = {},
     ): Promise<ManagedCoordinatorService> {
         await assertNoLiveService(dataRoot);
         const secret = await readServiceSecret(dataRoot);
         const service = new ManagedCoordinatorService(dataRoot, authority, secret, handler, options);
-        await service.transport.start();
-        const discovery: CoordinatorServiceDiscovery = {
-            schemaVersion: 1,
-            pid: process.pid,
-            epoch: authority.epoch,
-            controlEndpoint: service.transport.endpoint,
-            startedAt: new Date().toISOString(),
-        };
-        const path = discoveryPath(dataRoot);
-        await atomicWriteJson(path, discovery, { mode: 0o600, faultPrefix: 'service-discovery' });
-        await chmod(path, 0o600);
-        return service;
+        try {
+            await service.transport.start();
+            const discovery: CoordinatorServiceDiscovery = {
+                schemaVersion: 1,
+                pid: process.pid,
+                epoch: authority.epoch,
+                controlEndpoint: service.transport.endpoint,
+                startedAt: new Date().toISOString(),
+            };
+            const path = discoveryPath(dataRoot);
+            await atomicWriteJson(path, discovery, { mode: 0o600, faultPrefix: 'service-discovery' });
+            await chmod(path, 0o600);
+            return service;
+        } catch (error) {
+            await service.close().catch(() => undefined);
+            throw error;
+        }
     }
 
     async requestShutdownWhenIdle(): Promise<boolean> {
-        if (this.closed || this.connectionCount > 0 || !this.authority.canGracefullyShutdown()) {
+        if (
+            this.closed
+            || this.connectionCount > 0
+            || this.inFlightCount > 0
+            || this.queuedBytes > 0
+            || !this.authority.canGracefullyShutdown()
+        ) {
             return false;
         }
         await this.close();
@@ -91,17 +136,33 @@ export class ManagedCoordinatorService {
         this.closed = true;
         if (this.idleTimer) clearTimeout(this.idleTimer);
         this.idleTimer = null;
-        await this.transport.close();
-        await this.authority.close();
-        await rm(discoveryPath(this.dataRoot), { force: true });
+        try {
+            await this.transport.close();
+        } finally {
+            try {
+                await removeOwnedDiscovery(this.dataRoot, this.authority.epoch);
+            } finally {
+                await this.authority.close();
+            }
+        }
     }
 
     private onConnectionCountChanged(count: number): void {
         this.connectionCount = count;
+        this.scheduleIdleShutdown();
+    }
+
+    private scheduleIdleShutdown(): void {
         if (this.idleTimer) clearTimeout(this.idleTimer);
         this.idleTimer = null;
         const timeout = this.options.idleShutdownMilliseconds;
-        if (count !== 0 || timeout === undefined || this.closed) return;
+        if (
+            this.connectionCount !== 0
+            || this.inFlightCount !== 0
+            || this.queuedBytes !== 0
+            || timeout === undefined
+            || this.closed
+        ) return;
         this.idleTimer = setTimeout(() => {
             this.idleTimer = null;
             void this.requestShutdownWhenIdle();
@@ -113,7 +174,10 @@ export class ManagedCoordinatorService {
 export async function runManagedCoordinatorService(
     bootstrap: () => Promise<{
         authority: ManagedCoordinatorServiceAuthority;
-        handler: (request: LocalTransportRequest) => Promise<unknown>;
+        handler: (
+            request: LocalTransportRequest,
+            context: LocalTransportRequestContext,
+        ) => Promise<unknown>;
         dataRoot: string;
         options?: ManagedCoordinatorServiceOptions;
     }>,
@@ -187,6 +251,19 @@ export async function attachManagedCoordinator(dataRoot: string): Promise<{
 
 function discoveryPath(dataRoot: string): string {
     return join(dataRoot, 'coordinator', 'service.json');
+}
+
+async function removeOwnedDiscovery(dataRoot: string, epoch: string): Promise<void> {
+    const path = discoveryPath(dataRoot);
+    const discovery = await readJsonFile<CoordinatorServiceDiscovery>(path, 64 * 1024);
+    if (
+        discovery
+        && discovery.schemaVersion === 1
+        && discovery.pid === process.pid
+        && discovery.epoch === epoch
+    ) {
+        await rm(path, { force: true });
+    }
 }
 
 async function readServiceSecret(dataRoot: string): Promise<string> {

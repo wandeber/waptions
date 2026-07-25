@@ -21,8 +21,26 @@ export interface LocalTransportResponse {
 export interface LocalTransportOptions {
     inputLimitBytes?: number;
     outputLimitBytes?: number;
+    maxConnections?: number;
+    maxInFlightPerConnection?: number;
+    maxGlobalInFlight?: number;
+    maxQueuedBytesPerConnection?: number;
+    maxGlobalQueuedBytes?: number;
+    authenticationDeadlineMilliseconds?: number;
+    requestDeadlineMilliseconds?: number;
     onConnectionCountChanged?(count: number): void;
+    onResourceStateChanged?(state: {
+        connections: number;
+        inFlight: number;
+        queuedBytes: number;
+    }): void;
+    onDiagnostic?(kind: 'aborted' | 'deadline' | 'limit'): void;
     localhostPort?: number;
+}
+
+export interface LocalTransportRequestContext {
+    signal: AbortSignal;
+    deadlineAt: number;
 }
 
 export type LocalTransportEndpoint =
@@ -31,6 +49,13 @@ export type LocalTransportEndpoint =
 
 const DEFAULT_INPUT_LIMIT = 512 * 1024;
 const DEFAULT_OUTPUT_LIMIT = 1024 * 1024;
+const DEFAULT_MAX_CONNECTIONS = 32;
+const DEFAULT_MAX_IN_FLIGHT_PER_CONNECTION = 32;
+const DEFAULT_MAX_GLOBAL_IN_FLIGHT = 128;
+const DEFAULT_MAX_QUEUED_BYTES_PER_CONNECTION = 2 * 1024 * 1024;
+const DEFAULT_MAX_GLOBAL_QUEUED_BYTES = 8 * 1024 * 1024;
+const DEFAULT_AUTHENTICATION_DEADLINE_MILLISECONDS = 5_000;
+const DEFAULT_REQUEST_DEADLINE_MILLISECONDS = 30_000;
 
 export class LocalJsonTransportServer {
     private endpointValue: LocalTransportEndpoint;
@@ -38,11 +63,16 @@ export class LocalJsonTransportServer {
     private readonly sockets = new Set<Socket>();
     private readonly inputLimit: number;
     private readonly outputLimit: number;
+    private globalInFlight = 0;
+    private globalQueuedBytes = 0;
 
     constructor(
         dataRoot: string,
         private readonly secret: string,
-        private readonly handler: (request: LocalTransportRequest) => Promise<unknown>,
+        private readonly handler: (
+            request: LocalTransportRequest,
+            context: LocalTransportRequestContext,
+        ) => Promise<unknown>,
         private readonly options: LocalTransportOptions = {},
     ) {
         this.endpointValue = options.localhostPort === undefined
@@ -50,6 +80,27 @@ export class LocalJsonTransportServer {
             : { kind: 'tcp', host: 'localhost', port: options.localhostPort };
         this.inputLimit = options.inputLimitBytes ?? DEFAULT_INPUT_LIMIT;
         this.outputLimit = options.outputLimitBytes ?? DEFAULT_OUTPUT_LIMIT;
+        for (const [name, value] of Object.entries({
+            inputLimitBytes: this.inputLimit,
+            outputLimitBytes: this.outputLimit,
+            maxConnections: options.maxConnections ?? DEFAULT_MAX_CONNECTIONS,
+            maxInFlightPerConnection:
+                options.maxInFlightPerConnection ?? DEFAULT_MAX_IN_FLIGHT_PER_CONNECTION,
+            maxGlobalInFlight: options.maxGlobalInFlight ?? DEFAULT_MAX_GLOBAL_IN_FLIGHT,
+            maxQueuedBytesPerConnection:
+                options.maxQueuedBytesPerConnection ?? DEFAULT_MAX_QUEUED_BYTES_PER_CONNECTION,
+            maxGlobalQueuedBytes:
+                options.maxGlobalQueuedBytes ?? DEFAULT_MAX_GLOBAL_QUEUED_BYTES,
+            authenticationDeadlineMilliseconds:
+                options.authenticationDeadlineMilliseconds
+                    ?? DEFAULT_AUTHENTICATION_DEADLINE_MILLISECONDS,
+            requestDeadlineMilliseconds:
+                options.requestDeadlineMilliseconds ?? DEFAULT_REQUEST_DEADLINE_MILLISECONDS,
+        })) {
+            if (!Number.isSafeInteger(value) || value <= 0) {
+                throw managedError('INVALID_REQUEST', `The local transport ${name} limit is invalid.`);
+            }
+        }
     }
 
     get endpoint(): LocalTransportEndpoint {
@@ -104,11 +155,60 @@ export class LocalJsonTransportServer {
     }
 
     private accept(socket: Socket): void {
+        if (this.sockets.size >= (this.options.maxConnections ?? DEFAULT_MAX_CONNECTIONS)) {
+            this.options.onDiagnostic?.('limit');
+            socket.destroy();
+            return;
+        }
         this.sockets.add(socket);
-        this.options.onConnectionCountChanged?.(this.sockets.size);
+        this.notifyResources();
         socket.setNoDelay(true);
         let authenticated = false;
         const seenRequestIds = new Set<string>();
+        const inFlight = new Map<string, AbortController>();
+        let queuedBytes = 0;
+        let closed = false;
+        const authenticationTimer = setTimeout(() => {
+            if (authenticated || closed) return;
+            this.options.onDiagnostic?.('deadline');
+            socket.destroy(managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The local coordinator authentication timed out.',
+                true,
+            ));
+        }, this.options.authenticationDeadlineMilliseconds
+            ?? DEFAULT_AUTHENTICATION_DEADLINE_MILLISECONDS);
+        authenticationTimer.unref?.();
+        const write = async (value: unknown) => {
+            const frame = encodeFrame(value, this.outputLimit);
+            const perConnectionLimit = this.options.maxQueuedBytesPerConnection
+                ?? DEFAULT_MAX_QUEUED_BYTES_PER_CONNECTION;
+            const globalLimit = this.options.maxGlobalQueuedBytes
+                ?? DEFAULT_MAX_GLOBAL_QUEUED_BYTES;
+            if (
+                closed
+                || socket.destroyed
+                || socket.writableLength + queuedBytes + frame.byteLength > perConnectionLimit
+                || this.globalQueuedBytes + frame.byteLength > globalLimit
+            ) {
+                this.options.onDiagnostic?.('limit');
+                throw managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'The local transport response backpressure limit was reached.',
+                    true,
+                );
+            }
+            queuedBytes += frame.byteLength;
+            this.globalQueuedBytes += frame.byteLength;
+            this.notifyResources();
+            try {
+                await writeEncodedFrame(socket, frame);
+            } finally {
+                queuedBytes = Math.max(0, queuedBytes - frame.byteLength);
+                this.globalQueuedBytes = Math.max(0, this.globalQueuedBytes - frame.byteLength);
+                this.notifyResources();
+            }
+        };
         const reader = new FrameReader(this.inputLimit, async (payload) => {
             if (!authenticated) {
                 const hello = parseRecord(payload);
@@ -121,7 +221,8 @@ export class LocalJsonTransportServer {
                     return;
                 }
                 authenticated = true;
-                await writeFrame(socket, { type: 'ready' }, this.outputLimit);
+                clearTimeout(authenticationTimer);
+                await write({ type: 'ready' });
                 return;
             }
             const parsed = parseRecord(payload);
@@ -131,25 +232,102 @@ export class LocalJsonTransportServer {
                 return;
             }
             seenRequestIds.add(request.id);
+            if (
+                inFlight.size >= (
+                    this.options.maxInFlightPerConnection
+                    ?? DEFAULT_MAX_IN_FLIGHT_PER_CONNECTION
+                )
+                || this.globalInFlight >= (
+                    this.options.maxGlobalInFlight
+                    ?? DEFAULT_MAX_GLOBAL_IN_FLIGHT
+                )
+            ) {
+                this.options.onDiagnostic?.('limit');
+                await write({
+                    id: request.id,
+                    ok: false,
+                    error: managedError(
+                        'COORDINATOR_UNAVAILABLE',
+                        'The local coordinator request limit was reached.',
+                        true,
+                    ).toJSON(),
+                });
+                return;
+            }
+            const controller = new AbortController();
+            const deadlineMilliseconds = this.options.requestDeadlineMilliseconds
+                ?? DEFAULT_REQUEST_DEADLINE_MILLISECONDS;
+            const deadlineAt = Date.now() + deadlineMilliseconds;
+            const timer = setTimeout(() => {
+                this.options.onDiagnostic?.('deadline');
+                controller.abort(managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'The local coordinator request timed out.',
+                    true,
+                ));
+            }, deadlineMilliseconds);
+            timer.unref?.();
+            inFlight.set(request.id, controller);
+            this.globalInFlight += 1;
+            this.notifyResources();
             // Requests intentionally execute concurrently. The coordinator itself serializes
             // project mutations, while independent reads may complete out of order.
-            void this.handler(request).then(
-                (result) => writeFrame(socket, { id: request.id, ok: true, result }, this.outputLimit),
-                (error) => writeFrame(socket, {
+            const handlerExecution = Promise.resolve().then(() => (
+                this.handler(request, { signal: controller.signal, deadlineAt })
+            ));
+            void raceWithAbort(
+                handlerExecution,
+                controller.signal,
+            ).then(
+                (result) => write({ id: request.id, ok: true, result }),
+                (error) => write({
                     id: request.id,
                     ok: false,
                     error: asManagedRuntimeError(error).toJSON(),
-                }, this.outputLimit),
+                }),
             ).catch(() => socket.destroy());
+            // A response deadline cancels the caller-facing wait, but authority capacity remains
+            // leased until the handler actually settles. This keeps ignoring AbortSignal from
+            // turning timeouts or disconnects into unbounded hidden concurrency.
+            void handlerExecution.then(() => {
+                clearTimeout(timer);
+                inFlight.delete(request.id);
+                this.globalInFlight = Math.max(0, this.globalInFlight - 1);
+                this.notifyResources();
+            }, () => {
+                clearTimeout(timer);
+                inFlight.delete(request.id);
+                this.globalInFlight = Math.max(0, this.globalInFlight - 1);
+                this.notifyResources();
+            });
         });
         socket.on('data', (chunk) => {
             reader.push(chunk).catch(() => socket.destroy());
         });
         socket.once('close', () => {
+            closed = true;
+            clearTimeout(authenticationTimer);
+            for (const controller of Array.from(inFlight.values())) {
+                this.options.onDiagnostic?.('aborted');
+                controller.abort(managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'The local coordinator client disconnected.',
+                    true,
+                ));
+            }
             this.sockets.delete(socket);
-            this.options.onConnectionCountChanged?.(this.sockets.size);
+            this.notifyResources();
         });
         socket.once('error', () => socket.destroy());
+    }
+
+    private notifyResources(): void {
+        this.options.onConnectionCountChanged?.(this.sockets.size);
+        this.options.onResourceStateChanged?.({
+            connections: this.sockets.size,
+            inFlight: this.globalInFlight,
+            queuedBytes: this.globalQueuedBytes,
+        });
     }
 }
 
@@ -179,11 +357,15 @@ export class LocalJsonTransportClient {
         const socket = this.endpoint.kind === 'tcp'
             ? createConnection({ host: this.endpoint.host, port: this.endpoint.port })
             : createConnection(this.endpoint.path);
+        this.socket = socket;
         this.ready = false;
         this.readyPromise = new Promise<void>((resolve, reject) => {
             this.readyResolve = resolve;
             this.readyReject = reject;
         });
+        // A socket may fail while the hello frame itself is still being written. Attach a handler
+        // immediately so the concurrently rejected readiness promise never becomes unhandled.
+        void this.readyPromise.catch(() => undefined);
         const reader = new FrameReader(
             this.limits.outputLimitBytes ?? DEFAULT_OUTPUT_LIMIT,
             async (payload) => this.deliver(JSON.parse(payload.toString('utf8'))),
@@ -193,17 +375,37 @@ export class LocalJsonTransportClient {
         });
         socket.once('close', () => this.fail(new Error('The local coordinator connection closed.')));
         socket.once('error', (error) => this.fail(error));
-        await new Promise<void>((resolve, reject) => {
-            socket.once('connect', resolve);
-            socket.once('error', reject);
+        const timeout = this.limits.authenticationDeadlineMilliseconds
+            ?? DEFAULT_AUTHENTICATION_DEADLINE_MILLISECONDS;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The local coordinator authentication timed out.',
+                true,
+            )), timeout);
+            timer.unref?.();
         });
-        this.socket = socket;
-        await writeFrame(
-            socket,
-            { type: 'hello', secret: this.secret },
-            this.limits.inputLimitBytes ?? DEFAULT_INPUT_LIMIT,
-        );
-        await this.readyPromise;
+        try {
+            await Promise.race([
+                new Promise<void>((resolve, reject) => {
+                    socket.once('connect', resolve);
+                    socket.once('error', reject);
+                }),
+                deadline,
+            ]);
+            await writeFrame(
+                socket,
+                { type: 'hello', secret: this.secret },
+                this.limits.inputLimitBytes ?? DEFAULT_INPUT_LIMIT,
+            );
+            await Promise.race([this.readyPromise, deadline]);
+        } catch (error) {
+            this.fail(error);
+            throw error;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
     }
 
     async request(
@@ -212,6 +414,16 @@ export class LocalJsonTransportClient {
         options: { signal?: AbortSignal; timeoutMilliseconds?: number } = {},
     ): Promise<unknown> {
         if (!this.socket || !this.ready) throw new Error('Local transport client is not connected.');
+        if (
+            this.pending.size
+            >= (this.limits.maxInFlightPerConnection ?? DEFAULT_MAX_IN_FLIGHT_PER_CONNECTION)
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The local transport client request limit was reached.',
+                true,
+            );
+        }
         const id = `${process.pid}-${++this.requestSequence}`;
         if (this.pending.has(id)) throw new Error('Duplicate local transport request identifier.');
         if (options.signal?.aborted) {
@@ -353,16 +565,37 @@ class FrameReader {
 }
 
 async function writeFrame(socket: Socket, value: unknown, maximumBytes: number): Promise<void> {
+    await writeEncodedFrame(socket, encodeFrame(value, maximumBytes));
+}
+
+function encodeFrame(value: unknown, maximumBytes: number): Buffer {
     const body = Buffer.from(JSON.stringify(value));
     if (body.byteLength > maximumBytes) {
         throw managedError('PAYLOAD_TOO_LARGE', 'The local transport response is oversized.');
     }
     const header = Buffer.allocUnsafe(4);
     header.writeUInt32BE(body.byteLength);
-    const frame = Buffer.concat([header, body]);
+    return Buffer.concat([header, body]);
+}
+
+async function writeEncodedFrame(socket: Socket, frame: Buffer): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         socket.write(frame, (error) => error ? reject(error) : resolve());
     });
+}
+
+async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    let abort!: () => void;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        signal.addEventListener('abort', abort, { once: true });
+    });
+    try {
+        return await Promise.race([operation, cancellation]);
+    } finally {
+        signal.removeEventListener('abort', abort);
+    }
 }
 
 function parseRecord(payload: Buffer): Record<string, unknown> {

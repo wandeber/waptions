@@ -29,6 +29,11 @@ export interface ManagedMutationEnvelope<Command = unknown> {
     expected: MutationExpectedRevisions;
     idempotencyKey: string;
     toolName: string;
+    /**
+     * SHA-256 of the complete canonical MCP request before boundary-to-runtime transformation.
+     * The coordinator stores and compares this exact value; it never reconstructs the hash.
+     */
+    canonicalRequestHash: string;
     command: Command;
 }
 

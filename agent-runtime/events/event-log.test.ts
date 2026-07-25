@@ -19,13 +19,20 @@ describe('ManagedEventLog', () => {
         for (let sequence = 1; sequence <= 4; sequence += 1) {
             const event: ManagedEvent = {
                 schemaVersion: 1,
-                projectId: envelope.projectId,
-                sessionId: envelope.sessionId,
+                cursor: log.cursor(envelope.projectId, envelope.sessionId, sequence),
+                type: 'project.changed',
+                occurredAt: new Date().toISOString(),
                 sequence,
-                kind: 'project.changed',
-                createdAt: new Date().toISOString(),
-                sessionRevision: sequence,
-                summary: { sequence },
+                state: {
+                    sessionId: envelope.sessionId,
+                    projectId: envelope.projectId,
+                    sessionEpoch: 'event-test-epoch',
+                    sessionRevision: sequence,
+                    documentRevision: envelope.editor.documentRevision,
+                    audioGraphRevision: envelope.editor.audioGraphRevision,
+                    eventCursor: log.cursor(envelope.projectId, envelope.sessionId, sequence),
+                },
+                data: { sequence },
             };
             events.push(event);
             const next = {
@@ -78,5 +85,40 @@ describe('ManagedEventLog', () => {
         log.publish(events[0]);
         await expect(abortable.next()).resolves.toMatchObject({ sequence: 1 });
         abortable.close();
+    });
+
+    it('bounds subscriptions, pending reads, and long-poll lifetime', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const store = new ManagedFilesystemStore(runtime.path);
+        await store.initialize();
+        const log = new ManagedEventLog(
+            store,
+            Buffer.alloc(32, 5),
+            undefined,
+            undefined,
+            undefined,
+            {
+                maximumSubscriptionsPerScope: 2,
+                maximumSubscriptionsGlobal: 2,
+                maximumPendingReadersGlobal: 1,
+                longPollMilliseconds: 20,
+            },
+        );
+        const first = log.subscribe('project', 'session');
+        const second = log.subscribe('project', 'session');
+        expect(() => log.subscribe('project', 'session')).toThrowError(expect.objectContaining({
+            code: 'COORDINATOR_UNAVAILABLE',
+        }));
+
+        const pending = first.next();
+        await expect(first.next()).rejects.toMatchObject({ code: 'COORDINATOR_UNAVAILABLE' });
+        await expect(second.next()).rejects.toMatchObject({ code: 'COORDINATOR_UNAVAILABLE' });
+        await expect(pending).rejects.toMatchObject({ code: 'COORDINATOR_UNAVAILABLE' });
+
+        first.close();
+        const replacement = log.subscribe('project', 'session');
+        replacement.close();
+        second.close();
     });
 });

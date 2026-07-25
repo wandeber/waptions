@@ -9,6 +9,7 @@ import {
 import { temporaryRuntime, testEnvelope } from '../testing/runtime-test-helpers';
 import { ManagedCoordinator } from '../coordinator/managed-coordinator';
 import { fakeEditorPortFactory, fakeSnapshot } from '../testing/fake-editor-port';
+import type { StagedArtifact } from '../artifacts/artifact-registry';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
@@ -49,6 +50,7 @@ describe('DurableJobScheduler', () => {
         await scheduler.cancel(job.jobId);
         await waitFor(() => scheduler.get(job.jobId)?.state === 'cancelled');
         expect(cleaned).toBe(true);
+        await waitFor(() => !scheduler.hasActiveJobs());
         expect(scheduler.hasActiveJobs()).toBe(false);
         await scheduler.close();
     });
@@ -130,10 +132,139 @@ describe('DurableJobScheduler', () => {
             undefined,
             20,
         );
-        expect(eventPage.events.filter((event) => event.kind === 'job.changed')).toHaveLength(
+        expect(eventPage.events.filter((event) => event.type === 'job.changed')).toHaveLength(
             project.jobRevision,
         );
         await coordinator.close();
+    });
+
+    it('claims a queued job once while the scheduler has spare concurrency', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const store = new ManagedFilesystemStore(runtime.path);
+        await store.initialize();
+        const envelope = testEnvelope('single-claim-project');
+        await store.createProject(envelope);
+        let executions = 0;
+        const scheduler = new DurableJobScheduler(store, new RuntimeDiagnostics(), {
+            globalConcurrency: 4,
+        });
+        scheduler.register('review', {
+            run: async () => {
+                executions += 1;
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                return { result: { done: true } };
+            },
+        });
+        const job = await scheduler.enqueue({
+            projectId: envelope.projectId,
+            kind: 'review',
+            input: {},
+            inputDigest: `sha256:${'c'.repeat(64)}`,
+            capturedState: stateToken(envelope.projectId),
+            cancellable: true,
+            resumable: true,
+        });
+        await waitFor(() => scheduler.get(job.jobId)?.state === 'succeeded');
+        expect(executions).toBe(1);
+        await scheduler.close();
+    });
+
+    it('does not reverse a durable terminal transition when an observer fails', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const store = new ManagedFilesystemStore(runtime.path);
+        await store.initialize();
+        const envelope = testEnvelope('observer-failure-project');
+        await store.createProject(envelope);
+        const diagnostics = new RuntimeDiagnostics();
+        const scheduler = new DurableJobScheduler(store, diagnostics, {
+            onTransition: () => {
+                throw new Error('Observer unavailable');
+            },
+        });
+        scheduler.register('review', {
+            run: async () => ({ result: { done: true } }),
+        });
+        const job = await scheduler.enqueue({
+            projectId: envelope.projectId,
+            kind: 'review',
+            input: {},
+            inputDigest: `sha256:${'d'.repeat(64)}`,
+            capturedState: stateToken(envelope.projectId),
+            cancellable: true,
+            resumable: true,
+        });
+
+        await waitFor(() => scheduler.get(job.jobId)?.state === 'succeeded');
+        await waitFor(() => !scheduler.hasActiveJobs());
+        expect(scheduler.get(job.jobId)?.state).toBe('succeeded');
+        expect(diagnostics.snapshot().counters.observerFailures).toBeGreaterThan(0);
+        await scheduler.close();
+    });
+
+    it('rejects staged terminal artifacts when cancellation wins after handler return', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const store = new ManagedFilesystemStore(runtime.path);
+        await store.initialize();
+        const envelope = testEnvelope('cancelled-publication-project');
+        await store.createProject(envelope);
+        let releaseHandler!: () => void;
+        const handlerBarrier = new Promise<void>((resolve) => {
+            releaseHandler = resolve;
+        });
+        let rejections = 0;
+        const staged: StagedArtifact = {
+            record: {
+                schemaVersion: 1,
+                artifactId: 'cancelled-artifact',
+                projectId: envelope.projectId,
+                kind: 'review',
+                mediaType: 'application/octet-stream',
+                byteLength: 1,
+                digest: `sha256:${'d'.repeat(64)}`,
+                relativeBlobPath: `blobs/${'d'.repeat(64)}.blob`,
+                createdAt: new Date().toISOString(),
+                sourceIds: [],
+            },
+            registryWrite: {
+                relativePath: 'artifacts/cancelled-artifact.json',
+                value: { artifactId: 'cancelled-artifact' },
+            },
+            accept: () => undefined,
+            reject: async () => {
+                rejections += 1;
+            },
+        };
+        const scheduler = new DurableJobScheduler(store, new RuntimeDiagnostics(), {
+            persistTransition: async () => undefined,
+        });
+        scheduler.register('review', {
+            run: async () => {
+                await handlerBarrier;
+                return {
+                    result: { done: true },
+                    artifactIds: [staged.record.artifactId],
+                    terminalPublication: { artifacts: [staged] },
+                };
+            },
+        });
+        const job = await scheduler.enqueue({
+            projectId: envelope.projectId,
+            kind: 'review',
+            input: {},
+            inputDigest: `sha256:${'e'.repeat(64)}`,
+            capturedState: stateToken(envelope.projectId),
+            cancellable: true,
+            resumable: true,
+        });
+        await waitFor(() => scheduler.get(job.jobId)?.state === 'running');
+        await scheduler.cancel(job.jobId);
+        releaseHandler();
+        await waitFor(() => scheduler.get(job.jobId)?.state === 'cancelled');
+        expect(rejections).toBe(1);
+        await scheduler.close();
     });
 
     it('releases scheduler capacity when transition persistence fails', async () => {

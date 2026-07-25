@@ -82,6 +82,41 @@ describe('ManagedCoordinatorService', () => {
         await restarted.close();
         await service.close();
     });
+
+    it('does not idle-shutdown while a disconnected handler is still in flight', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
+        let started!: () => void;
+        const handlerStarted = new Promise<void>((resolve) => {
+            started = resolve;
+        });
+        let finish!: () => void;
+        const handlerFinished = new Promise<void>((resolve) => {
+            finish = resolve;
+        });
+        const service = await ManagedCoordinatorService.start(
+            runtime.path,
+            coordinator,
+            async () => {
+                started();
+                await handlerFinished;
+                return { complete: true };
+            },
+            { idleShutdownMilliseconds: 5 },
+        );
+        const attachment = await attachManagedCoordinator(runtime.path);
+        const request = attachment.client.request('slow').catch(() => undefined);
+        await handlerStarted;
+        attachment.client.close();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await expect(access(join(runtime.path, 'coordinator', 'service.json'))).resolves.toBeUndefined();
+
+        finish();
+        await request;
+        await waitForMissing(join(runtime.path, 'coordinator', 'service.json'));
+        await service.close();
+    });
 });
 
 async function waitForMissing(path: string, timeoutMilliseconds = 3_000): Promise<void> {

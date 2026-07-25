@@ -69,11 +69,11 @@ describe('ManagedFilesystemStore', () => {
                 writes: [{
                     relativePath: 'receipts/receipt.json',
                     value: {
-                        schemaVersion: 1,
+                        schemaVersion: 2,
                         projectId: initial.projectId,
                         toolName: 'test',
                         idempotencyKey: 'key',
-                        requestHash: 'sha256:test',
+                        canonicalRequestHash: `sha256:${'1'.repeat(64)}`,
                         result: { changed: true },
                         committedSessionRevision: 1,
                         createdAt: new Date().toISOString(),
@@ -130,6 +130,7 @@ describe('ManagedFilesystemStore', () => {
 
         const recovered = new ManagedFilesystemStore(runtime.path);
         await recovered.initialize();
+        expect(recovered.consumeRecoveryOutcome(initial.projectId)).toBe('wal-replayed');
         const project = await recovered.readProject<{ values: string[] }>(initial.projectId);
         expect(project?.sessionRevision).toBe(1);
         expect(project?.editor.state.values[0]).toHaveLength(historyProjection.length);

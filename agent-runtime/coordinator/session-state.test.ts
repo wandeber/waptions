@@ -68,11 +68,11 @@ describe('managed session state', () => {
             envelope,
             [{ state: 'running', input: { sourceId: 'job-source' } }],
             [{
-                schemaVersion: 1,
+                schemaVersion: 2,
                 projectId: envelope.projectId,
                 toolName: 'test',
                 idempotencyKey: 'key',
-                requestHash: 'sha256:request',
+                canonicalRequestHash: `sha256:${'2'.repeat(64)}`,
                 result: {},
                 committedSessionRevision: 1,
                 createdAt: new Date().toISOString(),
