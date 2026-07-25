@@ -2,8 +2,10 @@ import { BaseAction, ActionContext } from "./base.action";
 import { getAiProvider } from "@/lib/ai/ai-providers";
 import { Subtitle } from "@/types/timeline";
 import { shouldShowPaidTranscriptionModels } from "@/lib/config/feature-flags";
-import { assertServerTranscriptionEndpointAllowed } from "@/lib/ai/openai-compatible-transcription-server";
-import { transcribeWithOpenAICompatibleEndpoint } from "@/lib/ai/openai-compatible-transcription";
+import {
+    assertServerTranscriptionEndpointAllowed,
+    transcribeWithServerOpenAICompatibleEndpoint,
+} from "@/lib/ai/openai-compatible-transcription-server";
 import { ValidationError } from "@/lib/utils/errors";
 import type { OpenAICompatibleTranscriptionSettings } from "@/types/transcription";
 
@@ -94,7 +96,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
             // Public production runs without bundled paid providers. Keep this
             // branch isolated from the OpenAI provider so unauthenticated requests
             // can only reach an explicitly configured and allowlisted transcriber.
-            const transcription = await transcribeWithOpenAICompatibleEndpoint({
+            const transcription = await transcribeWithServerOpenAICompatibleEndpoint({
                 settings: customOpenAITranscription,
                 audioFile,
                 fallbackModel: 'faster-whisper',
@@ -117,7 +119,7 @@ export class GenerateSubtitlesAction extends BaseAction<GenerateSubtitlesInput, 
             if (customOpenAITranscription?.enabled && customOpenAITranscription.requestMode !== 'browser') {
                 assertServerTranscriptionEndpointAllowed(customOpenAITranscription.endpoint);
 
-                return transcribeWithOpenAICompatibleEndpoint({
+                return transcribeWithServerOpenAICompatibleEndpoint({
                     settings: customOpenAITranscription,
                     audioFile,
                     fallbackModel: 'faster-whisper',

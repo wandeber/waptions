@@ -17,6 +17,7 @@ export interface OpenAICompatibleDiarizationRequest {
     fallbackModel?: string;
     fetchImpl?: typeof fetch;
     signal: AbortSignal;
+    transcribeImpl?: typeof transcribeWithOpenAICompatibleEndpoint;
 }
 
 export interface NormalizedDiarizedSpeaker {
@@ -44,8 +45,9 @@ export function transcribeDiarizedAudioWithOpenAICompatibleEndpoint({
     fallbackModel = DEFAULT_DIARIZATION_MODEL,
     fetchImpl,
     signal,
+    transcribeImpl = transcribeWithOpenAICompatibleEndpoint,
 }: OpenAICompatibleDiarizationRequest): Promise<unknown> {
-    return transcribeWithOpenAICompatibleEndpoint({
+    return transcribeImpl({
         settings,
         audioFile,
         fallbackModel,

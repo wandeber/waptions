@@ -1,4 +1,8 @@
-import { resolveOpenAICompatibleTranscriptionUrl } from "@/lib/ai/openai-compatible-transcription";
+import {
+    resolveOpenAICompatibleTranscriptionUrl,
+    transcribeWithOpenAICompatibleEndpoint,
+    type OpenAICompatibleTranscriptionRequest,
+} from "@/lib/ai/openai-compatible-transcription";
 import { ValidationError } from "@/lib/utils/errors";
 
 const SERVER_ALLOWED_HOSTS_ENV = "OPENAI_COMPATIBLE_TRANSCRIPTION_SERVER_ALLOWED_HOSTS";
@@ -67,6 +71,26 @@ export async function assertServerTranscriptionEndpointNetworkAllowed(
 export interface ServerTranscriptionTransport {
     fetch: typeof fetch;
     dispose(): Promise<void>;
+}
+
+/**
+ * Keeps Node-only transport policy out of the browser transcription module.
+ * Server callers must enter through this wrapper so allowlisting, DNS pinning,
+ * and dispatcher disposal remain inseparable from the outbound request.
+ */
+export async function transcribeWithServerOpenAICompatibleEndpoint(
+    request: OpenAICompatibleTranscriptionRequest,
+): Promise<unknown> {
+    const endpoint = resolveOpenAICompatibleTranscriptionUrl(request.settings.endpoint);
+    const transport = await createServerTranscriptionTransport(endpoint, request.fetchImpl);
+    try {
+        return await transcribeWithOpenAICompatibleEndpoint({
+            ...request,
+            fetchImpl: transport.fetch,
+        });
+    } finally {
+        await transport.dispose();
+    }
 }
 
 /**

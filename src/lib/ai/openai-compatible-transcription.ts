@@ -12,7 +12,7 @@ import {
 const DEFAULT_TRANSCRIPTION_PATH = "/v1/audio/transcriptions";
 const TRANSCRIPTION_ENDPOINT_SUFFIX = "/audio/transcriptions";
 
-interface OpenAICompatibleTranscriptionRequest {
+export interface OpenAICompatibleTranscriptionRequest {
     settings: OpenAICompatibleTranscriptionSettings;
     audioFile: File | Blob;
     fallbackModel: string;
@@ -116,20 +116,10 @@ export async function transcribeWithOpenAICompatibleEndpoint({
     }
 
     const timeout = createTotalTimeoutSignal(signal);
-    let serverTransport: {
-        fetch: typeof fetch;
-        dispose(): Promise<void>;
-    } | null = null;
     try {
-        if (settings.requestMode === "server") {
-            const { createServerTranscriptionTransport } = await import(
-                "./openai-compatible-transcription-server"
-            );
-            serverTransport = await createServerTranscriptionTransport(endpointUrl, fetchImpl);
-        }
         let response: Response;
         try {
-            response = await (serverTransport?.fetch ?? fetchImpl)(endpointUrl, {
+            response = await fetchImpl(endpointUrl, {
                 method: "POST",
                 body: formData,
                 headers,
@@ -162,7 +152,6 @@ export async function transcribeWithOpenAICompatibleEndpoint({
         return await readBoundedJsonResponse(response, { signal: timeout.signal });
     } finally {
         timeout.dispose();
-        await serverTransport?.dispose();
     }
 }
 

@@ -1,6 +1,9 @@
 import { BaseAction, type ActionContext } from "@/lib/actions/base.action";
 import { transcribeDiarizedAudioWithOpenAICompatibleEndpoint } from "@/lib/ai/openai-compatible-diarization";
-import { assertServerTranscriptionEndpointAllowed } from "@/lib/ai/openai-compatible-transcription-server";
+import {
+    assertServerTranscriptionEndpointAllowed,
+    transcribeWithServerOpenAICompatibleEndpoint,
+} from "@/lib/ai/openai-compatible-transcription-server";
 import { ValidationError } from "@/lib/utils/errors";
 import type { OpenAICompatibleTranscriptionSettings } from "@/types/transcription";
 
@@ -34,6 +37,7 @@ export class GenerateDiarizedSubtitlesAction extends BaseAction<GenerateDiarized
             settings,
             audioFile: input.audioFile,
             signal: input.signal,
+            transcribeImpl: transcribeWithServerOpenAICompatibleEndpoint,
         });
     }
 }
