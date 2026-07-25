@@ -8,8 +8,10 @@ import type {
 export interface UiToolSuccess {
   ok: true;
   data: JsonObject;
-  state: StateToken;
+  state?: StateToken;
+  committedState?: StateToken;
   warnings: ToolWarning[];
+  replayed: boolean;
 }
 
 export interface UiToolFailure {
@@ -35,8 +37,12 @@ export function toUiToolResult(
     return {
       ok: true,
       data: result.data,
-      state: result.state,
+      ...(result.state ? { state: result.state } : {}),
+      ...(result.committedState
+        ? { committedState: result.committedState }
+        : {}),
       warnings: result.warnings,
+      replayed: result.replayed,
     };
   }
   return {

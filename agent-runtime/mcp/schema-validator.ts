@@ -1,8 +1,8 @@
-import {
-  Ajv,
-  type ErrorObject,
-  type ValidateFunction,
+import type {
+  ErrorObject,
+  ValidateFunction,
 } from "ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
 
 import {
   MAX_ERROR_DETAIL_ITEMS,
@@ -26,17 +26,16 @@ function boundedIssues(errors: ErrorObject[] | null | undefined): JsonObject {
     .slice(0, MAX_ERROR_DETAIL_ITEMS)
     .map((error) => ({
       path: error.instancePath || "/",
-      keyword: error.keyword,
+      code: error.keyword,
       message: error.message ?? "Schema validation failed.",
     }));
   return {
     issues,
-    truncated: (errors?.length ?? 0) > issues.length,
   };
 }
 
 export class ToolSchemaValidator {
-  private readonly ajv = new Ajv({
+  private readonly ajv = new Ajv2020({
     allErrors: true,
     strict: false,
     validateFormats: false,
@@ -48,10 +47,17 @@ export class ToolSchemaValidator {
   }
 
   validateInput(name: string, value: unknown): ValidationResult {
-    let serialized: string;
+    let serialized: string | undefined;
     try {
       serialized = JSON.stringify(value);
     } catch {
+      return {
+        valid: false,
+        code: "INVALID_REQUEST",
+        message: "Tool input must be finite, acyclic JSON.",
+      };
+    }
+    if (typeof serialized !== "string") {
       return {
         valid: false,
         code: "INVALID_REQUEST",
@@ -67,7 +73,6 @@ export class ToolSchemaValidator {
         message: `Structured input exceeds the ${MAX_STRUCTURED_INPUT_BYTES}-byte limit.`,
         details: {
           limitBytes: MAX_STRUCTURED_INPUT_BYTES,
-          observedBytes: byteLength,
         },
       };
     }
@@ -90,9 +95,6 @@ export class ToolSchemaValidator {
         valid: false,
         code: "UNSUPPORTED_API_VERSION",
         message: `apiVersion must be ${WAPTIONS_API_VERSION}.`,
-        details: {
-          supportedApiVersion: WAPTIONS_API_VERSION,
-        },
       };
     }
 

@@ -7,14 +7,9 @@ import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  computeCoreSemanticSchemaSha256,
-} from "../mcp/semantic-schema-adapter.js";
-import {
-  TEST_OPERATION_SCHEMA,
+  TEST_PROJECT_DATA,
+  TEST_SEMANTIC_SCHEMAS,
 } from "./test-fixtures/fakes.js";
-import {
-  TEST_CORE_OPERATION_TYPES,
-} from "./test-fixtures/core-operation-names.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -30,12 +25,7 @@ async function createRuntimeModule(): Promise<string> {
   const directory = await mkdtemp(resolve(tmpdir(), "waptions-stdio-"));
   temporaryDirectories.push(directory);
   const modulePath = resolve(directory, "runtime.mjs");
-  const semanticSchemas = {
-    apiVersion: "2026-07-25",
-    editOperationSchema: TEST_OPERATION_SCHEMA,
-    operationTypes: TEST_CORE_OPERATION_TYPES,
-    schemaSha256: computeCoreSemanticSchemaSha256(TEST_OPERATION_SCHEMA),
-  };
+  const semanticSchemas = TEST_SEMANTIC_SCHEMAS;
   const state = {
     sessionId: "session-1",
     projectId: "project-1",
@@ -48,7 +38,9 @@ async function createRuntimeModule(): Promise<string> {
   };
   const source = `
 const state = ${JSON.stringify(state)};
-const success = { ok: true, data: {}, state, warnings: [] };
+const success = { ok: true, data: ${JSON.stringify(
+    TEST_PROJECT_DATA,
+  )}, state, warnings: [] };
 export async function attachWaptionsRuntime() {
   return {
     controlEndpoint: { kind: "unix-socket", path: ${JSON.stringify(

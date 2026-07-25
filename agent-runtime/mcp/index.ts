@@ -1,6 +1,7 @@
 export * from "./app-resource.js";
 export * from "./constants.js";
 export * from "./contracts.js";
+export * from "./core-schema-loader.js";
 export * from "./dispatcher.js";
 export * from "./semantic-schema-adapter.js";
 export * from "./runtime-vocabulary.js";

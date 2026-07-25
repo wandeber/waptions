@@ -6,68 +6,14 @@ import type {
   ScopedMutationToolCall,
   StateToken,
 } from "../../mcp/contracts.js";
-import {
-  computeCoreSemanticSchemaSha256,
-  type CoreSemanticSchemaBundle,
-} from "../../mcp/semantic-schema-adapter.js";
-import { TEST_CORE_OPERATION_TYPES } from "./core-operation-names.js";
+import { loadCommittedCoreSemanticSchemaBundle } from "../../mcp/core-schema-loader.js";
 import type {
   CoordinatorEventSubscription,
   ManagedCoordinatorAdapter,
 } from "../coordinator-adapter.js";
 
-export const TEST_OPERATION_SCHEMA = {
-  oneOf: TEST_CORE_OPERATION_TYPES.map((type) => ({
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      operationId: {
-        type: "string",
-        minLength: 1,
-      },
-      type: {
-        const: type,
-      },
-      ...(type === "project.set-name"
-        ? {
-            name: { type: "string", minLength: 1 },
-          }
-        : {}),
-      ...(type === "audio-clip.trim"
-        ? {
-            clipId: { type: "string", minLength: 1 },
-            sourceStartSample48k: { type: "integer", minimum: 0 },
-            sourceEndSample48k: { type: "integer", minimum: 0 },
-          }
-        : {}),
-      ...(type === "audio-clip.set-fades"
-        ? {
-            clipId: { type: "string", minLength: 1 },
-            fadeInSamples48k: { type: "integer", minimum: 0 },
-            fadeOutSamples48k: { type: "integer", minimum: 0 },
-          }
-        : {}),
-    },
-    required: [
-      "operationId",
-      "type",
-      ...(type === "project.set-name" ? ["name"] : []),
-      ...(type === "audio-clip.trim"
-        ? ["clipId", "sourceStartSample48k", "sourceEndSample48k"]
-        : []),
-      ...(type === "audio-clip.set-fades"
-        ? ["clipId", "fadeInSamples48k", "fadeOutSamples48k"]
-        : []),
-    ],
-  })),
-} as const;
-
-export const TEST_SEMANTIC_SCHEMAS: CoreSemanticSchemaBundle = {
-  apiVersion: "2026-07-25",
-  editOperationSchema: TEST_OPERATION_SCHEMA,
-  operationTypes: TEST_CORE_OPERATION_TYPES,
-  schemaSha256: computeCoreSemanticSchemaSha256(TEST_OPERATION_SCHEMA),
-};
+export const TEST_SEMANTIC_SCHEMAS =
+  loadCommittedCoreSemanticSchemaBundle();
 
 export const TEST_STATE: StateToken = {
   sessionId: "session-1",
@@ -80,17 +26,47 @@ export const TEST_STATE: StateToken = {
   eventCursor: "event-9",
 };
 
+export const TEST_PROJECT_DATA = {
+  projectId: "project-1",
+  name: "Test project",
+  renderProfile: {
+    fps: { numerator: 30, denominator: 1 },
+    width: 1920,
+    height: 1080,
+    audioSampleRate: 48_000,
+    isFrameRateLocked: true,
+    isCanvasSizeLocked: true,
+  },
+  renderBackgroundColor: "#000000",
+  counts: {
+    tracks: 0,
+    clips: 0,
+    subtitles: 0,
+    sources: 0,
+    links: 0,
+  },
+  activeJobIds: [],
+  references: [],
+  page: { hasMore: false },
+};
+
 export class FakeCoordinatorAdapter implements ManagedCoordinatorAdapter {
   readonly calls: string[] = [];
   readResult: CoordinatorResult = {
     ok: true,
-    data: {},
+    data: TEST_PROJECT_DATA,
     state: TEST_STATE,
     warnings: [],
   };
   mutationResult: CoordinatorResult = {
     ok: true,
-    data: { applied: true },
+    data: {
+      commandId: "command-1",
+      noOp: false,
+      historyEntryId: "history-1",
+      eventId: "event-10",
+      aliases: {},
+    },
     state: TEST_STATE,
     warnings: [],
     replayed: false,

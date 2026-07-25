@@ -55,10 +55,12 @@ function fallbackText(
   }
 
   const replay =
-    result.ok && result.data.replayed === true
+    result.ok && result.replayed
       ? " A durable idempotency receipt was replayed."
       : "";
-  return `${toolName} succeeded at session revision ${result.state.sessionRevision} and document revision ${result.state.documentRevision}.${replay}`;
+  return result.state
+    ? `${toolName} succeeded at session revision ${result.state.sessionRevision} and document revision ${result.state.documentRevision}.${replay}`
+    : `${toolName} succeeded.${replay}`;
 }
 
 function mutationIdentity(request: JsonObject): MutationIdentity {
@@ -162,7 +164,9 @@ export class WaptionsToolDispatcher {
               receiptScope.idempotencyKey !==
                 mutationCall.identity.idempotencyKey
             ) {
-              throw new Error("Coordinator returned an invalid receipt scope.");
+              throw new UnsafeCoordinatorPayloadError(
+                "Coordinator returned an invalid receipt scope.",
+              );
             }
             coordinatorResult = await this.coordinator.executeMutation(
               {
@@ -187,11 +191,10 @@ export class WaptionsToolDispatcher {
       if (
         coordinatorResult.ok &&
         coordinatorResult.privateMeta &&
-        contract.name !== "waptions_artifact_get" &&
         contract.name !== "waptions_editor_render"
       ) {
         throw new UnsafeCoordinatorPayloadError(
-          "Private result metadata is allowed only for artifact access and editor rendering.",
+          "Private result metadata is allowed only for editor rendering.",
         );
       }
     } catch (error) {
@@ -215,14 +218,18 @@ export class WaptionsToolDispatcher {
     const structuredContent: StructuredToolResult = coordinatorResult.ok
       ? {
           ok: true,
-          data: contract.mutation
-            ? {
-                ...coordinatorResult.data,
-                replayed: coordinatorResult.replayed ?? false,
-              }
-            : coordinatorResult.data,
-          state: coordinatorResult.state,
+          data: coordinatorResult.data,
+          ...(contract.name !== "waptions_session_list" &&
+          coordinatorResult.state
+            ? { state: coordinatorResult.state }
+            : {}),
+          ...(coordinatorResult.committedState
+            ? { committedState: coordinatorResult.committedState }
+            : {}),
           warnings: coordinatorResult.warnings ?? [],
+          replayed: contract.mutation
+            ? (coordinatorResult.replayed ?? false)
+            : false,
         }
       : {
           ok: false,

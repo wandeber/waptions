@@ -120,8 +120,12 @@ export function assertSafeCoordinatorResult(
     ? {
         ok: true,
         data: result.data,
-        state: result.state,
+        ...(result.state ? { state: result.state } : {}),
+        ...(result.committedState
+          ? { committedState: result.committedState }
+          : {}),
         warnings: result.warnings ?? [],
+        replayed: result.replayed ?? false,
       }
     : {
         ok: false,

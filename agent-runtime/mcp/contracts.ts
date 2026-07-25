@@ -24,7 +24,7 @@ export interface StateToken {
 export interface ToolWarning {
   code: string;
   message: string;
-  details?: JsonObject;
+  operationId?: string;
 }
 
 export interface ToolError {
@@ -37,18 +37,20 @@ export interface ToolError {
 export interface CoordinatorSuccess {
   ok: true;
   data: JsonObject;
-  state: StateToken;
+  /** Global session discovery has no single authoritative state token. */
+  state?: StateToken;
+  /** State stored with the original durable receipt, when replayed. */
+  committedState?: StateToken;
   warnings?: ToolWarning[];
   /**
    * Mutations replaying an epoch-independent durable receipt set this flag.
-   * The dispatcher exposes it as data.replayed so the public success envelope
-   * remains exactly { ok, data, state, warnings }.
+   * The dispatcher projects it to the Core-owned top-level `replayed` field.
    */
   replayed?: boolean;
   /**
-   * Host-only metadata may contain an expiring bridge capability or signed
-   * artifact URL. The dispatcher never copies it into structuredContent,
-   * fallback text, events, logs, or model context.
+   * Host-only metadata may contain an expiring editor bridge capability.
+   * The dispatcher accepts it only from `waptions_editor_render` and never
+   * copies it into structuredContent, fallback text, events, or model context.
    */
   privateMeta?: JsonObject;
 }
@@ -64,8 +66,10 @@ export type CoordinatorResult = CoordinatorSuccess | CoordinatorFailure;
 export interface ToolSuccess {
   ok: true;
   data: JsonObject;
-  state: StateToken;
+  state?: StateToken;
+  committedState?: StateToken;
   warnings: ToolWarning[];
+  replayed: boolean;
 }
 
 export interface ToolFailure {

@@ -13,14 +13,16 @@ describe("MCP UI result adapter", () => {
       data: { project: "descriptor" },
       state: TEST_STATE,
       warnings: [],
+      replayed: false,
     });
     expect(result).toEqual({
       ok: true,
       data: { project: "descriptor" },
       state: TEST_STATE,
       warnings: [],
+      replayed: false,
     });
-    expect(result.ok && result.state.narrativeRevision).toBe(2);
+    expect(result.ok && result.state?.narrativeRevision).toBe(2);
   });
 
   it("publishes only bounded allowlisted model context", () => {

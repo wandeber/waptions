@@ -24,17 +24,21 @@ key. Successful calls expose exactly:
     "narrativeRevision": 0,
     "eventCursor": "opaque"
   },
-  "warnings": []
+  "warnings": [],
+  "replayed": false
 }
 ```
 
 `structuredContent` is authoritative. `content` is a short fallback and never
 contains descriptors, paths, transcripts, bridge capabilities, signed URLs,
-provider bodies, or credentials. Host-only expiring capabilities are allowed
-only in MCP result metadata for `waptions_artifact_get` and
-`waptions_editor_render`. Each tool has a closed outer `data` schema; nested
+provider bodies, or credentials. The Core schema permits `committedState` on
+replayed results and defines the global `waptions_session_list` success without
+a project state token. The signed-range presentation of
+`waptions_artifact_get` is the only structured result containing its
+short-lived localhost URL; UI bearer tokens remain host-only MCP result
+metadata on `waptions_editor_render`. Each tool has a closed `data` schema; nested
 descriptors remain bounded and are rejected if they contain transcript bodies,
-raw provider responses, byte bodies, credentials, signed URLs, or capabilities.
+raw provider responses, byte bodies, credentials, or bearer capabilities.
 `narrativeRevision` is present only for projects with a narrative domain.
 
 The public catalog contains exactly:
@@ -62,15 +66,23 @@ editor.
 
 ## Core and coordinator boundaries
 
-The Core owner supplies one hashed `CoreSemanticSchemaBundle`; production MCP
-code does not define a second operation-name inventory. Server construction
-fails unless the supplied schema is a closed 65-variant discriminated union,
-its declared operation names match those discriminators, and its schema hash
-matches. The MCP layer inserts that exact closed schema into
-`waptions_edit_plan` and `waptions_edit_apply`; it does not translate legacy
-fields or define a parallel operation union. Unit-explicit Core fields such as
-48 kHz sample coordinates therefore remain unit-explicit at the public
-boundary, and unknown or ambiguous units fail schema validation.
+Production MCP code imports Core's committed `common`, `operations`, `session`,
+and `tools` schemas plus `tool-registry.json`; it does not define a second
+operation or tool contract. The loader extracts
+`$defs.EditorSemanticOperation`, preserves the closed
+`{ operationId, type, payload }` wrapper, and validates its 63 discriminated
+cases as exactly 65 operation types. External schema references are rewritten
+to deterministic namespaced local `$defs`, including transitive common
+references, before the self-contained schema is hashed.
+
+The same resolver builds each public `ToolInput*` and `ToolOutput*` schema from
+`tools.schema.json`, including transitive operation and durable
+job/event/artifact definitions from the session schema. Names, descriptions,
+and annotations come from `tool-registry.json`. Every standalone schema is
+compiled as JSON Schema Draft 2020-12 so `unevaluatedProperties: false`
+continues to reject unknown fields. Unit-explicit Core payloads therefore
+remain unit-explicit at the public boundary, and flattened, ambiguous, or
+unknown-unit payloads fail validation.
 
 For a session mutation, the coordinator adapter resolves the durable receipt
 scope `(projectId, toolName, idempotencyKey)` before mutation execution.
