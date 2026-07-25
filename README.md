@@ -35,7 +35,7 @@ The public release is intentionally self-hosting friendly:
 ## Requirements
 
 - Node.js `22.13.1` or compatible.
-- PNPM `11.1.3` through Corepack.
+- PNPM `11.17.0` through Corepack.
 
 ```bash
 corepack enable

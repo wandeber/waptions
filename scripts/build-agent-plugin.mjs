@@ -21,7 +21,7 @@ import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGE_MANAGER = "pnpm@11.1.3";
+const PACKAGE_MANAGER = "pnpm@11.17.0";
 const BUILD_SCRIPT = "build:agent-plugin";
 const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const RESOURCE_URI_TOKEN = "{{WAPTIONS_RESOURCE_URI}}";
