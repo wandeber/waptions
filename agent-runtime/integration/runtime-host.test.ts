@@ -55,6 +55,25 @@ describe('ManagedRuntimeHost', () => {
         }, context())).resolves.toBe(expected);
         expect(route.mock.calls[0]?.[0].requestHash).toBe(call.requestHash);
     });
+
+    it('reports an unavailable event stream as a retryable coordinator failure', async () => {
+        const host = new ManagedRuntimeHost(
+            { resolveProjectId: () => 'project-1' },
+            router({
+                ok: false,
+                error: { code: 'INVALID_REQUEST', message: 'unused', retryable: false },
+            }),
+        );
+
+        expect(() => host.subscribeToEvents(
+            'session-1',
+            () => undefined,
+            context(),
+        )).toThrow(expect.objectContaining({
+            code: 'COORDINATOR_UNAVAILABLE',
+            retryable: true,
+        }));
+    });
 });
 
 function mutationCall() {

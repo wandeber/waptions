@@ -10,7 +10,10 @@ import type {
     CoordinatorEventSubscription,
     ManagedCoordinatorAdapter,
 } from '../server/coordinator-adapter.js';
-import { asManagedRuntimeError } from '../coordinator/errors.js';
+import {
+    asManagedRuntimeError,
+    managedError,
+} from '../coordinator/errors.js';
 import { CanonicalToolRouter } from './canonical-tool-router.js';
 
 export interface RuntimeHostAuthority {
@@ -88,7 +91,11 @@ export class ManagedRuntimeHost implements ManagedCoordinatorAdapter {
         context: CoordinatorCallContext,
     ): Promise<CoordinatorEventSubscription> {
         if (!this.authority.subscribeToEvents) {
-            throw asManagedRuntimeError(new Error('Event subscriptions are unavailable.'));
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'Event subscriptions are unavailable.',
+                true,
+            );
         }
         return this.authority.subscribeToEvents(sessionId, onEventAvailable, context);
     }
