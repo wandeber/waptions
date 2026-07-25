@@ -127,6 +127,46 @@ describe('project persistence lifecycle integration', () => {
         vi.restoreAllMocks();
     });
 
+    it('attaches the standalone engine to a new project after persisting the reset document', async () => {
+        const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+        Object.defineProperty(globalThis, 'indexedDB', {
+            configurable: true,
+            value: {},
+        });
+        try {
+            useTimelineStore.getState().hydrateEditorDocument(createEditorDocumentV4Fixture({
+                narrative: null,
+            }));
+            vi.spyOn(storageService, 'saveProject').mockResolvedValue();
+            vi.spyOn(storageService, 'loadAllProjects').mockResolvedValue([]);
+            const close = vi.fn(async () => undefined);
+            const create = vi.spyOn(StandaloneEditorEngineAdapter, 'create').mockResolvedValue({
+                close,
+            } as unknown as StandaloneEditorEngineAdapter);
+
+            const id = await useProjectStore.getState().createProject('Fresh project');
+
+            expect(create).toHaveBeenCalledOnce();
+            expect(create.mock.calls[0][0]).toMatchObject({
+                projectId: id,
+                projectName: 'Fresh project',
+                state: {
+                    videoSources: [],
+                    videoClips: [],
+                    audioSources: [],
+                    audioTracks: [],
+                },
+            });
+            expect(useProjectStore.getState().activeProject?.id).toBe(id);
+        } finally {
+            if (indexedDbDescriptor) {
+                Object.defineProperty(globalThis, 'indexedDB', indexedDbDescriptor);
+            } else {
+                Reflect.deleteProperty(globalThis, 'indexedDB');
+            }
+        }
+    });
+
     it('settles before reading and keeps a recovered save failure visible after attach', async () => {
         const id = 'project_reopen_success';
         const recoveredFailure = new Error('previous save failed');

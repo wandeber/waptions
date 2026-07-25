@@ -2,7 +2,11 @@ import type {
     EditorEngineSnapshot,
 } from '@/lib/editor-engine/editor-engine-types';
 import type { EditorSemanticOperation } from '@/lib/editor-engine/editor-command';
-import type { TransientMediaSelectionV4 } from '@/types/video';
+import type {
+    AudioSourceAsset,
+    TransientMediaSelectionV4,
+    VideoSourceAssetV3,
+} from '@/types/video';
 import type { TimelineV4CommandResult } from './timeline-v4-command-types';
 
 export interface StandaloneEditorDispatchOptions {
@@ -15,8 +19,17 @@ export interface StandaloneEditorDispatchOptions {
     compatibilityResult: TimelineV4CommandResult;
 }
 
+export interface StandaloneEditorMediaImportInput {
+    videoSources: readonly VideoSourceAssetV3[];
+    audioSources: readonly AudioSourceAsset[];
+    timelineStartFrame: number;
+    selectionBefore: TransientMediaSelectionV4;
+    selectionAfter: TransientMediaSelectionV4;
+}
+
 export interface StandaloneEditorEngineBridge {
     getSnapshot(): EditorEngineSnapshot;
+    enqueueMediaImport(input: StandaloneEditorMediaImportInput): void;
     enqueueOperations(
         operations: readonly EditorSemanticOperation[],
         options: StandaloneEditorDispatchOptions,

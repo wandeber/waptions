@@ -101,6 +101,10 @@ function persistenceCommit(
             inversePatches: [],
             byteSize: 1,
             transcriptRecordIds: [RECORD_ID],
+            sourceReferences: {
+                videoSourceIds: manifest.videoSourceDescriptors.map((source) => source.id),
+                audioSourceIds: [],
+            },
             projectMetadata: null,
         }],
         future: [],
@@ -159,6 +163,24 @@ function persistenceCommit(
             durableRecordIds: [RECORD_ID],
             historyRecordIds: [RECORD_ID],
             redoRecordIds: [],
+        },
+        sourcePins: {
+            current: {
+                videoSourceIds: manifest.videoSourceDescriptors.map((source) => source.id),
+                audioSourceIds: [],
+            },
+            history: {
+                videoSourceIds: manifest.videoSourceDescriptors.map((source) => source.id),
+                audioSourceIds: [],
+            },
+            redo: {
+                videoSourceIds: [],
+                audioSourceIds: [],
+            },
+        },
+        sourceRegistrations: {
+            videoSources: [],
+            audioSources: [],
         },
         event,
         receipt: {
@@ -317,6 +339,36 @@ describe('StandaloneEditorAssetRepositoryPort', () => {
             audioSourceIds: [],
         })).rejects.toThrow('no longer matches its immutable descriptor');
     });
+
+    it('rehashes a repeated import candidate instead of reusing the committed File capability', async () => {
+        const committedFile = new File(['abc'], 'primary.webm', {
+            type: 'video/webm',
+            lastModified: 10,
+        });
+        const candidateFile = new File(['xyz'], 'primary.webm', {
+            type: 'video/webm',
+            lastModified: 10,
+        });
+        const committed = sourceWithFile(committedFile);
+        const candidate = sourceWithFile(candidateFile);
+        const manifest = manifestWithSources([committed]);
+        const port = new StandaloneEditorAssetRepositoryPort({
+            videoSources: [committed],
+            audioSources: [],
+        });
+
+        const existing = await port.hydrate({
+            manifest,
+            videoSourceIds: [committed.id],
+            audioSourceIds: [],
+        });
+        const repeated = await port.prepareMediaImport([candidate], []);
+
+        expect(existing.videoSources[0].handle.identity.contentDigest)
+            .toBe('sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+        expect(repeated.videoSources[0].handle.identity.contentDigest)
+            .toBe('sha256:3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282');
+    });
 });
 
 describe('StandaloneEditorialTranscriptRepositoryPort', () => {
@@ -387,6 +439,7 @@ describe('StandaloneEditorPersistencePort', () => {
             before,
             after,
         });
+        expect(stored.head.sourcePins).toEqual(commit.sourcePins);
         expect(port.selectionForEvent(
             commit.event!,
             before,

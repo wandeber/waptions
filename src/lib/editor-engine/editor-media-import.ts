@@ -9,7 +9,11 @@ import {
     validateEditorManifestV4,
     validateHydratedEditorDocumentV4,
 } from '@/lib/editor-document-v4';
-import { secondsToFrames } from '@/lib/render-profile';
+import {
+    createDefaultRenderProfile,
+    normalizeFrameRate,
+    secondsToFrames,
+} from '@/lib/render-profile';
 import type { ResolvedEditorialTranscriptMapV1 } from '@/types/editorial';
 import type {
     AudioClip,
@@ -217,6 +221,35 @@ export function applyPreparedEditorMediaImport(input: {
     const placedClipIds: string[] = [];
     const hasVideo = prepared.orderedSources.some((source) => source.kind === 'video');
     const hasAudio = prepared.orderedSources.some((source) => source.kind === 'audio');
+    const firstVideo = prepared.orderedSources.find((source) => source.kind === 'video');
+    const renderProfileUnlocked = !prepared.candidate.renderProfile.isFrameRateLocked
+        || !prepared.candidate.renderProfile.isCanvasSizeLocked;
+    let placementRenderProfile = prepared.candidate.renderProfile;
+    if (!firstVideo && hasAudio && renderProfileUnlocked) {
+        throw new EditorCommandError(
+            'INVALID_REQUEST',
+            'Import a video first to establish the project frame rate and canvas size.',
+        );
+    }
+    if (firstVideo?.kind === 'video' && renderProfileUnlocked) {
+        // The first placed video establishes the standalone project output contract inside the
+        // same atomic import. This uses the existing semantic operation internally; it does not
+        // add a public operation or create a second history/persistence boundary.
+        placementRenderProfile = createDefaultRenderProfile({
+            fps: sourceFpsToRational(firstVideo.descriptor.fps),
+            width: firstVideo.descriptor.width,
+            height: firstVideo.descriptor.height,
+            isFrameRateLocked: true,
+            isCanvasSizeLocked: true,
+        });
+        operations.push({
+            operationId: 'media.import.initialize-render-profile',
+            type: 'render.set-profile',
+            payload: {
+                profile: placementRenderProfile,
+            },
+        });
+    }
     const videoTrackId = hasVideo
         ? resolveVideoTrack(prepared.candidate, input.placement.videoTrackId, input, operations)
         : null;
@@ -260,7 +293,7 @@ export function applyPreparedEditorMediaImport(input: {
                 cursor,
                 Math.max(1, secondsToFrames(
                     source.descriptor.duration,
-                    prepared.candidate.renderProfile.fps,
+                    placementRenderProfile.fps,
                     'nearest',
                 )),
             );
@@ -290,7 +323,7 @@ export function applyPreparedEditorMediaImport(input: {
             collisionTrack,
             clip,
             { kind: 'audio-source', descriptor: source.descriptor },
-            prepared.candidate.renderProfile,
+            placementRenderProfile,
             audioSources,
         )) {
             throw new EditorCommandError(
@@ -310,10 +343,10 @@ export function applyPreparedEditorMediaImport(input: {
         });
         cursor = outputSampleToCoveringFrame(
             safeAddSamples(
-                frameToOutputSample(cursor, prepared.candidate.renderProfile.fps),
+                frameToOutputSample(cursor, placementRenderProfile.fps),
                 durationSamples,
             ),
-            prepared.candidate.renderProfile.fps,
+            placementRenderProfile.fps,
         );
     });
 
@@ -334,6 +367,16 @@ export function applyPreparedEditorMediaImport(input: {
         placedClipIds,
         changed: true,
     };
+}
+
+function sourceFpsToRational(fps: number) {
+    const broadcastNumerator = [24_000, 30_000, 60_000, 120_000]
+        .find((numerator) => Math.abs(fps - numerator / 1_001) < 0.001);
+    if (broadcastNumerator) return { numerator: broadcastNumerator, denominator: 1_001 };
+    return normalizeFrameRate({
+        numerator: Math.max(1, Math.round(fps * 1_000)),
+        denominator: 1_000,
+    });
 }
 
 export function compareCanonicalNaturalNames(left: string, right: string): number {

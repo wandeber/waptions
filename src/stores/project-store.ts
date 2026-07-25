@@ -430,8 +430,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             recoveryDocumentRevision: null,
         });
 
+        useTimelineStore.getState().resetEditorDocument();
         const timelineStore = useTimelineStore.getState();
-        timelineStore.resetEditorDocument();
 
         // Reset playback
         usePlaybackStore.getState().reset();
@@ -453,6 +453,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 initialPayload.history,
             );
             await editorPersistenceRegistry.flush(newProject.id);
+            await attachStandaloneEditorAdapter(newProject);
             await get().loadAllProjects();
             return newProject.id;
         } catch (error) {

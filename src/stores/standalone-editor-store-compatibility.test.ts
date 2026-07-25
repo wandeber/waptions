@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     createEditorDocumentV4Fixture,
     createSubtitleTrackV4Fixture,
+    createVideoSourceAssetV4Fixture,
 } from '@/types/editorial.test-fixtures';
 import {
     setStandaloneEditorEngineBridge,
@@ -41,6 +42,35 @@ describe('standalone editor Zustand compatibility', () => {
         });
         expect(useTimelineStore.getState().videoClips[0].timelineStartFrame).toBe(0);
         expect(useTimelineStore.getState().revision).toBe(document.revision);
+    });
+
+    it('routes probed browser media to the Core import boundary without optimistic registration', () => {
+        const document = createEditorDocumentV4Fixture({
+            narrative: null,
+            editorialTranscriptDescriptors: [],
+            dependentLinks: [],
+            videoSources: [],
+            videoClips: [],
+        });
+        useTimelineStore.getState().hydrateEditorDocument(document);
+        const enqueueMediaImport = vi.fn();
+        setStandaloneEditorEngineBridge(bridge({ enqueueMediaImport }));
+        const source = createVideoSourceAssetV4Fixture({
+            id: 'video_source_import',
+        });
+
+        useTimelineStore.getState().appendMixedMediaCandidate({
+            videoSources: [source],
+            insertionFrame: 42,
+        });
+
+        expect(enqueueMediaImport).toHaveBeenCalledWith(expect.objectContaining({
+            videoSources: [source],
+            audioSources: [],
+            timelineStartFrame: 42,
+        }));
+        expect(useTimelineStore.getState().videoSources).toEqual([]);
+        expect(useTimelineStore.getState().videoClips).toEqual([]);
     });
 
     it('surfaces a typed unsupported boundary without publishing a cross-track move', () => {
@@ -189,6 +219,7 @@ function bridge(
 ): StandaloneEditorEngineBridge {
     return {
         getSnapshot: vi.fn(),
+        enqueueMediaImport: vi.fn(),
         enqueueOperations: vi.fn((_, options) => options.compatibilityResult),
         dispatchOperations: vi.fn(async (_, options) => options.compatibilityResult),
         reportUnsupported: vi.fn(),

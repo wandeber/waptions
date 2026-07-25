@@ -1777,9 +1777,18 @@ function collectChangedHistoryAssetIds(
         if (before) video.add(before.sourceId);
         if (after) video.add(after.sourceId);
     });
+    const candidateVideoIds = new Set(
+        candidate.videoSourceDescriptors.map((source) => source.id),
+    );
+    const candidateAudioIds = new Set(
+        candidate.audioSourceDescriptors.map((source) => source.id),
+    );
     return {
-        videoSourceIds: Array.from(video).sort(),
-        audioSourceIds: Array.from(audio).sort(),
+        // Removed sources need no hydration to validate the target history projection. Asking the
+        // repository for an ID absent from the candidate manifest would make placed imports
+        // impossible to Undo; Redo still requests and verifies the restored descriptors.
+        videoSourceIds: Array.from(video).filter((id) => candidateVideoIds.has(id)).sort(),
+        audioSourceIds: Array.from(audio).filter((id) => candidateAudioIds.has(id)).sort(),
     };
 }
 

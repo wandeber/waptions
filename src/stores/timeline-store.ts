@@ -1678,14 +1678,29 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const state = get();
         const standaloneEngine = getStandaloneEditorEngineBridge();
         if (standaloneEngine) {
-            standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
-                code: 'unsupported-source-registration',
-                message: 'Source File registration requires a typed engine setup transaction.',
-                ids: [
-                    ...videoSources.map((source) => source.id),
-                    ...audioSources.map((source) => source.id),
-                ],
-            }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+            if ((candidate.videoClips?.length ?? 0) > 0
+                || (candidate.audioTracks?.length ?? 0) > 0) {
+                standaloneEngine.reportUnsupported(standaloneUnsupportedBoundary({
+                    code: 'unsupported-custom-media-placement',
+                    message: 'Active-engine media import accepts natural full-source placement only.',
+                    ids: [
+                        ...(candidate.videoClips ?? []).map((clip) => clip.id),
+                        ...(candidate.audioTracks ?? []).map((track) => track.id),
+                    ],
+                }) as Extract<TimelineV4CommandResult, { kind: 'error' }>);
+                return;
+            }
+            const selection = cloneTransientSelection(state.transientSelection);
+            standaloneEngine.enqueueMediaImport({
+                videoSources,
+                audioSources,
+                timelineStartFrame: Math.max(
+                    0,
+                    Math.round(requestedInsertionFrame ?? candidate.insertionFrame ?? 0),
+                ),
+                selectionBefore: selection,
+                selectionAfter: selection,
+            });
             return;
         }
         const firstCandidateVideoSource = videoSources[0]

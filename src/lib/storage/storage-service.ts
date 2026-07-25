@@ -1,6 +1,7 @@
 import type { Subtitle, SubtitleTrack } from '@/types/timeline';
 import type {
     AudioSourceAsset,
+    AudioSourceDescriptor,
     EditorDocumentV3,
     EditorDocumentV2,
     EditorManifestV2,
@@ -8,6 +9,7 @@ import type {
     EditorDocumentV4,
     EditorManifestV4,
     VideoSourceAssetV3,
+    VideoSourceDescriptorV3,
 } from '@/types/video';
 import type { TProject } from '@/types/project';
 import {
@@ -33,7 +35,11 @@ import {
     migrateEditorDocumentV3ToV4,
     normalizeLegacyEditorManifestV4,
 } from '@/lib/editor-document-v4-migration';
-import { resolveEditorManifestAssets, resolveEditorVideoAsset } from './editor-asset-resolver';
+import {
+    resolveEditorAudioAsset,
+    resolveEditorManifestAssets,
+    resolveEditorVideoAsset,
+} from './editor-asset-resolver';
 import { IndexedDBAdapter, type IndexedDBBatchOperation } from './indexeddb-adapter';
 import type { SerializedProject, StorageConfig } from './types';
 import {
@@ -61,6 +67,10 @@ import type {
     EditorHistoryState,
 } from '@/lib/editor-engine/editor-engine-types';
 import type { EditorEngineEvent } from '@/lib/editor-engine/editor-events';
+import {
+    collectManifestSourceIds,
+    collectSourcePins,
+} from '@/lib/editor-engine/editor-history';
 import type { TransientMediaSelectionV4 } from '@/types/video';
 
 export const EDITOR_DOCUMENT_V2_KEY = 'editor-document-v2';
@@ -90,6 +100,7 @@ export interface StandaloneEditorEngineHeadV1 {
     transaction: EditorPersistenceCommit['transaction'];
     event: EditorEngineEvent | null;
     transcriptPins: EditorPersistenceCommit['transcriptPins'];
+    sourcePins: EditorPersistenceCommit['sourcePins'];
     pinGeneration: number;
     selectionByHistoryEntryId: Record<string, StandaloneEditorSelectionHistoryV1>;
 }
@@ -280,7 +291,53 @@ export class StorageService {
     ): Promise<StandaloneEditorEngineHeadV1 | null> {
         const value = await this.getProjectDbAdapter<unknown>(projectId)
             .get(STANDALONE_EDITOR_ENGINE_HEAD_KEY);
-        return isStandaloneEditorEngineHead(value) ? structuredClone(value) : null;
+        if (!isStandaloneEditorEngineHead(value)) return null;
+        const stored = structuredClone(value);
+        const historyPins = collectSourcePins(stored.history);
+        const expectedSourcePins: StandaloneEditorEngineHeadV1['sourcePins'] = {
+            current: collectManifestSourceIds(stored.snapshot.manifest),
+            history: historyPins.history,
+            redo: historyPins.redo,
+        };
+        if (stored.sourcePins === undefined) {
+            return {
+                ...stored,
+                sourcePins: expectedSourcePins,
+            };
+        }
+        if (!isStandaloneSourcePins(stored.sourcePins)) {
+            throw new Error('Standalone editor engine source pins are malformed.');
+        }
+        if (!sameStandaloneSourcePins(stored.sourcePins, expectedSourcePins)) {
+            throw new Error(
+                'Standalone editor engine source pins do not match its snapshot and history.',
+            );
+        }
+        return {
+            ...stored,
+            sourcePins: structuredClone(stored.sourcePins),
+        };
+    }
+
+    async loadStandaloneEditorVideoSource(
+        projectId: string,
+        descriptor: VideoSourceDescriptorV3,
+    ): Promise<VideoSourceAssetV3> {
+        return (await resolveEditorVideoAsset(
+            this.getProjectDbAdapter<unknown>(projectId),
+            descriptor,
+            1,
+        )).asset;
+    }
+
+    async loadStandaloneEditorAudioSource(
+        projectId: string,
+        descriptor: AudioSourceDescriptor,
+    ): Promise<AudioSourceAsset> {
+        return (await resolveEditorAudioAsset(
+            this.getProjectDbAdapter<unknown>(projectId),
+            descriptor,
+        )).asset;
     }
 
     async getStandaloneEditorEngineReceipt(
@@ -299,13 +356,14 @@ export class StorageService {
     /**
      * Commits the Core engine head and its public V4 manifest in the same project transaction.
      *
-     * Files are registered by the existing setup/import transaction before an engine can refer to
-     * them. Engine mutations therefore write only descriptor/history/session/event/receipt state.
+     * Newly registered browser Files join the same transaction as the authoritative head. Files
+     * required only by Undo/Redo remain retained through the persisted source-pin roots.
      */
     async commitStandaloneEditorEngineHead(input: {
         projectId: string;
         head: StandaloneEditorEngineHeadV1;
         receipt: EditorIdempotencyReceipt;
+        sourceAssets: readonly EditorPersistentAsset[];
     }): Promise<void> {
         const adapter = this.getProjectDbAdapter<unknown>(input.projectId);
         const receiptKey = standaloneEditorReceiptKey(
@@ -319,6 +377,37 @@ export class StorageService {
             ? keys.slice(0, keys.length - STANDALONE_EDITOR_ENGINE_RECEIPT_LIMIT)
             : [];
         const retainedKeys = keys.slice(-STANDALONE_EDITOR_ENGINE_RECEIPT_LIMIT);
+        const videoDescriptors = new Map(
+            input.head.snapshot.manifest.videoSourceDescriptors.map((descriptor) => [
+                descriptor.id,
+                descriptor,
+            ]),
+        );
+        const audioDescriptors = new Map(
+            input.head.snapshot.manifest.audioSourceDescriptors.map((descriptor) => [
+                descriptor.id,
+                descriptor,
+            ]),
+        );
+        const sourceOperations = input.sourceAssets.map((entry) => {
+            const descriptor = entry.kind === 'video-source'
+                ? videoDescriptors.get(entry.asset.id)
+                : audioDescriptors.get(entry.asset.id);
+            assertAssetMatchesDescriptor(entry.asset, descriptor, entry.kind);
+            return {
+                type: 'put' as const,
+                key: entry.kind === 'video-source'
+                    ? getEditorMediaAssetKey({
+                        kind: 'video-source',
+                        videoSourceId: entry.asset.id,
+                    })
+                    : getEditorMediaAssetKey({
+                        kind: 'audio-source',
+                        audioSourceId: entry.asset.id,
+                    }),
+                value: entry.asset.file,
+            };
+        });
         await adapter.batch<unknown>([
             {
                 type: 'put',
@@ -340,6 +429,7 @@ export class StorageService {
                     keys: retainedKeys,
                 } satisfies StandaloneEditorReceiptIndexV1,
             },
+            ...sourceOperations,
             ...deletedKeys.map((key) => ({ type: 'delete' as const, key })),
         ]);
     }
@@ -927,9 +1017,18 @@ function isEditorIdempotencyReceipt(
         && Boolean(candidate.result && typeof candidate.result === 'object');
 }
 
-function isStandaloneEditorEngineHead(value: unknown): value is StandaloneEditorEngineHeadV1 {
+type StoredStandaloneEditorEngineHeadV1 = Omit<
+    StandaloneEditorEngineHeadV1,
+    'sourcePins'
+> & {
+    sourcePins?: unknown;
+};
+
+function isStandaloneEditorEngineHead(
+    value: unknown,
+): value is StoredStandaloneEditorEngineHeadV1 {
     if (!value || typeof value !== 'object') return false;
-    const candidate = value as Partial<StandaloneEditorEngineHeadV1>;
+    const candidate = value as Partial<StoredStandaloneEditorEngineHeadV1>;
     return candidate.schemaVersion === 1
         && Boolean(candidate.snapshot && typeof candidate.snapshot === 'object')
         && Boolean(candidate.history && typeof candidate.history === 'object')
@@ -941,7 +1040,45 @@ function isStandaloneEditorEngineHead(value: unknown): value is StandaloneEditor
         && Boolean(
             candidate.selectionByHistoryEntryId
             && typeof candidate.selectionByHistoryEntryId === 'object',
-        );
+    );
+}
+
+function isStandaloneSourcePins(
+    value: unknown,
+): value is StandaloneEditorEngineHeadV1['sourcePins'] {
+    if (!value || typeof value !== 'object') return false;
+    const pins = value as Partial<StandaloneEditorEngineHeadV1['sourcePins']>;
+    return isStandaloneSourcePinSet(pins.current)
+        && isStandaloneSourcePinSet(pins.history)
+        && isStandaloneSourcePinSet(pins.redo);
+}
+
+function isStandaloneSourcePinSet(value: unknown): boolean {
+    if (!value || typeof value !== 'object') return false;
+    const pins = value as { videoSourceIds?: unknown; audioSourceIds?: unknown };
+    return Array.isArray(pins.videoSourceIds)
+        && pins.videoSourceIds.every((id) => typeof id === 'string')
+        && Array.isArray(pins.audioSourceIds)
+        && pins.audioSourceIds.every((id) => typeof id === 'string');
+}
+
+function sameStandaloneSourcePins(
+    left: StandaloneEditorEngineHeadV1['sourcePins'],
+    right: StandaloneEditorEngineHeadV1['sourcePins'],
+): boolean {
+    return sameStandaloneSourcePinSet(left.current, right.current)
+        && sameStandaloneSourcePinSet(left.history, right.history)
+        && sameStandaloneSourcePinSet(left.redo, right.redo);
+}
+
+function sameStandaloneSourcePinSet(
+    left: StandaloneEditorEngineHeadV1['sourcePins']['current'],
+    right: StandaloneEditorEngineHeadV1['sourcePins']['current'],
+): boolean {
+    return left.videoSourceIds.length === right.videoSourceIds.length
+        && left.videoSourceIds.every((id, index) => id === right.videoSourceIds[index])
+        && left.audioSourceIds.length === right.audioSourceIds.length
+        && left.audioSourceIds.every((id, index) => id === right.audioSourceIds[index]);
 }
 
 export const storageService = new StorageService();

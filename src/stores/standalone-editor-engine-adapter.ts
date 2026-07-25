@@ -1,5 +1,6 @@
 import {
     EDITOR_ENGINE_API_VERSION,
+    EDITOR_MEDIA_IMPORT_TOOL_NAME,
     type EditorCommandBatchRequest,
     type EditorExpectedRevisions,
     type EditorSemanticOperation,
@@ -17,6 +18,8 @@ import type {
     EditorHistoryEntry,
     EditorHistoryState,
     EditorHistorySummary,
+    EditorMediaImportRequest,
+    EditorMediaImportResult,
 } from '@/lib/editor-engine/editor-engine-types';
 import {
     StandaloneEditorAssetRepositoryPort,
@@ -29,9 +32,14 @@ import { applySerializablePatches } from '@/lib/serializable-patch';
 import {
     StorageService,
     storageService,
+    type EditorPersistentAsset,
     type StandaloneEditorSelectionHistoryV1,
 } from '@/lib/storage/storage-service';
-import type { TransientMediaSelectionV4 } from '@/types/video';
+import type {
+    AudioSourceAsset,
+    TransientMediaSelectionV4,
+    VideoSourceAssetV3,
+} from '@/types/video';
 import {
     projectTimelineHistory,
     restoreTimelineHistoryProjection,
@@ -53,6 +61,7 @@ import {
     StandaloneEditorUnsupportedError,
     type StandaloneEditorDispatchOptions,
     type StandaloneEditorEngineBridge,
+    type StandaloneEditorMediaImportInput,
 } from './standalone-editor-engine-registry';
 import type { TimelineV4CommandResult } from './timeline-v4-command-types';
 
@@ -75,16 +84,26 @@ interface ConvertedStandaloneHistory {
     selections: Record<string, StandaloneEditorSelectionHistoryV1>;
 }
 
+type FailedStandaloneDispatch =
+    | {
+        kind: 'operations';
+        request: EditorCommandBatchRequest;
+        options: StandaloneEditorDispatchOptions;
+        error: unknown;
+    }
+    | {
+        kind: 'media-import';
+        request: EditorMediaImportRequest;
+        input: StandaloneEditorMediaImportInput;
+        error: unknown;
+    };
+
 export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBridge {
     private readonly engine: EditorEngine;
     private readonly persistence: StandaloneEditorPersistencePort;
     private readonly assets: StandaloneEditorAssetRepositoryPort;
     private dispatchQueue: Promise<void> = Promise.resolve();
-    private failedDispatch: {
-        request: EditorCommandBatchRequest;
-        options: StandaloneEditorDispatchOptions;
-        error: unknown;
-    } | null = null;
+    private failedDispatch: FailedStandaloneDispatch | null = null;
     private operationSequence = 0;
     private closed = false;
 
@@ -117,7 +136,7 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
         const assets = new StandaloneEditorAssetRepositoryPort({
             videoSources: input.state.videoSources,
             audioSources: input.state.audioSources,
-        });
+        }, storage, input.projectId);
         const persistence = new StandaloneEditorPersistencePort(
             storage,
             transcriptRepository,
@@ -130,6 +149,7 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
                     selectionByHistoryEntryId: converted.selections,
                 }
                 : undefined,
+            assets,
         );
         const initialManifest = head?.snapshot.manifest
             ?? createEditorManifestV4(input.state.buildEditorDocumentV4());
@@ -184,6 +204,12 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
         return this.engine.getSnapshot();
     }
 
+    enqueueMediaImport(input: StandaloneEditorMediaImportInput): void {
+        if (this.closed) return;
+        void this.enqueueMediaImportCandidate(cloneMediaImportInput(input))
+            .catch((error) => this.onError?.(error));
+    }
+
     enqueueOperations(
         operations: readonly EditorSemanticOperation[],
         options: StandaloneEditorDispatchOptions,
@@ -220,10 +246,9 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
         if (!failed || this.closed) return false;
         this.incrementPendingCommands();
         try {
-            const result = await this.enqueue(() => this.runDispatch(
-                failed.request,
-                failed.options,
-            ));
+            const result = await this.enqueue(() => failed.kind === 'operations'
+                ? this.runDispatch(failed.request, failed.options)
+                : this.runMediaImport(failed.request, failed.input));
             return result.ok;
         } finally {
             this.decrementPendingCommands();
@@ -274,6 +299,9 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
         if (this.closed) return;
         this.closed = true;
         await this.dispatchQueue;
+        this.failedDispatch = null;
+        this.persistence.discardStagedSelection();
+        this.persistence.discardStagedSourceAssets();
         await this.engine.close();
     }
 
@@ -299,6 +327,34 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
         }).finally(() => this.decrementPendingCommands());
     }
 
+    private enqueueMediaImportCandidate(
+        input: StandaloneEditorMediaImportInput,
+    ): Promise<EditorMediaImportResult> {
+        this.incrementPendingCommands();
+        return this.enqueue(async () => {
+            await this.assertDispatchQueueReady();
+            const snapshot = this.engine.getSnapshot();
+            const sequence = ++this.operationSequence;
+            const request: EditorMediaImportRequest = {
+                apiVersion: EDITOR_ENGINE_API_VERSION,
+                toolName: EDITOR_MEDIA_IMPORT_TOOL_NAME,
+                sessionEpoch: snapshot.revisions.sessionEpoch,
+                expected: expectedRevisions(snapshot),
+                idempotencyKey: `standalone-media-import-${sequence}-${crypto.randomUUID()}`,
+                sources: {
+                    videoSourceDescriptors: input.videoSources.map(withoutFile),
+                    audioSourceDescriptors: input.audioSources.map(withoutFile),
+                },
+                placement: {
+                    kind: 'place',
+                    ordering: 'natural',
+                    timelineStartFrame: input.timelineStartFrame,
+                },
+            };
+            return this.runMediaImport(request, input);
+        }).finally(() => this.decrementPendingCommands());
+    }
+
     private async runDispatch(
         request: EditorCommandBatchRequest,
         options: StandaloneEditorDispatchOptions,
@@ -309,7 +365,7 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
             result = await this.engine.dispatch(request);
         } catch (error) {
             this.persistence.discardStagedSelection();
-            this.failedDispatch = { request, options, error };
+            this.failedDispatch = { kind: 'operations', request, options, error };
             await this.restoreAuthoritativeSnapshot();
             this.onError?.(error);
             throw error;
@@ -326,7 +382,78 @@ export class StandaloneEditorEngineAdapter implements StandaloneEditorEngineBrid
         } else {
             this.persistence.discardStagedSelection();
             const error = new Error(result.error.message);
-            this.failedDispatch = { request, options, error };
+            this.failedDispatch = { kind: 'operations', request, options, error };
+            await this.restoreAuthoritativeSnapshot();
+            this.onError?.(error);
+        }
+        return result;
+    }
+
+    private async runMediaImport(
+        request: EditorMediaImportRequest,
+        input: StandaloneEditorMediaImportInput,
+    ): Promise<EditorMediaImportResult> {
+        const sourceAssets: EditorPersistentAsset[] = [
+            ...input.videoSources.map((asset): EditorPersistentAsset => ({
+                kind: 'video-source',
+                asset,
+            })),
+            ...input.audioSources.map((asset): EditorPersistentAsset => ({
+                kind: 'audio-source',
+                asset,
+            })),
+        ];
+        this.persistence.stageSelection(input.selectionBefore, input.selectionAfter);
+        this.persistence.stageSourceAssets(sourceAssets);
+        let result: EditorMediaImportResult;
+        try {
+            const hydration = await this.assets.prepareMediaImport(
+                input.videoSources,
+                input.audioSources,
+            );
+            result = await this.engine.importMedia(request, hydration);
+        } catch (error) {
+            this.persistence.discardStagedSelection();
+            this.persistence.discardStagedSourceAssets();
+            if (this.failedDispatch?.request.idempotencyKey === request.idempotencyKey) {
+                this.failedDispatch = null;
+            }
+            await this.restoreAuthoritativeSnapshot();
+            throw new StandaloneEditorUnsupportedError(
+                error instanceof Error ? error.message : 'Browser media hydration failed.',
+            );
+        }
+
+        this.persistence.discardStagedSourceAssets();
+        if (result.ok) {
+            if (this.failedDispatch?.request.idempotencyKey === request.idempotencyKey) {
+                this.failedDispatch = null;
+            }
+            if (result.noOp || result.replayed) {
+                this.persistence.discardStagedSelection();
+            }
+            const selection = result.noOp || result.replayed
+                ? useTimelineStore.getState().transientSelection
+                : input.selectionAfter;
+            if (!this.closed) await this.projectSnapshot(result.snapshot, selection);
+        } else {
+            this.persistence.discardStagedSelection();
+            const retryablePersistenceFailure = result.error.code === 'INTERNAL_ERROR';
+            const error = retryablePersistenceFailure
+                ? new Error(result.error.message)
+                : new StandaloneEditorUnsupportedError(
+                    `${result.error.code}: ${result.error.message}`,
+                );
+            if (retryablePersistenceFailure) {
+                this.failedDispatch = {
+                    kind: 'media-import',
+                    request,
+                    input,
+                    error,
+                };
+            } else if (this.failedDispatch?.request.idempotencyKey === request.idempotencyKey) {
+                this.failedDispatch = null;
+            }
             await this.restoreAuthoritativeSnapshot();
             this.onError?.(error);
         }
@@ -622,6 +749,33 @@ function expectedRevisions(snapshot: EditorEngineSnapshot): EditorExpectedRevisi
             ? {}
             : { narrativeRevision: snapshot.revisions.narrativeRevision }),
     };
+}
+
+function cloneMediaImportInput(
+    input: StandaloneEditorMediaImportInput,
+): StandaloneEditorMediaImportInput {
+    return {
+        videoSources: input.videoSources.map(cloneSourceAsset),
+        audioSources: input.audioSources.map(cloneSourceAsset),
+        timelineStartFrame: input.timelineStartFrame,
+        selectionBefore: structuredClone(input.selectionBefore),
+        selectionAfter: structuredClone(input.selectionAfter),
+    };
+}
+
+function withoutFile<T extends VideoSourceAssetV3 | AudioSourceAsset>(
+    source: T,
+): Omit<T, 'file'> {
+    const { file, ...descriptor } = source;
+    void file;
+    return structuredClone(descriptor);
+}
+
+function cloneSourceAsset<T extends VideoSourceAssetV3 | AudioSourceAsset>(source: T): T {
+    return {
+        ...withoutFile(source),
+        file: source.file,
+    } as T;
 }
 
 function coreFailureToTimelineResult(

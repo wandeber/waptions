@@ -4,6 +4,7 @@ import {
 } from '@/lib/storage/editorial-transcript-repository';
 import {
     StorageService,
+    type EditorPersistentAsset,
     type StandaloneEditorEngineHeadV1,
     type StandaloneEditorSelectionHistoryV1,
 } from '@/lib/storage/storage-service';
@@ -40,7 +41,11 @@ export class StandaloneEditorAssetRepositoryPort implements EditorAssetRepositor
     private readonly audioSources = new Map<string, AudioSourceAsset>();
     private readonly handles = new Map<string, Promise<VerifiedMediaHandleV1>>();
 
-    constructor(document: Pick<EditorDocumentV4, 'videoSources' | 'audioSources'>) {
+    constructor(
+        document: Pick<EditorDocumentV4, 'videoSources' | 'audioSources'>,
+        private readonly storage?: StorageService,
+        private readonly projectId?: string,
+    ) {
         document.videoSources.forEach((source) => this.videoSources.set(source.id, source));
         document.audioSources.forEach((source) => this.audioSources.set(source.id, source));
     }
@@ -52,8 +57,8 @@ export class StandaloneEditorAssetRepositoryPort implements EditorAssetRepositor
     }): Promise<EditorAssetHydration> {
         const videoSources = await Promise.all(input.videoSourceIds.map(async (sourceId) => {
             const descriptor = input.manifest.videoSourceDescriptors.find((value) => value.id === sourceId);
-            const source = this.videoSources.get(sourceId);
-            if (!descriptor || !source) throw new Error(`Video source "${sourceId}" is unavailable.`);
+            if (!descriptor) throw new Error(`Video source "${sourceId}" is unavailable.`);
+            const source = await this.resolveVideoSource(descriptor);
             assertSourceMatchesDescriptor(source, descriptor);
             return {
                 ...structuredClone(descriptor),
@@ -63,8 +68,8 @@ export class StandaloneEditorAssetRepositoryPort implements EditorAssetRepositor
         }));
         const audioSources = await Promise.all(input.audioSourceIds.map(async (sourceId) => {
             const descriptor = input.manifest.audioSourceDescriptors.find((value) => value.id === sourceId);
-            const source = this.audioSources.get(sourceId);
-            if (!descriptor || !source) throw new Error(`Audio source "${sourceId}" is unavailable.`);
+            if (!descriptor) throw new Error(`Audio source "${sourceId}" is unavailable.`);
+            const source = await this.resolveAudioSource(descriptor);
             assertSourceMatchesDescriptor(source, descriptor);
             return {
                 ...structuredClone(descriptor),
@@ -73,6 +78,68 @@ export class StandaloneEditorAssetRepositoryPort implements EditorAssetRepositor
             };
         }));
         return { videoSources, audioSources };
+    }
+
+    async prepareMediaImport(
+        videoSources: readonly VideoSourceAssetV3[],
+        audioSources: readonly AudioSourceAsset[],
+    ): Promise<EditorAssetHydration> {
+        return {
+            videoSources: await Promise.all(videoSources.map(async (source) => {
+                assertSourceMatchesDescriptor(source, source);
+                return {
+                    ...withoutFile(source),
+                    handle: await createVerifiedFileHandle('video-source', source),
+                    fileMetadata: fileMetadata(source.file),
+                };
+            })),
+            audioSources: await Promise.all(audioSources.map(async (source) => {
+                assertSourceMatchesDescriptor(source, source);
+                return {
+                    ...withoutFile(source),
+                    handle: await createVerifiedFileHandle('audio-source', source),
+                    fileMetadata: fileMetadata(source.file),
+                };
+            })),
+        };
+    }
+
+    resolveStagedRegistrations(
+        registrations: EditorAssetHydration,
+        staged: readonly EditorPersistentAsset[],
+    ): EditorPersistentAsset[] {
+        const byKey = new Map(staged.map((entry) => [
+            `${entry.kind}:${entry.asset.id}`,
+            entry,
+        ]));
+        return [
+            ...registrations.videoSources.map((registration) => {
+                const entry = byKey.get(`video-source:${registration.id}`);
+                if (!entry || entry.kind !== 'video-source') {
+                    throw new Error(`Imported video File "${registration.id}" is unavailable.`);
+                }
+                assertSourceMatchesDescriptor(entry.asset, registration);
+                return entry;
+            }),
+            ...registrations.audioSources.map((registration) => {
+                const entry = byKey.get(`audio-source:${registration.id}`);
+                if (!entry || entry.kind !== 'audio-source') {
+                    throw new Error(`Imported audio File "${registration.id}" is unavailable.`);
+                }
+                assertSourceMatchesDescriptor(entry.asset, registration);
+                return entry;
+            }),
+        ];
+    }
+
+    adoptCommittedAssets(assets: readonly EditorPersistentAsset[]): void {
+        assets.forEach((entry) => {
+            if (entry.kind === 'video-source') {
+                this.videoSources.set(entry.asset.id, entry.asset);
+            } else {
+                this.audioSources.set(entry.asset.id, entry.asset);
+            }
+        });
     }
 
     hydrateRuntimeDocument(
@@ -108,6 +175,38 @@ export class StandaloneEditorAssetRepositoryPort implements EditorAssetRepositor
         this.handles.set(key, created);
         return created;
     }
+
+    private async resolveVideoSource(
+        descriptor: EditorManifestV4['videoSourceDescriptors'][number],
+    ): Promise<VideoSourceAssetV3> {
+        const existing = this.videoSources.get(descriptor.id);
+        if (existing) return existing;
+        if (!this.storage || !this.projectId) {
+            throw new Error(`Video source "${descriptor.id}" is unavailable.`);
+        }
+        const loaded = await this.storage.loadStandaloneEditorVideoSource(
+            this.projectId,
+            descriptor,
+        );
+        this.videoSources.set(loaded.id, loaded);
+        return loaded;
+    }
+
+    private async resolveAudioSource(
+        descriptor: EditorManifestV4['audioSourceDescriptors'][number],
+    ): Promise<AudioSourceAsset> {
+        const existing = this.audioSources.get(descriptor.id);
+        if (existing) return existing;
+        if (!this.storage || !this.projectId) {
+            throw new Error(`Audio source "${descriptor.id}" is unavailable.`);
+        }
+        const loaded = await this.storage.loadStandaloneEditorAudioSource(
+            this.projectId,
+            descriptor,
+        );
+        this.audioSources.set(loaded.id, loaded);
+        return loaded;
+    }
 }
 
 export class StandaloneEditorialTranscriptRepositoryPort
@@ -138,6 +237,7 @@ implements EditorialTranscriptRepositoryPort<ResolvedEditorialTranscriptMapV1> {
 export class StandaloneEditorPersistencePort implements EditorPersistencePort {
     private selectionByHistoryEntryId: Record<string, StandaloneEditorSelectionHistoryV1>;
     private pendingSelection: StandaloneEditorSelectionHistoryV1 | null = null;
+    private pendingSourceAssets: EditorPersistentAsset[] = [];
     private pinGeneration: number;
     private history = { past: [], future: [] } as EditorPersistenceCommit['history'];
 
@@ -151,6 +251,7 @@ export class StandaloneEditorPersistencePort implements EditorPersistencePort {
             history: EditorPersistenceCommit['history'];
             selectionByHistoryEntryId: Record<string, StandaloneEditorSelectionHistoryV1>;
         },
+        private readonly assets?: StandaloneEditorAssetRepositoryPort,
     ) {
         this.selectionByHistoryEntryId = structuredClone(
             head?.selectionByHistoryEntryId ?? initial?.selectionByHistoryEntryId ?? {},
@@ -168,6 +269,14 @@ export class StandaloneEditorPersistencePort implements EditorPersistencePort {
 
     discardStagedSelection(): void {
         this.pendingSelection = null;
+    }
+
+    stageSourceAssets(assets: readonly EditorPersistentAsset[]): void {
+        this.pendingSourceAssets = [...assets];
+    }
+
+    discardStagedSourceAssets(): void {
+        this.pendingSourceAssets = [];
     }
 
     selectionForEvent(
@@ -221,6 +330,15 @@ export class StandaloneEditorPersistencePort implements EditorPersistencePort {
             throw new Error('Standalone editor persistence project mismatch.');
         }
         const pinGeneration = this.pinGeneration + 1;
+        const sourceAssets = this.assets?.resolveStagedRegistrations(
+            input.sourceRegistrations,
+            this.pendingSourceAssets,
+        ) ?? [];
+        if (!this.assets
+            && (input.sourceRegistrations.videoSources.length > 0
+                || input.sourceRegistrations.audioSources.length > 0)) {
+            throw new Error('Standalone media registrations require an asset repository.');
+        }
         const allRecordIds = unique([
             ...input.transcriptPins.durableRecordIds,
             ...input.transcriptPins.historyRecordIds,
@@ -253,6 +371,7 @@ export class StandaloneEditorPersistencePort implements EditorPersistencePort {
             transaction: structuredClone(input.transaction),
             event: structuredClone(input.event),
             transcriptPins: structuredClone(input.transcriptPins),
+            sourcePins: structuredClone(input.sourcePins),
             pinGeneration,
             selectionByHistoryEntryId: selections,
         };
@@ -261,6 +380,7 @@ export class StandaloneEditorPersistencePort implements EditorPersistencePort {
                 projectId: this.projectId,
                 head,
                 receipt: input.receipt.value,
+                sourceAssets,
             });
         } catch (error) {
             if (allRecordIds.length > 0) {
@@ -273,9 +393,11 @@ export class StandaloneEditorPersistencePort implements EditorPersistencePort {
         }
 
         this.pinGeneration = pinGeneration;
+        this.assets?.adoptCommittedAssets(sourceAssets);
         this.selectionByHistoryEntryId = selections;
         this.history = structuredClone(input.history);
         this.pendingSelection = null;
+        this.pendingSourceAssets = [];
         try {
             await this.transcripts.publishDurableProjectPins({
                 projectId: this.projectId,
@@ -463,6 +585,12 @@ function fileMetadata(file: File) {
         size: file.size,
         lastModified: file.lastModified,
     };
+}
+
+function withoutFile<T extends VideoSourceAssetV3 | AudioSourceAsset>(source: T): Omit<T, 'file'> {
+    const { file, ...descriptor } = source;
+    void file;
+    return descriptor;
 }
 
 function unique(values: readonly string[]): string[] {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createVideoSourceFingerprint } from '@/lib/video-timeline';
+import { createDefaultRenderProfile } from '@/lib/render-profile';
 import { createEditorManifestV4Fixture } from '@/types/editorial.test-fixtures';
 import type {
     AudioSourceDescriptor,
@@ -449,6 +450,84 @@ describe('EditorEngine internal atomic media import', () => {
         expect(first.persistence.commits[0].history.past).toHaveLength(1);
         expect(first.persistence.commits[0].event?.sequence).toBe(1);
         expect(first.listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('locks the first video render profile atomically and rejects audio-first unlocked projects', async () => {
+        const unlocked = emptyManifest({
+            renderProfile: createDefaultRenderProfile(),
+        });
+        const harness = createHarness(unlocked);
+        const source = {
+            ...videoDescriptor({
+                id: 'video-first-profile',
+                name: 'First profile.mp4',
+                hasAudio: false,
+            }),
+            fps: 30_000 / 1_001,
+            width: 1_280,
+            height: 720,
+        };
+        const before = harness.engine.getSnapshot();
+        const imported = await harness.engine.importMedia(
+            importRequest(before, {
+                video: [source],
+                key: 'first-video-profile',
+                placement: {
+                    kind: 'place',
+                    ordering: 'natural',
+                    timelineStartFrame: 0,
+                },
+            }),
+            hydration({ video: [source] }),
+        );
+
+        expect(imported).toMatchObject({
+            ok: true,
+            snapshot: {
+                manifest: {
+                    renderProfile: {
+                        fps: { numerator: 30_000, denominator: 1_001 },
+                        width: 1_280,
+                        height: 720,
+                        isFrameRateLocked: true,
+                        isCanvasSizeLocked: true,
+                    },
+                },
+                revisions: {
+                    sessionRevision: before.revisions.sessionRevision + 1,
+                    documentRevision: before.revisions.documentRevision + 1,
+                    audioGraphRevision: before.revisions.audioGraphRevision + 1,
+                },
+            },
+        });
+        expect(harness.persistence.commits).toHaveLength(1);
+        expect(harness.persistence.commits[0].history.past).toHaveLength(1);
+        expect(harness.persistence.commits[0].event?.sequence).toBe(1);
+
+        const audioHarness = createHarness(unlocked);
+        const audio = audioDescriptor({ id: 'audio-first', name: 'Audio first.wav' });
+        const beforeAudio = audioHarness.engine.getSnapshot();
+        const rejected = await audioHarness.engine.importMedia(
+            importRequest(beforeAudio, {
+                audio: [audio],
+                key: 'audio-first-unlocked',
+                placement: {
+                    kind: 'place',
+                    ordering: 'natural',
+                    timelineStartFrame: 0,
+                },
+            }),
+            hydration({ audio: [audio] }),
+        );
+        expect(rejected).toMatchObject({
+            ok: false,
+            error: {
+                code: 'INVALID_REQUEST',
+                message: 'Import a video first to establish the project frame rate and canvas size.',
+            },
+        });
+        expect(audioHarness.persistence.commits).toHaveLength(0);
+        expect(audioHarness.engine.getSnapshot()).toEqual(beforeAudio);
     });
 
     it('rejects locked, missing, and overlapping targets without partial registration', async () => {

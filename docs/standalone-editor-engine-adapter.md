@@ -17,21 +17,21 @@ remains instance-scoped inside the project engine and its ports. When an engine 
 exists, the adapter projects that recovered authoritative snapshot during attachment; it never
 leaves an independently loaded public manifest visible as a competing head.
 
-Newly created projects temporarily remain in the existing coordinator-owned setup lifecycle for
-their current session. This preserves repeated browser `File` import, transcription provenance,
-and initial Text activation without inventing a second import authority. Reopening the project
-attaches the engine. Removing this bootstrap gap depends on Core's authoritative
-`EditorEngine.importMedia` boundary; P3A must only queue that boundary once it is frozen.
+Newly created projects attach the engine immediately after their empty V4 document becomes
+durable. They therefore use the same authority as reopened projects from their first edit and
+media import; there is no setup-session mutation head beside Core.
 
 ## Commit and projection ordering
 
 A standalone durable mutation follows one ordering:
 
 1. A compatibility wrapper translates the existing editor action into approved semantic
-   operations and enqueues or awaits `EditorEngine.dispatch`.
+   operations for `EditorEngine.dispatch`, or maps inspected browser media to the internal
+   `EditorEngine.importMedia` boundary.
 2. The engine plans and validates the complete mutation.
 3. `StandaloneEditorPersistencePort.commit` durably writes the IndexedDB engine head, receipt,
-   history, session state, transaction metadata, transcript pins, and selection sidecars.
+   history, session state, transaction metadata, transcript/source pins, selection sidecars, and
+   only the newly registered browser `File` records.
 4. After the commit promise resolves, the adapter hydrates browser files and transcript bodies,
    validates the resulting V4 runtime document, and publishes exactly one Zustand projection.
 
@@ -58,19 +58,23 @@ browser transactions cannot reverse semantic rename history.
 
 `StandaloneEditorAssetRepositoryPort` retains the project-owned browser `File` objects outside the
 portable manifest. It resolves descriptor IDs to the matching video or audio source, verifies the
-descriptor fingerprint and metadata, and exposes only a verified opaque media handle to the
-engine. Hydrating a committed snapshot reattaches the same project-owned files; no file bytes,
-object URLs, or local paths enter engine history or receipts.
+descriptor fingerprint, metadata, byte length, and content digest, and exposes only a verified
+opaque media handle to the engine. Import candidates remain provisional until the authoritative
+IndexedDB transaction commits; failure or receipt replay releases that provisional ownership.
+Files needed only by Redo are loaded lazily from their pinned IndexedDB records after reopen.
+Hydrating a committed snapshot reattaches the same project-owned files; no file bytes, object
+URLs, or local paths enter engine history or receipts.
 
 `StandaloneEditorialTranscriptRepositoryPort` resolves descriptor record IDs through the existing
 content-addressed transcript repository. V4 manifests and engine history retain descriptors and
 CAS record IDs only. Transcript bodies remain detached and are hydrated before the single Zustand
 publication.
 
-`StandaloneEditorPersistencePort` stores the engine head and idempotency receipt in the project's
-IndexedDB transaction boundary. Transcript pin generations protect durable, Undo, and Redo roots.
-Publishing the final CAS pins happens after the durable head commit; a post-commit pin publication
-failure is reported without falsely rolling back an already committed engine result.
+`StandaloneEditorPersistencePort` stores the engine head, idempotency receipt, and new source
+Files in the project's IndexedDB transaction boundary. Precise source pins protect current,
+history, and Redo roots; transcript pin generations protect the equivalent CAS roots. Publishing
+the final CAS pins happens after the durable head commit; a post-commit pin publication failure is
+reported without falsely rolling back an already committed engine result.
 
 ## History and selection sidecars
 
@@ -89,18 +93,17 @@ bootstrap, engine history is authoritative.
 The frozen semantic vocabulary does not yet provide typed operations for these durable standalone
 workflows:
 
-- registering a newly probed video or audio source, including its verified descriptor;
 - publishing transcription provenance or a newly acquired transcript record;
 - changing `activeSubtitleTrackId`;
 - moving an existing subtitle across tracks while preserving its identity;
 - muting one independent audio clip separately from its audio track.
 
-These are explicit unsupported adapter boundaries. Existing source import and transcription setup
-may prepare project-owned files, CAS bodies, and provenance before engine creation, but an active
-engine must not be patched behind its back. Callers must not emulate the missing semantics with a
-generic manifest patch, a nearby operation, or an optimistic Zustand dual-write. Moving these
-workflows behind the engine requires a separately approved typed operation or atomic registration
-transaction.
+These are explicit unsupported adapter boundaries. Transcription setup may prepare project-owned
+CAS bodies and provenance before engine creation, but an active engine must not be patched behind
+its back. Callers must not emulate missing semantics with a generic manifest patch, a nearby
+operation, or an optimistic Zustand dual-write. Browser video/audio import is not part of this
+list: inspected descriptors and verified `File` hydration route through the internal atomic media
+import boundary and Core owns ordering, placement, history, replay, guards, pins, and publication.
 
 The adapter also fails closed when the legacy ripple planner requires cross-media sibling shifts
 that Core cannot yet express in one semantic command. It never applies only the target operation
@@ -123,14 +126,7 @@ adapter-only background shadow state.
 
 ## Integration dependencies
 
-This adapter depends on the following frozen commits and must be integrated with all three:
-
-- `75aa894` — durable V4 render-background types, migration, validation, persistence, preview, and
-  export parity;
-- `e320621` — deleted-range subtitle policy used by the semantic command surface;
-- `a8c9e3a` — instance-scoped `EditorEngine`, semantic operations, history, ports, receipts, and
-  protocol contracts.
-
-The next integration dependency is Core's separate authoritative `EditorEngine.importMedia`
-commit. Once available, it replaces the documented new-project bootstrap gap and active-engine
-source-registration boundary; it must not be reimplemented in this adapter.
+This integration combines the host-neutral editor surface through `bb55096`, Core's authoritative
+atomic `EditorEngine.importMedia` boundary from `83ddd5f`, and the standalone adapter source change
+from `a92cabf`. Browser imports route to that internal API without adding a semantic operation or
+a second registration planner.
