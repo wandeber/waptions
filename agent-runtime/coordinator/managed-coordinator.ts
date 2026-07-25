@@ -7,6 +7,11 @@ import {
     type ArtifactRecord,
 } from '../artifacts/artifact-registry';
 import type { Readable } from 'node:stream';
+import type {
+    EditorIdempotencyReceipt,
+    EditorPersistenceCommit,
+    EditorPersistencePort,
+} from '../../src/lib/editor-engine';
 import { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
 import {
     getProcessDecodedMemoryBudget,
@@ -43,12 +48,15 @@ import {
     type DurableWrite,
     ManagedFilesystemStore,
 } from '../persistence/managed-filesystem-store';
-import { asManagedRuntimeError, managedError } from './errors';
+import {
+    asManagedRuntimeError,
+    managedError,
+    type ManagedRuntimeErrorCode,
+} from './errors';
 import type {
     ManagedEditorPort,
     ManagedEditorPortFactory,
-    ManagedEditorPersistenceCommit,
-    ManagedEditorPersistencePort,
+    ManagedEditorPublicationPort,
     ManagedEditorSnapshot,
 } from './managed-editor-port';
 import { SingleInstanceLock } from './single-instance-lock';
@@ -59,6 +67,7 @@ import {
     type ManagedMutationResult,
     type ManagedProjectEnvelopeV1,
     type ManagedSessionSummary,
+    type ManagedSourceRegistryRecord,
     type StateToken,
 } from './types';
 import { ViewPresenceStore } from './view-presence-store';
@@ -79,6 +88,11 @@ interface LoadedProject<State, Command, Result extends Record<string, unknown>> 
 
 export interface ManagedCoordinatorOptions {
     scheduler?: JobSchedulerOptions;
+    /**
+     * Production runners must exist before durable jobs are recovered. Registering after
+     * `start()` can strand an interrupted job indefinitely.
+     */
+    registerJobHandlers?(scheduler: DurableJobScheduler): void | Promise<void>;
     persistenceFaultInjector?: PersistenceFaultInjector;
     decodedMemoryLimitBytes?: number;
     artifactQuotas?: ArtifactQuotaPolicy;
@@ -122,6 +136,10 @@ export class ManagedCoordinator<
         committed: boolean;
         committedResult?: Result;
         committedSnapshot?: ManagedEditorSnapshot<State>;
+    }>();
+    private readonly pendingCoreEvents = new Map<string, {
+        coreEventId: string;
+        event: ManagedEvent;
     }>();
     private closed = false;
     private closing = false;
@@ -200,6 +218,7 @@ export class ManagedCoordinator<
                 epoch,
                 options,
             );
+            await options.registerJobHandlers?.(coordinator.jobs);
             const projectIds = await store.listProjectIds();
             for (const projectId of projectIds) {
                 await coordinator.loadProject(projectId);
@@ -273,7 +292,11 @@ export class ManagedCoordinator<
             recoveryCount: 0,
         };
         validateProjectEnvelope(envelope);
-        const port = await this.portFactory.create(snapshot, this.persistencePort(projectId));
+        const port = await this.portFactory.create(
+            snapshot,
+            this.persistencePort(projectId),
+            this.publicationPort(projectId),
+        );
         try {
             // Adapter acceptance precedes publication so a rejected snapshot cannot poison the
             // durable project set or make the next coordinator start fail.
@@ -359,6 +382,17 @@ export class ManagedCoordinator<
                     if (canonicalDigest(after) !== canonicalDigest(before)) {
                         await loaded.port.hydrate(before);
                     }
+                    if (isCoreFailure(result)) {
+                        return {
+                            ok: false,
+                            error: {
+                                code: result.error.code,
+                                message: result.error.message.slice(0, 512),
+                                retryable: result.error.retryable,
+                            },
+                            state: this.stateToken(loaded.envelope),
+                        };
+                    }
                     throw managedError(
                         'INTERNAL_ERROR',
                         'Core returned without its required atomic persistence commit.',
@@ -407,6 +441,14 @@ export class ManagedCoordinator<
         });
     }
 
+    async planEditor(projectId: string, command: Command): Promise<Result> {
+        const loaded = this.requireProject(projectId);
+        if (!loaded.port.plan) {
+            throw managedError('INVALID_REQUEST', 'The managed editor does not support planning.');
+        }
+        return loaded.port.plan(command);
+    }
+
     async mutateRegistry<RegistryResult extends Record<string, unknown>>(
         projectId: string,
         request: ManagedMutationEnvelope,
@@ -427,7 +469,7 @@ export class ManagedCoordinator<
                 const updated = mutation.update(structuredClone(loaded.envelope));
                 const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
                     ...updated,
-                    sessionRevision: loaded.envelope.sessionRevision + 1,
+                    sessionRevision: loaded.envelope.sessionRevision,
                     receiptRevision: loaded.envelope.receiptRevision + 1,
                     eventSequence: loaded.envelope.eventSequence + 1,
                     updatedAt: new Date().toISOString(),
@@ -459,13 +501,16 @@ export class ManagedCoordinator<
                     ...await this.events.retentionDeletes(projectId),
                 ]);
                 committed = true;
+                await loaded.port.hydrate(nextEnvelope.editor);
                 this.events.publish(event);
                 await Promise.resolve(mutation.afterCommit?.()).catch(() => undefined);
                 return {
                     ok: true,
-                    data: { ...mutation.result, replayed: false },
+                    data: mutation.result,
                     state: this.stateToken(nextEnvelope),
                     warnings: [],
+                    replayed: false,
+                    committedState: this.stateToken(nextEnvelope),
                 };
             } catch (error) {
                 if (!committed && mutation?.onReject) {
@@ -475,11 +520,13 @@ export class ManagedCoordinator<
                     await Promise.resolve(mutation.afterCommit?.()).catch(() => undefined);
                     return {
                         ok: true,
-                        data: { ...mutation.result, replayed: false },
+                        data: mutation.result,
                         state: this.stateToken(loaded.envelope),
                         warnings: [
                             'A post-commit callback failed; the durable mutation remains authoritative.',
                         ],
+                        replayed: false,
+                        committedState: this.stateToken(loaded.envelope),
                     };
                 }
                 return {
@@ -841,6 +888,7 @@ export class ManagedCoordinator<
         const port = await this.portFactory.create(
             recovered.editor,
             this.persistencePort(projectId),
+            this.publicationPort(projectId),
         );
         try {
             // Adapter acceptance precedes even the recovery event publication. One incompatible
@@ -852,13 +900,17 @@ export class ManagedCoordinator<
         }
         const envelope: ManagedProjectEnvelopeV1<State> = {
             ...recovered,
-            sessionRevision: recovered.sessionRevision + 1,
+            sessionRevision: recovered.sessionRevision,
             eventSequence: recovered.eventSequence + 1,
             grantRevision: recovered.grantRevision + (quarantinedGrantWrites.length > 0 ? 1 : 0),
             recoveryCount: recovered.recoveryCount + 1,
             lastCoordinatorEpoch: this.epoch,
             updatedAt: new Date().toISOString(),
         };
+        envelope.editor = port.rebaseSession?.(envelope.editor, {
+            sessionEpoch: this.epoch,
+            sessionRevision: envelope.sessionRevision,
+        }) ?? envelope.editor;
         const event = this.createEvent(envelope, 'session.recovered', {
             previousEpoch: recovered.lastCoordinatorEpoch,
             newEpoch: this.epoch,
@@ -876,6 +928,7 @@ export class ManagedCoordinator<
                     ...quarantinedGrantWrites,
                 ],
             });
+            await port.hydrate(envelope.editor);
             for (const grant of restorableGrants) this.pathGrants.register(grant);
             this.projects.set(projectId, { envelope, port, poisoned: false });
             this.events.publish(event);
@@ -892,19 +945,46 @@ export class ManagedCoordinator<
         }
     }
 
-    private persistencePort(projectId: string): ManagedEditorPersistencePort<State, Result> {
+    private persistencePort(projectId: string): EditorPersistencePort {
         return {
+            getReceipt: async (
+                receiptProjectId,
+                toolName,
+                idempotencyKey,
+            ): Promise<EditorIdempotencyReceipt | null> => {
+                if (receiptProjectId !== projectId) {
+                    throw managedError(
+                        'INVALID_REQUEST',
+                        'Core requested a receipt outside its managed project.',
+                    );
+                }
+                const receipt = await this.store.readReceipt(
+                    projectId,
+                    toolName,
+                    idempotencyKey,
+                );
+                return receipt?.coreReceipt
+                    ? structuredClone(receipt.coreReceipt)
+                    : null;
+            },
             commit: (input) => this.commitEditorFromCore(projectId, input),
         };
     }
 
     private async commitEditorFromCore(
         projectId: string,
-        input: ManagedEditorPersistenceCommit<State, Result>,
-    ): Promise<{ state: StateToken }> {
+        input: EditorPersistenceCommit,
+    ): Promise<void> {
         const loaded = this.requireProject(projectId);
         const active = this.activeEditorRequests.get(projectId);
-        if (!active || canonicalDigest(active.request) !== canonicalDigest(input.request)) {
+        if (
+            !active
+            || input.projectId !== projectId
+            || input.toolName !== active.request.toolName
+            || input.receipt.toolName !== active.request.toolName
+            || input.receipt.key !== active.request.idempotencyKey
+            || input.receipt.value.idempotencyKey !== active.request.idempotencyKey
+        ) {
             throw managedError(
                 'INVALID_REQUEST',
                 'Core attempted persistence outside the serialized coordinator dispatch.',
@@ -913,59 +993,142 @@ export class ManagedCoordinator<
         if (active.committed) {
             throw managedError('INTERNAL_ERROR', 'Core attempted more than one atomic commit.', false);
         }
-        validateEditorSnapshot(input.next);
-        validateManagedResult(input.result);
+        const nextSnapshot = loaded.port.snapshotFromCommit(input);
+        validateEditorSnapshot(nextSnapshot);
         if (
-            !input.semanticLabel
-            || input.semanticLabel.length > 200
-            || input.next.documentRevision <= loaded.envelope.editor.documentRevision
-            || input.next.audioGraphRevision < loaded.envelope.editor.audioGraphRevision
-            || input.next.historyRevision < loaded.envelope.editor.historyRevision
+            input.transaction.fromDocumentRevision
+                !== loaded.envelope.editor.documentRevision
+            || input.previous.revisions.documentRevision
+                !== loaded.envelope.editor.documentRevision
+            || input.sessionState.documentRevision !== nextSnapshot.documentRevision
+            || input.sessionState.audioGraphRevision !== nextSnapshot.audioGraphRevision
+            || input.next.revisions.sessionRevision !== input.sessionState.sessionRevision
+            || input.next.revisions.sessionEpoch !== this.epoch
         ) {
             throw managedError(
-                'INVALID_REQUEST',
-                'Core produced an invalid editor transition.',
-            );
-        }
-        if (input.baseDocumentRevision !== loaded.envelope.editor.documentRevision) {
-            throw managedError(
                 'REVISION_CONFLICT',
-                'The editor changed before Core reached its persistence boundary.',
+                'Core persistence did not start from the authoritative editor head.',
                 true,
             );
         }
+        if (
+            input.sessionState.sessionRevision !== loaded.envelope.sessionRevision
+            && input.sessionState.sessionRevision !== loaded.envelope.sessionRevision + 1
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'Core produced a non-contiguous session revision.',
+            );
+        }
+        if (
+            input.event === null
+            && (
+                input.sessionState.sessionRevision !== loaded.envelope.sessionRevision
+                || input.sessionState.eventSequence
+                    !== (loaded.port.editorEventSequence?.() ?? input.sessionState.eventSequence)
+            )
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'A Core no-op cannot advance session or event revisions.',
+            );
+        }
+        if (
+            input.event
+            && (
+                input.event.sequence
+                    !== (loaded.port.editorEventSequence?.() ?? input.event.sequence - 1) + 1
+                || input.sessionState.eventSequence !== input.event.sequence
+                || input.sessionState.sessionRevision !== loaded.envelope.sessionRevision + 1
+            )
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'A Core event must advance contiguous session and event revisions.',
+            );
+        }
+        const additions = sourceRegistryAdditions(input);
+        const sourceById = new Map(
+            loaded.envelope.sourceRegistry.map((source) => [source.sourceId, source]),
+        );
+        for (const addition of additions) {
+            const existing = sourceById.get(addition.sourceId);
+            if (existing && canonicalDigest(existing) !== canonicalDigest(addition)) {
+                throw managedError(
+                    'SOURCE_CHANGED',
+                    'Core attempted to replace an immutable managed source registration.',
+                );
+            }
+            sourceById.set(addition.sourceId, addition);
+        }
         const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
             ...loaded.envelope,
-            sessionRevision: loaded.envelope.sessionRevision + 1,
+            name: input.sessionState.projectName,
+            sessionRevision: input.sessionState.sessionRevision,
             receiptRevision: loaded.envelope.receiptRevision + 1,
-            eventSequence: loaded.envelope.eventSequence + 1,
-            editor: input.next,
+            sourceRegistryRevision: loaded.envelope.sourceRegistryRevision
+                + (additions.length > 0 ? 1 : 0),
+            eventSequence: loaded.envelope.eventSequence + (input.event ? 1 : 0),
+            editor: nextSnapshot,
+            sourceRegistry: Array.from(sourceById.values()),
             updatedAt: new Date().toISOString(),
             lastCoordinatorEpoch: this.epoch,
         };
-        const event = this.createEvent(
-            nextEnvelope,
-            'project.changed',
-            { action: input.semanticLabel, toolName: input.request.toolName },
-        );
+        const result = {
+            ...input.receipt.value.result,
+            ok: true,
+            replayed: false,
+            snapshot: structuredClone(input.next),
+        } as unknown as Result;
+        validateManagedResult(result);
+        const event = input.event
+            ? this.projectCoreEvent(nextEnvelope, input)
+            : null;
         const receipt = this.createReceipt(
             projectId,
-            input.request,
-            input.result,
+            active.request,
+            input.receipt.value.result,
             nextEnvelope.sessionRevision,
-            input.next.reachableSourceIds,
+            nextSnapshot.reachableSourceIds,
+            input.receipt.value,
         );
         await this.commit(loaded, nextEnvelope, [
+            {
+                relativePath: `core/commits/${canonicalDigest(
+                    input.transaction.walTransactionId,
+                ).slice(7)}.json`,
+                value: input,
+            },
             this.store.receiptWrite(receipt),
-            this.events.write(event),
+            ...(event ? [this.events.write(event)] : []),
             ...await this.store.receiptRetentionDeletes(projectId),
-            ...await this.events.retentionDeletes(projectId),
+            ...(event ? await this.events.retentionDeletes(projectId) : []),
         ]);
-        active.committedResult = structuredClone(input.result);
-        active.committedSnapshot = structuredClone(input.next);
+        active.committedResult = structuredClone(result);
+        active.committedSnapshot = structuredClone(nextSnapshot);
         active.committed = true;
-        this.events.publish(event);
-        return { state: this.stateToken(nextEnvelope) };
+        if (event && input.event) {
+            this.pendingCoreEvents.set(projectId, {
+                coreEventId: input.event.id,
+                event,
+            });
+        }
+    }
+
+    private publicationPort(projectId: string): ManagedEditorPublicationPort {
+        return {
+            publish: (coreEvent) => {
+                const pending = this.pendingCoreEvents.get(projectId);
+                if (!pending || pending.coreEventId !== coreEvent.id) {
+                    throw managedError(
+                        'INTERNAL_ERROR',
+                        'Core published an event without a matching durable commit.',
+                    );
+                }
+                this.pendingCoreEvents.delete(projectId);
+                this.events.publish(pending.event);
+            },
+        };
     }
 
     private async recordJobTransition(
@@ -1006,7 +1169,7 @@ export class ManagedCoordinator<
             }
             const nextEnvelope: ManagedProjectEnvelopeV1<State> = {
                 ...loaded.envelope,
-                sessionRevision: loaded.envelope.sessionRevision + 1,
+                sessionRevision: loaded.envelope.sessionRevision,
                 jobRevision: loaded.envelope.jobRevision + 1,
                 artifactRevision: loaded.envelope.artifactRevision + (artifacts.length > 0 ? 1 : 0),
                 eventSequence: loaded.envelope.eventSequence + 1,
@@ -1026,6 +1189,7 @@ export class ManagedCoordinator<
                     ...await this.events.retentionDeletes(record.projectId),
                 ]);
                 committed = true;
+                await loaded.port.hydrate(nextEnvelope.editor);
                 this.events.publish(event);
                 for (const artifact of artifacts) artifact.accept();
                 await Promise.all(outputs.map((output) => output.accept()));
@@ -1087,11 +1251,16 @@ export class ManagedCoordinator<
         }
         const loaded = this.projects.get(projectId);
         if (!loaded) throw managedError('SESSION_NOT_FOUND', 'The managed project is not open.');
+        const replayResult = receipt.coreReceipt && loaded.port.resultFromReceipt
+            ? loaded.port.resultFromReceipt(receipt.coreReceipt, true)
+            : receipt.result;
         return {
             ok: true,
-            data: { ...receipt.result, replayed: true },
+            data: replayResult as ReceiptResult,
             state: this.stateToken(loaded.envelope),
             warnings: [],
+            replayed: true,
+            committedState: this.stateToken(loaded.envelope),
         };
     }
 
@@ -1107,11 +1276,14 @@ export class ManagedCoordinator<
         if (!active.committed || !active.committedResult || !active.committedSnapshot) {
             throw managedError('INTERNAL_ERROR', 'Core commit bookkeeping is incomplete.');
         }
+        this.publishPendingCoreEvent(loaded.envelope.projectId);
         return {
             ok: true,
-            data: { ...active.committedResult, replayed: false },
+            data: active.committedResult,
             state: this.stateToken(loaded.envelope),
             warnings,
+            replayed: false,
+            committedState: this.stateToken(loaded.envelope),
         };
     }
 
@@ -1130,6 +1302,7 @@ export class ManagedCoordinator<
                 throw new Error('The committed editor snapshot is unavailable.');
             }
             await loaded.port.hydrate(active.committedSnapshot);
+            this.publishPendingCoreEvent(loaded.envelope.projectId);
         } catch {
             loaded.poisoned = true;
             nextWarnings.push(
@@ -1191,6 +1364,7 @@ export class ManagedCoordinator<
         result: ReceiptResult,
         committedSessionRevision: number,
         retainedSourceIds: readonly string[],
+        coreReceipt?: EditorIdempotencyReceipt,
     ): DurableReceipt<ReceiptResult> {
         return {
             schemaVersion: 2,
@@ -1202,23 +1376,77 @@ export class ManagedCoordinator<
             committedSessionRevision,
             createdAt: new Date().toISOString(),
             retainedSourceIds: [...retainedSourceIds],
+            ...(coreReceipt ? { coreReceipt: structuredClone(coreReceipt) } : {}),
+        };
+    }
+
+    private projectCoreEvent(
+        envelope: ManagedProjectEnvelopeV1<State>,
+        commit: EditorPersistenceCommit,
+    ): ManagedEvent {
+        if (!commit.event) {
+            throw managedError('INVALID_REQUEST', 'Core event projection requires an event.');
+        }
+        const state = this.stateToken(envelope);
+        if (commit.event.type === 'project.mutated') {
+            return {
+                schemaVersion: 1,
+                cursor: state.eventCursor,
+                type: 'project.mutated',
+                occurredAt: commit.event.occurredAt,
+                state,
+                sequence: envelope.eventSequence,
+                data: {
+                    commandId: commit.event.commandId,
+                    operationIds: [...commit.event.operationIds],
+                    affectedIds: affectedGraphIds(commit.previous, commit.next),
+                    historyEntryId: commit.event.historyEntryId,
+                },
+            };
+        }
+        return {
+            schemaVersion: 1,
+            cursor: state.eventCursor,
+            type: 'history.changed',
+            occurredAt: commit.event.occurredAt,
+            state,
+            sequence: envelope.eventSequence,
+            data: {
+                currentIndex: commit.next.history.currentIndex,
+                undoCount: commit.next.history.past.length,
+                redoCount: commit.next.history.future.length,
+                ...(commit.next.history.past.at(-1)?.id
+                    ? { headEntryId: commit.next.history.past.at(-1)!.id }
+                    : {}),
+            },
         };
     }
 
     private createEvent(
         envelope: ManagedProjectEnvelopeV1<State>,
-        kind: ManagedEventKind,
+        kind:
+            | ManagedEventKind
+            | 'project.changed'
+            | 'playback.changed'
+            | 'presenter.changed'
+            | 'grant.changed'
+            | 'source.changed',
         eventData: ManagedEventData,
     ): ManagedEvent {
         const state = this.stateToken(envelope);
+        const projected = projectManagedEvent(
+            kind,
+            eventData,
+            envelope.editor.manifestDigest,
+        );
         return {
             schemaVersion: 1,
             cursor: state.eventCursor,
-            type: kind,
+            type: projected.type,
             occurredAt: new Date().toISOString(),
             state,
             sequence: envelope.eventSequence,
-            data: eventData,
+            data: projected.data,
         };
     }
 
@@ -1241,6 +1469,13 @@ export class ManagedCoordinator<
             loaded.poisoned = true;
             throw error;
         }
+    }
+
+    private publishPendingCoreEvent(projectId: string): void {
+        const pending = this.pendingCoreEvents.get(projectId);
+        if (!pending) return;
+        this.pendingCoreEvents.delete(projectId);
+        this.events.publish(pending.event);
     }
 
     private stateToken(envelope: ManagedProjectEnvelopeV1<State>): StateToken {
@@ -1389,8 +1624,6 @@ function validateProjectEnvelope<State>(envelope: ManagedProjectEnvelopeV1<State
             || source.digest.length > 256
             || !source.immutableVersion
             || source.immutableVersion.length > 256
-            || !source.readGrantId
-            || source.readGrantId.length > 200
             || !source.streamSignature
             || source.streamSignature.length > 512
             || !Number.isFinite(Date.parse(source.registeredAt))
@@ -1412,6 +1645,127 @@ function validateManagedResult(value: unknown): void {
     canonicalJson(value, 768 * 1024);
 }
 
+function sourceRegistryAdditions(
+    commit: EditorPersistenceCommit,
+): ManagedSourceRegistryRecord[] {
+    return [
+        ...commit.sourceRegistrations.videoSources.map((source) => ({
+            sourceId: source.id,
+            immutableVersion: source.handle.identity.immutableVersion,
+            byteLength: source.handle.identity.byteLength,
+            digest: source.handle.identity.contentDigest,
+            streamSignature: source.handle.identity.descriptorFingerprint,
+            registeredAt: source.handle.verifiedAt,
+        })),
+        ...commit.sourceRegistrations.audioSources.map((source) => ({
+            sourceId: source.id,
+            immutableVersion: source.handle.identity.immutableVersion,
+            byteLength: source.handle.identity.byteLength,
+            digest: source.handle.identity.contentDigest,
+            streamSignature: source.handle.identity.descriptorFingerprint,
+            registeredAt: source.handle.verifiedAt,
+        })),
+    ];
+}
+
+function affectedGraphIds(
+    previous: EditorPersistenceCommit['previous'],
+    next: EditorPersistenceCommit['next'],
+): string[] {
+    const collect = (snapshot: EditorPersistenceCommit['next']) => new Map<string, unknown>([
+        ...snapshot.manifest.videoTracks.map((entity) => [entity.id, entity] as const),
+        ...snapshot.manifest.videoClips.map((entity) => [entity.id, entity] as const),
+        ...snapshot.manifest.audioTracks.map((entity) => [entity.id, entity] as const),
+        ...snapshot.manifest.audioTracks.flatMap(
+            (track) => track.clips.map((entity) => [entity.id, entity] as const),
+        ),
+        ...snapshot.manifest.subtitleTracks.map((entity) => [entity.id, entity] as const),
+        ...snapshot.manifest.subtitleTracks.flatMap(
+            (track) => track.subtitles.map((entity) => [entity.id, entity] as const),
+        ),
+        ...snapshot.manifest.videoSourceDescriptors.map(
+            (entity) => [entity.id, entity] as const,
+        ),
+        ...snapshot.manifest.audioSourceDescriptors.map(
+            (entity) => [entity.id, entity] as const,
+        ),
+    ]);
+    const before = collect(previous);
+    const after = collect(next);
+    return Array.from(new Set([...before.keys(), ...after.keys()]))
+        .filter((id) => {
+            const previousValue = before.get(id);
+            const nextValue = after.get(id);
+            return previousValue === undefined
+                || nextValue === undefined
+                || canonicalDigest(previousValue) !== canonicalDigest(nextValue);
+        })
+        .slice(0, 1_024);
+}
+
+function isCoreFailure(value: unknown): value is {
+    ok: false;
+    error: {
+        code: ManagedRuntimeErrorCode;
+        message: string;
+        retryable: boolean;
+    };
+} {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const candidate = value as {
+        ok?: unknown;
+        error?: { code?: unknown; message?: unknown; retryable?: unknown };
+    };
+    return candidate.ok === false
+        && isManagedRuntimeErrorCode(candidate.error?.code)
+        && typeof candidate.error?.message === 'string'
+        && typeof candidate.error?.retryable === 'boolean';
+}
+
+function isManagedRuntimeErrorCode(value: unknown): value is ManagedRuntimeErrorCode {
+    return typeof value === 'string' && MANAGED_RUNTIME_ERROR_CODES.has(value);
+}
+
+const MANAGED_RUNTIME_ERROR_CODES: ReadonlySet<string> = new Set([
+    'INVALID_REQUEST',
+    'UNSUPPORTED_API_VERSION',
+    'PAYLOAD_TOO_LARGE',
+    'SESSION_NOT_FOUND',
+    'SESSION_EPOCH_MISMATCH',
+    'SESSION_REVISION_CONFLICT',
+    'REVISION_CONFLICT',
+    'NARRATIVE_REVISION_CONFLICT',
+    'AUDIO_REVISION_CONFLICT',
+    'IDEMPOTENCY_KEY_CONFLICT',
+    'PLAN_NOT_FOUND',
+    'PLAN_EXPIRED',
+    'PLAN_INPUT_CHANGED',
+    'NOT_FOUND',
+    'INVALID_DOCUMENT',
+    'INVALID_OPERATION',
+    'OVERLAP_CONFLICT',
+    'LOCKED_TARGET',
+    'ORDER_NOT_MEANINGFUL',
+    'SOURCE_CHANGED',
+    'SOURCE_UNREADABLE',
+    'PATH_NOT_GRANTED',
+    'WRITE_DESTINATION_NOT_GRANTED',
+    'OVERWRITE_NOT_AUTHORIZED',
+    'PATH_IDENTITY_CHANGED',
+    'UNSUPPORTED_MEDIA',
+    'NO_AUDIO',
+    'CODEC_UNAVAILABLE',
+    'TRANSCRIPTION_POLICY_REJECTED',
+    'TRANSCRIPTION_ENDPOINT_UNREACHABLE',
+    'SSRF_POLICY_REJECTED',
+    'JOB_NOT_CANCELLABLE',
+    'EVENT_CURSOR_EXPIRED',
+    'ARTIFACT_EXPIRED',
+    'CAPABILITY_EXPIRED',
+    'COORDINATOR_UNAVAILABLE',
+    'INTERNAL_ERROR',
+]);
+
 function validateStringSet(values: readonly string[], label: string): void {
     if (values.length > 100_000 || new Set(values).size !== values.length) {
         throw managedError('INVALID_REQUEST', `The editor ${label} list is invalid.`);
@@ -1431,6 +1785,35 @@ function jobEventData(record: DurableJobRecord): Readonly<Record<string, unknown
         ...(record.fraction === undefined ? {} : { fraction: record.fraction }),
         ...(record.message === undefined ? {} : { message: record.message }),
     };
+}
+
+function projectManagedEvent(
+    kind:
+        | ManagedEventKind
+        | 'project.changed'
+        | 'playback.changed'
+        | 'presenter.changed'
+        | 'grant.changed'
+        | 'source.changed',
+    data: ManagedEventData,
+    manifestDigest: string,
+): { type: ManagedEventKind; data: ManagedEventData } {
+    if (
+        kind === 'project.changed'
+        || kind === 'playback.changed'
+        || kind === 'presenter.changed'
+        || kind === 'grant.changed'
+        || kind === 'source.changed'
+    ) {
+        return {
+            type: 'project.snapshot',
+            data: {
+                manifestDigest,
+                reason: 'refreshed',
+            },
+        };
+    }
+    return { type: kind, data };
 }
 
 function boundedIdentity(value: string): string {

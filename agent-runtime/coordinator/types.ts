@@ -39,9 +39,11 @@ export interface ManagedMutationEnvelope<Command = unknown> {
 
 export interface ManagedMutationSuccess<Result = unknown> {
     ok: true;
-    data: Result & { replayed: boolean };
+    data: Result;
     state: StateToken;
     warnings: readonly string[];
+    replayed: boolean;
+    committedState?: StateToken;
 }
 
 export interface ManagedMutationFailure {
@@ -67,7 +69,6 @@ export interface ManagedPlaybackState {
 export interface ManagedSourceRegistryRecord {
     sourceId: string;
     immutableVersion: string;
-    readGrantId: string;
     byteLength: number;
     digest: string;
     streamSignature: string;

@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ManagedCoordinator } from './managed-coordinator';
-import { fakeEditorPortFactory, fakeSnapshot } from '../testing/fake-editor-port';
+import {
+    fakeEditorCommit,
+    fakeEditorPortFactory,
+    fakeEditorResultFromCommit,
+    fakeSnapshot,
+    fakeSnapshotFromCommit,
+    type FakeEditorCommand,
+    type FakeEditorResult,
+    type FakeEditorState,
+} from '../testing/fake-editor-port';
 import { mutationRequest, temporaryRuntime } from '../testing/runtime-test-helpers';
 import type { PersistenceFaultInjector } from '../persistence/fs-durable';
 import { canonicalDigest } from '../persistence/canonical-json';
@@ -11,9 +20,16 @@ import type {
     ManagedEditorPortFactory,
     ManagedEditorSnapshot,
 } from './managed-editor-port';
+import type {
+    ManagedMutationEnvelope,
+    StateToken,
+} from './types';
+import type { EditorCommandFailure } from '../../src/lib/editor-engine';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
+
+type FakeCoreFailure = EditorCommandFailure & Record<string, unknown>;
 
 describe('ManagedCoordinator', () => {
     it('enforces one coordinator authority per data root', async () => {
@@ -44,17 +60,21 @@ describe('ManagedCoordinator', () => {
         const first = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory, {
             persistenceFaultInjector: injector,
         });
-        const created = await first.createSession('Retry test', fakeSnapshot(), {
-            projectId: 'retry-project',
-            sessionId: 'retry-session',
-        });
-        const request = mutationRequest(created.state, 'same-key', { append: 'once' });
+        const created = await first.createSession(
+            'Retry test',
+            fakeProjectSnapshot('retry-project'),
+            {
+                projectId: 'retry-project',
+                sessionId: 'retry-session',
+            },
+        );
+        const request = editorMutationRequest(created.state, 'same-key', { append: 'once' });
         const lost = await first.mutateEditor('retry-project', request);
         expect(lost.ok).toBe(false);
         const immediateReplay = await first.mutateEditor('retry-project', request);
         expect(immediateReplay.ok).toBe(true);
         if (immediateReplay.ok) {
-            expect(immediateReplay.data.replayed).toBe(true);
+            expect(immediateReplay.replayed).toBe(true);
             expect(immediateReplay.state.sessionRevision).toBe(1);
         }
         const receipt = await first.store.readReceipt(
@@ -70,11 +90,12 @@ describe('ManagedCoordinator', () => {
         );
         expect(mutationEvents.events[0]).toMatchObject({
             cursor: immediateReplay.ok ? immediateReplay.state.eventCursor : undefined,
-            type: 'project.changed',
+            type: 'project.mutated',
             state: immediateReplay.ok ? immediateReplay.state : undefined,
             data: {
-                action: 'append test value',
-                toolName: request.toolName,
+                commandId: `command-${request.idempotencyKey}`,
+                operationIds: ['fake-operation'],
+                historyEntryId: `history-${request.idempotencyKey}`,
             },
         });
         await first.close();
@@ -83,9 +104,10 @@ describe('ManagedCoordinator', () => {
         const replay = await recovered.mutateEditor('retry-project', request);
         expect(replay.ok).toBe(true);
         if (replay.ok) {
-            expect(replay.data).toMatchObject({ appended: 'once', replayed: true });
+            expect(replay.data).toMatchObject({ appended: 'once' });
+            expect(replay.replayed).toBe(true);
             expect(replay.state.sessionEpoch).not.toBe(request.sessionEpoch);
-            expect(replay.state.sessionRevision).toBe(2);
+            expect(replay.state.sessionRevision).toBe(1);
         }
         const recoveredProject = recovered.getProject('retry-project').envelope;
         expect(recoveredProject.editor.state.values).toEqual(['once']);
@@ -113,18 +135,22 @@ describe('ManagedCoordinator', () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
-        const created = await coordinator.createSession('Concurrency', fakeSnapshot(), {
-            projectId: 'concurrent-project',
-            sessionId: 'concurrent-session',
-        });
+        const created = await coordinator.createSession(
+            'Concurrency',
+            fakeProjectSnapshot('concurrent-project'),
+            {
+                projectId: 'concurrent-project',
+                sessionId: 'concurrent-session',
+            },
+        );
         const [first, second] = await Promise.all([
             coordinator.mutateEditor(
                 'concurrent-project',
-                mutationRequest(created.state, 'client-one', { append: 'one' }),
+                editorMutationRequest(created.state, 'client-one', { append: 'one' }),
             ),
             coordinator.mutateEditor(
                 'concurrent-project',
-                mutationRequest(created.state, 'client-two', { append: 'two' }),
+                editorMutationRequest(created.state, 'client-two', { append: 'two' }),
             ),
         ]);
         expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
@@ -139,11 +165,15 @@ describe('ManagedCoordinator', () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
-        const created = await coordinator.createSession('Conflict', fakeSnapshot(), {
-            projectId: 'conflict-project',
-            sessionId: 'conflict-session',
-        });
-        const first = mutationRequest(created.state, 'duplicate', { append: 'one' });
+        const created = await coordinator.createSession(
+            'Conflict',
+            fakeProjectSnapshot('conflict-project'),
+            {
+                projectId: 'conflict-project',
+                sessionId: 'conflict-session',
+            },
+        );
+        const first = editorMutationRequest(created.state, 'duplicate', { append: 'one' });
         expect((await coordinator.mutateEditor('conflict-project', first)).ok).toBe(true);
         const conflict = await coordinator.mutateEditor('conflict-project', {
             ...first,
@@ -185,7 +215,7 @@ describe('ManagedCoordinator', () => {
             root,
         );
         expect(replay.ok).toBe(true);
-        if (replay.ok) expect(replay.data.replayed).toBe(true);
+        if (replay.ok) expect(replay.replayed).toBe(true);
         await coordinator.close();
     });
 
@@ -216,7 +246,7 @@ describe('ManagedCoordinator', () => {
             }()),
         });
         expect(replay.ok).toBe(true);
-        if (replay.ok) expect(replay.data.replayed).toBe(true);
+        if (replay.ok) expect(replay.replayed).toBe(true);
         expect(consumed).toBe(false);
         await coordinator.close();
     });
@@ -364,17 +394,20 @@ describe('ManagedCoordinator', () => {
         cleanups.push(runtime.cleanup);
         let dispatches = 0;
         const factory: ManagedEditorPortFactory<
-            { values: readonly string[] },
+            FakeEditorState,
             { append: string },
             { claimed: boolean }
         > = {
             create: async (initial) => {
-                let current: ManagedEditorSnapshot<{ values: readonly string[] }> = structuredClone(initial);
+                let current = structuredClone(initial);
                 return {
                     snapshot: () => structuredClone(current),
                     dispatch: async () => {
                         dispatches += 1;
                         return { claimed: true };
+                    },
+                    snapshotFromCommit: () => {
+                        throw new Error('The no-commit adapter cannot project a commit.');
                     },
                     hydrate: async (snapshot) => {
                         current = structuredClone(snapshot);
@@ -384,11 +417,15 @@ describe('ManagedCoordinator', () => {
             },
         };
         const coordinator = await ManagedCoordinator.start(runtime.path, factory);
-        const created = await coordinator.createSession('No commit', fakeSnapshot(), {
-            projectId: 'no-commit-project',
-            sessionId: 'no-commit-session',
-        });
-        const request = mutationRequest(created.state, 'no-commit');
+        const created = await coordinator.createSession(
+            'No commit',
+            fakeProjectSnapshot('no-commit-project'),
+            {
+                projectId: 'no-commit-project',
+                sessionId: 'no-commit-session',
+            },
+        );
+        const request = editorMutationRequest(created.state, 'no-commit');
         const result = await coordinator.mutateEditor('no-commit-project', request);
         expect(result.ok).toBe(false);
         expect(dispatches).toBe(1);
@@ -401,20 +438,159 @@ describe('ManagedCoordinator', () => {
         await coordinator.close();
     });
 
+    it('returns a Core failure without requiring a persistence commit', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const factory: ManagedEditorPortFactory<
+            FakeEditorState,
+            FakeEditorCommand,
+            FakeCoreFailure
+        > = {
+            create: async (initial) => {
+                let current = structuredClone(initial);
+                return {
+                    snapshot: () => structuredClone(current),
+                    dispatch: async () => ({
+                        ok: false,
+                        error: {
+                            code: 'INVALID_OPERATION',
+                            message: 'The fake operation is invalid.',
+                            retryable: false,
+                        },
+                    } as FakeCoreFailure),
+                    snapshotFromCommit: () => {
+                        throw new Error('A failed Core operation cannot have a commit.');
+                    },
+                    hydrate: async (snapshot) => {
+                        current = structuredClone(snapshot);
+                    },
+                    close: async () => undefined,
+                };
+            },
+        };
+        const coordinator = await ManagedCoordinator.start(runtime.path, factory);
+        const created = await coordinator.createSession(
+            'Core failure',
+            fakeProjectSnapshot('core-failure-project'),
+            {
+                projectId: 'core-failure-project',
+                sessionId: 'core-failure-session',
+            },
+        );
+        const request = editorMutationRequest(created.state, 'core-failure');
+        const transact = vi.spyOn(coordinator.store, 'transact');
+        const result = await coordinator.mutateEditor('core-failure-project', request);
+        expect(result).toMatchObject({
+            ok: false,
+            error: {
+                code: 'INVALID_OPERATION',
+                message: 'The fake operation is invalid.',
+                retryable: false,
+            },
+            state: created.state,
+        });
+        expect(transact).not.toHaveBeenCalled();
+        expect(await coordinator.store.readReceipt(
+            'core-failure-project',
+            request.toolName,
+            request.idempotencyKey,
+        )).toBeNull();
+        await coordinator.close();
+    });
+
     it('uses one persistence transaction for a valid editor mutation', async () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
-        const created = await coordinator.createSession('Single commit', fakeSnapshot(), {
-            projectId: 'single-commit-project',
-            sessionId: 'single-commit-session',
-        });
+        const created = await coordinator.createSession(
+            'Single commit',
+            fakeProjectSnapshot('single-commit-project'),
+            {
+                projectId: 'single-commit-project',
+                sessionId: 'single-commit-session',
+            },
+        );
         const transact = vi.spyOn(coordinator.store, 'transact');
         const result = await coordinator.mutateEditor(
             'single-commit-project',
-            mutationRequest(created.state, 'single-commit', { append: 'once' }),
+            editorMutationRequest(created.state, 'single-commit', { append: 'once' }),
         );
         expect(result.ok).toBe(true);
+        expect(transact).toHaveBeenCalledTimes(1);
+        await coordinator.close();
+    });
+
+    it('persists a Core no-op receipt without advancing state or emitting an event', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const factory: ManagedEditorPortFactory<
+            FakeEditorState,
+            FakeEditorCommand,
+            FakeEditorResult
+        > = {
+            create: async (initial, persistence) => {
+                let current = structuredClone(initial);
+                return {
+                    snapshot: () => structuredClone(current),
+                    dispatch: async ({ command, request }) => {
+                        const commit = fakeEditorCommit(
+                            current.state.projectId,
+                            request,
+                            current,
+                            current,
+                            { noOp: true },
+                        );
+                        await persistence.commit(commit);
+                        current = fakeSnapshotFromCommit(commit);
+                        return fakeEditorResultFromCommit(commit, command.append);
+                    },
+                    snapshotFromCommit: fakeSnapshotFromCommit,
+                    hydrate: async (snapshot) => {
+                        current = structuredClone(snapshot);
+                    },
+                    close: async () => undefined,
+                };
+            },
+        };
+        const coordinator = await ManagedCoordinator.start(runtime.path, factory);
+        const created = await coordinator.createSession(
+            'Core no-op',
+            fakeProjectSnapshot('no-op-project'),
+            {
+                projectId: 'no-op-project',
+                sessionId: 'no-op-session',
+            },
+        );
+        const request = editorMutationRequest(created.state, 'no-op', { append: 'ignored' });
+        const transact = vi.spyOn(coordinator.store, 'transact');
+        const result = await coordinator.mutateEditor('no-op-project', request);
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('The Core no-op did not commit its receipt.');
+        expect(result.replayed).toBe(false);
+        expect(result.data).toMatchObject({ noOp: true, eventId: null });
+        expect(result.state).toEqual(created.state);
+        expect(transact).toHaveBeenCalledTimes(1);
+        expect((await coordinator.events.read(
+            'no-op-project',
+            'no-op-session',
+            undefined,
+        )).events).toEqual([]);
+
+        const receipt = await coordinator.store.readReceipt(
+            'no-op-project',
+            request.toolName,
+            request.idempotencyKey,
+        );
+        expect(receipt?.coreReceipt?.result).toMatchObject({ noOp: true, eventId: null });
+        expect(receipt?.coreReceipt?.result).not.toHaveProperty('snapshot');
+        expect(receipt?.coreReceipt?.result).not.toHaveProperty('replayed');
+
+        const replay = await coordinator.mutateEditor('no-op-project', request);
+        expect(replay.ok).toBe(true);
+        if (replay.ok) {
+            expect(replay.replayed).toBe(true);
+            expect(replay.state).toEqual(created.state);
+        }
         expect(transact).toHaveBeenCalledTimes(1);
         await coordinator.close();
     });
@@ -423,31 +599,34 @@ describe('ManagedCoordinator', () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const factory: ManagedEditorPortFactory<
-            { values: readonly string[] },
-            { append: string },
-            { fraction: number }
+            FakeEditorState,
+            FakeEditorCommand,
+            FakeEditorResult
         > = {
             create: async (initial, persistence) => {
                 let current = structuredClone(initial);
                 return {
                     snapshot: () => structuredClone(current),
-                    dispatch: async ({ request }) => {
-                        const next = {
-                            ...current,
-                            documentRevision: current.documentRevision + 1,
-                            historyRevision: current.historyRevision + 1,
-                        };
-                        const result = { fraction: Number.NaN };
-                        await persistence.commit({
+                    dispatch: async ({ command, request }) => {
+                        const next = fakeSnapshot(
+                            [...current.state.values, command.append],
+                            current.state.projectId,
+                            current.state.eventSequence + 1,
+                        );
+                        const commit = fakeEditorCommit(
+                            current.state.projectId,
                             request,
-                            baseDocumentRevision: current.documentRevision,
+                            current,
                             next,
-                            result,
-                            semanticLabel: 'invalid-result',
-                        });
-                        current = next;
-                        return result;
+                        );
+                        await persistence.commit(commit);
+                        current = fakeSnapshotFromCommit(commit);
+                        return fakeEditorResultFromCommit(commit, command.append);
                     },
+                    snapshotFromCommit: (commit) => ({
+                        ...fakeSnapshotFromCommit(commit),
+                        documentRevision: Number.NaN,
+                    }),
                     hydrate: async (snapshot) => {
                         current = structuredClone(snapshot);
                     },
@@ -456,20 +635,24 @@ describe('ManagedCoordinator', () => {
             },
         };
         const coordinator = await ManagedCoordinator.start(runtime.path, factory);
-        const created = await coordinator.createSession('Invalid adapter', fakeSnapshot(), {
-            projectId: 'invalid-adapter-project',
-            sessionId: 'invalid-adapter-session',
-        });
+        const created = await coordinator.createSession(
+            'Invalid adapter',
+            fakeProjectSnapshot('invalid-adapter-project'),
+            {
+                projectId: 'invalid-adapter-project',
+                sessionId: 'invalid-adapter-session',
+            },
+        );
         const result = await coordinator.mutateEditor(
             'invalid-adapter-project',
-            mutationRequest(created.state, 'invalid-adapter') as never,
+            editorMutationRequest(created.state, 'invalid-adapter'),
         );
         expect(result.ok).toBe(false);
         expect((await coordinator.store.readProject('invalid-adapter-project'))?.sessionRevision).toBe(0);
         await coordinator.close();
 
         const restarted = await ManagedCoordinator.start(runtime.path, factory);
-        expect(restarted.getProject('invalid-adapter-project').envelope.sessionRevision).toBe(1);
+        expect(restarted.getProject('invalid-adapter-project').envelope.sessionRevision).toBe(0);
         await restarted.close();
     });
 
@@ -477,31 +660,31 @@ describe('ManagedCoordinator', () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const factory: ManagedEditorPortFactory<
-            { values: readonly string[] },
-            { append: string },
-            { claimed: boolean }
+            FakeEditorState,
+            FakeEditorCommand,
+            FakeEditorResult
         > = {
             create: async (initial, persistence) => {
                 let current = structuredClone(initial);
                 return {
                     snapshot: () => structuredClone(current),
-                    dispatch: async ({ request }) => {
-                        const next = {
-                            ...current,
-                            documentRevision: current.documentRevision + 1,
-                            historyRevision: current.historyRevision + 1,
-                            state: { values: [...current.state.values, request.command.append] },
-                        };
-                        await persistence.commit({
+                    dispatch: async ({ command, request }) => {
+                        const next = fakeSnapshot(
+                            [...current.state.values, command.append],
+                            current.state.projectId,
+                            current.state.eventSequence + 1,
+                        );
+                        const commit = fakeEditorCommit(
+                            current.state.projectId,
                             request,
-                            baseDocumentRevision: current.documentRevision,
+                            current,
                             next,
-                            result: { claimed: true },
-                            semanticLabel: 'committed-before-adapter-failure',
-                        });
-                        current = next;
+                        );
+                        await persistence.commit(commit);
+                        current = fakeSnapshotFromCommit(commit);
                         throw new Error('Core failed after commit.');
                     },
+                    snapshotFromCommit: fakeSnapshotFromCommit,
                     hydrate: async (snapshot) => {
                         current = structuredClone(snapshot);
                     },
@@ -510,16 +693,21 @@ describe('ManagedCoordinator', () => {
             },
         };
         const coordinator = await ManagedCoordinator.start(runtime.path, factory);
-        const created = await coordinator.createSession('Post-commit authority', fakeSnapshot(), {
-            projectId: 'post-commit-project',
-            sessionId: 'post-commit-session',
-        });
-        const request = mutationRequest(created.state, 'post-commit', { append: 'once' });
+        const created = await coordinator.createSession(
+            'Post-commit authority',
+            fakeProjectSnapshot('post-commit-project'),
+            {
+                projectId: 'post-commit-project',
+                sessionId: 'post-commit-session',
+            },
+        );
+        const request = editorMutationRequest(created.state, 'post-commit', { append: 'once' });
         const transact = vi.spyOn(coordinator.store, 'transact');
         const result = await coordinator.mutateEditor('post-commit-project', request);
         expect(result.ok).toBe(true);
         if (result.ok) {
-            expect(result.data).toMatchObject({ claimed: true, replayed: false });
+            expect(result.data).toMatchObject({ appended: 'once', noOp: false });
+            expect(result.replayed).toBe(false);
             expect(result.warnings).toHaveLength(1);
         }
         expect(transact).toHaveBeenCalledTimes(1);
@@ -537,37 +725,35 @@ describe('ManagedCoordinator', () => {
         cleanups.push(runtime.cleanup);
         let throwAfterCommit = true;
         const factory: ManagedEditorPortFactory<
-            { values: readonly string[] },
-            { append: string },
-            { appended: string }
+            FakeEditorState,
+            FakeEditorCommand,
+            FakeEditorResult
         > = {
             create: async (initial, persistence) => {
                 let current = structuredClone(initial);
                 return {
                     snapshot: () => structuredClone(current),
                     dispatch: async ({ command, request }) => {
-                        const next = {
-                            ...current,
-                            state: { values: [...current.state.values, command.append] },
-                            documentRevision: current.documentRevision + 1,
-                            historyRevision: current.historyRevision + 1,
-                            manifestDigest: `fake:${[...current.state.values, command.append].join(',')}`,
-                        };
-                        const result = { appended: command.append };
-                        await persistence.commit({
+                        const next = fakeSnapshot(
+                            [...current.state.values, command.append],
+                            current.state.projectId,
+                            current.state.eventSequence + 1,
+                        );
+                        const commit = fakeEditorCommit(
+                            current.state.projectId,
                             request,
-                            baseDocumentRevision: current.documentRevision,
+                            current,
                             next,
-                            result,
-                            semanticLabel: 'append before publication',
-                        });
+                        );
+                        await persistence.commit(commit);
                         if (throwAfterCommit) {
                             throwAfterCommit = false;
                             throw new Error('Core failed before publishing its in-memory head.');
                         }
-                        current = structuredClone(next);
-                        return result;
+                        current = fakeSnapshotFromCommit(commit);
+                        return fakeEditorResultFromCommit(commit, command.append);
                     },
+                    snapshotFromCommit: fakeSnapshotFromCommit,
                     hydrate: async (snapshot) => {
                         current = structuredClone(snapshot);
                     },
@@ -576,19 +762,31 @@ describe('ManagedCoordinator', () => {
             },
         };
         const coordinator = await ManagedCoordinator.start(runtime.path, factory);
-        const created = await coordinator.createSession('Post-commit hydration', fakeSnapshot(), {
-            projectId: 'post-commit-hydration-project',
-            sessionId: 'post-commit-hydration-session',
-        });
+        const created = await coordinator.createSession(
+            'Post-commit hydration',
+            fakeProjectSnapshot('post-commit-hydration-project'),
+            {
+                projectId: 'post-commit-hydration-project',
+                sessionId: 'post-commit-hydration-session',
+            },
+        );
         const first = await coordinator.mutateEditor(
             'post-commit-hydration-project',
-            mutationRequest(created.state, 'post-commit-hydration-one', { append: 'one' }),
+            editorMutationRequest(
+                created.state,
+                'post-commit-hydration-one',
+                { append: 'one' },
+            ),
         );
         expect(first.ok).toBe(true);
         if (!first.ok) throw new Error('The first mutation did not commit.');
         const second = await coordinator.mutateEditor(
             'post-commit-hydration-project',
-            mutationRequest(first.state, 'post-commit-hydration-two', { append: 'two' }),
+            editorMutationRequest(
+                first.state,
+                'post-commit-hydration-two',
+                { append: 'two' },
+            ),
         );
         expect(second.ok).toBe(true);
         expect(
@@ -914,7 +1112,6 @@ describe('ManagedCoordinator', () => {
                     sourceRegistry: [{
                         sourceId: 'live-source',
                         immutableVersion: 'sha256:version',
-                        readGrantId: 'opaque-grant',
                         byteLength: 1,
                         digest: 'sha256:source',
                         streamSignature: 'stream:source',
@@ -980,7 +1177,6 @@ describe('ManagedCoordinator', () => {
                     sourceRegistry: [{
                         sourceId: 'releasable-source',
                         immutableVersion: digest,
-                        readGrantId: granted.data.grant.grantId,
                         byteLength: 'source-bytes'.length,
                         digest,
                         streamSignature: 'stream:releasable',
@@ -1014,6 +1210,37 @@ async function directoryEntries(path: string): Promise<string[]> {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
         throw error;
     }
+}
+
+function fakeProjectSnapshot(
+    projectId: string,
+    values: readonly string[] = [],
+): ManagedEditorSnapshot<FakeEditorState> {
+    return fakeSnapshot(values, projectId);
+}
+
+function editorMutationRequest(
+    token: StateToken,
+    key: string,
+    command: FakeEditorCommand = { append: key },
+): ManagedMutationEnvelope<FakeEditorCommand> {
+    const base = mutationRequest(token, key, command);
+    const request = {
+        ...base,
+        toolName: 'waptions_edit_apply',
+    };
+    return {
+        ...request,
+        canonicalRequestHash: canonicalDigest({
+            apiVersion: request.apiVersion,
+            sessionId: request.sessionId,
+            sessionEpoch: request.sessionEpoch,
+            expected: request.expected,
+            idempotencyKey: request.idempotencyKey,
+            toolName: request.toolName,
+            command: request.command,
+        }),
+    };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMilliseconds = 3_000): Promise<void> {

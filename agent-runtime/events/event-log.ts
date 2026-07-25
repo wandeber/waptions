@@ -6,16 +6,25 @@ import type { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
 import type { StateToken } from '../coordinator/types';
 
 export type ManagedEventKind =
-    | 'project.changed'
+    | 'project.snapshot'
+    | 'project.mutated'
     | 'session.recovered'
     | 'history.changed'
+    | 'job.changed'
+    | 'artifact.created'
+    | 'diagnostics.changed'
+    | 'presence.changed'
+    | 'view.changed'
+    | 'source.invalidated'
+    /**
+     * Accepted only at the coordinator's internal projection boundary. Production writes map
+     * these values to one of the canonical event kinds above before reaching this log.
+     */
+    | 'project.changed'
     | 'playback.changed'
     | 'presenter.changed'
     | 'grant.changed'
-    | 'source.changed'
-    | 'job.changed'
-    | 'artifact.created'
-    | 'diagnostics.changed';
+    | 'source.changed';
 
 export type ManagedEventData = Readonly<Record<string, unknown>>;
 

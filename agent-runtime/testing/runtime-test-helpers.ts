@@ -62,7 +62,7 @@ export function mutationRequest(
             narrativeRevision: token.narrativeRevision,
         },
         idempotencyKey: key,
-        toolName: 'waptions_test_append',
+        toolName: 'waptions_edit_apply',
         command,
     };
     return {

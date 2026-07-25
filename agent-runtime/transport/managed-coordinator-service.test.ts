@@ -19,10 +19,14 @@ describe('ManagedCoordinatorService', () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
-        const created = await coordinator.createSession('Detached authority', fakeSnapshot(), {
+        const created = await coordinator.createSession(
+            'Detached authority',
+            fakeSnapshot([], 'service-project'),
+            {
             projectId: 'service-project',
             sessionId: 'service-session',
-        });
+            },
+        );
         const service = await ManagedCoordinatorService.start(
             runtime.path,
             coordinator,
@@ -63,10 +67,14 @@ describe('ManagedCoordinatorService', () => {
         const runtime = await temporaryRuntime();
         cleanups.push(runtime.cleanup);
         const coordinator = await ManagedCoordinator.start(runtime.path, fakeEditorPortFactory);
-        const created = await coordinator.createSession('Idle recovery', fakeSnapshot(), {
+        const created = await coordinator.createSession(
+            'Idle recovery',
+            fakeSnapshot([], 'idle-project'),
+            {
             projectId: 'idle-project',
             sessionId: 'idle-session',
-        });
+            },
+        );
         await coordinator.mutateEditor(
             'idle-project',
             mutationRequest(created.state, 'idle-edit', { append: 'durable' }),

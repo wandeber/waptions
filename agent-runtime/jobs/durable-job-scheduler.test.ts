@@ -125,7 +125,8 @@ describe('DurableJobScheduler', () => {
         await waitFor(() => coordinator.getProject('job-events-project').envelope.jobRevision >= 4);
         const project = coordinator.getProject('job-events-project').envelope;
         expect(project.jobRevision).toBeGreaterThanOrEqual(4);
-        expect(project.sessionRevision).toBe(project.jobRevision);
+        expect(project.sessionRevision).toBe(0);
+        expect(project.eventSequence).toBe(project.jobRevision);
         const eventPage = await coordinator.events.read(
             'job-events-project',
             'job-events-session',

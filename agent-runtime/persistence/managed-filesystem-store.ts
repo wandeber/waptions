@@ -25,6 +25,8 @@ export interface DurableReceipt<Result = unknown> {
     committedSessionRevision: number;
     createdAt: string;
     retainedSourceIds: readonly string[];
+    /** Core keeps its own transformed-request digest in the exact engine receipt. */
+    coreReceipt?: import('../../src/lib/editor-engine').EditorIdempotencyReceipt;
 }
 
 export interface DurableWrite {
@@ -398,6 +400,8 @@ function namespaceJsonLimit(namespace: string): number {
         case 'artifacts':
         case 'grants':
             return MANAGED_METADATA_JSON_MAX_BYTES;
+        case 'core':
+            return MANAGED_WAL_JSON_MAX_BYTES;
         default:
             return MANAGED_METADATA_JSON_MAX_BYTES;
     }

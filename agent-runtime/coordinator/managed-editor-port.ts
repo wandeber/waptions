@@ -1,4 +1,10 @@
-import type { ManagedMutationEnvelope, StateToken } from './types';
+import type {
+    EditorEngineEvent,
+    EditorIdempotencyReceipt,
+    EditorPersistenceCommit,
+    EditorPersistencePort,
+} from '../../src/lib/editor-engine';
+import type { ManagedMutationEnvelope } from './types';
 
 export interface ManagedEditorSnapshot<State = unknown> {
     state: State;
@@ -9,31 +15,6 @@ export interface ManagedEditorSnapshot<State = unknown> {
     historyRevision: number;
     reachableSourceIds: readonly string[];
     transcriptRecordIds: readonly string[];
-}
-
-export interface ManagedEditorPersistenceCommit<State = unknown, Result = unknown> {
-    request: ManagedMutationEnvelope;
-    baseDocumentRevision: number;
-    next: ManagedEditorSnapshot<State>;
-    result: Result;
-    semanticLabel: string;
-}
-
-export interface ManagedEditorPersistenceCommitResult {
-    state: StateToken;
-}
-
-/**
- * Coordinator-owned implementation of Core's EditorPersistencePort atomic boundary.
- *
- * Core calls this exactly once after its pure planning, dependent transforms, hydration, and V4
- * validation. Core remains responsible for publishing its prepared head after this promise
- * resolves. The coordinator must never run a second prepare/publish pipeline.
- */
-export interface ManagedEditorPersistencePort<State = unknown, Result = unknown> {
-    commit(
-        input: ManagedEditorPersistenceCommit<State, Result>,
-    ): Promise<ManagedEditorPersistenceCommitResult>;
 }
 
 export interface ManagedEditorDispatchInput<Command = unknown> {
@@ -49,14 +30,43 @@ export interface ManagedEditorDispatchInput<Command = unknown> {
  */
 export interface ManagedEditorPort<State = unknown, Command = unknown, Result = unknown> {
     snapshot(): ManagedEditorSnapshot<State>;
+    plan?(command: Command): Result | Promise<Result>;
     dispatch(input: ManagedEditorDispatchInput<Command>): Promise<Result>;
+    /**
+     * Purely projects Core's exact committed payload into the coordinator envelope. It does not
+     * persist, publish, allocate IDs, or create a second receipt/event.
+     */
+    snapshotFromCommit(commit: EditorPersistenceCommit): ManagedEditorSnapshot<State>;
+    /**
+     * Rehydrates the exact Core semantic receipt against the current managed head. This keeps the
+     * public request hash separate from Core's internal request hash without persisting snapshots
+     * in public receipts.
+     */
+    resultFromReceipt?(
+        receipt: EditorIdempotencyReceipt,
+        replayed: boolean,
+    ): Result;
+    editorEventSequence?(): number;
+    rebaseSession?(
+        snapshot: ManagedEditorSnapshot<State>,
+        session: {
+            sessionEpoch: string;
+            sessionRevision: number;
+            eventSequence?: number;
+        },
+    ): ManagedEditorSnapshot<State>;
     hydrate(snapshot: ManagedEditorSnapshot<State>): Promise<void>;
     close(): Promise<void>;
+}
+
+export interface ManagedEditorPublicationPort {
+    publish(event: EditorEngineEvent): void | Promise<void>;
 }
 
 export interface ManagedEditorPortFactory<State = unknown, Command = unknown, Result = unknown> {
     create(
         snapshot: ManagedEditorSnapshot<State>,
-        persistence: ManagedEditorPersistencePort<State, Result>,
+        persistence: EditorPersistencePort,
+        publication: ManagedEditorPublicationPort,
     ): Promise<ManagedEditorPort<State, Command, Result>>;
 }
