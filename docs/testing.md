@@ -112,6 +112,10 @@ for its linked waveform, and plays from its audio clock. The persistence scenari
 transaction failure through the native IndexedDB prototype, restores it, retries from the status
 bar, and reloads the durably recovered edit.
 
+`e2e/render-background.spec.ts` creates an explicit V4 leading gap, verifies the persisted project
+background on the live preview canvas and in a decoded exported WebM frame, then removes the field
+from the stored V4 manifest and proves the legacy compatibility boundary reopens it as black.
+
 ## Deterministic Text editor E2E
 
 `e2e/text-editor.spec.ts` uses the committed VP9/Opus fixture and intercepts a browser-mode

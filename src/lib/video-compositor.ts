@@ -12,8 +12,9 @@ export function clearVideoFrameToBlack(
     context: VideoCompositorContext,
     targetWidth: number,
     targetHeight: number,
+    backgroundColor = '#000000',
 ): void {
-    context.fillStyle = '#000';
+    context.fillStyle = backgroundColor;
     context.fillRect(0, 0, Math.max(1, targetWidth), Math.max(1, targetHeight));
 }
 
@@ -76,8 +77,9 @@ export function drawContainedVideoFrameOrBlack(
     sourceHeight: number,
     targetWidth: number,
     targetHeight: number,
+    backgroundColor = '#000000',
 ): ContainRectangle | null {
-    clearVideoFrameToBlack(context, targetWidth, targetHeight);
+    clearVideoFrameToBlack(context, targetWidth, targetHeight, backgroundColor);
     return frame
         ? drawContainedVideoFrame(
             context,

@@ -192,6 +192,7 @@ function makeDocument(
             isFrameRateLocked: true,
             isCanvasSizeLocked: true,
         },
+        renderBackgroundColor: '#000000',
         subtitleTracks: [],
         videoSources: [createVideoSourceAssetV4Fixture({
             id: 'source_main',

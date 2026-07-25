@@ -303,6 +303,7 @@ export function createEditorDocumentV4Fixture(
             isFrameRateLocked: true,
             isCanvasSizeLocked: true,
         },
+        renderBackgroundColor: '#000000',
         subtitleTracks: [],
         videoSources: [createVideoSourceAssetV4Fixture()],
         videoClips: [{
@@ -348,6 +349,7 @@ export function createEditorManifestV4Fixture(
         revision: document.revision,
         audioGraphRevision: document.audioGraphRevision,
         renderProfile: document.renderProfile,
+        renderBackgroundColor: document.renderBackgroundColor,
         subtitleTracks: document.subtitleTracks,
         videoSourceDescriptors: document.videoSources.map(({ file, ...descriptor }) => {
             void file;

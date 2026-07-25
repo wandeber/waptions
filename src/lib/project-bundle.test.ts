@@ -209,6 +209,21 @@ describe('project bundle 4.0', () => {
         expect(getRecord).not.toHaveBeenCalled();
     });
 
+    it('imports pre-background V4 bundles with the historical black render default', async () => {
+        const document = migrateEditorDocumentV3ToV4(v3Document(true));
+        const metadata = createV4Metadata(document);
+        delete (metadata.editorManifest as Partial<EditorManifestV4>).renderBackgroundColor;
+        const saveDocument = vi.spyOn(storageService, 'saveEditorDocument').mockResolvedValue();
+        vi.spyOn(storageService, 'saveProject').mockResolvedValue();
+
+        await importProjectBundle(await generateV4Bundle(metadata, document, []));
+
+        expect(saveDocument.mock.calls[0][1]).toMatchObject({
+            version: 4,
+            renderBackgroundColor: '#000000',
+        });
+    });
+
     it('exports a descriptor-only manifest, typed sources, and exact canonical current-record sidecars', async () => {
         vi.spyOn(storageService, 'loadProject').mockResolvedValue(project);
         const loadDocument = vi.spyOn(storageService, 'loadEditorDocument')

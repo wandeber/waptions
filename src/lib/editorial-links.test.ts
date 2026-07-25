@@ -190,6 +190,7 @@ function createDocument(options: {
             isFrameRateLocked: true,
             isCanvasSizeLocked: true,
         },
+        renderBackgroundColor: '#000000',
         subtitleTracks: [createSubtitleTrackV4Fixture({
             id: 'subtitle_track',
             subtitles: [{

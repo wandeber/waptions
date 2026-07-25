@@ -14,6 +14,8 @@ content-addressed IndexedDB repository and in verified `.waptions` bundle sideca
 
 - a locked render profile with rational project frame rate, canvas dimensions, and 48 kHz output
   audio rate;
+- a canonical `#RRGGBB` project background used by preview gaps, letterboxing, media tails, and
+  export;
 - typed video and audio source catalogs;
 - explicit video clips with `trackId`, `timelineStartFrame`, and source crops;
 - visible/locked video tracks, independent audio tracks, and subtitle tracks;
@@ -149,8 +151,11 @@ and recovery references continue owning their required descriptor pins.
 
 V3-to-V4 migration is one pure validated transform. It projects the old gapless sequence into
 explicit `timelineStartFrame` values, creates the initial video-track catalog, maps subtitle timing
-policy, and initializes empty editorial fields. Before Text activation, migrated preview, audio,
-subtitle, and export behavior is semantically identical to V3.
+policy, initializes the project background to black, and initializes empty editorial fields. V4
+manifests written before the background field existed are normalized to the same black default only
+at version-aware IndexedDB and bundle read boundaries; present malformed colors still fail closed.
+Before Text activation, migrated preview, audio, subtitle, and export behavior is semantically
+identical to V3.
 
 V4 becomes the durable authority after a successful save. The legacy V3 record is then a tombstone
 candidate; readers do not merge V3 and V4 or silently fall back from a corrupt V4 record. Failed

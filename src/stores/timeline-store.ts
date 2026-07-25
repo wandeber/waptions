@@ -42,6 +42,7 @@ import {
     isDiarizationJobGuardCurrent,
 } from '@/lib/diarization-provenance';
 import {
+    DEFAULT_RENDER_BACKGROUND_COLOR,
     createDefaultRenderProfile,
     frameRateToNumber,
     framesToSeconds,
@@ -845,6 +846,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     contentBoundaryRevision: 0,
     projectFps: 30,
     renderProfile: createDefaultRenderProfile(),
+    renderBackgroundColor: DEFAULT_RENDER_BACKGROUND_COLOR,
     videoSources: [],
     videoClips: [],
     videoTracks: normalizeTimelineVideoTrackMirrors(createDefaultVideoTracks([])),
@@ -1387,6 +1389,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             contentBoundaryRevision,
             projectFps,
             renderProfile: cloneRenderProfile(migrated.renderProfile),
+            renderBackgroundColor: migrated.renderBackgroundColor,
             tracks,
             videoSources: migrated.videoSources.map((source) => ({ ...source })),
             videoClips: cloneVideoClips(migrated.videoClips),
@@ -1425,6 +1428,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             contentBoundaryRevision,
             projectFps: frameRateToNumber(renderProfile.fps),
             renderProfile,
+            renderBackgroundColor: DEFAULT_RENDER_BACKGROUND_COLOR,
             tracks: [],
             videoSources: [],
             videoClips: [],

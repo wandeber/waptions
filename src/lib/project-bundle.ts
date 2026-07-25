@@ -29,6 +29,7 @@ import {
     migrateEditorDocumentV2ToV4,
     migrateEditorDocumentV3ToV4,
     migrateLegacyEditorDocumentToV4,
+    normalizeLegacyEditorManifestV4,
 } from './editor-document-v4-migration';
 import {
     validateEditorManifestV4,
@@ -303,20 +304,21 @@ async function prepareV4Import(
     zip: JSZip,
     metadata: ProjectBundleMetadataV4,
 ): Promise<PreparedProjectImport> {
-    assertValidManifestV4(metadata.editorManifest, 'bundle V4 manifest');
+    const manifest = normalizeLegacyEditorManifestV4(metadata.editorManifest);
+    assertValidManifestV4(manifest, 'bundle V4 manifest');
     assertTypedSourceMaps(
         metadata.sourceFiles,
-        metadata.editorManifest.videoSourceDescriptors,
-        metadata.editorManifest.audioSourceDescriptors,
+        manifest.videoSourceDescriptors,
+        manifest.audioSourceDescriptors,
         'V4',
     );
-    const videoSources = await Promise.all(metadata.editorManifest.videoSourceDescriptors.map((descriptor) => (
+    const videoSources = await Promise.all(manifest.videoSourceDescriptors.map((descriptor) => (
         restoreSourceFile(zip, metadata.sourceFiles.video[descriptor.id], descriptor)
     )));
-    const audioSources = await Promise.all(metadata.editorManifest.audioSourceDescriptors.map((descriptor) => (
+    const audioSources = await Promise.all(manifest.audioSourceDescriptors.map((descriptor) => (
         restoreSourceFile(zip, metadata.sourceFiles.audio[descriptor.id], descriptor)
     )));
-    const document = hydrateEditorDocumentV4(metadata.editorManifest, videoSources, audioSources);
+    const document = hydrateEditorDocumentV4(manifest, videoSources, audioSources);
     const transcriptRecords = await readAndValidateTranscriptSidecars(zip, metadata, document);
     return {
         manifest: createEditorManifestV4(document),

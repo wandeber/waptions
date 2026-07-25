@@ -31,7 +31,7 @@ import {
     type VideoFrameRuntimePlacement,
 } from './video-frame-plan';
 import { frameToOutputSample } from './audio-timebase';
-import { framesToSeconds } from './render-profile';
+import { DEFAULT_RENDER_BACKGROUND_COLOR, framesToSeconds } from './render-profile';
 import { TimelineAudioRenderer } from './timeline-audio-renderer';
 import { clearVideoFrameToBlack, drawContainedVideoFrame } from './video-compositor';
 import {
@@ -206,9 +206,16 @@ export async function exportProject(request: ExportProjectContext): Promise<Expo
                 ? sourcesById.get(resolved.placement.clip.sourceId) ?? null
                 : null;
 
-            // Paint first on every iteration. If video ends before subtitle or audio content, this
-            // black frame is the deterministic visual tail on which subtitles still render.
-            clearVideoFrameToBlack(context2d, canvasWidth, canvasHeight);
+            // Paint first on every iteration. If video ends before subtitle or audio content, the
+            // configured project background is the deterministic tail beneath any subtitles.
+            clearVideoFrameToBlack(
+                context2d,
+                canvasWidth,
+                canvasHeight,
+                document.version === 4
+                    ? document.renderBackgroundColor
+                    : DEFAULT_RENDER_BACKGROUND_COLOR,
+            );
             if (resolved && activeSource) {
                 const sourceFrame = getSourceFrameAtOrBefore(
                     resolved.sourceTime,

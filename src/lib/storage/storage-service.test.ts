@@ -189,6 +189,15 @@ describe('v3 storage service', () => {
 
         expect(loaded).toMatchObject({ version: 4, revision: 9 });
 
+        const preBackground = setup();
+        const legacyManifest = createEditorManifestV4(v4) as Partial<EditorManifestV4>;
+        delete legacyManifest.renderBackgroundColor;
+        preBackground.adapter.values.set(EDITOR_DOCUMENT_V4_KEY, legacyManifest);
+        preBackground.adapter.values.set('video-source:shared', legacy.videoSources[0].file);
+        preBackground.adapter.values.set('audio-source:shared', legacy.audioSources[0].file);
+        await expect(preBackground.service.loadEditorDocument('project', { targetVersion: 4 }))
+            .resolves.toMatchObject({ version: 4, renderBackgroundColor: '#000000' });
+
         const malformed = setup();
         malformed.adapter.values.set(EDITOR_DOCUMENT_V4_KEY, { version: 4, revision: 99 });
         malformed.adapter.values.set(EDITOR_DOCUMENT_V3_KEY, createEditorManifestV3(legacy));

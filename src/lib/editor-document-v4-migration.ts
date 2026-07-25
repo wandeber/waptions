@@ -26,6 +26,11 @@ import {
     validateEditorDocumentV4,
     validateEditorManifestV4,
 } from './editor-document-v4';
+import {
+    DEFAULT_RENDER_BACKGROUND_COLOR,
+    isRenderBackgroundColor,
+    normalizeRenderBackgroundColor,
+} from './render-profile';
 import { getVideoClipDurationFramesV4 } from './video-placement-v4';
 
 export type EditorDocumentV4MigrationRequest =
@@ -70,8 +75,9 @@ export function migrateLegacyEditorDocumentToV4(
 /**
  * Versioned dispatcher used by load/import compatibility boundaries.
  *
- * A valid V4 object is returned by reference: reopening a current projection must be a true no-op,
- * not a normalization pass that could hide corruption or produce an unrequested history change.
+ * A current canonical V4 object is returned by reference. The only compatibility normalization
+ * permitted here is adding the background introduced after the initial V4 release or lowercasing
+ * an otherwise valid CSS hex value.
  */
 export function migrateEditorDocumentToV4(request: EditorDocumentV4MigrationRequest): EditorDocumentV4 {
     if (request.sourceVersion === 1) return migrateLegacyEditorDocumentToV4(request.input);
@@ -79,13 +85,29 @@ export function migrateEditorDocumentToV4(request: EditorDocumentV4MigrationRequ
     return migrateLoadedEditorDocumentToV4(request.input);
 }
 
-/** Migrates an already hydrated V3 graph or validates and returns a current V4 graph unchanged. */
+/** Migrates an already hydrated V3 graph or validates a compatibility-normalized V4 graph. */
 export function migrateLoadedEditorDocumentToV4(
     document: EditorDocumentV3 | EditorDocumentV4,
 ): EditorDocumentV4 {
     if (document.version === 3) return migrateEditorDocumentV3ToV4(document);
-    assertValidV4Document(document, 'V4 document');
-    return document;
+    const normalized = normalizeLegacyEditorDocumentV4(document);
+    assertValidV4Document(normalized, 'V4 document');
+    return normalized;
+}
+
+/**
+ * Normalizes only the backward-compatible V4 background addition.
+ *
+ * Invalid present values are deliberately left unchanged so the strict validator reports them;
+ * this boundary must not repair unrelated corruption or strip unknown fields.
+ */
+export function normalizeLegacyEditorDocumentV4(document: EditorDocumentV4): EditorDocumentV4 {
+    return normalizeLegacyV4Background(document);
+}
+
+/** Descriptor-only counterpart used by IndexedDB and bundle import boundaries. */
+export function normalizeLegacyEditorManifestV4(manifest: EditorManifestV4): EditorManifestV4 {
+    return normalizeLegacyV4Background(manifest);
 }
 
 /**
@@ -111,6 +133,7 @@ export function createEditorManifestV4(document: EditorDocumentV4): EditorManife
         revision: document.revision,
         audioGraphRevision: document.audioGraphRevision,
         renderProfile: cloneRenderProfile(document.renderProfile),
+        renderBackgroundColor: normalizeRenderBackgroundColor(document.renderBackgroundColor),
         subtitleTracks: document.subtitleTracks.map(cloneSubtitleTrack),
         videoSourceDescriptors: document.videoSources.map(withoutFile),
         videoClips: document.videoClips.map(cloneVideoClip),
@@ -134,25 +157,27 @@ export function hydrateEditorDocumentV4(
     videoSources: readonly VideoSourceAssetV3[],
     audioSources: readonly AudioSourceAsset[],
 ): EditorDocumentV4 {
-    assertValidV4Manifest(manifest, 'V4 manifest');
+    const normalizedManifest = normalizeLegacyEditorManifestV4(manifest);
+    assertValidV4Manifest(normalizedManifest, 'V4 manifest');
     const document: EditorDocumentV4 = {
         version: 4,
-        revision: manifest.revision,
-        audioGraphRevision: manifest.audioGraphRevision,
-        renderProfile: cloneRenderProfile(manifest.renderProfile),
-        subtitleTracks: manifest.subtitleTracks.map(cloneSubtitleTrack),
+        revision: normalizedManifest.revision,
+        audioGraphRevision: normalizedManifest.audioGraphRevision,
+        renderProfile: cloneRenderProfile(normalizedManifest.renderProfile),
+        renderBackgroundColor: normalizeRenderBackgroundColor(normalizedManifest.renderBackgroundColor),
+        subtitleTracks: normalizedManifest.subtitleTracks.map(cloneSubtitleTrack),
         videoSources: videoSources.map((source) => ({ ...source })),
-        videoClips: manifest.videoClips.map(cloneVideoClip),
-        videoTracks: manifest.videoTracks.map((track) => ({ ...track })),
+        videoClips: normalizedManifest.videoClips.map(cloneVideoClip),
+        videoTracks: normalizedManifest.videoTracks.map((track) => ({ ...track })),
         audioSources: audioSources.map((source) => ({ ...source })),
-        audioTracks: cloneAudioTracks(manifest.audioTracks),
-        activeSubtitleTrackId: manifest.activeSubtitleTrackId,
+        audioTracks: cloneAudioTracks(normalizedManifest.audioTracks),
+        activeSubtitleTrackId: normalizedManifest.activeSubtitleTrackId,
         transientSelection: { kind: 'none' },
-        transcriptionByTrackId: cloneTranscriptionProvenance(manifest.transcriptionByTrackId),
-        globalEditingMode: manifest.globalEditingMode,
-        editorialTranscriptDescriptors: manifest.editorialTranscriptDescriptors.map((descriptor) => ({ ...descriptor })),
-        narrative: cloneJsonDomain(manifest.narrative),
-        dependentLinks: cloneJsonDomain(manifest.dependentLinks),
+        transcriptionByTrackId: cloneTranscriptionProvenance(normalizedManifest.transcriptionByTrackId),
+        globalEditingMode: normalizedManifest.globalEditingMode,
+        editorialTranscriptDescriptors: normalizedManifest.editorialTranscriptDescriptors.map((descriptor) => ({ ...descriptor })),
+        narrative: cloneJsonDomain(normalizedManifest.narrative),
+        dependentLinks: cloneJsonDomain(normalizedManifest.dependentLinks),
     };
     assertValidV4Document(document, 'V4 hydration');
     return document;
@@ -222,6 +247,7 @@ function migrateRuntimeGraph(document: EditorDocumentV3): EditorDocumentV4 {
         revision: document.revision,
         audioGraphRevision: document.audioGraphRevision,
         renderProfile: cloneRenderProfile(document.renderProfile),
+        renderBackgroundColor: DEFAULT_RENDER_BACKGROUND_COLOR,
         subtitleTracks: document.subtitleTracks.map(migrateSubtitleTrack),
         videoSources: document.videoSources.map((source) => ({ ...source })),
         videoClips,
@@ -261,6 +287,7 @@ function migrateManifestGraph(manifest: EditorManifestV3): EditorManifestV4 {
         revision: manifest.revision,
         audioGraphRevision: manifest.audioGraphRevision,
         renderProfile: cloneRenderProfile(manifest.renderProfile),
+        renderBackgroundColor: DEFAULT_RENDER_BACKGROUND_COLOR,
         subtitleTracks: manifest.subtitleTracks.map(migrateSubtitleTrack),
         videoSourceDescriptors: manifest.videoSourceDescriptors.map((source) => ({ ...source })),
         videoClips,
@@ -274,6 +301,18 @@ function migrateManifestGraph(manifest: EditorManifestV3): EditorManifestV4 {
         narrative: null,
         dependentLinks: [],
     };
+}
+
+function normalizeLegacyV4Background<T extends EditorDocumentV4 | EditorManifestV4>(value: T): T {
+    const background = (value as T & { renderBackgroundColor?: unknown }).renderBackgroundColor;
+    if (background === undefined) {
+        return { ...value, renderBackgroundColor: DEFAULT_RENDER_BACKGROUND_COLOR };
+    }
+    if (!isRenderBackgroundColor(background)) return value;
+    const normalized = background.toLowerCase();
+    return normalized === background
+        ? value
+        : { ...value, renderBackgroundColor: normalized };
 }
 
 function buildTrackIdByClipId(videoTracks: readonly VideoTrack[]): Map<string, string> {

@@ -1,4 +1,8 @@
-import { frameRateToNumber } from '@/lib/render-profile';
+import {
+    DEFAULT_RENDER_BACKGROUND_COLOR,
+    frameRateToNumber,
+    normalizeRenderBackgroundColor,
+} from '@/lib/render-profile';
 import type { TimelineHistoryProjection, TimelineStore } from './timeline-store-types';
 import {
     cloneAudioTracks,
@@ -26,6 +30,7 @@ export const TIMELINE_HISTORY_ROOTS = new Set<keyof TimelineHistoryProjection>([
     'videoClips',
     'videoTracks',
     'renderProfile',
+    'renderBackgroundColor',
     'audioTracks',
     'transientSelection',
     'activeTrackId',
@@ -65,6 +70,7 @@ export function projectTimelineHistory(state: TimelineStore): TimelineHistoryPro
             ? state.videoTracks.map((track) => ({ ...track, clipIds: [...track.clipIds] }))
             : projectVideoTracksV4(state.videoTracks),
         renderProfile: cloneRenderProfile(state.renderProfile),
+        renderBackgroundColor: state.renderBackgroundColor,
         audioTracks: cloneAudioTracks(state.audioTracks),
         transientSelection: cloneTransientSelection(state.transientSelection),
         activeTrackId: state.activeTrackId,
@@ -95,6 +101,7 @@ export function selectTimelineHistoryProjection(state: TimelineStore): TimelineH
         videoClips: projectVideoClipsV4(state.videoClips, state.videoTracks, state.renderProfile),
         videoTracks: projectVideoTracksV4(state.videoTracks),
         renderProfile: state.renderProfile,
+        renderBackgroundColor: state.renderBackgroundColor,
         audioTracks: state.audioTracks,
         transientSelection: state.transientSelection,
         activeTrackId: state.activeTrackId,
@@ -152,6 +159,9 @@ export function restoreTimelineHistoryProjection(
             })),
         ),
         renderProfile: cloneRenderProfile(projection.renderProfile),
+        renderBackgroundColor: normalizeRenderBackgroundColor(
+            projection.renderBackgroundColor ?? DEFAULT_RENDER_BACKGROUND_COLOR,
+        ),
         projectFps: frameRateToNumber(projection.renderProfile.fps),
         audioTracks: cloneAudioTracks(projection.audioTracks),
         transientSelection,

@@ -103,6 +103,7 @@ export const buildEditorDocumentFromState = (state: TimelineStore): EditorDocume
     revision: state.revision,
     audioGraphRevision: state.audioGraphRevision,
     renderProfile: cloneRenderProfile(state.renderProfile),
+    renderBackgroundColor: state.renderBackgroundColor,
     subtitleTracks: cloneSubtitleTracks(state.tracks).map((track) => {
         const { timingDomain: _legacyTimingDomain, ...v4Track } = track;
         void _legacyTimingDomain;

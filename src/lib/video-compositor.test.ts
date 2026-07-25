@@ -34,8 +34,21 @@ describe('video compositor', () => {
         } as unknown as CanvasRenderingContext2D;
 
         expect(drawContainedVideoFrameOrBlack(context, null, 0, 0, 640, 360)).toBeNull();
-        expect(context.fillStyle).toBe('#000');
+        expect(context.fillStyle).toBe('#000000');
         expect(context.fillRect).toHaveBeenCalledWith(0, 0, 640, 360);
         expect(context.drawImage).not.toHaveBeenCalled();
+    });
+
+    it('uses the durable project background for letterboxing and gap frames', () => {
+        const context = {
+            fillStyle: '',
+            fillRect: vi.fn(),
+            drawImage: vi.fn(),
+        } as unknown as CanvasRenderingContext2D;
+
+        drawContainedVideoFrameOrBlack(context, null, 0, 0, 640, 360, '#123abc');
+
+        expect(context.fillStyle).toBe('#123abc');
+        expect(context.fillRect).toHaveBeenCalledWith(0, 0, 640, 360);
     });
 });

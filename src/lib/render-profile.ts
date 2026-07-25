@@ -1,6 +1,9 @@
 import type { RationalFrameRate, RenderProfile } from '@/types/video';
 
 export const OUTPUT_AUDIO_SAMPLE_RATE = 48_000 as const;
+export const DEFAULT_RENDER_BACKGROUND_COLOR = '#000000' as const;
+
+const RENDER_BACKGROUND_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 export const DEFAULT_RENDER_PROFILE: Readonly<RenderProfile> = Object.freeze({
     fps: Object.freeze({ numerator: 30, denominator: 1 }),
@@ -10,6 +13,23 @@ export const DEFAULT_RENDER_PROFILE: Readonly<RenderProfile> = Object.freeze({
     isFrameRateLocked: false,
     isCanvasSizeLocked: false,
 });
+
+export function isRenderBackgroundColor(value: unknown): value is string {
+    return typeof value === 'string' && RENDER_BACKGROUND_COLOR_PATTERN.test(value);
+}
+
+/**
+ * Canonicalizes the durable project background at command/import boundaries.
+ *
+ * Validation accepts either CSS hex case so existing external bundles remain interoperable, while
+ * every newly projected manifest uses one lowercase representation for deterministic history.
+ */
+export function normalizeRenderBackgroundColor(value: unknown): string {
+    if (!isRenderBackgroundColor(value)) {
+        throw new Error('Render background color must use the #RRGGBB CSS hex format.');
+    }
+    return value.toLowerCase();
+}
 
 export type FrameRoundingMode = 'floor' | 'nearest' | 'ceil';
 

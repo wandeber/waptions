@@ -204,6 +204,7 @@ export function createTimelinePatchFromV4Document(
     );
     return {
         renderProfile: structuredClone(document.renderProfile),
+        renderBackgroundColor: document.renderBackgroundColor,
         tracks: document.subtitleTracks.map((track) => ({
             ...structuredClone(track),
             timingDomain: track.unlinkedVideoEditResponse === 'stay-absolute'

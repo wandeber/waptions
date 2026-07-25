@@ -53,6 +53,7 @@ function makeV4Document(sampleCount = 4): EditorDocumentV4 {
     return {
         ...legacy,
         version: 4,
+        renderBackgroundColor: '#000000',
         subtitleTracks: [],
         videoTracks: [{ id: 'video_track_1', name: 'Video 1', visible: true, locked: false }],
         videoClips: legacy.videoClips.map((clip) => ({

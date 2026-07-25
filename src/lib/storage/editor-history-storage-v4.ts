@@ -2,6 +2,10 @@ import { finalizeAudioGraphMutation } from '@/lib/audio-graph-signature';
 import { cloneAudioTracks } from '@/lib/audio-timeline';
 import { validateEditorDocumentV4 } from '@/lib/editor-document-v4';
 import {
+    DEFAULT_RENDER_BACKGROUND_COLOR,
+    normalizeRenderBackgroundColor,
+} from '@/lib/render-profile';
+import {
     applySerializablePatches,
     createSerializablePatches,
     validateSerializablePatches,
@@ -364,6 +368,9 @@ function documentFromProjectionV4(
         revision,
         audioGraphRevision,
         renderProfile: structuredClone(projection.renderProfile),
+        renderBackgroundColor: normalizeRenderBackgroundColor(
+            projection.renderBackgroundColor ?? DEFAULT_RENDER_BACKGROUND_COLOR,
+        ),
         subtitleTracks: projection.tracks.map((track) => {
             const { timingDomain: _legacyTimingDomain, ...v4Track } = structuredClone(track);
             void _legacyTimingDomain;
@@ -393,6 +400,7 @@ function projectDurableRoots(projection: TimelineHistoryProjection): unknown {
         videoClips: projection.videoClips,
         videoTracks: projection.videoTracks,
         renderProfile: projection.renderProfile,
+        renderBackgroundColor: projection.renderBackgroundColor ?? DEFAULT_RENDER_BACKGROUND_COLOR,
         audioTracks: projection.audioTracks,
         activeTrackId: projection.activeTrackId,
         transcriptionByTrackId: projection.transcriptionByTrackId,

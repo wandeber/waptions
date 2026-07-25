@@ -18,6 +18,7 @@ import {
     migrateEditorHistoryProjectionSequenceToV4,
     migrateEditorManifestV3ToV4,
     migrateLegacyEditorDocumentToV4,
+    normalizeLegacyEditorManifestV4,
     tryMigrateOptionalEditorHistoryProjectionSequenceToV4,
 } from './editor-document-v4-migration';
 import { createEditorManifestV3 } from './editor-document-migration';
@@ -200,6 +201,7 @@ describe('V4 document migration', () => {
 
         expect(migrated).toMatchObject({
             version: 4,
+            renderBackgroundColor: '#000000',
             globalEditingMode: 'ripple',
             videoTracks: [{ id: 'video_track_empty', visible: true, locked: false }],
             videoClips: [],
@@ -279,7 +281,12 @@ describe('V4 document migration', () => {
         });
 
         expect(fromV2).toMatchObject({ version: 4, videoClips: [{ timelineStartFrame: 0 }] });
-        expect(fromV1).toMatchObject({ version: 4, videoClips: [{ timelineStartFrame: 0 }] });
+        expect(fromV1).toMatchObject({
+            version: 4,
+            renderBackgroundColor: '#000000',
+            videoClips: [{ timelineStartFrame: 0 }],
+        });
+        expect(fromV2.renderBackgroundColor).toBe('#000000');
         expect(validateEditorDocumentV4(fromV2).valid).toBe(true);
         expect(validateEditorDocumentV4(fromV1).valid).toBe(true);
         expect(migrateEditorDocumentToV4({
@@ -308,18 +315,60 @@ describe('V4 document migration', () => {
         expect(() => migrateEditorDocumentToV4({ sourceVersion: 4, input: malformed })).toThrow(/globalEditingMode/);
     });
 
+    it('normalizes only the backward-compatible V4 background addition', () => {
+        const current = createEditorDocumentV4Fixture();
+        const legacy = { ...current } as Partial<typeof current>;
+        delete legacy.renderBackgroundColor;
+        const normalized = migrateEditorDocumentToV4({
+            sourceVersion: 4,
+            input: legacy as typeof current,
+        });
+        expect(normalized.renderBackgroundColor).toBe('#000000');
+
+        const uppercase = { ...current, renderBackgroundColor: '#A1B2C3' };
+        expect(migrateEditorDocumentToV4({
+            sourceVersion: 4,
+            input: uppercase,
+        }).renderBackgroundColor).toBe('#a1b2c3');
+
+        const malformed = { ...current, renderBackgroundColor: 'black' };
+        expect(() => migrateEditorDocumentToV4({
+            sourceVersion: 4,
+            input: malformed,
+        })).toThrow(/renderBackgroundColor/);
+    });
+
     it('migrates manifests and rehydrates only with exact matching source assets', () => {
         const v3 = populatedV3();
         const manifestV4 = migrateEditorManifestV3ToV4(createEditorManifestV3(v3));
         const hydrated = hydrateEditorDocumentV4(manifestV4, v3.videoSources, v3.audioSources);
 
         expect(manifestV4).not.toHaveProperty('transientSelection');
+        expect(manifestV4.renderBackgroundColor).toBe('#000000');
         expect(manifestV4.videoClips.map((clip) => clip.timelineStartFrame)).toEqual([0, 30, 90]);
         expect(hydrated.transientSelection).toEqual({ kind: 'none' });
         expect(createEditorManifestV4(hydrated)).toEqual(manifestV4);
 
         const mismatched = [{ ...v3.videoSources[0], originalName: 'different.webm' }, v3.videoSources[1]];
         expect(() => hydrateEditorDocumentV4(manifestV4, mismatched, v3.audioSources)).toThrow(/File metadata/i);
+    });
+
+    it('copies and canonicalizes the V4 background through manifest creation and hydration', () => {
+        const document = createEditorDocumentV4Fixture({ renderBackgroundColor: '#A1B2C3' });
+        const manifest = createEditorManifestV4(document);
+        const hydrated = hydrateEditorDocumentV4(
+            manifest,
+            document.videoSources,
+            document.audioSources,
+        );
+
+        expect(manifest.renderBackgroundColor).toBe('#a1b2c3');
+        expect(hydrated.renderBackgroundColor).toBe('#a1b2c3');
+
+        const legacy = { ...manifest } as Partial<typeof manifest>;
+        delete legacy.renderBackgroundColor;
+        expect(normalizeLegacyEditorManifestV4(legacy as typeof manifest))
+            .toMatchObject({ renderBackgroundColor: '#000000' });
     });
 
     it('rejects invalid V3 ownership instead of inventing a clip lane', () => {

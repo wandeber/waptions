@@ -81,6 +81,8 @@ export interface TimelineHistoryProjection {
     /** V4 projections omit the compatibility-only `clipIds`; V3 migration may still supply it. */
     videoTracks: TimelineHistoryVideoTrack[];
     renderProfile: RenderProfile;
+    /** Missing only in persisted history written before durable project backgrounds existed. */
+    renderBackgroundColor?: string;
     audioTracks: AudioTrack[];
     transientSelection: TransientMediaSelectionV4;
     activeTrackId: string | null;
@@ -171,6 +173,7 @@ export interface TimelineStore {
     contentBoundaryRevision: number;
     projectFps: number;
     renderProfile: RenderProfile;
+    renderBackgroundColor: string;
     videoSources: VideoSourceAsset[];
     videoClips: TimelineVideoClip[];
     videoTracks: TimelineVideoTrack[];

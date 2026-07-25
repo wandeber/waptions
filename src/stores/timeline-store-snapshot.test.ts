@@ -29,6 +29,7 @@ const stateFixture = (): TimelineStore => {
         isFrameRateLocked: true,
         isCanvasSizeLocked: true,
     }),
+    renderBackgroundColor: '#123abc',
     tracks: [{
         id: 'captions',
         name: 'Captions',
@@ -84,6 +85,7 @@ describe('timeline store snapshots', () => {
             version: 4,
             revision: 7,
             audioGraphRevision: 3,
+            renderBackgroundColor: '#123abc',
             transientSelection: { kind: 'video-clip', clipId: 'video_clip' },
             subtitleTracks: [{ unlinkedVideoEditResponse: 'follow-project-ripple' }],
             videoSources: [{ id: 'video_source', file: state.videoSources[0].file }],
@@ -94,6 +96,7 @@ describe('timeline store snapshots', () => {
             version: 4,
             revision: 7,
             audioGraphRevision: 3,
+            renderBackgroundColor: '#123abc',
             globalEditingMode: 'ripple',
             editorialTranscriptDescriptors: [],
             narrative: null,
@@ -118,6 +121,7 @@ describe('timeline store snapshots', () => {
             trackId: 'video_track_1',
             timelineStartFrame: 0,
         });
+        expect(projection.renderBackgroundColor).toBe('#123abc');
 
         const restored = restoreTimelineHistoryProjection(projection);
         projection.tracks[0].subtitles[0].text = 'Projection mutation';
@@ -128,5 +132,6 @@ describe('timeline store snapshots', () => {
         expect(restored.lastSelectedId).toBe('subtitle');
         expect(projection).not.toHaveProperty('projectFps');
         expect(restored.projectFps).toBe(30);
+        expect(restored.renderBackgroundColor).toBe('#123abc');
     });
 });

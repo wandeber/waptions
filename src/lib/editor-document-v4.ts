@@ -44,7 +44,7 @@ import {
     validateEditorDocumentV3,
     validateEditorManifestV3,
 } from './editor-document-v3';
-import { secondsToFrames } from './render-profile';
+import { isRenderBackgroundColor, secondsToFrames } from './render-profile';
 import {
     buildVideoTrackPlacementsV4,
     getVideoClipDurationFramesV4,
@@ -55,6 +55,7 @@ const NUMERICAL_GUARD = 1e-9;
 
 export type EditorDocumentV4ValidationCode = EditorDocumentV3ValidationCode
     | 'invalid-graph-shape'
+    | 'invalid-render-background'
     | 'invalid-global-mode'
     | 'invalid-subtitle-policy'
     | 'invalid-descriptor'
@@ -89,6 +90,7 @@ interface V4GraphView {
     revision: number;
     audioGraphRevision: number;
     renderProfile: RenderProfile;
+    renderBackgroundColor: string;
     subtitleTracks: SubtitleTrackV4[];
     videoSources: V4VideoSource[];
     videoClips: VideoClipV4[];
@@ -191,6 +193,7 @@ const DOCUMENT_ROOT_KEYS = new Set([
     'revision',
     'audioGraphRevision',
     'renderProfile',
+    'renderBackgroundColor',
     'subtitleTracks',
     'videoSources',
     'videoClips',
@@ -210,6 +213,7 @@ const MANIFEST_ROOT_KEYS = new Set([
     'revision',
     'audioGraphRevision',
     'renderProfile',
+    'renderBackgroundColor',
     'subtitleTracks',
     'videoSourceDescriptors',
     'videoClips',
@@ -337,6 +341,13 @@ function validateV4Value(value: unknown, validateFiles: boolean): EditorDocument
     if (graph.rawRoot.editorialTranscriptRecordBodies !== undefined) {
         addIssue('invalid-descriptor', 'editorialTranscriptRecordBodies',
             'Transcript record bodies are forbidden in V4 documents and manifests.');
+    }
+    if (!isRenderBackgroundColor(graph.renderBackgroundColor)) {
+        addIssue(
+            'invalid-render-background',
+            'renderBackgroundColor',
+            'Render background color must use the #RRGGBB CSS hex format.',
+        );
     }
     validateV3CompatibleGraph(graph, validateFiles, addIssue);
     validateTransientSelectionShape(graph.transientSelection, addIssue);
@@ -505,6 +516,7 @@ function readGraph(value: unknown, validateFiles: boolean, addIssue: AddIssue): 
         revision: value.revision as number,
         audioGraphRevision: value.audioGraphRevision as number,
         renderProfile: value.renderProfile as unknown as RenderProfile,
+        renderBackgroundColor: value.renderBackgroundColor as string,
         subtitleTracks: subtitleTracks as SubtitleTrackV4[],
         videoSources: videoSources as V4VideoSource[],
         videoClips: videoClips as VideoClipV4[],

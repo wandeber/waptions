@@ -255,6 +255,7 @@ function makeV4Document(): EditorDocumentV4 {
     return {
         ...legacy,
         version: 4,
+        renderBackgroundColor: '#000000',
         subtitleTracks: legacy.subtitleTracks.map(({ timingDomain, ...track }) => ({
             ...track,
             unlinkedVideoEditResponse: timingDomain === 'video-ripple'

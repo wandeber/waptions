@@ -189,6 +189,25 @@ describe('V4 editor graph validation', () => {
         expect(validateHydratedEditorDocumentV4(repeated, resolvedMap())).toEqual({ valid: true, issues: [] });
     });
 
+    it('accepts CSS hex background case and rejects missing or malformed V4 backgrounds', () => {
+        expect(validateEditorDocumentV4(canonicalDocumentFixture({
+            renderBackgroundColor: '#A1B2C3',
+        }))).toEqual({ valid: true, issues: [] });
+
+        const malformed = canonicalDocumentFixture() as unknown as Record<string, unknown>;
+        malformed.renderBackgroundColor = '#12345';
+        expect(validateEditorDocumentV4(malformed).issues).toContainEqual(expect.objectContaining({
+            code: 'invalid-render-background',
+            path: 'renderBackgroundColor',
+        }));
+
+        delete malformed.renderBackgroundColor;
+        expect(validateEditorDocumentV4(malformed).issues).toContainEqual(expect.objectContaining({
+            code: 'invalid-render-background',
+            path: 'renderBackgroundColor',
+        }));
+    });
+
     it('accepts a source-tail crop shorter than the ceil-rounded canonical PCM by less than one sample', () => {
         const document = cloneDocument();
         document.videoSources[0].duration = 0.99998;

@@ -299,6 +299,7 @@ export interface EditorDocumentV4 {
     revision: number;
     audioGraphRevision: number;
     renderProfile: RenderProfile;
+    renderBackgroundColor: string;
     subtitleTracks: SubtitleTrackV4[];
     videoSources: VideoSourceAssetV3[];
     videoClips: VideoClipV4[];
@@ -328,6 +329,7 @@ export interface EditorManifestV4 {
     revision: number;
     audioGraphRevision: number;
     renderProfile: RenderProfile;
+    renderBackgroundColor: string;
     subtitleTracks: SubtitleTrackV4[];
     videoSourceDescriptors: VideoSourceDescriptorV3[];
     videoClips: VideoClipV4[];

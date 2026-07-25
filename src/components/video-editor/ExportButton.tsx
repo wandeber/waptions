@@ -39,7 +39,7 @@ export function ExportButton() {
     // defensively again at its API boundary, but this first freeze fixes user-visible job identity
     // to the exact click even if the timeline changes while the destination prompt is open.
     const documentSnapshot = createExportDocumentSnapshot(
-      useTimelineStore.getState().buildEditorDocument(),
+      useTimelineStore.getState().buildEditorDocumentV4(),
     );
     const projectName = activeProject?.name || 'video';
     const safeName = projectName

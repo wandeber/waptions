@@ -31,6 +31,7 @@ import {
     createEditorManifestV4,
     hydrateEditorDocumentV4,
     migrateEditorDocumentV3ToV4,
+    normalizeLegacyEditorManifestV4,
 } from '@/lib/editor-document-v4-migration';
 import { resolveEditorManifestAssets, resolveEditorVideoAsset } from './editor-asset-resolver';
 import { IndexedDBAdapter, type IndexedDBBatchOperation } from './indexeddb-adapter';
@@ -288,7 +289,7 @@ export class StorageService {
             ) as LoadedEditorRuntimeState & { document: EditorDocumentV3 };
         }
         const normalizedManifest = document.version === 4
-            ? persistedManifest as EditorManifestV4
+            ? normalizeLegacyEditorManifestV4(persistedManifest as EditorManifestV4)
             : normalizeLegacyEditorManifestV3(persistedManifest as EditorManifestV3);
         const indexes = await adapter.getMany<unknown>([
             EDITOR_HISTORY_INDEX_KEY,
@@ -335,14 +336,15 @@ export class StorageService {
             if (!isEditorManifestV4(v4Value)) {
                 throw new Error(`Project ${projectId} contains an invalid editor-document-v4 manifest.`);
             }
-            const validation = validateEditorManifestV4(v4Value);
+            const normalizedManifest = normalizeLegacyEditorManifestV4(v4Value);
+            const validation = validateEditorManifestV4(normalizedManifest);
             if (!validation.valid) {
                 const details = validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ');
                 throw new Error(`Project ${projectId} v4 manifest failed validation: ${details}`);
             }
-            const assets = await resolveEditorManifestAssets(adapter, v4Value);
+            const assets = await resolveEditorManifestAssets(adapter, normalizedManifest);
             return projectLoadedDocumentVersion(
-                hydrateEditorDocumentV4(v4Value, assets.videoSources, assets.audioSources),
+                hydrateEditorDocumentV4(normalizedManifest, assets.videoSources, assets.audioSources),
                 options.targetVersion,
             );
         }

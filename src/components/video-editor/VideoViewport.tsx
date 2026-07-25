@@ -89,6 +89,7 @@ export function VideoViewport({
     videoClips,
     videoTracks,
     renderProfile,
+    renderBackgroundColor,
     appendMixedMediaCandidate,
   } = useTimelineStore(useShallow((state) => ({
     tracks: state.tracks,
@@ -96,6 +97,7 @@ export function VideoViewport({
     videoClips: state.videoClips,
     videoTracks: state.videoTracks,
     renderProfile: state.renderProfile,
+    renderBackgroundColor: state.renderBackgroundColor,
     appendMixedMediaCandidate: state.appendMixedMediaCandidate,
   })));
 
@@ -245,7 +247,7 @@ export function VideoViewport({
     lastCompositeKeyRef.current = null;
     persistentVideoCanvasRef.current?.removeAttribute('data-has-frame');
     invalidateStaleRender();
-  }, [invalidateStaleRender, videoClips, videoSources, videoTracks]);
+  }, [invalidateStaleRender, renderBackgroundColor, videoClips, videoSources, videoTracks]);
 
   useEffect(() => {
     visualRevisionRef.current += 1;
@@ -309,10 +311,10 @@ export function VideoViewport({
       renderProfile.fps,
       framePlan.version === 4 ? 'floor' : 'nearest',
     );
-    const compositeKey = `${mediaKey}:${canonicalProjectFrame}:${layoutKey}:${showSubtitles ? visualRevisionRef.current : 'no-subtitles'}`;
+    const compositeKey = `${mediaKey}:${renderBackgroundColor}:${canonicalProjectFrame}:${layoutKey}:${showSubtitles ? visualRevisionRef.current : 'no-subtitles'}`;
     if (lastCompositeKeyRef.current === compositeKey && canvas.getAttribute('data-has-content') === 'true') return;
 
-    const videoLayerKey = `${mediaKey}:${layoutKey}`;
+    const videoLayerKey = `${mediaKey}:${renderBackgroundColor}:${layoutKey}`;
     if (source && sourceFrame && lastVideoLayerKeyRef.current !== videoLayerKey) {
       const frame = await videoCache.requestFrame({
         scope: 'preview',
@@ -339,7 +341,7 @@ export function VideoViewport({
         videoLayer.height = displayHeight;
         const context = videoLayer.getContext('2d');
         if (!context) return;
-        context.fillStyle = '#000';
+        context.fillStyle = renderBackgroundColor;
         context.fillRect(0, 0, displayWidth, displayHeight);
         // The cache preserves source aspect ratio. Containment belongs here (and in export), once,
         // so preview does not letterbox an already-letterboxed intermediate canvas a second time.
@@ -367,7 +369,7 @@ export function VideoViewport({
     const offscreenContext = offscreen.getContext('2d');
     if (!offscreenContext) return;
 
-    offscreenContext.fillStyle = '#000';
+    offscreenContext.fillStyle = renderBackgroundColor;
     offscreenContext.fillRect(0, 0, displayWidth, displayHeight);
     if (source && persistentVideoCanvasRef.current?.getAttribute('data-has-frame') === 'true') {
       offscreenContext.drawImage(persistentVideoCanvasRef.current, 0, 0);
@@ -403,6 +405,7 @@ export function VideoViewport({
     measureDisplayRectangle,
     framePlan,
     projectCanvasSize,
+    renderBackgroundColor,
     renderProfile.fps,
     showSubtitles,
     sourcesById,
