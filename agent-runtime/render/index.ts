@@ -10,6 +10,7 @@ export * from './ffmpeg-video-producer';
 export * from './node-ffmpeg-handles';
 export * from './node-ffmpeg-process';
 export * from './node-ffmpeg-resolved-plan-executor';
+export * from './node-bounded-chromium-worker-host';
 export * from './progress';
 export * from './resolved-render-stream-producer';
 export * from './resource-budget';

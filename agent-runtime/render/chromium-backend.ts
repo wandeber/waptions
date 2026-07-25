@@ -29,6 +29,11 @@ export interface ChromiumWebCodecsCapabilityProbe {
     h264Encoder: boolean;
     aacEncoder: boolean;
     mp4Muxer: boolean;
+    /**
+     * Keeps the fallback explicit when the raw worker-host contract is fulfilled by a
+     * descriptor-bound deterministic encoder after Chromium has already composed the pixels.
+     */
+    implementation?: 'chromium-webcodecs' | 'deterministic-ffmpeg-raw-descriptor';
     reason?: string;
 }
 
@@ -83,8 +88,10 @@ export class ChromiumWebCodecsRenderBackend implements HeadlessRenderBackendPort
         throwIfAborted(signal);
         const capability = await this.worker.probe(signal);
         throwIfAborted(signal);
-        const supported = capability.chromiumAvailable
-            && capability.webCodecs
+        const hasExactDescriptorFallback = capability.implementation
+            === 'deterministic-ffmpeg-raw-descriptor';
+        const supported = (capability.chromiumAvailable && capability.webCodecs
+                || hasExactDescriptorFallback)
             && capability.h264Encoder
             && capability.aacEncoder
             && capability.mp4Muxer;

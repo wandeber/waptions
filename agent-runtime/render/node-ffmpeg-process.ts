@@ -53,6 +53,11 @@ export interface NodeBoundedProcessSession {
     readonly pid: number;
     readonly stdin: Writable | null;
     readonly stdout: Readable | null;
+    /**
+     * Returns an explicitly configured writable child FD. This keeps multi-stream encoders on
+     * inherited pipes instead of giving them filesystem paths or a second process channel.
+     */
+    inputAt(index: number): Writable | null;
     wait(): Promise<NodeBoundedProcessResult>;
     terminate(error?: HeadlessRenderError): Promise<void>;
     forceKill(): void;
@@ -352,6 +357,13 @@ export class NodeBoundedFfmpegProcessRunner {
             pid: child.pid,
             stdin: child.stdin,
             stdout,
+            inputAt: (index) => {
+                if (!Number.isSafeInteger(index) || index < 0) return null;
+                const input = child.stdio[index];
+                return input && typeof (input as Writable).write === 'function'
+                    ? input as Writable
+                    : null;
+            },
             wait: () => completion,
             terminate: async (error = new HeadlessRenderError(
                 'RENDER_FAILED',

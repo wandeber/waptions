@@ -8,9 +8,13 @@ timeline interpretation from codec and process integration:
 2. Both backends consume the same `ResolvedRenderPlanV1`. Track ordering, exact frame boundaries,
    compositor geometry, subtitles, audio contributors, mute/solo, linked/detached audio, gain,
    fades, rational frame-rate conversion, and the content boundary are already resolved.
-3. Chromium is the primary H.264/AAC MP4 backend. `CanonicalResolvedRenderStreamProducer` resolves
-   every frame and bounded DSP window; `BoundedChromiumWebCodecsWorker` feeds only raw RGBA/PCM to
-   the isolated encoder worker and owns cancellation plus forced termination.
+3. Chromium is the primary subtitle-composition backend. `CanonicalResolvedRenderStreamProducer`
+   resolves every frame and bounded DSP window; `BoundedChromiumWebCodecsWorker` feeds only raw
+   RGBA/PCM to the isolated encoder worker and owns cancellation plus forced termination. On Node,
+   `NodeBoundedChromiumWorkerHostPort` selects deterministic FFmpeg raw-descriptor encoding because
+   the packaged Chromium/WebCodecs surface cannot robustly write directly to a Node descriptor.
+   Chromium remains authoritative for subtitle layout: subtitle pixels are already present in RGBA,
+   so FFmpeg does not parse text, load fonts, or approximate captions.
 4. FFmpeg is a fixed codec/mux fallback. `NodeFfmpegResolvedPlanExecutor` materializes canonical
    48 kHz stereo PCM to private bounded scratch first, then sends the encoder only raw RGBA plus
    seekable PCM/output descriptors. Source decoders receive one immutable seekable descriptor at
@@ -89,9 +93,13 @@ those runtime components are not present at this baseline:
 - Shared contracts: replace the local media-identity and staged-destination imports with the final
   Core/Runtime-owned types when those integration commits land; do not create parallel adapters.
 - Chromium host: bind the platform frame renderer used by
-  `CanonicalResolvedRenderStreamProducer` to `renderResolvedPlanFrame`, load deterministic fonts by
-  verified identity, and launch the fixed raw H.264/AAC encoder worker behind
-  `BoundedChromiumWorkerHostPort`.
+  `CanonicalResolvedRenderStreamProducer` to `renderResolvedPlanFrame` and load deterministic fonts
+  by verified identity. Node uses `NodeBoundedChromiumWorkerHostPort`: it accepts only pre-composed
+  RGBA and canonical PCM, sends them through fixed `pipe:` descriptors to a single bounded FFmpeg
+  H.264/AAC MP4 encoder, and receives no manifest, subtitle text, source/output paths, or network
+  protocol. The capability probe exposes this choice as
+  `deterministic-ffmpeg-raw-descriptor`; direct Chromium/WebCodecs descriptor output remains
+  unavailable with the packaged dependency set.
 - Coordinator handles: bind `ImmutableSourceHandleResolverPort` and
   `NodeStagedOutputHandleResolverPort` to already-validated source/staged-output capabilities.
   These bindings issue fresh seekable descriptors and implement `assertCurrent`; they never expose
