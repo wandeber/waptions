@@ -21,6 +21,45 @@ into a job, checkpoint, result, receipt, event, artifact, or terminal proposal.
 Browser-local transcription is rejected in this headless runtime. It must not be relabelled as
 managed until a bounded managed browser worker exists.
 
+## Canonical tool start seam
+
+`createManagedTranscriptionIntegration()` is the installable seam for the canonical
+`waptions_transcription_start` handler. Runtime composition supplies its `handler` as the
+delegated tool implementation and calls `bundle.install(scheduler)` from the existing
+`registerJobHandlers` construction hook, before `scheduler.recover(projectIds)`.
+
+The mapper accepts only the already schema-validated canonical request and independently checks
+its relevant closed fields. It maps `editorial`/`subtitle` to the durable job kinds, preserves
+normalized language and diarization mode, and groups half-open `startSample16k`/`endSample16k`
+ranges by Core-authorized source. With no ranges it requests the full canonical 16 kHz duration
+of every authorized source. Model overrides and browser-local execution are rejected because the
+headless worker has one fixed editorial provider contract.
+
+Composition must provide these narrow authorities:
+
+- **Core start planner**: authorizes canonical target IDs and returns only the immutable source
+  ID, fingerprint, and canonical sample count. It owns target/source relationship checks.
+- **Coordinator enqueue boundary**: the existing receipt-first `enqueueJob` boundary owns state
+  guards, the durable idempotency receipt, job/event WAL writes, and recovery. The mapper does
+  not create a second receipt store.
+- **Media and freshness ports**: `ManagedRetainedTranscriptionSourcePort` and
+  `ManagedTranscriptionFreshnessPort` provide retained verified reads and stale-state guards.
+- **CAS and publication ports**: `ManagedTranscriptionCasPort` and
+  `CoreTranscriptionPublisher` preserve the private transcript/Coverage CAS and final Core
+  publication transaction.
+- **Endpoint and credential authorities**: process-local endpoint and credential capability
+  authorities plus an optional configuration resolver. Raw URLs and secrets never cross the
+  durable mapper result.
+
+For `managed-local-endpoint`, the durable input deliberately carries only
+`{ kind: 'managed-local-endpoint' }`. The worker mints the exact default
+`http://localhost:43556/v1/audio/transcriptions` capability while it runs, so recovery can mint
+a fresh local capability without storing the URL. A supplied local credential is converted to an
+opaque in-memory credential capability; it cannot be recovered after a process restart and fails
+closed as `CAPABILITY_EXPIRED` rather than persisting a secret. `openai-compatible` configuration
+is likewise read in memory, immediately converted to opaque capability IDs, and never written to
+jobs, checkpoints, receipts, events, artifacts, or WAL values.
+
 ## Core and coordinator seam
 
 `CoreTranscriptionPublisher` deliberately has two independent methods:

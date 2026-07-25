@@ -6,3 +6,4 @@ export * from './managed-transcription-job-handler';
 export * from './media-byte-source';
 export * from './provider-transport';
 export * from './streaming-pcm-window-decoder';
+export * from './transcription-tool-service';
