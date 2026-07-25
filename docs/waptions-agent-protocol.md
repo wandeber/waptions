@@ -76,11 +76,12 @@ All IDs and cursors are opaque. `sessionId` identifies an attachment to a manage
 `projectId` identifies the durable project. Neither is a bearer credential.
 
 `sessionEpoch` identifies one coordinator incarnation and changes after recovery.
-`sessionRevision` is durable and monotonically orders authoritative session changes, including
-project/history publication, source-registry or path-grant changes, playback authority, and
-job/artifact publication. `documentRevision`, `audioGraphRevision`, and optional
-`narrativeRevision` guard their respective V4 domains. View state and in-job progress have their
-own revisions and do not advance the document.
+`sessionRevision` is durable, owned exclusively by the Core editor engine, and monotonically
+orders semantic project-head and history publication. A source registration advances it only
+when Core imports that source in the same atomic editor commit. Path grants, jobs, artifacts,
+views, playback, and presenter state use their own durable revisions or sequences; they neither
+advance nor rebase Core. `documentRevision`, `audioGraphRevision`, and optional
+`narrativeRevision` guard their respective V4 domains.
 
 The P2 engine owns `sessionRevision` as independent instance state, initializes it from
 `EditorEngineOptions.initialSessionRevision`, and compares it with every mutation's
@@ -90,10 +91,12 @@ A state token is a concurrency and recovery token, not an authorization token. V
 handles, output capabilities, path grants, and short-lived UI/view capabilities carry authority
 separately.
 
-Mutations send the current `sessionEpoch`, expected `sessionRevision`, expected
+Core mutations send the current `sessionEpoch`, expected `sessionRevision`, expected
 `documentRevision`, and the audio or narrative revision when the operation depends on that
-domain. One queue establishes a total order for project mutations. Read tools observe one
-consistent revision.
+domain. Auxiliary mutations additionally use their explicit domain guard where the canonical
+schema defines one, such as `expectedViewRevision` or `expectedPlaybackRevision`. One project
+queue establishes a total order without coupling auxiliary changes to the editor head. Read
+tools observe one consistent captured state.
 
 ## Durable receipts and mutation order
 

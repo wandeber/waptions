@@ -375,14 +375,13 @@ The protocol `StateToken` includes `sessionId` and `eventCursor`, but
 `EditorEngineSnapshot` does not. Adapters must assemble that token; the engine
 must not invent an opaque cursor from its numeric sequence.
 
-An active engine does not adopt a coordinator-only `sessionRevision` advance
-caused by a path grant, an out-of-band source-registry change, playback
-authority, a job, or artifact publication. After such a coordinator
-transaction, the coordinator closes and reconstructs the engine from the same
-durable project head with the new `initialSessionRevision` before accepting
-another project mutation. This keeps one session counter without adding a
-second project planner/publisher or allowing the coordinator to mutate an
-active engine behind its back.
+An active engine never adopts a coordinator-only `sessionRevision`. Path
+grants, jobs, artifacts, views, playback, and presenter authority use
+independent revisions or sequences and do not reconstruct or rebase the
+engine. Source registration enters the editor head only through Core's typed
+media-import commit. This keeps Core as the only owner of the editorial
+session counter and prevents auxiliary activity from invalidating otherwise
+current edit plans.
 
 ## Selective asset and transcript hydration
 
@@ -604,9 +603,9 @@ Phase 2 intentionally stops at the instance-scoped project mutation core:
 
 - the coordinator maps committed numeric event sequences to retained opaque
   cursors and supplies reconnect behavior;
-- coordinator-only path-grant, out-of-band source-registry,
-  playback-authority, job, and artifact changes own their session transactions
-  and reconstruct or reattach an engine at the resulting durable head;
+- coordinator-only path-grant, playback-authority, job, artifact, and view
+  changes own independent revisions or sequences and leave the active engine
+  head untouched;
 - source registration enters Core only through the typed internal media-import
   boundary; transcription provenance remains a typed managed or standalone
   setup workflow, and neither is a generic manifest-patch operation;

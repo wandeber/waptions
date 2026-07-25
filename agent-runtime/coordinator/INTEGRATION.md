@@ -32,16 +32,17 @@ allocation, staging, or any other side effect.
 
 Protocol-facing job creation calls `ManagedCoordinator.enqueueJob()`, not
 `DurableJobScheduler.enqueue()` directly. The coordinator prepares the job only after receipt
-resolution and commits the queued job record, receipt, session/job/event revisions, and
-`job.changed` event in one transaction. The scheduler adopts the already committed job
+resolution and commits the queued job record, receipt, independent job revision, and event sequence
+with the `job.changed` event in one transaction, without advancing Core's editorial
+`sessionRevision`. The scheduler adopts the already committed job
 idempotently, including after a lost response.
 
 A handler that produces artifacts stages them through `ArtifactRegistry` and returns both the
 ordered `artifactIds` and `terminalPublication`. The scheduler's coordinator hook then commits the
-artifact registry writes, terminal job record, session/job/artifact/event revisions, and typed
-terminal event in one transaction. Any pre-commit rejection reaps staged blobs; recovery preserves
-only blobs owned by committed registry records. A scheduler without that coordinator hook rejects
-terminal artifact publication.
+artifact registry writes, terminal job record, independent job/artifact revisions, event sequence,
+and typed terminal event in one transaction. Any pre-commit rejection reaps staged blobs; recovery
+preserves only blobs owned by committed registry records. A scheduler without that coordinator
+hook rejects terminal artifact publication.
 
 Persisted events use the `EventRecordV1` transport shape: `cursor`, `type`, `occurredAt`, complete
 canonical `state`, `sequence`, and bounded typed `data`. The event cursor is authenticated and
