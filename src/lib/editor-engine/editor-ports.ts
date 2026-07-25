@@ -2,7 +2,12 @@ import type { ResolvedEditorialTranscriptMapV1 } from '@/types/editorial';
 import type { AudioSourceDescriptor, EditorManifestV4, VideoSourceDescriptorV3 } from '@/types/video';
 import type { VerifiedMediaHandleV1 } from '@/types/waptions-agent-protocol';
 import type { EditorMutationToolName } from './editor-command';
-import type { EditorCommandResult, EditorEngineSnapshot, EditorHistoryState } from './editor-engine-types';
+import type {
+    EditorCommandResult,
+    EditorEngineSnapshot,
+    EditorHistoryState,
+    EditorMediaImportResult,
+} from './editor-engine-types';
 import type { EditorEngineEvent } from './editor-events';
 
 export interface EditorClock {
@@ -71,7 +76,9 @@ export interface EditorIdempotencyReceipt {
     toolName: EditorMutationToolName;
     idempotencyKey: string;
     requestHash: string;
-    result: Omit<Extract<EditorCommandResult, { ok: true }>, 'snapshot' | 'replayed'>;
+    result:
+        | Omit<Extract<EditorCommandResult, { ok: true }>, 'snapshot' | 'replayed'>
+        | Omit<Extract<EditorMediaImportResult, { ok: true }>, 'snapshot' | 'replayed'>;
 }
 
 export interface EditorPersistenceCommit {
@@ -103,6 +110,25 @@ export interface EditorPersistenceCommit {
         historyRecordIds: string[];
         redoRecordIds: string[];
     };
+    sourcePins: {
+        current: {
+            videoSourceIds: string[];
+            audioSourceIds: string[];
+        };
+        history: {
+            videoSourceIds: string[];
+            audioSourceIds: string[];
+        };
+        redo: {
+            videoSourceIds: string[];
+            audioSourceIds: string[];
+        };
+    };
+    /**
+     * New path-free immutable registrations included in this transaction. Non-import commits and
+     * imports that reuse existing descriptors carry empty arrays.
+     */
+    sourceRegistrations: EditorAssetHydration;
     event: EditorEngineEvent | null;
     receipt: {
         toolName: EditorMutationToolName;

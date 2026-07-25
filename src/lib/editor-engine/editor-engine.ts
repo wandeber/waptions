@@ -8,7 +8,9 @@ import type { EditorManifestV4 } from '@/types/video';
 import {
     EDITOR_APPLY_TOOL_NAME,
     EDITOR_ENGINE_API_VERSION,
+    EDITOR_ENGINE_MAX_REQUEST_BYTES,
     EDITOR_HISTORY_TOOL_NAME,
+    EDITOR_MEDIA_IMPORT_TOOL_NAME,
     EDITOR_PLAN_TOOL_NAME,
     parseEditorCommandBatchRequest,
     type EditorCommandBatchRequest,
@@ -31,7 +33,9 @@ import {
     appendEditorHistory,
     cloneHistoryState,
     collectHistoryPins,
+    collectManifestSourceIds,
     collectManifestTranscriptRecordIds,
+    collectSourcePins,
     createEditorHistoryEntry,
     jumpEditorHistory,
     moveEditorHistory,
@@ -50,6 +54,9 @@ import type {
     EditorHistoryState,
     HistoryJumpRequest,
     HistoryMutationRequest,
+    EditorMediaImportRequest,
+    EditorMediaImportResult,
+    EditorMediaImportSuccess,
 } from './editor-engine-types';
 import type { EditorEngineEvent, EditorEngineListener } from './editor-events';
 import type {
@@ -57,6 +64,10 @@ import type {
     EditorIdempotencyReceipt,
     EditorPersistenceCommit,
 } from './editor-ports';
+import {
+    applyPreparedEditorMediaImport,
+    prepareEditorMediaImport,
+} from './editor-media-import';
 
 const DEFAULT_PLAN_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_HISTORY_SUMMARY_LIMIT = 200;
@@ -302,6 +313,19 @@ class EditorEngineImplementation implements EditorEngine {
             )));
         }
         return this.enqueue(() => this.dispatchSerial(rawRequest));
+    }
+
+    importMedia(
+        rawRequest: EditorMediaImportRequest,
+        hydration?: EditorAssetHydration,
+    ): Promise<EditorMediaImportResult> {
+        if (this.closing || this.closed) {
+            return Promise.resolve(toEditorCommandFailure(new EditorCommandError(
+                'COORDINATOR_UNAVAILABLE',
+                'The editor engine is closing or closed.',
+            )));
+        }
+        return this.enqueue(() => this.importMediaSerial(rawRequest, hydration));
     }
 
     undo(rawRequest: HistoryMutationRequest): Promise<EditorCommandResult> {
@@ -565,6 +589,206 @@ class EditorEngineImplementation implements EditorEngine {
                 projectId: this.options.projectId,
                 ...(commandId ? { commandId } : {}),
                 message: error instanceof Error ? error.message : 'Unknown engine failure.',
+            });
+            return toEditorCommandFailure(error);
+        }
+    }
+
+    private async importMediaSerial(
+        rawRequest: EditorMediaImportRequest,
+        hydration?: EditorAssetHydration,
+    ): Promise<EditorMediaImportResult> {
+        let commandId: string | undefined;
+        try {
+            const request = parseMediaImportRequest(rawRequest);
+            const requestHash = canonicalRequestDigest(request);
+
+            // An exact replay does not need a still-live media capability or current revisions.
+            const replay = await this.resolveReceipt(
+                request.toolName,
+                request.idempotencyKey,
+                requestHash,
+            );
+            if (replay) {
+                if (!replay.ok
+                    || !('sourceIds' in replay)
+                    || !Array.isArray(replay.sourceIds)
+                    || !('placedClipIds' in replay)
+                    || !Array.isArray(replay.placedClipIds)) {
+                    throw new EditorCommandError(
+                        'INTERNAL_ERROR',
+                        'The durable media-import receipt is invalid.',
+                    );
+                }
+                return replay as EditorMediaImportSuccess;
+            }
+
+            this.assertGuards(request.sessionEpoch, request.expected);
+            this.assertMediaImportDomainGuards(request);
+            if (!hydration) {
+                throw new EditorCommandError(
+                    'INVALID_REQUEST',
+                    'A new media import requires verified source hydration.',
+                );
+            }
+            commandId = this.options.ports.ids.generate(
+                'command',
+                `${this.options.projectId}:${request.toolName}:${request.idempotencyKey}`,
+            );
+            const now = this.options.ports.clock.now();
+            const before = this.snapshot();
+            const reused = collectReusedImportSourceIds(this.manifest, request);
+            const existingHydration = await this.hydrateAssets(this.manifest, reused);
+            const prepared = prepareEditorMediaImport({
+                current: this.manifest,
+                request,
+                hydration,
+                existingHydration,
+            });
+            const bodies = prepared.descriptorChanged || request.placement.kind === 'place'
+                ? await this.hydrateTranscripts(this.manifest, [], true)
+                : {} as ResolvedEditorialTranscriptMapV1;
+            const proposal = applyPreparedEditorMediaImport({
+                prepared,
+                placement: request.placement,
+                commandScope: `${this.options.projectId}:${commandId}`,
+                nowIso: now.iso,
+                ids: this.options.ports.ids,
+                bodies,
+            });
+
+            if (!proposal.changed) {
+                const semanticResult: Omit<EditorMediaImportSuccess, 'snapshot' | 'replayed'> = {
+                    ok: true,
+                    commandId,
+                    noOp: true,
+                    noOpReason: proposal.noOpReason ?? 'sources-already-registered',
+                    historyEntryId: null,
+                    eventId: null,
+                    aliases: {},
+                    warnings: [],
+                    sourceIds: [...proposal.sourceIds],
+                    placedClipIds: [],
+                };
+                const receipt: EditorIdempotencyReceipt = {
+                    toolName: request.toolName,
+                    idempotencyKey: request.idempotencyKey,
+                    requestHash,
+                    result: semanticResult,
+                };
+                await this.options.ports.persistence.commit(this.createCommit({
+                    toolName: request.toolName,
+                    commandId,
+                    operationIds: ['media.import'],
+                    preparedAt: now.iso,
+                    previous: before,
+                    next: before,
+                    history: this.history,
+                    event: null,
+                    idempotencyKey: request.idempotencyKey,
+                    receipt,
+                }));
+                this.recordDiagnostics({
+                    kind: 'noop',
+                    projectId: this.options.projectId,
+                    commandId,
+                });
+                return {
+                    ...semanticResult,
+                    replayed: false,
+                    snapshot: this.snapshot(),
+                };
+            }
+
+            const summary = createHistorySummary({
+                id: this.options.ports.ids.generate(
+                    'history',
+                    `${this.options.projectId}:${commandId}`,
+                ),
+                label: 'Import media',
+                category: 'media',
+                operationIds: ['media.import'],
+                occurredAt: now.iso,
+                before: this.manifest,
+                after: proposal.manifest,
+                fromSessionRevision: this.sessionRevision,
+                toSessionRevision: this.sessionRevision + 1,
+            });
+            const historyEntry = createEditorHistoryEntry({
+                before: this.manifest,
+                after: proposal.manifest,
+                beforeProject: this.projectMetadata,
+                afterProject: this.projectMetadata,
+                summary,
+            });
+            const nextHistory = appendEditorHistory(this.history, historyEntry);
+            const next = createSnapshot(
+                this.options.projectId,
+                this.options.sessionEpoch,
+                this.sessionRevision + 1,
+                this.projectMetadata,
+                proposal.manifest,
+                nextHistory,
+                this.historySummaryLimit,
+            );
+            const event = this.createMutationEvent(
+                commandId,
+                ['media.import'],
+                summary.id,
+                next.revisions,
+                now.iso,
+            );
+            const semanticResult: Omit<EditorMediaImportSuccess, 'snapshot' | 'replayed'> = {
+                ok: true,
+                commandId,
+                noOp: false,
+                historyEntryId: summary.id,
+                eventId: event.id,
+                aliases: {},
+                warnings: [],
+                sourceIds: [...proposal.sourceIds],
+                placedClipIds: [...proposal.placedClipIds],
+            };
+            const receipt: EditorIdempotencyReceipt = {
+                toolName: request.toolName,
+                idempotencyKey: request.idempotencyKey,
+                requestHash,
+                result: semanticResult,
+            };
+            await this.options.ports.persistence.commit(this.createCommit({
+                toolName: request.toolName,
+                commandId,
+                operationIds: ['media.import'],
+                preparedAt: now.iso,
+                previous: before,
+                next,
+                history: nextHistory,
+                event,
+                idempotencyKey: request.idempotencyKey,
+                receipt,
+                sourceRegistrations: proposal.sourceRegistrations,
+            }));
+            this.eventSequence = event.sequence;
+            this.sessionRevision += 1;
+            this.manifest = structuredClone(proposal.manifest);
+            this.history = cloneHistoryState(nextHistory);
+            await this.publish(next, event);
+            this.recordDiagnostics({
+                kind: 'commit',
+                projectId: this.options.projectId,
+                commandId,
+            });
+            return {
+                ...semanticResult,
+                replayed: false,
+                snapshot: this.snapshot(),
+            };
+        } catch (error) {
+            this.recordDiagnostics({
+                kind: 'failure',
+                projectId: this.options.projectId,
+                ...(commandId ? { commandId } : {}),
+                message: error instanceof Error ? error.message : 'Unknown media-import failure.',
             });
             return toEditorCommandFailure(error);
         }
@@ -837,6 +1061,22 @@ class EditorEngineImplementation implements EditorEngine {
         }
     }
 
+    private assertMediaImportDomainGuards(request: EditorMediaImportRequest): void {
+        if (request.placement.kind !== 'place') return;
+        if (request.expected.audioGraphRevision === undefined) {
+            throw new EditorCommandError(
+                'INVALID_REQUEST',
+                'Placed media imports require expected.audioGraphRevision.',
+            );
+        }
+        if (this.manifest.narrative && request.expected.narrativeRevision === undefined) {
+            throw new EditorCommandError(
+                'INVALID_REQUEST',
+                'Placed media imports require expected.narrativeRevision for an active narrative.',
+            );
+        }
+    }
+
     private async hydrateAssets(
         manifest: EditorManifestV4,
         required: {
@@ -947,8 +1187,10 @@ class EditorEngineImplementation implements EditorEngine {
         event: EditorEngineEvent | null;
         idempotencyKey: string;
         receipt: EditorIdempotencyReceipt;
+        sourceRegistrations?: EditorAssetHydration;
     }): EditorPersistenceCommit {
         const pins = collectHistoryPins(input.history);
+        const sourcePins = collectSourcePins(input.history);
         return {
             schemaVersion: 1,
             projectId: this.options.projectId,
@@ -982,6 +1224,15 @@ class EditorEngineImplementation implements EditorEngine {
                 durableRecordIds: collectManifestTranscriptRecordIds(input.next.manifest),
                 ...pins,
             },
+            sourcePins: {
+                current: collectManifestSourceIds(input.next.manifest),
+                history: sourcePins.history,
+                redo: sourcePins.redo,
+            },
+            sourceRegistrations: structuredClone(input.sourceRegistrations ?? {
+                videoSources: [],
+                audioSources: [],
+            }),
             event: structuredClone(input.event),
             receipt: {
                 toolName: input.toolName,
@@ -1223,6 +1474,122 @@ function parseHistoryRequest<T extends HistoryMutationRequest | HistoryJumpReque
         }
     }
     return structuredClone(raw);
+}
+
+function parseMediaImportRequest(raw: unknown): EditorMediaImportRequest {
+    const encodedLength = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
+    if (encodedLength > EDITOR_ENGINE_MAX_REQUEST_BYTES) {
+        throw new EditorCommandError('PAYLOAD_TOO_LARGE', 'Media import request exceeds 512 KiB.');
+    }
+    const request = requireImportRecord(raw, 'Media import request');
+    rejectImportKeys(request, new Set([
+        'apiVersion',
+        'toolName',
+        'sessionEpoch',
+        'expected',
+        'idempotencyKey',
+        'sources',
+        'placement',
+    ]), 'Media import request');
+    if (request.apiVersion !== EDITOR_ENGINE_API_VERSION) {
+        throw new EditorCommandError('UNSUPPORTED_API_VERSION', 'Unsupported editor engine API version.');
+    }
+    if (request.toolName !== EDITOR_MEDIA_IMPORT_TOOL_NAME
+        || !isImportString(request.sessionEpoch)
+        || !isImportString(request.idempotencyKey)) {
+        throw new EditorCommandError('INVALID_REQUEST', 'Media import request envelope is invalid.');
+    }
+
+    const expected = requireImportRecord(request.expected, 'Media import expected revisions');
+    rejectImportKeys(expected, new Set([
+        'sessionRevision',
+        'documentRevision',
+        'audioGraphRevision',
+        'narrativeRevision',
+    ]), 'Media import expected revisions');
+    if (!isRevision(expected.sessionRevision)
+        || !isRevision(expected.documentRevision)
+        || (expected.audioGraphRevision !== undefined && !isRevision(expected.audioGraphRevision))
+        || (expected.narrativeRevision !== undefined && !isRevision(expected.narrativeRevision))) {
+        throw new EditorCommandError('INVALID_REQUEST', 'Media import revision guards are invalid.');
+    }
+
+    const sources = requireImportRecord(request.sources, 'Media import sources');
+    rejectImportKeys(sources, new Set([
+        'videoSourceDescriptors',
+        'audioSourceDescriptors',
+    ]), 'Media import sources');
+    if (!Array.isArray(sources.videoSourceDescriptors)
+        || !Array.isArray(sources.audioSourceDescriptors)) {
+        throw new EditorCommandError('INVALID_REQUEST', 'Media import descriptor lists are invalid.');
+    }
+
+    const placement = requireImportRecord(request.placement, 'Media import placement');
+    if (placement.kind === 'register-only') {
+        rejectImportKeys(placement, new Set(['kind']), 'Register-only media placement');
+    } else if (placement.kind === 'place') {
+        rejectImportKeys(placement, new Set([
+            'kind',
+            'ordering',
+            'timelineStartFrame',
+            'videoTrackId',
+            'audioTrackId',
+        ]), 'Natural media placement');
+        if (placement.ordering !== 'natural'
+            || !isRevision(placement.timelineStartFrame)
+            || (placement.videoTrackId !== undefined && !isImportString(placement.videoTrackId))
+            || (placement.audioTrackId !== undefined && !isImportString(placement.audioTrackId))) {
+            throw new EditorCommandError('INVALID_REQUEST', 'Natural media placement is invalid.');
+        }
+    } else {
+        throw new EditorCommandError('INVALID_REQUEST', 'Media import placement kind is invalid.');
+    }
+    return structuredClone(request) as unknown as EditorMediaImportRequest;
+}
+
+function requireImportRecord(value: unknown, label: string): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new EditorCommandError('INVALID_REQUEST', `${label} must be an object.`);
+    }
+    return value as Record<string, unknown>;
+}
+
+function rejectImportKeys(
+    value: Record<string, unknown>,
+    allowed: ReadonlySet<string>,
+    label: string,
+): void {
+    const unknown = Object.keys(value).find((key) => !allowed.has(key));
+    if (unknown) {
+        throw new EditorCommandError(
+            'INVALID_REQUEST',
+            `${label} contains unsupported field "${unknown}".`,
+        );
+    }
+}
+
+function isImportString(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0 && value.length <= 256;
+}
+
+function isRevision(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function collectReusedImportSourceIds(
+    manifest: EditorManifestV4,
+    request: EditorMediaImportRequest,
+): { videoSourceIds: string[]; audioSourceIds: string[] } {
+    const video = new Set(manifest.videoSourceDescriptors.map((source) => source.id));
+    const audio = new Set(manifest.audioSourceDescriptors.map((source) => source.id));
+    return {
+        videoSourceIds: request.sources.videoSourceDescriptors
+            .map((source) => source.id)
+            .filter((sourceId) => video.has(sourceId)),
+        audioSourceIds: request.sources.audioSourceDescriptors
+            .map((source) => source.id)
+            .filter((sourceId) => audio.has(sourceId)),
+    };
 }
 
 function collectRequiredTranscriptIds(

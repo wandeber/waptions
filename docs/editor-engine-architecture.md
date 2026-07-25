@@ -15,9 +15,10 @@ import Zustand stores, browser persistence, the project/video store
 singletons, filesystem paths, credentials, media bytes, decoded frames, PCM,
 or UI state.
 
-Phase 2 covers edits to an already registered V4 graph. Managed sessions,
-source registration, import/probe jobs, event retention, path grants, and UI
-selection are adapter or coordinator responsibilities.
+Phase 2 covers semantic edits and the internal atomic boundary that imports
+verified, path-free media into a V4 graph. Managed sessions, probing jobs,
+event retention, path grants, and UI selection are adapter or coordinator
+responsibilities.
 
 ## Instance ownership and public interface
 
@@ -33,6 +34,10 @@ interface EditorEngine {
   getSnapshot(): EditorEngineSnapshot;
   plan(request: EditorCommandBatchRequest): EditorCommandPlan;
   dispatch(request: EditorCommandBatchRequest): Promise<EditorCommandResult>;
+  importMedia(
+    request: EditorMediaImportRequest,
+    hydration?: EditorAssetHydration
+  ): Promise<EditorMediaImportResult>;
   undo(request: HistoryMutationRequest): Promise<EditorCommandResult>;
   redo(request: HistoryMutationRequest): Promise<EditorCommandResult>;
   jumpToHistory(request: HistoryJumpRequest): Promise<EditorCommandResult>;
@@ -43,7 +48,9 @@ interface EditorEngine {
 
 `getSnapshot()` returns a clone. Callers cannot mutate engine state through a
 snapshot. `plan()` is synchronous and cannot perform port I/O. All durable
-methods are serialized by the instance queue.
+methods are serialized by the instance queue. `importMedia()` is an internal
+Core integration boundary for `waptions_media_import`; it does not add a
+semantic operation to the public edit vocabulary.
 
 The frozen construction options are:
 
@@ -271,6 +278,8 @@ interface EditorPersistencePort {
 | `transcriptPins.durableRecordIds` | Transcript records reachable from the next manifest |
 | `transcriptPins.historyRecordIds` | Records retained by Undo history |
 | `transcriptPins.redoRecordIds` | Records retained by Redo history |
+| `sourcePins.current` / `history` / `redo` | Video and audio source IDs retained by the current graph, Undo, and Redo |
+| `sourceRegistrations` | New path-free verified source registrations committed with an import |
 | `event` | The ordered event made visible by this transaction, or `null` for a durable no-op receipt |
 | `receipt` | The durable idempotency receipt in the same transaction |
 
@@ -367,17 +376,20 @@ The protocol `StateToken` includes `sessionId` and `eventCursor`, but
 must not invent an opaque cursor from its numeric sequence.
 
 An active engine does not adopt a coordinator-only `sessionRevision` advance
-caused by a path grant, source registry, playback authority, job, or artifact
-publication. After such a coordinator transaction, the coordinator closes and
-reconstructs the engine from the same durable project head with the new
-`initialSessionRevision` before accepting another project mutation. This keeps
-one session counter without adding a second project planner/publisher or
-allowing the coordinator to mutate an active engine behind its back.
+caused by a path grant, an out-of-band source-registry change, playback
+authority, a job, or artifact publication. After such a coordinator
+transaction, the coordinator closes and reconstructs the engine from the same
+durable project head with the new `initialSessionRevision` before accepting
+another project mutation. This keeps one session counter without adding a
+second project planner/publisher or allowing the coordinator to mutate an
+active engine behind its back.
 
 ## Selective asset and transcript hydration
 
 The manifest remains the durable source of descriptor identity. Hydration
-provides temporary planning evidence and never changes source registration.
+provides temporary planning evidence. For ordinary semantic and history
+requests it never changes source registration; media import may include the
+verified registration records in the same Core commit as the manifest change.
 
 For assets:
 
@@ -519,11 +531,11 @@ are not alternative engine graph types.
 
 ## Import, source registration, and provenance boundary
 
-Phase 2 semantic operations may reference only source IDs, transcript record
-IDs, and provenance records already present in the manifest/catalogue. The
-current operation union has clip insertion and narrative activation, but it
-has no media probe, source registration, path grant, bundle import, transcript
-body creation, or transcription-job publication operation.
+Semantic operations may reference only source IDs, transcript record IDs, and
+provenance records already present in the manifest/catalogue. The operation
+union has clip insertion and narrative activation, but it has no media probe,
+source registration, path grant, bundle import, transcript body creation, or
+transcription-job publication operation.
 
 The frozen Phase 2 vocabulary also intentionally has no durable operation for
 changing `activeSubtitleTrackId`, moving a subtitle between tracks while
@@ -533,20 +545,24 @@ approved. `video-clip.set-order` is present for protocol completeness but is a
 stable `order-not-meaningful` no-op because same-track video order is derived
 from non-overlapping timeline placement, not an independent render stack.
 
-Those workflows remain outside the Phase 2 semantic operation set:
+Media import remains outside the semantic operation set but now has one
+internal `EditorEngine.importMedia()` transaction:
 
 1. A coordinator or standalone adapter obtains explicit authority.
 2. It probes bytes and verifies immutable identity.
-3. It registers the path-free source descriptor and detached provenance in its
-   source/transcript registry.
-4. It invokes an approved atomic integration boundary that makes the
-   registered descriptor visible before any clip operation references it.
+3. It passes the path-free V4 descriptors and separate verified hydration to
+   `importMedia()`. Capability data is excluded from the canonical request hash.
+4. Core verifies descriptor, digest, size, existing ID/content/class identity,
+   target locks, and placement before creating a detached proposal.
+5. New registrations, optional natural-order occurrences, one history entry,
+   source pins, one event, one receipt, and session state cross the existing
+   `EditorPersistencePort.commit` boundary together.
 
-The current engine does not yet expose that integration boundary. Adapters
-must not mutate an active engine manifest behind its back or treat
-`video-clip.insert`/`audio-clip.insert` as source registration. Managed import
-and transcription publication require a later typed coordinator transaction
-or an explicitly approved engine command.
+Register-only imports are undoable. Re-registering identical descriptors is a
+durable receipt-only no-op, while importing those descriptors with placement
+reuses them and creates new deterministic occurrences. Adapters must not mutate
+an active engine manifest behind its back or treat `video-clip.insert` and
+`audio-clip.insert` as source registration.
 
 ## Render background prerequisite
 
@@ -588,11 +604,12 @@ Phase 2 intentionally stops at the instance-scoped project mutation core:
 
 - the coordinator maps committed numeric event sequences to retained opaque
   cursors and supplies reconnect behavior;
-- coordinator-only path-grant, source-registry, playback-authority, job, and
-  artifact changes own their session transactions and reconstruct or reattach
-  an engine at the resulting durable head;
-- source registration and transcription provenance are typed managed or
-  standalone setup workflows, not generic manifest-patch operations;
+- coordinator-only path-grant, out-of-band source-registry,
+  playback-authority, job, and artifact changes own their session transactions
+  and reconstruct or reattach an engine at the resulting durable head;
+- source registration enters Core only through the typed internal media-import
+  boundary; transcription provenance remains a typed managed or standalone
+  setup workflow, and neither is a generic manifest-patch operation;
 - the descriptor-backed File-shaped projection exists only inside the detached
   planner because the shared V4 hydrated validator currently accepts
   `EditorDocumentV4`; no browser object or path enters the engine contract.

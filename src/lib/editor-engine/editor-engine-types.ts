@@ -1,13 +1,20 @@
 import type { SerializablePatch } from '@/lib/serializable-patch';
-import type { EditorManifestV4 } from '@/types/video';
+import type {
+    AudioSourceDescriptor,
+    EditorManifestV4,
+    VideoSourceDescriptorV3,
+} from '@/types/video';
 import type {
     EditorCommandBatchRequest,
     EditorExpectedRevisions,
+    EDITOR_ENGINE_API_VERSION,
+    EDITOR_MEDIA_IMPORT_TOOL_NAME,
     EditorMutationToolName,
     EditorSemanticOperation,
 } from './editor-command';
 import type { EditorCommandFailure } from './editor-command-errors';
 import type { EditorEngineListener } from './editor-events';
+import type { EditorAssetHydration } from './editor-ports';
 
 export interface EditorEngineRevisions {
     sessionEpoch: string;
@@ -33,6 +40,10 @@ export interface EditorHistoryEntry {
     inversePatches: SerializablePatch[];
     byteSize: number;
     transcriptRecordIds: string[];
+    sourceReferences: {
+        videoSourceIds: string[];
+        audioSourceIds: string[];
+    };
     projectMetadata: {
         before: EditorProjectMetadata;
         after: EditorProjectMetadata;
@@ -107,6 +118,38 @@ export interface EditorCommandSuccess {
 
 export type EditorCommandResult = EditorCommandSuccess | EditorCommandFailure;
 
+export type EditorMediaImportPlacement =
+    | {
+        kind: 'register-only';
+    }
+    | {
+        kind: 'place';
+        ordering: 'natural';
+        timelineStartFrame: number;
+        videoTrackId?: string;
+        audioTrackId?: string;
+    };
+
+export interface EditorMediaImportRequest {
+    apiVersion: typeof EDITOR_ENGINE_API_VERSION;
+    toolName: typeof EDITOR_MEDIA_IMPORT_TOOL_NAME;
+    sessionEpoch: string;
+    expected: EditorExpectedRevisions;
+    idempotencyKey: string;
+    sources: {
+        videoSourceDescriptors: VideoSourceDescriptorV3[];
+        audioSourceDescriptors: AudioSourceDescriptor[];
+    };
+    placement: EditorMediaImportPlacement;
+}
+
+export interface EditorMediaImportSuccess extends EditorCommandSuccess {
+    sourceIds: string[];
+    placedClipIds: string[];
+}
+
+export type EditorMediaImportResult = EditorMediaImportSuccess | EditorCommandFailure;
+
 export interface HistoryMutationRequest {
     apiVersion: '2026-07-25';
     toolName: Extract<EditorMutationToolName, 'waptions_history_apply'>;
@@ -125,6 +168,14 @@ export interface EditorEngine {
     getSnapshot(): EditorEngineSnapshot;
     plan(request: EditorCommandBatchRequest): EditorCommandPlan;
     dispatch(request: EditorCommandBatchRequest): Promise<EditorCommandResult>;
+    /**
+     * Internal import boundary used after an adapter resolves public media handles. Hydration is
+     * deliberately separate so capability identities never enter the durable request digest.
+     */
+    importMedia(
+        request: EditorMediaImportRequest,
+        hydration?: EditorAssetHydration,
+    ): Promise<EditorMediaImportResult>;
     undo(request: HistoryMutationRequest): Promise<EditorCommandResult>;
     redo(request: HistoryMutationRequest): Promise<EditorCommandResult>;
     jumpToHistory(request: HistoryJumpRequest): Promise<EditorCommandResult>;

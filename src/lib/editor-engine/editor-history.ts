@@ -4,6 +4,7 @@ import {
     validateSerializablePatches,
     type SerializablePatch,
 } from '@/lib/serializable-patch';
+import { canonicalizeJson } from '@/lib/editorial-transcription/canonical-json';
 import type { EditorManifestV4 } from '@/types/video';
 import { EditorCommandError } from './editor-command-errors';
 import type {
@@ -50,16 +51,21 @@ export function createEditorHistoryEntry(input: {
         afterProjection,
         EDITOR_HISTORY_ROOTS,
     );
+    const transcriptRecordIds = collectTranscriptRecordIds(input.before, input.after);
+    const sourceReferences = collectSourceReferences(input.before, input.after);
     const byteSize = encodedBytes(pair.patches) + encodedBytes(pair.inversePatches)
         + encodedBytes(input.summary)
         + encodedBytes(input.beforeProject)
-        + encodedBytes(input.afterProject);
+        + encodedBytes(input.afterProject)
+        + encodedBytes(transcriptRecordIds)
+        + encodedBytes(sourceReferences);
     return {
         summary: structuredClone(input.summary),
         patches: pair.patches,
         inversePatches: pair.inversePatches,
         byteSize,
-        transcriptRecordIds: collectTranscriptRecordIds(input.before, input.after),
+        transcriptRecordIds,
+        sourceReferences,
         projectMetadata: input.beforeProject.name === input.afterProject.name
             ? null
             : {
@@ -93,7 +99,10 @@ export function validateEditorHistoryState(state: EditorHistoryState): void {
     entries.forEach((entry) => {
         if (!entry || !entry.summary || !Array.isArray(entry.patches)
             || !Array.isArray(entry.inversePatches)
-            || !Array.isArray(entry.transcriptRecordIds)) {
+            || !Array.isArray(entry.transcriptRecordIds)
+            || !entry.sourceReferences
+            || !Array.isArray(entry.sourceReferences.videoSourceIds)
+            || !Array.isArray(entry.sourceReferences.audioSourceIds)) {
             throw invalidHistory('Recovered editor history contains an invalid entry.');
         }
         try {
@@ -114,6 +123,11 @@ export function validateEditorHistoryState(state: EditorHistoryState): void {
         if (!entry.transcriptRecordIds.every((recordId) => typeof recordId === 'string'
             && recordId.length > 0 && recordId.length <= 256)) {
             throw invalidHistory('Recovered editor history contains an invalid transcript reference.');
+        }
+        if (![...entry.sourceReferences.videoSourceIds, ...entry.sourceReferences.audioSourceIds]
+            .every((sourceId) => typeof sourceId === 'string'
+                && sourceId.length > 0 && sourceId.length <= 256)) {
+            throw invalidHistory('Recovered editor history contains an invalid source reference.');
         }
         if (entry.projectMetadata) {
             validateProjectMetadata(entry.projectMetadata.before);
@@ -245,6 +259,46 @@ export function collectManifestTranscriptRecordIds(manifest: EditorManifestV4): 
     ]);
 }
 
+export function collectSourcePins(state: EditorHistoryState): {
+    history: {
+        videoSourceIds: string[];
+        audioSourceIds: string[];
+    };
+    redo: {
+        videoSourceIds: string[];
+        audioSourceIds: string[];
+    };
+} {
+    return {
+        history: {
+            videoSourceIds: unique(state.past.flatMap(
+                (entry) => entry.sourceReferences.videoSourceIds,
+            )),
+            audioSourceIds: unique(state.past.flatMap(
+                (entry) => entry.sourceReferences.audioSourceIds,
+            )),
+        },
+        redo: {
+            videoSourceIds: unique(state.future.flatMap(
+                (entry) => entry.sourceReferences.videoSourceIds,
+            )),
+            audioSourceIds: unique(state.future.flatMap(
+                (entry) => entry.sourceReferences.audioSourceIds,
+            )),
+        },
+    };
+}
+
+export function collectManifestSourceIds(manifest: EditorManifestV4): {
+    videoSourceIds: string[];
+    audioSourceIds: string[];
+} {
+    return {
+        videoSourceIds: unique(manifest.videoSourceDescriptors.map((source) => source.id)),
+        audioSourceIds: unique(manifest.audioSourceDescriptors.map((source) => source.id)),
+    };
+}
+
 function cloneEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
     return {
         summary: structuredClone(entry.summary),
@@ -252,6 +306,10 @@ function cloneEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
         inversePatches: structuredClone(entry.inversePatches) as SerializablePatch[],
         byteSize: entry.byteSize,
         transcriptRecordIds: [...entry.transcriptRecordIds],
+        sourceReferences: {
+            videoSourceIds: [...entry.sourceReferences.videoSourceIds],
+            audioSourceIds: [...entry.sourceReferences.audioSourceIds],
+        },
         projectMetadata: entry.projectMetadata ? structuredClone(entry.projectMetadata) : null,
     };
 }
@@ -264,6 +322,98 @@ function collectTranscriptRecordIds(
         ...collectManifestTranscriptRecordIds(before),
         ...collectManifestTranscriptRecordIds(after),
     ]);
+}
+
+function collectSourceReferences(
+    before: EditorManifestV4,
+    after: EditorManifestV4,
+): EditorHistoryEntry['sourceReferences'] {
+    const video = new Set<string>();
+    const audio = new Set<string>();
+    collectChangedDescriptors(
+        before.videoSourceDescriptors,
+        after.videoSourceDescriptors,
+        video,
+    );
+    collectChangedDescriptors(
+        before.audioSourceDescriptors,
+        after.audioSourceDescriptors,
+        audio,
+    );
+
+    const beforeVideoClips = new Map(before.videoClips.map((clip) => [clip.id, clip]));
+    const afterVideoClips = new Map(after.videoClips.map((clip) => [clip.id, clip]));
+    new Set([
+        ...Array.from(beforeVideoClips.keys()),
+        ...Array.from(afterVideoClips.keys()),
+    ]).forEach((clipId) => {
+        const previous = beforeVideoClips.get(clipId);
+        const next = afterVideoClips.get(clipId);
+        if (sameOptionalCanonicalJson(previous, next)) return;
+        if (previous) video.add(previous.sourceId);
+        if (next) video.add(next.sourceId);
+    });
+
+    const collectAudioClips = (
+        manifest: EditorManifestV4,
+    ): Map<string, EditorManifestV4['audioTracks'][number]['clips'][number]> => new Map(
+        manifest.audioTracks.flatMap((track) => track.clips.map((clip) => [clip.id, clip] as const)),
+    );
+    const beforeAudioClips = collectAudioClips(before);
+    const afterAudioClips = collectAudioClips(after);
+    const addAudioClipSource = (
+        clip: EditorManifestV4['audioTracks'][number]['clips'][number],
+    ): void => {
+        if (clip.source.kind === 'audio-source') audio.add(clip.source.audioSourceId);
+        else video.add(clip.source.videoSourceId);
+    };
+    new Set([
+        ...Array.from(beforeAudioClips.keys()),
+        ...Array.from(afterAudioClips.keys()),
+    ]).forEach((clipId) => {
+        const previous = beforeAudioClips.get(clipId);
+        const next = afterAudioClips.get(clipId);
+        if (sameOptionalCanonicalJson(previous, next)) return;
+        if (previous) addAudioClipSource(previous);
+        if (next) addAudioClipSource(next);
+    });
+
+    const beforeBlocks = before.narrative?.blocks ?? {};
+    const afterBlocks = after.narrative?.blocks ?? {};
+    new Set([...Object.keys(beforeBlocks), ...Object.keys(afterBlocks)]).forEach((blockId) => {
+        const previous = beforeBlocks[blockId];
+        const next = afterBlocks[blockId];
+        if (sameOptionalCanonicalJson(previous, next)) return;
+        if (previous) video.add(previous.sourceId);
+        if (next) video.add(next.sourceId);
+    });
+
+    return {
+        videoSourceIds: unique(Array.from(video)),
+        audioSourceIds: unique(Array.from(audio)),
+    };
+}
+
+function collectChangedDescriptors<T extends { id: string }>(
+    before: readonly T[],
+    after: readonly T[],
+    target: Set<string>,
+): void {
+    const previous = new Map(before.map((descriptor) => [descriptor.id, descriptor]));
+    const next = new Map(after.map((descriptor) => [descriptor.id, descriptor]));
+    new Set([
+        ...Array.from(previous.keys()),
+        ...Array.from(next.keys()),
+    ]).forEach((sourceId) => {
+        if (!sameOptionalCanonicalJson(previous.get(sourceId), next.get(sourceId))) {
+            target.add(sourceId);
+        }
+    });
+}
+
+function sameOptionalCanonicalJson(left: unknown, right: unknown): boolean {
+    if (left === undefined || right === undefined) return left === right;
+    return canonicalizeJson(left) === canonicalizeJson(right);
 }
 
 function unique(values: readonly string[]): string[] {

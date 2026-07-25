@@ -17,6 +17,7 @@ export type EditorCommandErrorCode =
     | 'OVERLAP_CONFLICT'
     | 'LOCKED_TARGET'
     | 'ORDER_NOT_MEANINGFUL'
+    | 'SOURCE_CHANGED'
     | 'COORDINATOR_UNAVAILABLE'
     | 'INTERNAL_ERROR';
 
