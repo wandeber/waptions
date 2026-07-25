@@ -205,6 +205,8 @@ export class NodeFfmpegResolvedPlanExecutor implements FfmpegResolvedPlanExecuto
                     fpsDenominator: request.plan.renderProfile.fps.denominator,
                     frameCount: request.plan.contentEndFrame,
                     outputSampleCount: request.plan.outputEndSample,
+                    maximumOutputBytes: request.maximumScratchBytes
+                        ?? FALLBACK_MAX_SCRATCH_BYTES,
                 }),
                 stdio: [
                     'pipe',

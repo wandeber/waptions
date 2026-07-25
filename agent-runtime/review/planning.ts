@@ -204,10 +204,7 @@ function frameGridPlan(
     decodedReservationBytes: decodedReservationBytes(source, outputRasterBytes),
     processOperation: operation,
     processLimits: baseLimits({
-      maxInputBytes: Math.min(
-        source.identity.byteLength,
-        32 * 1024 * 1024 + timestampsUs.length * 8 * 1024 * 1024,
-      ),
+      maxInputBytes: source.identity.byteLength,
       maxOutputBytes: MEDIA_JOB_LIMITS.maxImageArtifactBytes,
       timeoutMs: 120_000,
       maxResidentBytes: 256 * 1024 * 1024,
@@ -234,7 +231,6 @@ function audioPlan(
     5_000_000,
     'Audio bucket duration',
   );
-  const durationUs = totalRangeDuration(ranges);
   const bucketCount = sampleCountAcrossRanges(ranges, bucketDurationUs);
   if (bucketCount > MEDIA_JOB_LIMITS.maxAudioBuckets) {
     throw new ManagedMediaError(
@@ -293,10 +289,7 @@ function audioPlan(
     decodedReservationBytes: 0,
     processOperation: operation,
     processLimits: baseLimits({
-      maxInputBytes: Math.min(
-        source.identity.byteLength,
-        32 * 1024 * 1024 + Math.ceil(durationUs / 1_000_000) * 1024 * 1024,
-      ),
+      maxInputBytes: source.identity.byteLength,
       maxOutputBytes: 0,
       timeoutMs: 180_000,
       maxResidentBytes: 128 * 1024 * 1024,
@@ -361,10 +354,7 @@ function scenePlan(
     decodedReservationBytes: decodedReservationBytes(source),
     processOperation: operation,
     processLimits: baseLimits({
-      maxInputBytes: Math.min(
-        source.identity.byteLength,
-        32 * 1024 * 1024 + sampleCount * 512 * 1024,
-      ),
+      maxInputBytes: source.identity.byteLength,
       maxOutputBytes: 0,
       timeoutMs: 180_000,
       maxResidentBytes: 192 * 1024 * 1024,
@@ -438,7 +428,7 @@ function proxyPlan(
     decodedReservationBytes: decodedReservationBytes(source),
     processOperation: operation,
     processLimits: baseLimits({
-      maxInputBytes: Math.min(source.identity.byteLength, 1024 * 1024 * 1024),
+      maxInputBytes: source.identity.byteLength,
       maxOutputBytes: MEDIA_JOB_LIMITS.maxProxyArtifactBytes,
       timeoutMs: 10 * 60_000,
       maxResidentBytes: 384 * 1024 * 1024,

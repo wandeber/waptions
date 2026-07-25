@@ -104,6 +104,7 @@ export class NodeBackendProcessTracker {
 
         let sampling = false;
         let closed = false;
+        let consecutiveSampleFailures = 0;
         const sample = async () => {
             if (closed || sampling) return;
             sampling = true;
@@ -113,6 +114,7 @@ export class NodeBackendProcessTracker {
                 if (!Number.isSafeInteger(bytes) || bytes < 0) {
                     throw new Error('Resident-memory sampler returned an invalid byte count.');
                 }
+                consecutiveSampleFailures = 0;
                 this.activeResidentBytes.set(pid, bytes);
                 const total = Array.from(this.activeResidentBytes.values())
                     .reduce((sum, value) => sum + value, 0);
@@ -126,9 +128,18 @@ export class NodeBackendProcessTracker {
                         'The FFmpeg backend exceeded its resident-memory limit.',
                     ));
                 }
-            } catch {
-                // A process can exit between the timer firing and the OS sample. The close event is
-                // the authoritative process-lifecycle signal, so sampling races are ignored.
+            } catch (error) {
+                // A single failure can be a process-exit race. A second failure while the process
+                // remains registered means its memory budget is unverifiable and must fail closed.
+                consecutiveSampleFailures += 1;
+                if (!closed && consecutiveSampleFailures >= 2) {
+                    onLimit(new HeadlessRenderError(
+                        'RESOURCE_LIMIT',
+                        'The FFmpeg backend resident-memory limit could not be verified.',
+                        false,
+                        error instanceof Error ? { cause: error } : undefined,
+                    ));
+                }
             } finally {
                 sampling = false;
             }
@@ -402,7 +413,10 @@ export async function sampleNodeProcessResidentBytes(pid: number): Promise<numbe
     if (platform() === 'linux') {
         const status = await readFile(`/proc/${pid}/status`, 'utf8');
         const match = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
-        return match ? Number(match[1]) * 1024 : 0;
+        if (!match) {
+            throw new Error('Linux did not report a parseable resident-memory sample.');
+        }
+        return Number(match[1]) * 1024;
     }
     if (platform() === 'darwin') {
         const stdout = await new Promise<string>((resolve, reject) => {
@@ -419,9 +433,10 @@ export async function sampleNodeProcessResidentBytes(pid: number): Promise<numbe
             );
         });
         const kibibytes = Number(stdout.trim());
-        return Number.isFinite(kibibytes) && kibibytes >= 0
-            ? Math.round(kibibytes * 1024)
-            : 0;
+        if (!stdout.trim() || !Number.isFinite(kibibytes) || kibibytes < 0) {
+            throw new Error('macOS did not report a parseable resident-memory sample.');
+        }
+        return Math.round(kibibytes * 1024);
     }
     throw new Error('Resident-memory sampling is unavailable on this platform.');
 }

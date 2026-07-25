@@ -122,6 +122,7 @@ export function buildFfmpegEncoderArgs(input: {
     fpsDenominator: number;
     frameCount: number;
     outputSampleCount: number;
+    maximumOutputBytes: number;
 }): readonly string[] {
     validatePositiveInteger(input.width, 'width');
     validatePositiveInteger(input.height, 'height');
@@ -129,6 +130,7 @@ export function buildFfmpegEncoderArgs(input: {
     validatePositiveInteger(input.fpsDenominator, 'fpsDenominator');
     validatePositiveInteger(input.frameCount, 'frameCount');
     validatePositiveInteger(input.outputSampleCount, 'outputSampleCount');
+    validatePositiveInteger(input.maximumOutputBytes, 'maximumOutputBytes');
     if (input.width % 2 !== 0 || input.height % 2 !== 0) {
         throw new HeadlessRenderError(
             'INVALID_SNAPSHOT',
@@ -168,6 +170,7 @@ export function buildFfmpegEncoderArgs(input: {
         '-threads:a', '1',
         '-max_muxing_queue_size', '128',
         '-progress', `pipe:${FFMPEG_PROGRESS_FD}`,
+        '-fs', String(input.maximumOutputBytes),
         '-f', 'mp4',
         '-y',
         inheritedFdPath(FFMPEG_OUTPUT_FD),

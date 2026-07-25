@@ -223,8 +223,8 @@ export function parseFfprobeMetadata(stdout: Uint8Array, expectedBytes: number):
   const audioStreams = streams
     .map(parseAudioStream)
     .filter((stream): stream is MediaAudioStreamMetadata => Boolean(stream));
-  if (videoStreams.length === 0) {
-    throw new ManagedMediaError('UNSUPPORTED_MEDIA', 'Media contains no video stream.');
+  if (videoStreams.length === 0 && audioStreams.length === 0) {
+    throw new ManagedMediaError('UNSUPPORTED_MEDIA', 'Media contains no supported audio or video stream.');
   }
 
   const format = document.format as FfprobeFormat;
@@ -260,7 +260,7 @@ export function parseFfprobeMetadata(stdout: Uint8Array, expectedBytes: number):
     bitRate: readOptionalInteger(format.bit_rate),
     videoStreams,
     audioStreams,
-    primaryVideoStreamIndex: videoStreams[0].index,
+    primaryVideoStreamIndex: videoStreams[0]?.index,
     primaryAudioStreamIndex: audioStreams[0]?.index,
   };
 }
@@ -431,7 +431,10 @@ export class ManagedMediaProbeService implements ManagedMediaProbePort {
         limits: {
           timeoutMs: MEDIA_JOB_LIMITS.probeTimeoutMs,
           killGraceMs: MEDIA_JOB_LIMITS.processKillGraceMs,
-          maxInputBytes: MEDIA_JOB_LIMITS.maxProbeInputBytes,
+          maxInputBytes: Math.min(
+            handle.snapshot.byteLength,
+            MEDIA_JOB_LIMITS.maxProbeInputBytes,
+          ),
           maxOutputBytes: 0,
           maxStdoutBytes: MEDIA_JOB_LIMITS.maxProbeStdoutBytes,
           maxStderrBytes: MEDIA_JOB_LIMITS.maxProbeStderrBytes,

@@ -118,6 +118,27 @@ describe('bounded Node FFmpeg process lifecycle', () => {
             peakBackendResidentBytes: 65,
         });
     });
+
+    it('fails closed when resident-memory accounting is unavailable', async () => {
+        const child = createFakeChild({ closeOnTerm: true });
+        const tracker = new NodeBackendProcessTracker(
+            1,
+            64,
+            vi.fn().mockRejectedValue(new Error('sampler unavailable')),
+            1,
+        );
+        const session = createRunner(child).start({
+            executable: 'ffmpeg',
+            args: ['-version'],
+            stdio: ['ignore', 'pipe', 'pipe'],
+            limits: processLimits({ maximumResidentBytes: 64 }),
+            tracker,
+            maximumStdoutBytes: 1024,
+        });
+
+        await expect(session.wait()).rejects.toMatchObject({ code: 'RESOURCE_LIMIT' });
+        expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    });
 });
 
 function createRunner(child: ReturnType<typeof createFakeChild>) {

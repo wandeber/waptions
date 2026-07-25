@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -86,8 +86,10 @@ describe('PathGrantAuthority', () => {
             privatePath = path;
             expect(await readFile(path, 'utf8')).toBe('managed');
         });
-        await staged.commit();
+        const publication = await staged.commit();
         expect(await readFile(target, 'utf8')).toBe('managed');
+        expect(await readFile(privatePath, 'utf8')).toBe('managed');
+        await publication.accept();
         await expect(readFile(privatePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     });
 
@@ -208,6 +210,62 @@ describe('PathGrantAuthority', () => {
         expect(recovered?.record.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
         expect(await readFile(target, 'utf8')).toBe('complete-before-publication');
         await recovered?.accept();
+        expect(await restarted.recoverOutputPublication(
+            grant.grantId,
+            scope.sessionId,
+        )).toBeNull();
+    });
+
+    it('rejects a crash-recovered publication with no durable output record', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const target = join(runtime.path, 'orphaned-export.mp4');
+        const grants = authority(runtime.path);
+        const grant = await grants.create(
+            scope.sessionId,
+            scope.sessionEpoch,
+            'create-only-destination',
+            target,
+        );
+        const staged = await grants.stageCreate(grant.grantId, scope);
+        await staged.handle.writeFile('complete-but-not-durable');
+        await staged.handle.sync();
+        await staged.commit();
+        expect(await readFile(target, 'utf8')).toBe('complete-but-not-durable');
+
+        const restarted = authority(runtime.path);
+        await restarted.reconcileOutputPublications(scope.sessionId, []);
+        await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await restarted.recoverOutputPublication(
+            grant.grantId,
+            scope.sessionId,
+        )).toBeNull();
+    });
+
+    it('retains recovery authority when the target disappears before acceptance', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const target = join(runtime.path, 'missing-before-accept.mp4');
+        const grants = authority(runtime.path);
+        const grant = await grants.create(
+            scope.sessionId,
+            scope.sessionEpoch,
+            'create-only-destination',
+            target,
+        );
+        const staged = await grants.stageCreate(grant.grantId, scope);
+        await staged.handle.writeFile('complete-output');
+        const publication = await staged.commit();
+        await unlink(target);
+
+        await expect(publication.accept()).rejects.toMatchObject({ code: 'ENOENT' });
+        const restarted = authority(runtime.path);
+        const recovered = await restarted.recoverOutputPublication(
+            grant.grantId,
+            scope.sessionId,
+        );
+        expect(recovered?.record).toEqual(publication.record);
+        await recovered?.reject();
         expect(await restarted.recoverOutputPublication(
             grant.grantId,
             scope.sessionId,

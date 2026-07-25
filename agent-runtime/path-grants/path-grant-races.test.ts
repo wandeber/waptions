@@ -218,4 +218,33 @@ describe('PathGrantAuthority adversarial races', () => {
             code: 'ENOENT',
         });
     });
+
+    it('truncates every published inode alias when the parent moves before rollback', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const destinationRoot = join(runtime.path, 'rollback-destination');
+        const movedRoot = join(runtime.path, 'rollback-destination-moved');
+        const target = join(destinationRoot, 'export.mp4');
+        await fs.mkdir(destinationRoot);
+        const authority = new PathGrantAuthority({
+            privateCopyRoot: join(runtime.path, 'private-copies'),
+            authoritySecret: Buffer.alloc(32, 7),
+        });
+        const grant = await authority.create(
+            scope.sessionId,
+            scope.sessionEpoch,
+            'create-only-destination',
+            target,
+        );
+        const staged = await authority.stageCreate(grant.grantId, scope);
+        await staged.handle.writeFile('sensitive-complete-output');
+        const publication = await staged.commit();
+        await fs.rename(destinationRoot, movedRoot);
+        await fs.mkdir(destinationRoot);
+
+        await expect(publication.reject()).rejects.toMatchObject({
+            code: 'PATH_IDENTITY_CHANGED',
+        });
+        expect(await fs.readFile(join(movedRoot, 'export.mp4'), 'utf8')).toBe('');
+    });
 });

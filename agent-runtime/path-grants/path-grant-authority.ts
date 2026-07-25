@@ -244,6 +244,15 @@ export class PathGrantAuthority {
         return this.grants.has(grantId);
     }
 
+    /** Revalidates opaque grant authority without resolving or exposing its canonical path. */
+    assertActiveGrant(
+        grantId: string,
+        scope: PathGrantScope,
+        kind?: PathGrantKind,
+    ): void {
+        this.resolve(grantId, scope, kind);
+    }
+
     async create(
         sessionId: string,
         sessionEpoch: string,
@@ -384,6 +393,7 @@ export class PathGrantAuthority {
         sourceId: string,
         digest: string,
         expectedBytes: number,
+        options: { signal?: AbortSignal; deadlineMilliseconds?: number } = {},
     ): Promise<VerifiedReadHandle> {
         if (
             !sessionId
@@ -395,6 +405,8 @@ export class PathGrantAuthority {
         ) {
             throw managedError('INVALID_REQUEST', 'The retained source identity is invalid.');
         }
+        const deadline = deadlineFrom(options.deadlineMilliseconds, 5 * 60 * 1000);
+        assertNotCancelled(options.signal, deadline);
         const path = join(
             sourceCopySessionRoot(this.options.privateCopyRoot, sessionId),
             `${digest.slice(7)}.source`,
@@ -412,8 +424,8 @@ export class PathGrantAuthority {
             }
             const verified = await digestHandle(
                 handle,
-                undefined,
-                deadlineFrom(undefined, 5 * 60 * 1000),
+                options.signal,
+                deadline,
             );
             if (verified.digest !== digest || verified.bytes !== expectedBytes) {
                 throw managedError('SOURCE_CHANGED', 'The retained source digest changed.');
@@ -751,8 +763,6 @@ export class PathGrantAuthority {
 
                 await parent.handle.close();
                 parent = undefined;
-                await removeIfIdentityMatches(privatePath, stagingIdentity);
-                await fsyncDirectory(stagingSessionRoot);
                 await stagingHandle.close();
                 lifecycle = 'settled';
                 clearTimeout(lifetimeTimer);
@@ -975,21 +985,76 @@ export class PathGrantAuthority {
                 await atomicWriteJson(journalPath, journal, { mode: 0o600 });
                 await fsyncDirectory(publicationRoot);
             }
-            await removeIfIdentityMatches(journal.privatePath, journal.finalIdentity)
-                .catch(() => undefined);
             return this.outputPublication(journal, journalPath);
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-                await Promise.all([
-                    rm(journal.privatePath, { force: true }),
-                    rm(journalPath, { force: true }),
-                ]);
-                await fsyncDirectory(publicationRoot).catch(() => undefined);
-                return null;
+                // The private hardlink is the recovery authority. Keep it and the journal until
+                // the coordinator has classified the publication as durable or orphaned.
+                return this.outputPublication(journal, journalPath);
             }
             throw error;
         } finally {
             await handle?.close().catch(() => undefined);
+        }
+    }
+
+    /**
+     * Reconciles every private publication journal for one recovered session against the durable
+     * output namespace. Orphan publications are rejected; exact durable records are accepted.
+     */
+    async reconcileOutputPublications(
+        sessionId: string,
+        durableOutputs: readonly OutputPublicationRecord[],
+    ): Promise<void> {
+        if (!sessionId || new Set(durableOutputs.map((output) => output.publicationId)).size
+            !== durableOutputs.length) {
+            throw managedError('INVALID_REQUEST', 'Durable output recovery scope is invalid.');
+        }
+        const durableById = new Map(durableOutputs.map((output) => {
+            validateOutputPublicationRecord(output);
+            if (output.sessionId !== sessionId) {
+                throw managedError(
+                    'PATH_NOT_GRANTED',
+                    'A durable output does not belong to the recovered session.',
+                );
+            }
+            return [output.publicationId, output] as const;
+        }));
+        const publicationRoot = join(this.options.privateCopyRoot, 'output-publications');
+        await ensurePrivateDirectory(publicationRoot);
+        const names = (await readdir(publicationRoot))
+            .filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
+            .sort();
+        for (const name of names) {
+            const journal = await readJsonFile<OutputPublicationJournal>(
+                join(publicationRoot, name),
+                256 * 1024,
+            );
+            if (!journal) continue;
+            validateOutputPublicationJournal(journal);
+            if (journal.sessionId !== sessionId) continue;
+            const durable = durableById.get(journal.publicationId);
+            if (!durable) {
+                // An orphan is rejected from the retained private hardlink so a swapped target
+                // can never trick recovery into deleting unrelated bytes.
+                await this.outputPublication(
+                    journal,
+                    join(publicationRoot, name),
+                ).reject();
+                continue;
+            }
+            const pending = await this.recoverOutputPublication(journal.grantId, sessionId);
+            if (!pending
+                || pending.record.publicationId !== durable.publicationId
+                || pending.record.grantId !== durable.grantId
+                || pending.record.byteLength !== durable.byteLength
+                || pending.record.digest !== durable.digest) {
+                throw managedError(
+                    'PATH_IDENTITY_CHANGED',
+                    'A durable output publication could not be recovered exactly.',
+                );
+            }
+            await pending.accept();
         }
     }
 
@@ -1074,14 +1139,59 @@ export class PathGrantAuthority {
         const finish = async (removeTarget: boolean) => {
             if (settled) return;
             if (removeTarget) {
-                await removeIfIdentityMatches(journal.targetPath, journal.finalIdentity)
-                    .catch(() => undefined);
-                await fsyncDirectory(dirname(journal.targetPath)).catch(() => undefined);
+                const privateHandle = await openNoFollow(
+                    journal.privatePath,
+                    constants.O_RDWR | constants.O_NONBLOCK,
+                );
+                try {
+                    const metadata = await privateHandle.stat({ bigint: true });
+                    validateStoredIdentity(journal.finalIdentity, fileIdentity(metadata));
+                    await privateHandle.truncate(0);
+                    await privateHandle.sync();
+                } finally {
+                    await privateHandle.close();
+                }
+                await removeIfIdentityMatches(journal.targetPath, journal.finalIdentity);
+                await validateCurrentParentIdentity(
+                    journal.targetPath,
+                    journal.parentIdentity,
+                );
+                await fsyncDirectory(dirname(journal.targetPath));
+            } else {
+                // Acceptance discards the final recovery authority. Revalidate both the
+                // published inode and its parent immediately before removing that authority.
+                const targetHandle = await openNoFollow(
+                    journal.targetPath,
+                    constants.O_RDONLY | constants.O_NONBLOCK,
+                );
+                try {
+                    const metadata = await targetHandle.stat({ bigint: true });
+                    validateRecoveredPublishedFile(metadata);
+                    validateStoredIdentity(journal.finalIdentity, fileIdentity(metadata));
+                    const digest = await digestHandle(
+                        targetHandle,
+                        undefined,
+                        deadlineFrom(undefined, 5 * 60 * 1000),
+                    );
+                    if (digest.digest !== journal.digest
+                        || digest.bytes !== journal.byteLength) {
+                        throw managedError(
+                            'PATH_IDENTITY_CHANGED',
+                            'The output publication changed before acceptance.',
+                        );
+                    }
+                    await validateCurrentParentIdentity(
+                        journal.targetPath,
+                        journal.parentIdentity,
+                    );
+                } finally {
+                    await targetHandle.close();
+                }
             }
-            await removeIfIdentityMatches(journal.privatePath, journal.finalIdentity)
-                .catch(() => undefined);
+            await removeIfIdentityMatches(journal.privatePath, journal.finalIdentity);
+            await fsyncDirectory(dirname(journal.privatePath));
             await rm(journalPath, { force: true });
-            await fsyncDirectory(dirname(journalPath)).catch(() => undefined);
+            await fsyncDirectory(dirname(journalPath));
             settled = true;
         };
         return {
@@ -1864,6 +1974,22 @@ function validateOutputPublicationJournal(
     validateAbsolutePath(journal.targetPath);
     validateAbsolutePath(journal.privatePath);
     toSafeNumber(journal.finalIdentity.size, 'output publication size');
+}
+
+function validateOutputPublicationRecord(record: OutputPublicationRecord): void {
+    if (record.schemaVersion !== 1
+        || !/^[a-f0-9]{64}$/.test(record.publicationId)
+        || !record.grantId
+        || !record.sessionId
+        || !Number.isSafeInteger(record.byteLength)
+        || record.byteLength < 0
+        || !/^sha256:[a-f0-9]{64}$/.test(record.digest)
+        || !Number.isFinite(Date.parse(record.createdAt))) {
+        throw managedError(
+            'PATH_IDENTITY_CHANGED',
+            'The durable output publication record is invalid.',
+        );
+    }
 }
 
 function withGrantMac(

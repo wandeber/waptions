@@ -7,7 +7,7 @@ export const MEDIA_JOB_LIMITS = Object.freeze({
   maxReadAccountingRanges: 256,
   maxProbeStdoutBytes: 1024 * 1024,
   maxProbeStderrBytes: 64 * 1024,
-  maxProbeInputBytes: 64 * 1024 * 1024,
+  maxProbeInputBytes: 64 * 1024 * 1024 * 1024,
   probeTimeoutMs: 30_000,
   processKillGraceMs: 5_000,
   maxReviewRanges: 64,

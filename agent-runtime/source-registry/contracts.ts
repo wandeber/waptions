@@ -59,7 +59,7 @@ export interface MediaProbeMetadata {
   readonly bitRate?: number;
   readonly videoStreams: readonly MediaVideoStreamMetadata[];
   readonly audioStreams: readonly MediaAudioStreamMetadata[];
-  readonly primaryVideoStreamIndex: number;
+  readonly primaryVideoStreamIndex?: number;
   readonly primaryAudioStreamIndex?: number;
 }
 

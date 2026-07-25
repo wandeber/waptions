@@ -33,6 +33,7 @@ describe('fixed FFmpeg argument construction', () => {
             fpsDenominator: plan.renderProfile.fps.denominator,
             frameCount: plan.contentEndFrame,
             outputSampleCount: plan.outputEndSample,
+            maximumOutputBytes: 1024 * 1024,
         });
 
         expect(decoder).toContain('/dev/fd/3');
