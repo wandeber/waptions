@@ -1,0 +1,49 @@
+{
+  "name": "@waptions/agent-runtime",
+  "version": "2026.7.25",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.1.3",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "waptions-mcp": "./dist/server/stdio.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "http-bridge/README.md",
+    "mcp/README.md",
+    "server/README.md",
+    "runtime-package.json"
+  ],
+  "exports": {
+    "./http-bridge": "./dist/http-bridge/index.js",
+    "./mcp": "./dist/mcp/index.js",
+    "./server": "./dist/server/index.js"
+  },
+  "scripts": {
+    "build": "node scripts/clean-build.mjs && tsc -p tsconfig.build.json && node scripts/write-build-manifest.mjs",
+    "prepack": "pnpm run build",
+    "pack:verify": "node scripts/verify-packed-package.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && vitest run",
+    "test:unit": "vitest run mcp",
+    "test:bridge": "vitest run http-bridge",
+    "test:protocol": "pnpm run build && vitest run server",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run build && node scripts/verify-build-manifest.mjs && pnpm run pack:verify"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "ajv": "8.20.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.20",
+    "typescript": "5.7.3",
+    "vitest": "4.1.8"
+  }
+}

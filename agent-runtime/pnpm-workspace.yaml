@@ -1,0 +1,4 @@
+packages: []
+
+overrides:
+  ajv: 8.20.0

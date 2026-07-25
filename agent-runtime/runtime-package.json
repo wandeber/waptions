@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "requiredSurfaces": [
+    "coordinator",
+    "runtime",
+    "render",
+    "media",
+    "http-bridge",
+    "mcp",
+    "server"
+  ],
+  "entrypoints": {
+    "stdio": "server/stdio.js",
+    "httpBridge": "http-bridge/index.js"
+  },
+  "transports": {
+    "control": "private-ipc",
+    "httpBridgeHost": "localhost",
+    "httpBridgePort": 59941
+  }
+}

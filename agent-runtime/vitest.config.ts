@@ -2,6 +2,7 @@ import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  root: path.resolve(__dirname, '..'),
   resolve: {
     alias: {
       '@': path.resolve(__dirname, '../src'),
@@ -10,6 +11,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['agent-runtime/**/*.test.ts'],
+    testTimeout: 15_000,
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       reportsDirectory: 'coverage/agent-runtime',
