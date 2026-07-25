@@ -70,6 +70,33 @@ export const SHORTCUTS: Record<string, ShortcutConfig> = {
         description: 'Delete selected media',
         category: 'edit'
     },
+    TEXT_SPLIT_BLOCK: {
+        id: 'TEXT_SPLIT_BLOCK',
+        key: 's',
+        shift: true,
+        description: 'Split selected text block',
+        category: 'edit'
+    },
+    TEXT_MERGE_NEXT: {
+        id: 'TEXT_MERGE_NEXT',
+        key: 'm',
+        shift: true,
+        description: 'Merge selected text block with next',
+        category: 'edit'
+    },
+    TEXT_DELETE_SELECTION: {
+        id: 'TEXT_DELETE_SELECTION',
+        key: 'Delete',
+        description: 'Delete selected source-backed media',
+        category: 'edit'
+    },
+    TEXT_DELETE_ALL_SILENCES: {
+        id: 'TEXT_DELETE_ALL_SILENCES',
+        key: 'Delete',
+        shift: true,
+        description: 'Delete all source-backed silences',
+        category: 'edit'
+    },
     PLAY_PAUSE: {
         id: 'PLAY_PAUSE',
         key: ' ',
@@ -109,6 +136,7 @@ const DISPLAY_KEYS: Record<string, string> = {
     ArrowLeft: 'Left Arrow',
     ArrowRight: 'Right Arrow',
     Backspace: 'Backspace',
+    Delete: 'Delete',
 };
 
 /** Formats one shortcut consistently for native hover tooltips across editor controls. */

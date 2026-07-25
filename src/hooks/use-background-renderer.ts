@@ -5,11 +5,13 @@ import { useShallow } from 'zustand/react/shallow';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { videoCache } from '@/lib/video-cache';
-import { buildClipPlacements } from '@/lib/video-timeline';
 import { secondsToFrames } from '@/lib/render-profile';
-import { buildPreviewWarmupFramePlan } from '@/lib/video-frame-plan';
+import {
+    buildPreviewWarmupFramePlanForRuntime,
+} from '@/lib/video-frame-plan';
 import { PreviewWarmupQueue } from '@/lib/preview-warmup-queue';
 import { usePreviewTargetResolution } from '@/lib/preview-target-resolution';
+import { buildTimelineVideoFrameRuntimePlanV4 } from '@/stores/timeline-v4-compat';
 import type { VideoSourceAssetV3 } from '@/types/video';
 import type {
     PreviewWarmupFrame,
@@ -63,15 +65,21 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
         fps = 10,
         playbackLookaheadFrames = 12,
     } = options;
-    const { videoSources, videoClips, projectFrameRate } = useTimelineStore(useShallow((state) => ({
+    const { videoSources, videoClips, videoTracks, renderProfile } = useTimelineStore(useShallow((state) => ({
         videoSources: state.videoSources,
         videoClips: state.videoClips,
-        projectFrameRate: state.renderProfile.fps,
+        videoTracks: state.videoTracks,
+        renderProfile: state.renderProfile,
     })));
+    const projectFrameRate = renderProfile.fps;
     const targetResolution = usePreviewTargetResolution();
-    const placements = useMemo(
-        () => buildClipPlacements(videoClips, projectFrameRate),
-        [projectFrameRate, videoClips],
+    const framePlan = useMemo(
+        () => buildTimelineVideoFrameRuntimePlanV4({
+            renderProfile,
+            videoClips,
+            videoTracks,
+        }),
+        [renderProfile, videoClips, videoTracks],
     );
     const sourcesById = useMemo(
         () => new Map(videoSources.map((source) => [source.id, source])),
@@ -79,7 +87,8 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
     );
 
     useEffect(() => {
-        if (!targetResolution || videoSources.length === 0 || placements.length === 0) return;
+        const hasPlacements = framePlan.tracks.some((track) => track.placements.length > 0);
+        if (!targetResolution || videoSources.length === 0 || !hasPlacements) return;
         let pausedStartTimer: number | null = null;
         const hasFrame = (frame: PreviewWarmupFrame) => {
             const source = sourcesById.get(frame.sourceId);
@@ -120,11 +129,11 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
                 projectFrameRate,
                 'floor',
             );
-            const frames = buildPreviewWarmupFramePlan({
+            const frames = buildPreviewWarmupFramePlanForRuntime({
                 isPlaying: playback.isPlaying,
                 currentProjectFrameIndex,
                 projectFrameRate,
-                placements,
+                plan: framePlan,
                 sources: videoSources,
                 rangeForward,
                 rangeBackward,
@@ -199,7 +208,7 @@ export function useBackgroundRenderer(options: BackgroundRendererOptions = {}) {
         };
     }, [
         fps,
-        placements,
+        framePlan,
         playbackLookaheadFrames,
         projectFrameRate,
         rangeBackward,

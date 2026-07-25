@@ -1,8 +1,11 @@
 import type {
     AudioClip,
     EditorDocumentV3,
+    EditorDocumentV4,
     ImportedAudioClip,
     RationalFrameRate,
+    VideoClipV3,
+    VideoClipV4,
     VideoSourceAudioClip,
 } from '@/types/video';
 import {
@@ -11,6 +14,7 @@ import {
     nativeBoundaryToOutputSample,
 } from './audio-timebase';
 import { secondsToFrames } from './render-profile';
+import { indexVideoTrackPlacementsV4 } from './video-placement-v4';
 
 export type AudioMixContributorSource = AudioClip['source'];
 
@@ -38,10 +42,15 @@ export interface AudioMixPlan {
     contributors: AudioMixContributor[];
 }
 
-export type AudioMixDocument = Pick<
-    EditorDocumentV3,
-    'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
->;
+export type AudioMixDocument =
+    | Pick<
+        EditorDocumentV3,
+        'renderProfile' | 'videoSources' | 'videoClips' | 'videoTracks' | 'audioSources' | 'audioTracks'
+    >
+    | Pick<
+        EditorDocumentV4,
+        'renderProfile' | 'videoSources' | 'videoClips' | 'videoTracks' | 'audioSources' | 'audioTracks'
+    >;
 
 interface CandidateContributor extends AudioMixContributor {
     trackSolo: boolean;
@@ -64,15 +73,11 @@ export function buildAudioMixPlan(document: AudioMixDocument): AudioMixPlan {
     const { fps } = document.renderProfile;
     const videoSourcesById = new Map(document.videoSources.map((source) => [source.id, source]));
     const candidates: CandidateContributor[] = [];
-    let videoFrameCursor = 0;
     let independentTimelineEndSample = 0;
+    const videoPlacements = buildEmbeddedVideoPlacements(document);
 
-    document.videoClips.forEach((clip) => {
+    videoPlacements.forEach(({ clip, startFrame, endFrame }) => {
         const source = videoSourcesById.get(clip.sourceId);
-        const durationFrames = getCanonicalVideoFrameCount(clip.sourceEnd - clip.sourceStart, fps);
-        const startFrame = videoFrameCursor;
-        const endFrame = startFrame + durationFrames;
-        videoFrameCursor = endFrame;
 
         if (!source?.hasAudio || !clip.audio || clip.audio.linkState !== 'linked' || clip.audio.muted) return;
         candidates.push({
@@ -127,7 +132,11 @@ export function buildAudioMixPlan(document: AudioMixDocument): AudioMixPlan {
     const contributors = candidates
         .filter((candidate) => !hasEffectiveSolo || candidate.trackSolo)
         .map(stripCandidateState);
-    const videoSampleCount = frameToOutputSample(videoFrameCursor, fps);
+    const videoEndFrame = videoPlacements.reduce(
+        (maximum, placement) => Math.max(maximum, placement.endFrame),
+        0,
+    );
+    const videoSampleCount = frameToOutputSample(videoEndFrame, fps);
     const totalSampleCount = Math.max(videoSampleCount, independentTimelineEndSample);
 
     return {
@@ -136,6 +145,66 @@ export function buildAudioMixPlan(document: AudioMixDocument): AudioMixPlan {
         videoSampleCount,
         contributors,
     };
+}
+
+interface EmbeddedVideoPlacement {
+    clip: VideoClipV3 | VideoClipV4;
+    startFrame: number;
+    endFrame: number;
+}
+
+/**
+ * Projects linked-video audio from the same placement authority as visual playback.
+ *
+ * V3 retains its cumulative frame cursor. A coherent V4 clip/track shape selects the explicit
+ * path; mixed-version arrays fail closed instead of accidentally restoring cumulative timing.
+ * Track visibility is deliberately absent because hiding video must not mute linked audio.
+ */
+function buildEmbeddedVideoPlacements(document: AudioMixDocument): EmbeddedVideoPlacement[] {
+    const trackVersions = new Set(document.videoTracks.map((track) => (
+        'visible' in track && 'locked' in track && !('clipIds' in track) ? 4
+            : 'clipIds' in track && !('visible' in track) && !('locked' in track) ? 3
+                : 0
+    )));
+    const clipVersions = new Set(document.videoClips.map((clip) => (
+        'timelineStartFrame' in clip && 'trackId' in clip ? 4 : 3
+    )));
+    if (trackVersions.has(0) || trackVersions.size > 1 || clipVersions.size > 1) {
+        throw new Error('Mixed or ambiguous V3/V4 audio runtime graph.');
+    }
+    const trackVersion = trackVersions.values().next().value as 3 | 4 | undefined;
+    const clipVersion = clipVersions.values().next().value as 3 | 4 | undefined;
+    if (trackVersion && clipVersion && trackVersion !== clipVersion) {
+        throw new Error('Video clips and tracks must use the same editor graph version.');
+    }
+
+    if ((clipVersion ?? trackVersion) === 4) {
+        const explicitDocument = document as Pick<
+            EditorDocumentV4,
+            'renderProfile' | 'videoTracks' | 'videoClips'
+        >;
+        const index = indexVideoTrackPlacementsV4(explicitDocument);
+        return explicitDocument.videoClips.map((clip) => {
+            const placement = index.byClipId.get(clip.id);
+            if (!placement) throw new Error(`Missing explicit video placement for clip "${clip.id}".`);
+            return { clip, startFrame: placement.startFrame, endFrame: placement.endFrame };
+        });
+    }
+
+    let frameCursor = 0;
+    return (document.videoClips as VideoClipV3[]).map((clip) => {
+        const durationFrames = getCanonicalVideoFrameCount(
+            clip.sourceEnd - clip.sourceStart,
+            document.renderProfile.fps,
+        );
+        const placement = {
+            clip,
+            startFrame: frameCursor,
+            endFrame: frameCursor + durationFrames,
+        };
+        frameCursor = placement.endFrame;
+        return placement;
+    });
 }
 
 export function getAudioMixPlanDurationSeconds(plan: AudioMixPlan): number {

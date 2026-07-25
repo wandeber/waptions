@@ -1,8 +1,13 @@
 import type { ExportOptions } from '@/types/export';
-import type { EditorDocumentV3 } from '@/types/video';
+import type { EditorDocumentV3, EditorDocumentV4 } from '@/types/video';
 import { calculateActiveTimelineBitrate } from './export-bitrate';
 import { framesToSeconds } from './render-profile';
-import { getTimelineContentEndFrame } from './video-timeline';
+import { validateEditorDocumentV4 } from './editor-document-v4';
+import {
+    buildVideoFrameRuntimePlan,
+    type VideoFrameRuntimePlan,
+} from './video-frame-plan';
+import { getTimelineContentEndFrameForRuntime } from './video-timeline';
 
 const EXPORT_CONTAINER_OVERHEAD_MULTIPLIER = 1.12;
 const EXPORT_CONTAINER_FIXED_OVERHEAD_BYTES = 2 * 1024 * 1024;
@@ -16,13 +21,8 @@ const QUALITY_BITRATE_MULTIPLIERS = {
 } as const;
 
 /** Exact exclusive content boundary shared by the timeline, playback, and export. */
-export function getExportContentEndFrame(document: EditorDocumentV3): number {
-    return getTimelineContentEndFrame(document.videoClips, document.subtitleTracks, {
-        renderProfile: document.renderProfile,
-        videoSources: document.videoSources,
-        audioSources: document.audioSources,
-        audioTracks: document.audioTracks,
-    });
+export function getExportContentEndFrame(document: EditorDocumentV3 | EditorDocumentV4): number {
+    return getTimelineContentEndFrameForRuntime(document);
 }
 
 /**
@@ -31,7 +31,7 @@ export function getExportContentEndFrame(document: EditorDocumentV3): number {
  * from producing either an unusable stream or an unexpectedly huge allocation.
  */
 export function calculateExportVideoBitrate(
-    document: EditorDocumentV3,
+    document: EditorDocumentV3 | EditorDocumentV4,
     quality: ExportOptions['quality'],
 ): number {
     const { width, height } = document.renderProfile;
@@ -51,7 +51,7 @@ export function calculateExportVideoBitrate(
 
 /** Conservative preflight used only to decide whether the bounded memory fallback is safe. */
 export function estimateExportOutputBytes(
-    document: EditorDocumentV3,
+    document: EditorDocumentV3 | EditorDocumentV4,
     options: Pick<ExportOptions, 'quality' | 'includeAudio'>,
 ): number {
     const duration = framesToSeconds(
@@ -73,8 +73,39 @@ export function estimateExportOutputBytes(
  * recursively cloned and frozen, so timeline mutations made while a long export is running cannot
  * change later frames, audio contributors, subtitle tails, or render-profile boundaries.
  */
-export function createExportDocumentSnapshot(document: EditorDocumentV3): EditorDocumentV3 {
-    return cloneAndFreeze(document) as EditorDocumentV3;
+export function createExportDocumentSnapshot<T extends EditorDocumentV3 | EditorDocumentV4>(
+    document: T,
+): T {
+    const snapshot = cloneAndFreeze(document) as T;
+    if (snapshot.version === 4) {
+        const validation = validateEditorDocumentV4(snapshot);
+        if (!validation.valid) {
+            const detail = validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ');
+            throw new Error(`Cannot export an invalid V4 editor graph: ${detail}`);
+        }
+    }
+    return snapshot;
+}
+
+export interface ExportRuntimeSnapshot {
+    document: EditorDocumentV3 | EditorDocumentV4;
+    /** Detached placement plan captured before font loading, decoding, or progress callbacks. */
+    videoPlan: VideoFrameRuntimePlan;
+}
+
+/**
+ * Captures and plans export before the first asynchronous boundary.
+ *
+ * V4 validation runs against the detached snapshot and the resulting visual plan contains no
+ * narrative/CAS dependency. A live narrative or placement mutation therefore cannot alter any
+ * later winning layer, black gap, audio contributor, subtitle tail, or source-time mapping.
+ */
+export function createExportRuntimeSnapshot(
+    document: EditorDocumentV3 | EditorDocumentV4,
+): ExportRuntimeSnapshot {
+    const snapshot = createExportDocumentSnapshot(document);
+    const videoPlan = cloneAndFreeze(buildVideoFrameRuntimePlan(snapshot)) as VideoFrameRuntimePlan;
+    return Object.freeze({ document: snapshot, videoPlan });
 }
 
 /** Reports only finite, clamped, monotonic progress values. */

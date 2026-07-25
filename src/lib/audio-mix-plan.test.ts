@@ -1,6 +1,17 @@
-import type { AudioSourceAsset, EditorDocumentV3, VideoSourceAssetV3 } from '@/types/video';
+import { createEditorDocumentV4Fixture } from '@/types/editorial.test-fixtures';
+import type {
+    AudioSourceAsset,
+    EditorDocumentV3,
+    EditorDocumentV4,
+    VideoSourceAssetV3,
+} from '@/types/video';
 import { describe, expect, it } from 'vitest';
-import { buildAudioMixPlan, decibelsToLinear, getAudioMixPlanDurationSeconds } from './audio-mix-plan';
+import {
+    buildAudioMixPlan,
+    decibelsToLinear,
+    getAudioMixPlanDurationSeconds,
+    type AudioMixDocument,
+} from './audio-mix-plan';
 import { renderAudioMixPlan } from './audio-dsp';
 import { createDefaultRenderProfile } from './render-profile';
 
@@ -106,6 +117,62 @@ function makeDocument(overrides: Partial<EditorDocumentV3> = {}): EditorDocument
 }
 
 describe('buildAudioMixPlan', () => {
+    it('places overlapping cross-track V4 linked audio explicitly regardless of visual visibility', () => {
+        const document: EditorDocumentV4 = createEditorDocumentV4Fixture({
+            videoTracks: [
+                { id: 'top_track', name: 'Top', visible: false, locked: false },
+                { id: 'lower_track', name: 'Lower', visible: true, locked: false },
+            ],
+            videoClips: [{
+                id: 'top_clip',
+                sourceId: 'video_source_editorial',
+                trackId: 'top_track',
+                timelineStartFrame: 30,
+                sourceStart: 0,
+                sourceEnd: 1,
+                audio: { linkState: 'linked', muted: false, gainDb: 0, fadeInFrames: 0, fadeOutFrames: 0 },
+            }, {
+                id: 'lower_clip',
+                sourceId: 'video_source_editorial',
+                trackId: 'lower_track',
+                timelineStartFrame: 45,
+                sourceStart: 2,
+                sourceEnd: 3,
+                audio: { linkState: 'linked', muted: false, gainDb: -3, fadeInFrames: 0, fadeOutFrames: 0 },
+            }],
+            audioTracks: [],
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+
+        const plan = buildAudioMixPlan(document);
+
+        expect(plan.contributors).toMatchObject([{
+            id: 'embedded-video:top_clip',
+            outputStartSample: 48_000,
+            outputEndSample: 96_000,
+        }, {
+            id: 'embedded-video:lower_clip',
+            outputStartSample: 72_000,
+            outputEndSample: 120_000,
+        }]);
+        expect(plan.videoSampleCount).toBe(120_000);
+        expect(plan.totalSampleCount).toBe(120_000);
+    });
+
+    it('fails closed instead of cumulatively mixing a mixed-version media graph', () => {
+        const document = createEditorDocumentV4Fixture({
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+        const mixed = {
+            ...document,
+            videoTracks: [{ id: 'legacy', name: 'Legacy', clipIds: [document.videoClips[0].id] }],
+        } as unknown as AudioMixDocument;
+
+        expect(() => buildAudioMixPlan(mixed)).toThrow(/same editor graph version/i);
+    });
+
     it('mixes linked video once and represents detached/imported audio with typed references', () => {
         const plan = buildAudioMixPlan(makeDocument());
 

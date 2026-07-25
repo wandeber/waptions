@@ -5,6 +5,8 @@ import type {
     EditorDocumentV2,
     EditorManifestV2,
     EditorManifestV3,
+    EditorDocumentV4,
+    EditorManifestV4,
     VideoSourceAssetV3,
 } from '@/types/video';
 import type { TProject } from '@/types/project';
@@ -15,7 +17,9 @@ import {
     validateEditorDocument,
 } from '@/lib/video-timeline';
 import { getEditorMediaAssetKey } from '@/lib/media-asset-ref';
+import { cloneAudioTracks } from '@/lib/audio-timeline';
 import { validateEditorManifestV3 } from '@/lib/editor-document-v3';
+import { validateEditorManifestV4 } from '@/lib/editor-document-v4';
 import {
     createEditorManifestV3,
     hydrateEditorDocumentV3,
@@ -23,6 +27,11 @@ import {
     migrateLegacyEditorDocumentToV3,
     normalizeLegacyEditorManifestV3,
 } from '@/lib/editor-document-migration';
+import {
+    createEditorManifestV4,
+    hydrateEditorDocumentV4,
+    migrateEditorDocumentV3ToV4,
+} from '@/lib/editor-document-v4-migration';
 import { resolveEditorManifestAssets, resolveEditorVideoAsset } from './editor-asset-resolver';
 import { IndexedDBAdapter, type IndexedDBBatchOperation } from './indexeddb-adapter';
 import type { SerializedProject, StorageConfig } from './types';
@@ -34,11 +43,22 @@ import {
     type PersistedRecoveryEntry,
     type PersistedRecoveryIndex,
     historyEntryStorageKey,
+    createHistoryIndex,
     restoreEditorRuntimeState,
 } from './editor-history-storage';
+import {
+    migrateTimelineHistoryV3ToV4,
+    projectEditorDocumentHistoryV4,
+} from './editor-history-storage-v4';
 
 export const EDITOR_DOCUMENT_V2_KEY = 'editor-document-v2';
 export const EDITOR_DOCUMENT_V3_KEY = 'editor-document-v3';
+export const EDITOR_DOCUMENT_V4_KEY = 'editor-document-v4';
+export const EDITOR_DOCUMENT_V3_TOMBSTONE = Object.freeze({
+    version: 3,
+    tombstone: true,
+    migratedToVersion: 4,
+} as const);
 export const VIDEO_SOURCE_KEY_PREFIX = 'source:';
 
 export type EditorPersistentAsset =
@@ -46,6 +66,8 @@ export type EditorPersistentAsset =
     | { kind: 'audio-source'; asset: AudioSourceAsset };
 
 export interface LoadEditorDocumentOptions {
+    /** Canonical project/editor callers request V4; omitted preserves the temporary V3 facade. */
+    targetVersion?: 3 | 4;
     /**
      * Scalar v1 records contain only a File. The caller supplies inspection so this storage
      * layer never invents stream metadata and the pure migration module remains decoder-free.
@@ -155,20 +177,27 @@ export class StorageService {
 
     async saveEditorDocument(
         projectId: string,
-        manifest: EditorManifestV3,
+        manifest: EditorManifestV3 | EditorManifestV4,
         sourceAssets: readonly EditorPersistentAsset[],
         historyCheckpoint?: EditorHistoryCheckpoint,
     ): Promise<void> {
-        const validation = validateEditorManifestV3(manifest);
+        const validation = manifest.version === 4
+            ? validateEditorManifestV4(manifest)
+            : validateEditorManifestV3(manifest);
         if (!validation.valid) {
             const details = validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ');
-            throw new Error(`Cannot save invalid v3 editor manifest: ${details}`);
+            throw new Error(`Cannot save invalid v${manifest.version} editor manifest: ${details}`);
         }
         const videoDescriptors = new Map(manifest.videoSourceDescriptors.map((item) => [item.id, item]));
         const audioDescriptors = new Map(manifest.audioSourceDescriptors.map((item) => [item.id, item]));
         const operations: IndexedDBBatchOperation<unknown>[] = [
-            { type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: manifest },
+            { type: 'put', key: manifest.version === 4 ? EDITOR_DOCUMENT_V4_KEY : EDITOR_DOCUMENT_V3_KEY, value: manifest },
         ];
+        if (manifest.version === 4) {
+            // Replacing the V3 value prevents an old client from silently reopening stale media
+            // after a V4 save. V4 and the marker commit in the same project transaction.
+            operations.push({ type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: EDITOR_DOCUMENT_V3_TOMBSTONE });
+        }
 
         sourceAssets.forEach((entry) => {
             const descriptor = entry.kind === 'video-source'
@@ -221,14 +250,34 @@ export class StorageService {
         ]);
     }
 
-    /** Loads auxiliary history/WAL state without changing the EditorManifestV3 contract. */
+    /** Loads auxiliary history/WAL state against the exact persisted V3 or V4 manifest contract. */
+    async loadEditorRuntimeState(
+        projectId: string,
+        document: EditorDocumentV4,
+    ): Promise<LoadedEditorRuntimeState & { document: EditorDocumentV4 }>;
     async loadEditorRuntimeState(
         projectId: string,
         document: EditorDocumentV3,
+    ): Promise<LoadedEditorRuntimeState & { document: EditorDocumentV3 }>;
+    async loadEditorRuntimeState(
+        projectId: string,
+        document: EditorDocumentV3 | EditorDocumentV4,
     ): Promise<LoadedEditorRuntimeState> {
         const adapter = this.getProjectDbAdapter<unknown>(projectId);
-        const persistedManifest = await adapter.get(EDITOR_DOCUMENT_V3_KEY);
-        if (!isEditorManifestV3(persistedManifest)) {
+        const persistedManifest = document.version === 4
+            ? await adapter.get(EDITOR_DOCUMENT_V4_KEY)
+            : await adapter.get(EDITOR_DOCUMENT_V3_KEY);
+        if (document.version === 4 && !isEditorManifestV4(persistedManifest)) {
+            return restoreEditorRuntimeState(
+                document,
+                createEditorManifestV4(document),
+                null,
+                new Map(),
+                null,
+                new Map(),
+            ) as LoadedEditorRuntimeState & { document: EditorDocumentV4 };
+        }
+        if (document.version === 3 && !isEditorManifestV3(persistedManifest)) {
             return restoreEditorRuntimeState(
                 document,
                 createEditorManifestV3(document),
@@ -236,9 +285,11 @@ export class StorageService {
                 new Map(),
                 null,
                 new Map(),
-            );
+            ) as LoadedEditorRuntimeState & { document: EditorDocumentV3 };
         }
-        const normalizedManifest = normalizeLegacyEditorManifestV3(persistedManifest);
+        const normalizedManifest = document.version === 4
+            ? persistedManifest as EditorManifestV4
+            : normalizeLegacyEditorManifestV3(persistedManifest as EditorManifestV3);
         const indexes = await adapter.getMany<unknown>([
             EDITOR_HISTORY_INDEX_KEY,
             EDITOR_RECOVERY_INDEX_KEY,
@@ -268,11 +319,39 @@ export class StorageService {
 
     async loadEditorDocument(
         projectId: string,
+        options: LoadEditorDocumentOptions & { targetVersion: 4 },
+    ): Promise<EditorDocumentV4 | null>;
+    async loadEditorDocument(
+        projectId: string,
+        options?: LoadEditorDocumentOptions,
+    ): Promise<EditorDocumentV3 | null>;
+    async loadEditorDocument(
+        projectId: string,
         options: LoadEditorDocumentOptions = {},
-    ): Promise<EditorDocumentV3 | null> {
+    ): Promise<EditorDocumentV3 | EditorDocumentV4 | null> {
         const adapter = this.getProjectDbAdapter<unknown>(projectId);
+        const v4Value = await adapter.get(EDITOR_DOCUMENT_V4_KEY);
+        if (v4Value !== null) {
+            if (!isEditorManifestV4(v4Value)) {
+                throw new Error(`Project ${projectId} contains an invalid editor-document-v4 manifest.`);
+            }
+            const validation = validateEditorManifestV4(v4Value);
+            if (!validation.valid) {
+                const details = validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ');
+                throw new Error(`Project ${projectId} v4 manifest failed validation: ${details}`);
+            }
+            const assets = await resolveEditorManifestAssets(adapter, v4Value);
+            return projectLoadedDocumentVersion(
+                hydrateEditorDocumentV4(v4Value, assets.videoSources, assets.audioSources),
+                options.targetVersion,
+            );
+        }
+
         const v3Value = await adapter.get(EDITOR_DOCUMENT_V3_KEY);
         if (v3Value !== null) {
+            if (isEditorV3Tombstone(v3Value)) {
+                throw new Error(`Project ${projectId} has a V3 tombstone but no V4 manifest.`);
+            }
             if (!isEditorManifestV3(v3Value)) {
                 throw new Error(`Project ${projectId} contains an invalid editor-document-v3 manifest.`);
             }
@@ -285,16 +364,53 @@ export class StorageService {
             const assets = await resolveEditorManifestAssets(adapter, normalizedManifest);
             const hydrated = hydrateEditorDocumentV3(normalizedManifest, assets.videoSources, assets.audioSources);
             const upgraded = upgradeLegacyMediaFingerprints(projectId, hydrated);
-            if (upgraded.changed || normalizedManifest !== v3Value) {
-                // Only the small manifest changes. Rewriting legacy Files under new keys would
-                // duplicate potentially multi-gigabyte blobs and can make a safe migration fail.
-                await adapter.batch([{
-                    type: 'put',
-                    key: EDITOR_DOCUMENT_V3_KEY,
-                    value: createEditorManifestV3(upgraded.document),
-                }]);
-            }
-            return upgraded.document;
+            // Restore storage-v2 history/WAL in its native V3 graph before changing authority.
+            // The migrated checkpoint below then replaces manifest, history index/entries, and
+            // the V3 tombstone atomically without rewriting potentially multi-gigabyte Files.
+            const legacyRuntime = await this.loadEditorRuntimeState(projectId, upgraded.document);
+            const effectiveV3 = legacyRuntime.document;
+            const migrated = migrateEditorDocumentV3ToV4(effectiveV3);
+            const migratedHistory = migrateTimelineHistoryV3ToV4(
+                effectiveV3,
+                migrated,
+                {
+                    history: legacyRuntime.history.history,
+                    redoStack: legacyRuntime.history.redoStack,
+                    projection: projectEditorDocumentHistoryV4(migrated),
+                },
+            );
+            const v4Manifest = createEditorManifestV4(migrated);
+            const historyIndex = createHistoryIndex(v4Manifest, migratedHistory);
+            const oldIndexes = await adapter.getMany<unknown>([
+                EDITOR_HISTORY_INDEX_KEY,
+                EDITOR_RECOVERY_INDEX_KEY,
+            ]);
+            const oldHistoryIds = [
+                ...readIndexStringArray(oldIndexes.get(EDITOR_HISTORY_INDEX_KEY), 'historyEntryIds'),
+                ...readIndexStringArray(oldIndexes.get(EDITOR_HISTORY_INDEX_KEY), 'redoEntryIds'),
+            ];
+            const retainedIds = new Set([
+                ...migratedHistory.history,
+                ...migratedHistory.redoStack,
+            ].map((entry) => entry.id));
+            const operations: IndexedDBBatchOperation<unknown>[] = [
+                { type: 'put', key: EDITOR_DOCUMENT_V4_KEY, value: v4Manifest },
+                { type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: EDITOR_DOCUMENT_V3_TOMBSTONE },
+                { type: 'put', key: EDITOR_HISTORY_INDEX_KEY, value: historyIndex },
+                { type: 'delete', key: EDITOR_RECOVERY_INDEX_KEY },
+                ...[...migratedHistory.history, ...migratedHistory.redoStack].map((entry) => ({
+                    type: 'put' as const,
+                    key: historyEntryStorageKey(entry.id),
+                    value: { ...entry },
+                })),
+                ...oldHistoryIds.filter((id) => !retainedIds.has(id)).map((id) => ({
+                    type: 'delete' as const,
+                    key: historyEntryStorageKey(id),
+                })),
+                ...legacyRuntime.recoveryEntryKeys.map((key) => ({ type: 'delete' as const, key })),
+            ];
+            await adapter.batch<unknown>(operations);
+            return projectLoadedDocumentVersion(migrated, options.targetVersion);
         }
 
         const v2Value = await adapter.get(EDITOR_DOCUMENT_V2_KEY);
@@ -318,9 +434,13 @@ export class StorageService {
             };
             assertValidV2Document(projectId, legacyDocument);
             const migrated = migrateEditorDocumentV2ToV3({ manifest: v2Value, loadedVideoSources });
-            const document = upgradeLegacyMediaFingerprints(projectId, migrated).document;
-            await adapter.batch([{ type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: createEditorManifestV3(document) }]);
-            return document;
+            const upgraded = upgradeLegacyMediaFingerprints(projectId, migrated).document;
+            const document = migrateEditorDocumentV3ToV4(upgraded);
+            await adapter.batch<unknown>([
+                { type: 'put', key: EDITOR_DOCUMENT_V4_KEY, value: createEditorManifestV4(document) },
+                { type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: EDITOR_DOCUMENT_V3_TOMBSTONE },
+            ]);
+            return projectLoadedDocumentVersion(document, options.targetVersion);
         }
 
         const legacy = await this.loadLegacyProjectPayload(projectId);
@@ -343,9 +463,13 @@ export class StorageService {
             transcriptionContainerIds: legacy.transcriptionContainerIds,
             loadedVideoSource: inspectedSource,
         });
-        const document = upgradeLegacyMediaFingerprints(projectId, migrated).document;
-        await adapter.batch([{ type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: createEditorManifestV3(document) }]);
-        return document;
+        const upgraded = upgradeLegacyMediaFingerprints(projectId, migrated).document;
+        const document = migrateEditorDocumentV3ToV4(upgraded);
+        await adapter.batch<unknown>([
+            { type: 'put', key: EDITOR_DOCUMENT_V4_KEY, value: createEditorManifestV4(document) },
+            { type: 'put', key: EDITOR_DOCUMENT_V3_KEY, value: EDITOR_DOCUMENT_V3_TOMBSTONE },
+        ]);
+        return projectLoadedDocumentVersion(document, options.targetVersion);
     }
 
     /** Migration-only legacy timeline writer retained until reserved consumers move to v2. */
@@ -481,6 +605,78 @@ function isEditorManifestV3(value: unknown): value is EditorManifestV3 {
         && (!('videoTracks' in value) || Array.isArray(value.videoTracks))
         && 'audioTracks' in value
         && Array.isArray(value.audioTracks);
+}
+
+function isEditorManifestV4(value: unknown): value is EditorManifestV4 {
+    return typeof value === 'object'
+        && value !== null
+        && 'version' in value
+        && value.version === 4
+        && 'videoSourceDescriptors' in value
+        && Array.isArray(value.videoSourceDescriptors)
+        && 'audioSourceDescriptors' in value
+        && Array.isArray(value.audioSourceDescriptors)
+        && 'editorialTranscriptDescriptors' in value
+        && Array.isArray(value.editorialTranscriptDescriptors)
+        && 'videoClips' in value
+        && Array.isArray(value.videoClips)
+        && 'videoTracks' in value
+        && Array.isArray(value.videoTracks);
+}
+
+function isEditorV3Tombstone(value: unknown): boolean {
+    return typeof value === 'object'
+        && value !== null
+        && 'version' in value
+        && value.version === 3
+        && 'tombstone' in value
+        && value.tombstone === true
+        && 'migratedToVersion' in value
+        && value.migratedToVersion === 4;
+}
+
+/**
+ * Temporary V3 read facade for callers that have not moved to explicit placement yet.
+ *
+ * It is never written back and must not be used for structural commands. The canonical load path
+ * passes `targetVersion: 4`; the facade exists only to keep WP7/WP8 migration additive.
+ */
+function projectLoadedDocumentVersion(
+    document: EditorDocumentV4,
+    targetVersion: LoadEditorDocumentOptions['targetVersion'],
+): EditorDocumentV3 | EditorDocumentV4 {
+    if (targetVersion === 4) return document;
+    return {
+        version: 3,
+        revision: document.revision,
+        audioGraphRevision: document.audioGraphRevision,
+        renderProfile: structuredClone(document.renderProfile),
+        subtitleTracks: document.subtitleTracks.map((track) => {
+            const { unlinkedVideoEditResponse, ...base } = structuredClone(track);
+            return {
+                ...base,
+                timingDomain: unlinkedVideoEditResponse === 'stay-absolute' ? 'absolute' : 'video-ripple',
+            };
+        }),
+        videoSources: document.videoSources.map((source) => ({ ...source })),
+        videoClips: document.videoClips.map(({ trackId, timelineStartFrame, ...clip }) => {
+            void trackId;
+            void timelineStartFrame;
+            return { ...clip, audio: clip.audio ? { ...clip.audio } : null };
+        }),
+        videoTracks: document.videoTracks.map((track) => ({
+            id: track.id,
+            name: track.name,
+            clipIds: document.videoClips.filter((clip) => clip.trackId === track.id).map((clip) => clip.id),
+        })),
+        audioSources: document.audioSources.map((source) => ({ ...source })),
+        audioTracks: cloneAudioTracks(document.audioTracks),
+        activeSubtitleTrackId: document.activeSubtitleTrackId,
+        transientSelection: document.transientSelection.kind === 'narrative'
+            ? { kind: 'none' }
+            : structuredClone(document.transientSelection),
+        transcriptionByTrackId: structuredClone(document.transcriptionByTrackId),
+    };
 }
 
 function readIndexStringArray(value: unknown, key: string): string[] {

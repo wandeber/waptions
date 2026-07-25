@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ClipPlacement, VideoSourceAssetV3 } from '@/types/video';
 import { FrameCache } from '@/lib/frame-cache';
+import { createDefaultRenderProfile } from '@/lib/render-profile';
 import { buildClipPlacements } from '@/lib/video-timeline';
 import { buildPreviewWarmupFramePlan } from '@/lib/video-frame-plan';
+import { buildTimelineVideoFrameRuntimePlanV4 } from '@/stores/timeline-v4-compat';
 import { buildPreviewWarmupRequest } from './use-background-renderer';
 
 const file = new File(['video'], 'clip.mp4', { type: 'video/mp4' });
@@ -39,6 +41,28 @@ const commonOptions = (
 });
 
 describe('buildPreviewWarmupFramePlan', () => {
+    it('projects an empty transitional Timeline graph as an explicit V4 runtime plan', () => {
+        const plan = buildTimelineVideoFrameRuntimePlanV4({
+            renderProfile: createDefaultRenderProfile(),
+            videoClips: [],
+            videoTracks: [{
+                id: 'video_track_1',
+                name: 'Video 1',
+                visible: true,
+                locked: false,
+                clipIds: [],
+            }],
+        });
+
+        expect(plan).toMatchObject({
+            version: 4,
+            tracks: [{
+                track: { id: 'video_track_1', visible: true, locked: false },
+                placements: [],
+            }],
+        });
+    });
+
     it('uses the measured preview resolution on the first warmup request', () => {
         const candidate = source('a', 30);
         const planned = {

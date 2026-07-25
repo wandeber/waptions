@@ -10,14 +10,19 @@ async function pointerDrag(page: Page, source: Locator, target: Locator): Promis
   const sourceBox = await source.boundingBox();
   const targetBox = await target.boundingBox();
   if (!sourceBox || !targetBox) throw new Error('Video track drag geometry is not measurable.');
-  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  const sourceCenterX = sourceBox.x + sourceBox.width / 2;
+  const sourceCenterY = sourceBox.y + sourceBox.height / 2;
+  await page.mouse.move(sourceCenterX, sourceCenterY);
   await page.mouse.down();
   await page.mouse.move(
-    sourceBox.x + sourceBox.width / 2 + 8,
-    sourceBox.y + sourceBox.height / 2,
+    sourceCenterX + 8,
+    sourceCenterY,
     { steps: 3 },
   );
-  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+  // A vertical lane move must not accidentally inherit the center x-coordinate of a full-width
+  // row. Keeping the pointer on the clip's original x-position makes this helper express exactly
+  // the membership change its callers intend to test.
+  await page.mouse.move(sourceCenterX, targetBox.y + targetBox.height / 2, { steps: 8 });
   await page.mouse.up();
 }
 
@@ -31,11 +36,154 @@ async function pointerDragToNewTrack(page: Page, source: Locator, insertionIndex
   await expect(insertion).toBeVisible();
   const targetBox = await insertion.boundingBox();
   if (!targetBox) throw new Error('New video track insertion target is not measurable.');
-  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
   await page.mouse.up();
 }
 
+async function beginHorizontalDrag(page: Page, source: Locator, deltaX: number): Promise<void> {
+  const sourceBox = await source.boundingBox();
+  if (!sourceBox) throw new Error('Video clip drag geometry is not measurable.');
+  const sourceCenterX = sourceBox.x + sourceBox.width / 2;
+  const sourceCenterY = sourceBox.y + sourceBox.height / 2;
+  await page.mouse.move(sourceCenterX, sourceCenterY);
+  await page.mouse.down();
+  await page.mouse.move(sourceCenterX + deltaX, sourceCenterY, { steps: 8 });
+}
+
 test.describe('video track editing', () => {
+  test('moves video and follow-ripple subtitles atomically through undo and redo', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const failures = monitorPageFailures(page);
+    await createEditorProject(page, 'Atomic horizontal video drag');
+    await page.locator('input[type="file"][accept="video/*,audio/*"]').setInputFiles(mediaFixtures.videoA);
+
+    const videoClip = page.getByTestId('timeline-video-clip');
+    await expect(videoClip).toHaveCount(1, { timeout: 30_000 });
+    await page.getByTitle('Añadir subtítulo').click();
+    const subtitleTextarea = page.locator('textarea').first();
+    await subtitleTextarea.fill('Subtitle survives video drag');
+    await subtitleTextarea.blur();
+    const subtitleClip = page.getByTestId('timeline-subtitle-clip');
+    await expect(subtitleClip).toHaveCount(1);
+
+    // The defect only reproduced on tracks that follow project ripple. Toggle the public control
+    // instead of seeding IndexedDB so this test covers the same path a user takes in the editor.
+    await page.getByRole('button', {
+      name: /unlinked video edit response: stay absolute/i,
+    }).click();
+    await page.getByTitle('Fit timeline to view').click();
+
+    const initialVideoFrame = Number(await videoClip.getAttribute('data-preview-start-frame'));
+    const initialVideoLeft = await videoClip.evaluate((element) => (element as HTMLElement).style.left);
+    const initialSubtitleLeft = await subtitleClip.evaluate((element) => (element as HTMLElement).style.left);
+
+    await beginHorizontalDrag(page, videoClip, 100);
+    await expect(videoClip).toHaveAttribute('data-dragging', 'true');
+    await expect.poll(async () => (
+      Number(await videoClip.getAttribute('data-preview-start-frame'))
+    )).toBeGreaterThan(initialVideoFrame);
+    await expect(subtitleClip).toHaveCount(1);
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+    await page.mouse.up();
+
+    await expect(videoClip).toHaveAttribute('data-dragging', 'false');
+    const movedVideoFrame = Number(await videoClip.getAttribute('data-preview-start-frame'));
+    const movedVideoLeft = await videoClip.evaluate((element) => (element as HTMLElement).style.left);
+    const movedSubtitleLeft = await subtitleClip.evaluate((element) => (element as HTMLElement).style.left);
+    expect(movedVideoFrame).toBeGreaterThan(initialVideoFrame);
+    expect(movedVideoLeft).not.toBe(initialVideoLeft);
+    expect(movedSubtitleLeft).toBe(movedVideoLeft);
+    await expect(subtitleClip).toHaveCount(1);
+
+    await page.getByTitle('Undo (Ctrl/Cmd+Z)').click();
+    await expect(videoClip).toHaveAttribute('data-preview-start-frame', String(initialVideoFrame));
+    await expect.poll(async () => (
+      subtitleClip.evaluate((element) => (element as HTMLElement).style.left)
+    )).toBe(initialSubtitleLeft);
+    await expect(subtitleClip).toHaveCount(1);
+
+    await page.getByTitle('Redo (Ctrl/Cmd+Shift+Z)').click();
+    await expect(videoClip).toHaveAttribute('data-preview-start-frame', String(movedVideoFrame));
+    await expect.poll(async () => (
+      subtitleClip.evaluate((element) => (element as HTMLElement).style.left)
+    )).toBe(movedSubtitleLeft);
+    await expect(subtitleClip).toHaveCount(1);
+    expect(failures.errors).toEqual([]);
+  });
+
+  test('previews snapping and invalid drops while fully restoring canceled video drags', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const failures = monitorPageFailures(page);
+    await createEditorProject(page, 'Video drag lifecycle');
+    await page.locator('input[type="file"][accept="video/*,audio/*"]').setInputFiles([
+      mediaFixtures.videoA,
+      mediaFixtures.videoB,
+    ]);
+    await expect(page.getByTestId('timeline-video-clip')).toHaveCount(2, { timeout: 30_000 });
+    await page.getByTitle('Añadir subtítulo').click();
+    const subtitleTextarea = page.locator('textarea').first();
+    await subtitleTextarea.fill('Visible through every drag terminal');
+    await subtitleTextarea.blur();
+    await page.getByRole('button', {
+      name: /unlinked video edit response: stay absolute/i,
+    }).click();
+    await page.getByRole('button', { name: 'Add video track' }).click();
+    await page.getByTitle('Fit timeline to view').click();
+
+    const secondClip = videoRows(page).nth(0).getByTestId('timeline-video-clip').nth(1);
+    const initialFrame = Number(await secondClip.getAttribute('data-preview-start-frame'));
+    const initialLeft = await secondClip.evaluate((element) => (element as HTMLElement).style.left);
+
+    // The second clip begins on the first clip's end boundary. Moving inside the fifteen-pixel
+    // tolerance must show the shared snap affordance while retaining the exact boundary frame.
+    await beginHorizontalDrag(page, secondClip, 8);
+    await expect(secondClip).toHaveAttribute('data-dragging', 'true');
+    await expect(secondClip).toHaveAttribute('data-preview-start-frame', String(initialFrame));
+    await expect(page.getByTestId('timeline-snap-indicator')).toBeVisible();
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await expect(secondClip).toHaveAttribute('data-dragging', 'false');
+    await expect(secondClip).toHaveAttribute('data-preview-start-frame', String(initialFrame));
+    await expect(page.getByTestId('timeline-snap-indicator')).toHaveCount(0);
+    await expect(page.locator('[data-video-track-insertion-index]')).toHaveCount(0);
+
+    // A partial overlap is rejected before the terminal store command. Both the clip and lane use
+    // the same invalid state, and releasing the pointer restores the persisted geometry exactly.
+    const secondClipBox = await secondClip.boundingBox();
+    if (!secondClipBox) throw new Error('Collision drag geometry is not measurable.');
+    await beginHorizontalDrag(page, secondClip, -Math.max(20, secondClipBox.width / 4));
+    await expect(secondClip).toHaveAttribute('data-drag-invalid', 'true');
+    await expect(videoRows(page).nth(0)).toHaveAttribute('data-video-drag-invalid', 'true');
+    await page.mouse.up();
+    await expect(secondClip).toHaveAttribute('data-dragging', 'false');
+    await expect(secondClip).toHaveAttribute('data-preview-start-frame', String(initialFrame));
+    await expect(secondClip).toHaveCSS('left', initialLeft);
+
+    // Releasing outside every explicit lane is also a rejected drop, not a best-effort move.
+    await beginHorizontalDrag(page, secondClip, 40);
+    await page.mouse.move(10, 10, { steps: 5 });
+    await expect(secondClip).toHaveAttribute('data-drag-invalid', 'true');
+    await page.mouse.up();
+    await expect(secondClip).toHaveAttribute('data-dragging', 'false');
+    await expect(secondClip).toHaveAttribute('data-preview-start-frame', String(initialFrame));
+    await expect(secondClip).toHaveCSS('left', initialLeft);
+    await expect(page.getByTestId('timeline-snap-indicator')).toHaveCount(0);
+    await expect(page.locator('[data-video-track-insertion-index]')).toHaveCount(0);
+
+    // A vertical move retains the horizontal frame and keeps the source lane populated, making
+    // both memberships observable without relying on lane-pruning side effects.
+    await pointerDrag(page, secondClip, videoRows(page).nth(1));
+    await expect(videoRows(page).nth(0).getByTestId('timeline-video-clip')).toHaveCount(1);
+    await expect(videoRows(page).nth(1).getByTestId('timeline-video-clip')).toHaveCount(1);
+    await expect(videoRows(page).nth(1).getByTestId('timeline-video-clip'))
+      .toHaveAttribute('data-preview-start-frame', String(initialFrame));
+    await expect(page.getByTestId('timeline-subtitle-clip')).toHaveCount(1);
+    expect(failures.errors).toEqual([]);
+  });
+
   test('adds, moves, creates, prunes, reloads, and restores vertical video membership', async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 1000 });

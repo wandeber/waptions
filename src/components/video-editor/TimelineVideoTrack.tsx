@@ -1,14 +1,18 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link2Off, Volume2, VolumeX } from 'lucide-react';
-import type { ClipPlacement, VideoSourceAsset, VideoTrack } from '@/types/video';
+import { Link2, Link2Off, Volume2, VolumeX } from 'lucide-react';
+import type { VideoSourceAsset } from '@/types/video';
 import type { TimelineVideoClip } from '@/stores/timeline-store';
+import type { TimelineVideoTrack } from '@/stores/timeline-v4-compat';
 import type { AudioMediaCacheKey } from '@/lib/media-asset-ref';
 import type { WaveformPeaks } from '@/lib/video-waveform';
 import { getAudioMediaCacheKey } from '@/lib/media-asset-ref';
 import { useTimelineStore } from '@/stores/timeline-store';
-import { buildClipPlacements } from '@/lib/video-timeline';
+import {
+    buildVideoTrackPlacementsV4,
+    type VideoClipPlacementV4,
+} from '@/lib/video-placement-v4';
 import {
     beginTimelineGesture,
     cancelTimelineGesture,
@@ -16,6 +20,11 @@ import {
     updateTimelineGesture,
     type TimelineGestureState,
 } from '@/lib/timeline-gesture';
+import {
+    getTimelineSnapThresholdFrames,
+    snapTimelineSpan,
+    type TimelineSnapPoint,
+} from '@/lib/timeline-snap';
 import { TimelineContextMenu } from './TimelineContextMenu';
 import { TimelineWaveform } from './TimelineWaveform';
 import { useShallow } from 'zustand/react/shallow';
@@ -25,24 +34,31 @@ import {
     type VideoTrackDropTarget,
 } from '@/lib/video-track-drop-target';
 import type { VideoCutDetectionRequest } from '@/lib/video-cut/targets';
+import { framesToSeconds, secondsToFrames } from '@/lib/render-profile';
+import { timelineEditorialRuntime } from '@/stores/timeline-editorial-runtime';
+import { useTextEditorCommands } from './text-editor/useTextEditorCommands';
+import { usePlaybackStore } from '@/stores/playback-store';
 
 export interface VideoTrackDragPreview {
     clipId: string;
     target: VideoTrackDropTarget | null;
+    startFrame: number;
+    invalid: boolean;
 }
 
 interface TimelineVideoTrackProps {
-    track: VideoTrack;
+    track: TimelineVideoTrack;
     peaksByMediaKey: ReadonlyMap<AudioMediaCacheKey, WaveformPeaks>;
     selectedClipIds: readonly string[];
     onClipSelectionChange: (clipId: string, additive: boolean) => void;
     onClearClipSelection: () => void;
     onOpenCutDetection: (request: VideoCutDetectionRequest) => void;
     onDragPreviewChange: (preview: VideoTrackDragPreview | null) => void;
+    snapPoints: readonly TimelineSnapPoint[];
 }
 
 interface ClipBlockProps {
-    placement: ClipPlacement;
+    placement: VideoClipPlacementV4;
     clip: TimelineVideoClip;
     source: VideoSourceAsset;
     trackId: string;
@@ -53,6 +69,12 @@ interface ClipBlockProps {
     onClipSelectionChange: (clipId: string, additive: boolean) => void;
     onOpenCutDetection: (request: VideoCutDetectionRequest) => void;
     onDragPreviewChange: (preview: VideoTrackDragPreview | null) => void;
+    snapPoints: readonly TimelineSnapPoint[];
+    validatePlacement: (
+        target: VideoTrackDropTarget,
+        startFrame: number,
+        durationFrames: number,
+    ) => boolean;
 }
 
 interface TrimDraft {
@@ -60,8 +82,26 @@ interface TrimDraft {
     sourceEnd: number;
 }
 
+interface MoveDraft {
+    target: VideoTrackDropTarget | null;
+    startFrame: number;
+    invalid: boolean;
+}
+
 function areTrimDraftsEqual(left: TrimDraft, right: TrimDraft) {
     return left.sourceStart === right.sourceStart && left.sourceEnd === right.sourceEnd;
+}
+
+function areMoveTargetsEqual(left: VideoTrackDropTarget | null, right: VideoTrackDropTarget | null) {
+    if (left === null || right === null) return left === right;
+    if (left.kind !== right.kind) return false;
+    return left.kind === 'track'
+        ? left.trackId === (right as Extract<VideoTrackDropTarget, { kind: 'track' }>).trackId
+        : left.insertionIndex === (right as Extract<VideoTrackDropTarget, { kind: 'insertion' }>).insertionIndex;
+}
+
+function areMoveDraftsEqual(left: MoveDraft, right: MoveDraft) {
+    return left.startFrame === right.startFrame && areMoveTargetsEqual(left.target, right.target);
 }
 
 function ClipBlock({
@@ -76,32 +116,51 @@ function ClipBlock({
     onClipSelectionChange,
     onOpenCutDetection,
     onDragPreviewChange,
+    snapPoints,
+    validatePlacement,
 }: ClipBlockProps) {
     const transactionCoordinator = useEditorTransactionCoordinator();
+    const { runNarrative } = useTextEditorCommands();
     const {
         projectFps,
+        renderProfile,
         trimVideoClip,
         detachVideoClipAudio,
-        moveVideoClipToTrack,
-        moveVideoClipToNewTrack,
+        moveVideoClip,
+        moveVideoClipToNewTrackAtFrame,
+        narrative,
+        dependentLinks,
+        videoTracks,
     } = useTimelineStore(useShallow((state) => ({
         projectFps: state.projectFps,
+        renderProfile: state.renderProfile,
         trimVideoClip: state.trimVideoClip,
         detachVideoClipAudio: state.detachVideoClipAudio,
-        moveVideoClipToTrack: state.moveVideoClipToTrack,
-        moveVideoClipToNewTrack: state.moveVideoClipToNewTrack,
+        moveVideoClip: state.moveVideoClip,
+        moveVideoClipToNewTrackAtFrame: state.moveVideoClipToNewTrackAtFrame,
+        narrative: state.narrative,
+        dependentLinks: state.dependentLinks,
+        videoTracks: state.videoTracks,
     })));
     const clipRef = useRef<HTMLDivElement>(null);
     const [trimPreview, setTrimPreview] = useState<TrimDraft | null>(null);
+    const [movePreview, setMovePreview] = useState<MoveDraft | null>(null);
     const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-    const [isLaneDragging, setIsLaneDragging] = useState(false);
     const activeLaneDragCancellationRef = useRef<(() => void) | null>(null);
     const suppressClickRef = useRef(false);
     const previewStart = trimPreview?.sourceStart ?? clip.sourceStart;
     const previewEnd = trimPreview?.sourceEnd ?? clip.sourceEnd;
     const previewDuration = previewEnd - previewStart;
-    const visibleDuration = trimPreview ? previewDuration : placement.duration;
-    const canSeparateAudio = source.hasAudio && clip.audio?.linkState === 'linked';
+    const visibleDuration = trimPreview
+        ? previewDuration
+        : framesToSeconds(placement.durationFrames, renderProfile.fps);
+    const previewTimelineStartFrame = movePreview?.startFrame ?? placement.startFrame;
+    const ownedBlock = Object.values(narrative?.blocks ?? {}).find((block) => block.clipId === clip.id);
+    const canSeparateAudio = !ownedBlock && source.hasAudio && clip.audio?.linkState === 'linked';
+    const dependentLink = dependentLinks.find((link) => (
+        link.target.kind === 'video-clip' && link.target.clipId === clip.id
+    ));
+    const trackLocked = videoTracks.find((track) => track.id === trackId)?.locked ?? false;
 
     const openContextMenu = (x: number, y: number) => {
         // Context-clicking one member of a multi-selection must preserve the group so the modal
@@ -117,12 +176,45 @@ function ClipBlock({
         // shared lane preview and terminal commit; otherwise concurrent contacts could overwrite
         // each other's target and publish more than one clip move.
         if (event.button !== 0 || !event.isPrimary) return;
+        if (ownedBlock || trackLocked) {
+            // Controlled occurrences retain their source-track identity and are reordered through
+            // narrative commands. A locked ordinary lane likewise cannot publish a direct move.
+            if (!event.metaKey && !event.ctrlKey) onClipSelectionChange(clip.id, false);
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
         const pointerId = event.pointerId;
         const origin = { x: event.clientX, y: event.clientY };
         const pointerOwner = event.currentTarget;
+        const timeline = useTimelineStore.getState();
+        const fps = renderProfile.fps.numerator / renderProfile.fps.denominator;
+        const initial: MoveDraft = {
+            target: { kind: 'track', trackId },
+            startFrame: placement.startFrame,
+            invalid: false,
+        };
+        const gestureSnapPoints = timeline.snapEnabled
+            ? [
+                ...snapPoints,
+                {
+                    frame: secondsToFrames(
+                        usePlaybackStore.getState().currentTime,
+                        renderProfile.fps,
+                        'nearest',
+                    ),
+                    ownerKey: 'playhead',
+                },
+            ]
+            : [];
+        const snapThresholdFrames = getTimelineSnapThresholdFrames(
+            pixelsPerSecond,
+            renderProfile.fps,
+        );
+        const clipOwnerKey = `video:${clip.id}`;
+        let gesture: TimelineGestureState<MoveDraft> = beginTimelineGesture(initial);
         let active = false;
         let terminal = false;
-        let target: VideoTrackDropTarget | null = null;
         let unregisterCancellation: () => void = () => undefined;
 
         // Modifier clicks toggle on the later click event. Publishing here as well would toggle
@@ -139,8 +231,9 @@ function ClipBlock({
             window.removeEventListener('keydown', handleKeyDown);
             pointerOwner.removeEventListener('lostpointercapture', handleLostPointerCapture);
             if (pointerOwner.hasPointerCapture(pointerId)) pointerOwner.releasePointerCapture(pointerId);
+            timeline.setActiveSnapTime(null);
             onDragPreviewChange(null);
-            setIsLaneDragging(false);
+            setMovePreview(null);
         };
         const handleMove = (moveEvent: PointerEvent) => {
             if (moveEvent.pointerId !== pointerId) return;
@@ -148,22 +241,63 @@ function ClipBlock({
             if (!active) {
                 active = true;
                 suppressClickRef.current = true;
-                setIsLaneDragging(true);
             }
-            target = parseVideoTrackDropTarget(document.elementFromPoint(moveEvent.clientX, moveEvent.clientY));
-            onDragPreviewChange({ clipId: clip.id, target });
+            const deltaFrames = Math.round((moveEvent.clientX - origin.x) / pixelsPerSecond * fps);
+            const rawStartFrame = Math.max(0, initial.startFrame + deltaFrames);
+            const snapped = snapTimelineSpan(
+                rawStartFrame,
+                placement.durationFrames,
+                gestureSnapPoints,
+                snapThresholdFrames,
+                clipOwnerKey,
+            );
+            const target = parseVideoTrackDropTarget(
+                document.elementFromPoint(moveEvent.clientX, moveEvent.clientY),
+            );
+            const draft: MoveDraft = {
+                target,
+                startFrame: snapped.frame,
+                invalid: target === null
+                    || !validatePlacement(target, snapped.frame, placement.durationFrames),
+            };
+            gesture = updateTimelineGesture(gesture, draft);
+            setMovePreview(draft);
+            timeline.setActiveSnapTime(
+                target && snapped.snappedFrame !== null
+                    ? framesToSeconds(snapped.snappedFrame, renderProfile.fps)
+                    : null,
+            );
+            onDragPreviewChange({
+                clipId: clip.id,
+                target,
+                startFrame: draft.startFrame,
+                invalid: draft.invalid,
+            });
         };
         const finish = (commit: boolean) => {
             if (terminal) return;
             terminal = true;
-            const finalTarget = active ? target : null;
+            // Cancellation must discard the gesture instead of asking the shared gesture helper
+            // to derive a commit that the caller later ignores. This keeps Escape, pointercancel,
+            // lost capture, and editor-wide transaction cancellation on one rollback-only path.
+            const finished = commit && active
+                ? finishTimelineGesture(gesture, areMoveDraftsEqual)
+                : { commit: null };
             cleanup();
             if (active) window.setTimeout(() => { suppressClickRef.current = false; }, 0);
-            if (!commit || !finalTarget) return;
-            if (finalTarget.kind === 'track') {
-                moveVideoClipToTrack(clip.id, finalTarget.trackId);
+            if (!commit || !finished.commit || finished.commit.invalid || !finished.commit.target) return;
+            if (finished.commit.target.kind === 'track') {
+                moveVideoClip(
+                    clip.id,
+                    finished.commit.target.trackId,
+                    finished.commit.startFrame,
+                );
             } else {
-                moveVideoClipToNewTrack(clip.id, finalTarget.insertionIndex);
+                moveVideoClipToNewTrackAtFrame(
+                    clip.id,
+                    finished.commit.target.insertionIndex,
+                    finished.commit.startFrame,
+                );
             }
         };
         const handleUp = (upEvent: PointerEvent) => {
@@ -171,6 +305,7 @@ function ClipBlock({
         };
         const handleCancel = (cancelEvent?: PointerEvent) => {
             if (cancelEvent && cancelEvent.pointerId !== pointerId) return;
+            cancelTimelineGesture<MoveDraft>();
             finish(false);
         };
         const handleLostPointerCapture = () => finish(false);
@@ -191,7 +326,7 @@ function ClipBlock({
     };
 
     const beginTrim = (side: 'start' | 'end', event: React.PointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || trackLocked) return;
         event.preventDefault();
         event.stopPropagation();
         const startClientX = event.clientX;
@@ -228,7 +363,46 @@ function ClipBlock({
             cleanup();
             setTrimPreview(null);
             const finished = finishTimelineGesture(gesture, areTrimDraftsEqual);
-            if (finished.commit) trimVideoClip(clip.id, finished.commit.sourceStart, finished.commit.sourceEnd);
+            if (!finished.commit) return;
+            if (!ownedBlock) {
+                trimVideoClip(clip.id, finished.commit.sourceStart, finished.commit.sourceEnd);
+                return;
+            }
+            const requestedSample = Math.round(
+                (side === 'start' ? finished.commit.sourceStart : finished.commit.sourceEnd) * 16_000,
+            );
+            const body = timelineEditorialRuntime.getResolvedBodies()[ownedBlock.transcriptRecordId];
+            const retainedWordIds = new Set(ownedBlock.sourceWordIds);
+            const wordBoundaries = ownedBlock.kind === 'speech'
+                ? (body?.words ?? [])
+                    .filter((word) => retainedWordIds.has(word.id))
+                    .map((word) => side === 'start' ? word.editableStartSample : word.editableEndSample)
+                    .filter((sample) => side === 'start'
+                        ? sample >= ownedBlock.coreStartSample && sample < ownedBlock.coreEndSample
+                        : sample > ownedBlock.coreStartSample && sample <= ownedBlock.coreEndSample)
+                : [];
+            const containedSample = Math.max(
+                side === 'start' ? 0 : ownedBlock.coreStartSample + 1,
+                Math.min(
+                    body?.sampleCount ?? ownedBlock.coreEndSample,
+                    side === 'start'
+                        ? Math.min(requestedSample, ownedBlock.coreEndSample - 1)
+                        : Math.max(requestedSample, ownedBlock.coreStartSample + 1),
+                ),
+            );
+            const chosenSample = wordBoundaries.length > 0
+                ? wordBoundaries.reduce((closest, sample) => (
+                    Math.abs(sample - containedSample) < Math.abs(closest - containedSample)
+                        ? sample
+                        : closest
+                ))
+                : containedSample;
+            void runNarrative({
+                type: 'trim-block',
+                blockId: ownedBlock.id,
+                side,
+                sample: chosenSample,
+            }, { structural: true });
         };
         const handleCancel = () => {
             if (terminal) return;
@@ -259,15 +433,21 @@ function ClipBlock({
                 tabIndex={0}
                 role="button"
                 data-testid="timeline-video-clip"
-                className={`absolute bottom-1 top-1 cursor-pointer touch-none overflow-hidden rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-200 ${isLaneDragging ? 'cursor-grabbing opacity-70' : ''} ${selected
-                    ? 'z-20 border-sky-200 bg-sky-500/30 ring-1 ring-sky-200/60'
-                    : 'z-10 border-sky-400/35 bg-sky-500/15 hover:border-sky-300/60 hover:bg-sky-500/20'
+                data-dragging={movePreview ? 'true' : 'false'}
+                data-drag-invalid={movePreview?.invalid ? 'true' : 'false'}
+                data-preview-start-frame={previewTimelineStartFrame}
+                className={`absolute bottom-1 top-1 touch-none select-none overflow-hidden rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-200 ${movePreview ? 'cursor-grabbing opacity-80' : 'cursor-grab'} ${movePreview?.invalid
+                    ? 'z-30 border-red-300 bg-red-500/30 ring-1 ring-red-300/60'
+                    : selected
+                        ? 'z-20 border-sky-200 bg-sky-500/30 ring-1 ring-sky-200/60'
+                        : 'z-10 border-sky-400/35 bg-sky-500/15 hover:border-sky-300/60 hover:bg-sky-500/20'
                     }`}
                 style={{
-                    left: placement.projectStart * pixelsPerSecond,
-                    // Persisted geometry uses the canonical frame-domain placement. Raw seconds
-                    // are used only while previewing an uncommitted pointer trim.
+                    left: framesToSeconds(previewTimelineStartFrame, renderProfile.fps) * pixelsPerSecond,
+                    // Pointer movement stays as a local frame-domain draft until one terminal
+                    // store command accepts the target lane and start frame together.
                     width: Math.max(2, visibleDuration * pixelsPerSecond),
+                    willChange: movePreview ? 'left' : undefined,
                 }}
                 onClick={(event) => {
                     event.stopPropagation();
@@ -301,7 +481,7 @@ function ClipBlock({
                     openContextMenu(rect.left + Math.min(rect.width, 24), rect.top + Math.min(rect.height, 24));
                 }}
                 aria-label={`${source.originalName}, video clip from ${previewStart.toFixed(2)} to ${previewEnd.toFixed(2)} seconds`}
-                title={`${source.originalName} · ${previewStart.toFixed(2)}s–${previewEnd.toFixed(2)}s`}
+                title={`${source.originalName} · ${previewStart.toFixed(2)}s–${previewEnd.toFixed(2)}s${ownedBlock ? ' · Controlled by Text' : dependentLink?.association.kind === 'transcript-bound' ? ' · Exact bound' : dependentLink ? ' · Overlap linked' : ''}${movePreview?.invalid ? ' · Invalid drop' : ''}`}
             >
                 {canSeparateAudio && (
                     <div className="absolute inset-x-0 bottom-0 h-1/2 overflow-hidden border-t border-sky-200/15 bg-sky-950/45">
@@ -324,6 +504,15 @@ function ClipBlock({
                         ? <Volume2 className="w-3 h-3 text-blue-100 flex-none" />
                         : <VolumeX className="w-3 h-3 text-gray-500 flex-none" />}
                     <span className="truncate text-[10px] font-semibold text-sky-50">{source.originalName}</span>
+                    {ownedBlock && (
+                        <span className="rounded bg-sky-500/25 px-1 text-[8px] text-sky-100">Controlled</span>
+                    )}
+                    {dependentLink?.association.kind === 'transcript-bound' && (
+                        <span className="rounded bg-violet-500/25 px-1 text-[8px] text-violet-100"><Link2 className="inline h-2 w-2" /> Exact</span>
+                    )}
+                    {dependentLink?.association.kind === 'overlap' && (
+                        <span className="rounded bg-teal-500/25 px-1 text-[8px] text-teal-100"><Link2 className="inline h-2 w-2" /> Overlap</span>
+                    )}
                 </div>
                 {clip.audio?.linkState === 'detached' && (
                     <div className="absolute bottom-1 left-3 flex items-center gap-1 rounded bg-gray-950/75 px-1.5 py-0.5 text-[9px] text-gray-300 pointer-events-none">
@@ -367,32 +556,59 @@ export function TimelineVideoTrack({
     onClearClipSelection,
     onOpenCutDetection,
     onDragPreviewChange,
+    snapPoints,
 }: TimelineVideoTrackProps) {
     const {
         pixelsPerSecond,
         zoomLevel,
         videoSources,
-        videoClips,
-        renderProfile,
+        revision,
     } = useTimelineStore(useShallow((state) => ({
         pixelsPerSecond: state.pixelsPerSecond,
         zoomLevel: state.zoomLevel,
         videoSources: state.videoSources,
-        videoClips: state.videoClips,
-        renderProfile: state.renderProfile,
+        revision: state.revision,
     })));
     const trackRef = useRef<HTMLDivElement>(null);
     const [trackMenu, setTrackMenu] = useState<{ x: number; y: number } | null>(null);
-    const placements = useMemo(
-        () => buildClipPlacements(videoClips, renderProfile.fps),
-        [renderProfile.fps, videoClips],
+    const document = useMemo(
+        () => {
+            if (!Number.isSafeInteger(revision)) throw new Error('Timeline revision must be a safe integer.');
+            return useTimelineStore.getState().buildEditorDocumentV4();
+        },
+        [revision],
     );
+    const placementTracks = useMemo(() => buildVideoTrackPlacementsV4(document), [document]);
+    const placements = placementTracks.find((entry) => entry.track.id === track.id)?.placements ?? [];
     const sourcesById = useMemo(
         () => new Map(videoSources.map((source) => [source.id, source])),
         [videoSources],
     );
-    const clipsById = useMemo(() => new Map(videoClips.map((clip) => [clip.id, clip])), [videoClips]);
     const scaledPixelsPerSecond = pixelsPerSecond * zoomLevel;
+    const validatePlacement = (
+        movingClipId: string,
+        target: VideoTrackDropTarget,
+        startFrame: number,
+        durationFrames: number,
+    ) => {
+        if (!Number.isSafeInteger(startFrame) || startFrame < 0) return false;
+        if (target.kind === 'insertion') {
+            return target.insertionIndex >= 0 && target.insertionIndex <= document.videoTracks.length;
+        }
+        const targetTrack = document.videoTracks.find((candidate) => candidate.id === target.trackId);
+        if (!targetTrack || targetTrack.locked) return false;
+        const endFrame = startFrame + durationFrames;
+        if (!Number.isSafeInteger(durationFrames) || durationFrames <= 0 || !Number.isSafeInteger(endFrame)) {
+            return false;
+        }
+        return placementTracks
+            .find((entry) => entry.track.id === target.trackId)
+            ?.placements.every((candidate) => (
+                candidate.clip.id === movingClipId
+                || endFrame <= candidate.startFrame
+                || startFrame >= candidate.endFrame
+            )) ?? true;
+    };
 
     return (
         <div
@@ -412,10 +628,10 @@ export function TimelineVideoTrack({
                     Empty video track
                 </div>
             )}
-            {placements.filter((placement) => track.clipIds.includes(placement.clip.id)).map((placement) => {
-                const clip = clipsById.get(placement.clip.id);
-                const source = clip ? sourcesById.get(clip.sourceId) : undefined;
-                if (!clip || !source) return null;
+            {placements.map((placement) => {
+                const clip = placement.clip;
+                const source = sourcesById.get(clip.sourceId);
+                if (!source) return null;
                 const peaks = peaksByMediaKey.get(getAudioMediaCacheKey({
                     kind: 'video-source-audio',
                     videoSourceId: source.id,
@@ -434,6 +650,10 @@ export function TimelineVideoTrack({
                         onClipSelectionChange={onClipSelectionChange}
                         onOpenCutDetection={onOpenCutDetection}
                         onDragPreviewChange={onDragPreviewChange}
+                        snapPoints={snapPoints}
+                        validatePlacement={(target, startFrame, durationFrames) => (
+                            validatePlacement(clip.id, target, startFrame, durationFrames)
+                        )}
                     />
                 );
             })}

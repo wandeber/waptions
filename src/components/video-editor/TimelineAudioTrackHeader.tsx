@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Headphones, Lock, Trash2, Unlock, Volume2, VolumeX } from 'lucide-react';
+import { Headphones, Link2, Lock, Trash2, Unlock, Volume2, VolumeX } from 'lucide-react';
 import type { AudioTrack } from '@/types/video';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useShallow } from 'zustand/react/shallow';
@@ -17,15 +17,22 @@ export function TimelineAudioTrackHeader({ track }: TimelineAudioTrackHeaderProp
         removeAudioTrack,
         setAudioTrackLocked,
         updateAudioTrackMix,
+        dependentLinks,
     } = useTimelineStore(useShallow((state) => ({
         renameAudioTrack: state.renameAudioTrack,
         removeAudioTrack: state.removeAudioTrack,
         setAudioTrackLocked: state.setAudioTrackLocked,
         updateAudioTrackMix: state.updateAudioTrackMix,
+        dependentLinks: state.dependentLinks,
     })));
     const [nameDraft, setNameDraft] = useState(track.name);
     const escapedNameRef = useRef(false);
     const lastCommittedNameRef = useRef(track.name);
+    const trackLinks = dependentLinks.filter((link) => (
+        link.target.kind === 'audio-clip' && link.target.trackId === track.id
+    ));
+    const exactCount = trackLinks.filter((link) => link.association.kind === 'transcript-bound').length;
+    const overlapCount = trackLinks.length - exactCount;
 
     useEffect(() => {
         setNameDraft(track.name);
@@ -106,6 +113,16 @@ export function TimelineAudioTrackHeader({ track }: TimelineAudioTrackHeaderProp
               >
                 {track.gainDb > 0 ? '+' : ''}{track.gainDb} dB
               </span>
+              {exactCount > 0 && (
+                <span className="rounded bg-violet-500/15 px-1 text-[8px] text-violet-200" title={`${exactCount} exact-bound audio targets`}>
+                    <Link2 className="inline h-2 w-2" /> E{exactCount}
+                </span>
+              )}
+              {overlapCount > 0 && (
+                <span className="rounded bg-teal-500/15 px-1 text-[8px] text-teal-200" title={`${overlapCount} overlap-linked audio targets`}>
+                    O{overlapCount}
+                </span>
+              )}
               <button
                 type="button"
                 disabled={track.locked}

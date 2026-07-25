@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { createEditorDocumentV4Fixture } from '@/types/editorial.test-fixtures';
 import type { EditorDocumentV3, TrackTranscriptionProvenanceV3 } from '@/types/video';
 import {
     createTranscriptionJobGuard,
     finalizeAudioGraphMutation,
+    getCanonicalEditorAudioGraphSignature,
     isTranscriptionJobGuardCurrent,
 } from './audio-graph-signature';
 import { createDefaultRenderProfile } from './render-profile';
@@ -45,6 +47,18 @@ const document = (): EditorDocumentV3 => ({
 });
 
 describe('audio graph mutation finalization', () => {
+    it('uses explicit V4 starts while excluding visual-only track state', () => {
+        const current = createEditorDocumentV4Fixture({
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+        const original = getCanonicalEditorAudioGraphSignature(current);
+        current.videoTracks[0] = { ...current.videoTracks[0], visible: false, locked: true };
+        expect(getCanonicalEditorAudioGraphSignature(current)).toBe(original);
+        current.videoClips[0] = { ...current.videoClips[0], timelineStartFrame: 30 };
+        expect(getCanonicalEditorAudioGraphSignature(current)).not.toBe(original);
+    });
+
     it('does not let an invalidate hint advance an unchanged canonical graph', () => {
         const previous = document();
         const next = { ...previous, revision: 2 };

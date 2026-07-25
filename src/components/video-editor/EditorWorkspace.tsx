@@ -1,6 +1,6 @@
 'use client';
 
-import { History, SlidersHorizontal } from 'lucide-react';
+import { AlignLeft, History, SlidersHorizontal, Workflow } from 'lucide-react';
 import { useRef, useState, type KeyboardEvent } from 'react';
 import { usePlaybackStore } from '@/stores/playback-store';
 import { useTimelineStore } from '@/stores/timeline-store';
@@ -12,6 +12,9 @@ import type { SubtitleAnimationStyle } from './subtitle-editor/types';
 import { Timeline } from './Timeline';
 import { VideoViewport } from './VideoViewport';
 import { EditorTransportBar } from './EditorTransportBar';
+import { EditorialTargetLinkPanel } from './text-editor/EditorialTargetLinkPanel';
+import { NarrativePropertiesPanel } from './text-editor/NarrativePropertiesPanel';
+import { TextEditorWorkspace } from './text-editor/TextEditorWorkspace';
 import type { Subtitle } from '@/types/timeline';
 import {
   MINIMUM_INSPECTOR_WIDTH,
@@ -42,12 +45,13 @@ interface EditorWorkspaceProps {
 export function EditorWorkspace(props: EditorWorkspaceProps) {
   const { layout } = props;
   const [inspectorTab, setInspectorTab] = useState<'properties' | 'history'>('properties');
+  const [lowerPane, setLowerPane] = useState<'timeline' | 'text'>('timeline');
   const propertiesTabRef = useRef<HTMLButtonElement>(null);
   const historyTabRef = useRef<HTMLButtonElement>(null);
-  const isMediaSelection = useTimelineStore((state) => (
-    state.transientSelection.kind === 'video-clip'
-    || state.transientSelection.kind === 'audio-clip'
-  ));
+  const timelinePaneTabRef = useRef<HTMLButtonElement>(null);
+  const textPaneTabRef = useRef<HTMLButtonElement>(null);
+  const selectionKind = useTimelineStore((state) => state.transientSelection.kind);
+  const hasNarrative = useTimelineStore((state) => state.narrative !== null);
   const selectAdjacentInspectorTab = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -59,6 +63,18 @@ export function EditorWorkspace(props: EditorWorkspaceProps) {
         : inspectorTab === 'properties' ? 'history' : 'properties';
     setInspectorTab(target);
     (target === 'properties' ? propertiesTabRef : historyTabRef).current?.focus();
+  };
+  const selectLowerPaneTab = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.key === 'Home'
+      ? 'timeline'
+      : event.key === 'End'
+        ? 'text'
+        : lowerPane === 'timeline' ? 'text' : 'timeline';
+    setLowerPane(target);
+    (target === 'timeline' ? timelinePaneTabRef : textPaneTabRef).current?.focus();
   };
 
   return (
@@ -95,16 +111,88 @@ export function EditorWorkspace(props: EditorWorkspaceProps) {
           >
             <div className="absolute -bottom-1.5 -top-1.5 inset-x-0" aria-hidden="true" />
           </div>
-          <div className="flex-none min-h-0" style={{ height: layout.timelineHeight }}>
-            <Timeline
-              onSubtitleClick={props.onSubtitleClick}
-              showThirdsGuide={layout.showThirdsGuide}
-              onThirdsGuideToggle={layout.toggleThirdsGuide}
-              showDevinGuide={layout.showDevinGuide}
-              onDevinGuideToggle={layout.toggleDevinGuide}
-              showMetaInfo={layout.showMetaInfo}
-              onMetaInfoToggle={layout.toggleMetaInfo}
-            />
+          <div className="relative flex-none min-h-0" style={{ height: layout.timelineHeight }}>
+            {/*
+              The tablist deliberately lives outside both tabpanels. Each pane reserves the same
+              leading toolbar slot beneath it, so this one DOM instance can sit beside that pane's
+              tools without remounting when the selected tab changes. Keeping the node persistent
+              preserves focus and the ARIA roving-tabindex relationship across pane switches.
+            */}
+            <div
+              className={`absolute left-2 z-50 w-40 ${lowerPane === 'text' && !hasNarrative
+                ? 'top-px'
+                : 'top-[5px]'}`}
+            >
+              <div
+                role="tablist"
+                aria-label="Lower editor workspace"
+                aria-orientation="horizontal"
+                data-testid="lower-workspace-selector"
+                className="flex h-[30px] w-full rounded border border-slate-700 bg-slate-950 p-0.5"
+              >
+                <button
+                  ref={timelinePaneTabRef}
+                  id="editor-timeline-pane-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={lowerPane === 'timeline'}
+                  aria-controls="editor-timeline-pane"
+                  tabIndex={lowerPane === 'timeline' ? 0 : -1}
+                  onClick={() => setLowerPane('timeline')}
+                  onKeyDown={selectLowerPaneTab}
+                  className={`flex h-6 min-w-0 flex-1 items-center justify-center gap-1.5 rounded px-2 text-[11px] font-medium transition-colors motion-reduce:transition-none ${lowerPane === 'timeline'
+                    ? 'bg-sky-500/20 text-sky-100'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                >
+                  <Workflow className="h-3.5 w-3.5 flex-none" /> Timeline
+                </button>
+                <button
+                  ref={textPaneTabRef}
+                  id="editor-text-pane-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={lowerPane === 'text'}
+                  aria-controls="editor-text-pane"
+                  tabIndex={lowerPane === 'text' ? 0 : -1}
+                  onClick={() => setLowerPane('text')}
+                  onKeyDown={selectLowerPaneTab}
+                  className={`flex h-6 min-w-0 flex-1 items-center justify-center gap-1.5 rounded px-2 text-[11px] font-medium transition-colors motion-reduce:transition-none ${lowerPane === 'text'
+                    ? 'bg-violet-500/20 text-violet-100'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                >
+                  <AlignLeft className="h-3.5 w-3.5 flex-none" /> Text
+                </button>
+              </div>
+            </div>
+            <div
+              id="editor-timeline-pane"
+              role="tabpanel"
+              aria-labelledby="editor-timeline-pane-tab"
+              className={`absolute inset-0 ${lowerPane === 'timeline' ? '' : 'hidden'}`}
+              aria-hidden={lowerPane !== 'timeline'}
+              inert={lowerPane !== 'timeline'}
+            >
+              <Timeline
+                active={lowerPane === 'timeline'}
+                onSubtitleClick={props.onSubtitleClick}
+                showThirdsGuide={layout.showThirdsGuide}
+                onThirdsGuideToggle={layout.toggleThirdsGuide}
+                showDevinGuide={layout.showDevinGuide}
+                onDevinGuideToggle={layout.toggleDevinGuide}
+                showMetaInfo={layout.showMetaInfo}
+                onMetaInfoToggle={layout.toggleMetaInfo}
+              />
+            </div>
+            <div
+              id="editor-text-pane"
+              role="tabpanel"
+              aria-labelledby="editor-text-pane-tab"
+              className={`absolute inset-0 ${lowerPane === 'text' ? '' : 'hidden'}`}
+              aria-hidden={lowerPane !== 'text'}
+              inert={lowerPane !== 'text'}
+            >
+              <TextEditorWorkspace active={lowerPane === 'text'} />
+            </div>
           </div>
         </div>
 
@@ -186,7 +274,9 @@ export function EditorWorkspace(props: EditorWorkspaceProps) {
           >
             {inspectorTab === 'history'
               ? <HistoryPanel />
-              : isMediaSelection
+              : selectionKind === 'narrative'
+                ? <NarrativePropertiesPanel />
+                : selectionKind === 'video-clip' || selectionKind === 'audio-clip'
                 ? <MediaInspector />
                 : <PlaybackAwareSubtitleEditor {...props} />}
           </div>
@@ -199,22 +289,49 @@ export function EditorWorkspace(props: EditorWorkspaceProps) {
 /** The subtitle inspector needs the clock, but the workspace and timeline rows do not. */
 function PlaybackAwareSubtitleEditor(props: EditorWorkspaceProps) {
   const currentTime = usePlaybackStore((state) => state.currentTime);
+  const transientSelection = useTimelineStore((state) => state.transientSelection);
+  const tracks = useTimelineStore((state) => state.tracks);
+  const selectedSubtitle = transientSelection.kind === 'subtitles'
+    && transientSelection.subtitleIds.length === 1
+    ? tracks.find((track) => track.id === transientSelection.trackId)?.subtitles
+      .find((subtitle) => subtitle.id === transientSelection.subtitleIds[0])
+    : undefined;
+  const selectedTrack = transientSelection.kind === 'subtitles'
+    ? tracks.find((track) => track.id === transientSelection.trackId)
+    : undefined;
   return (
-    <SubtitleEditor
-      subtitles={props.subtitles}
-      onSubtitleClick={props.onSubtitleClick}
-      onDelete={props.onDelete}
-      onSubtitlesChange={props.onSubtitlesChange}
-      onSubtitleUpdate={props.onSubtitleUpdate}
-      onAddSubtitle={props.onAddSubtitle}
-      currentTime={currentTime}
-      fps={props.projectFps}
-      onGenerateSubtitles={props.onGenerateSubtitles}
-      isGeneratingSubtitles={props.isGeneratingSubtitles}
-      animationStyle={props.animationStyle}
-      onAnimationStyleChange={props.onAnimationStyleChange}
-      onUndo={props.onUndo}
-      onRedo={props.onRedo}
-    />
+    <div className="flex min-h-0 flex-1 flex-col">
+      {selectedSubtitle && selectedTrack && (
+        <div className="flex-none border-b border-slate-800 p-2">
+          <EditorialTargetLinkPanel
+            target={{
+              kind: 'subtitle',
+              trackId: selectedTrack.id,
+              subtitleId: selectedSubtitle.id,
+            }}
+            targetLabel={`Subtitle · ${selectedSubtitle.text || 'Untitled cue'}`}
+            locked={selectedTrack.isLocked}
+          />
+        </div>
+      )}
+      <div className="min-h-0 flex-1">
+        <SubtitleEditor
+          subtitles={props.subtitles}
+          onSubtitleClick={props.onSubtitleClick}
+          onDelete={props.onDelete}
+          onSubtitlesChange={props.onSubtitlesChange}
+          onSubtitleUpdate={props.onSubtitleUpdate}
+          onAddSubtitle={props.onAddSubtitle}
+          currentTime={currentTime}
+          fps={props.projectFps}
+          onGenerateSubtitles={props.onGenerateSubtitles}
+          isGeneratingSubtitles={props.isGeneratingSubtitles}
+          animationStyle={props.animationStyle}
+          onAnimationStyleChange={props.onAnimationStyleChange}
+          onUndo={props.onUndo}
+          onRedo={props.onRedo}
+        />
+      </div>
+    </div>
   );
 }

@@ -18,22 +18,22 @@ import type {
     ExportResult,
 } from '@/types/export';
 import type {
-    ClipPlacement,
     EditorDocumentV3,
+    EditorDocumentV4,
     VideoSourceAssetV3,
 } from '@/types/video';
 import { renderSubtitles } from './subtitle-renderer';
 import { waitForFonts } from './fonts/google-fonts';
+import { getSourceFrameAtOrBefore } from './video-timeline';
 import {
-    buildClipPlacements,
-    getSourceFrameAtOrBefore,
-    projectTimeToSourceTime,
-    resolveClipAtProjectTime,
-} from './video-timeline';
+    buildVideoFrameRuntimePlan,
+    resolveVideoFrameRuntimePlacementAtFrame,
+    type VideoFrameRuntimePlacement,
+} from './video-frame-plan';
 import { frameToOutputSample } from './audio-timebase';
 import { framesToSeconds } from './render-profile';
 import { TimelineAudioRenderer } from './timeline-audio-renderer';
-import { drawContainedVideoFrame } from './video-compositor';
+import { clearVideoFrameToBlack, drawContainedVideoFrame } from './video-compositor';
 import {
     VideoFrameSession,
     type VideoFrameSessionBackend,
@@ -43,7 +43,7 @@ import { runtimeDiagnostics } from './runtime-diagnostics';
 import {
     awaitExportPhase,
     calculateExportVideoBitrate,
-    createExportDocumentSnapshot,
+    createExportRuntimeSnapshot,
     createExportProgressReporter,
     getExportContentEndFrame,
     isExportAbortError,
@@ -82,15 +82,14 @@ const EXPORT_VIDEO_SESSION_BACKEND: VideoFrameSessionBackend = {
  * and independent-audio tails continue at the locked canvas size after the video program ends.
  */
 export function resolveExportVideoPlacement(
-    document: EditorDocumentV3,
+    document: EditorDocumentV3 | EditorDocumentV4,
     frameIndex: number,
-): ClipPlacement | null {
+): VideoFrameRuntimePlacement | null {
     if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) return null;
-    const placements = buildClipPlacements(document.videoClips, document.renderProfile.fps);
-    return resolveClipAtProjectTime(
-        placements,
-        framesToSeconds(frameIndex, document.renderProfile.fps),
-    );
+    return resolveVideoFrameRuntimePlacementAtFrame(
+        buildVideoFrameRuntimePlan(document),
+        frameIndex,
+    )?.placement ?? null;
 }
 
 /**
@@ -135,7 +134,9 @@ export async function exportProject(request: ExportProjectContext): Promise<Expo
         // or progress callbacks so every early exit reaches one awaited terminal operation.
         destinationRuntime = createExportDestinationRuntime(request.destination, signal);
         const destination = destinationRuntime;
-        const document = createExportDocumentSnapshot(request.document);
+        const exportSnapshot = createExportRuntimeSnapshot(request.document);
+        const document = exportSnapshot.document;
+        const videoPlan = exportSnapshot.videoPlan;
         throwIfExportAborted(signal);
         reportProgress(0);
         const { format, quality, includeAudio = true } = request.options;
@@ -156,7 +157,6 @@ export async function exportProject(request: ExportProjectContext): Promise<Expo
         const frameRateNumber = frameRate.numerator / frameRate.denominator;
         const contentEndFrame = getExportContentEndFrame(document);
         const audioEndSample = frameToOutputSample(contentEndFrame, frameRate);
-        const placements = buildClipPlacements(document.videoClips, frameRate);
         const canvasWidth = document.renderProfile.width;
         const canvasHeight = document.renderProfile.height;
         output = new Output({
@@ -201,16 +201,17 @@ export async function exportProject(request: ExportProjectContext): Promise<Expo
             throwIfExportAborted(signal);
             const projectTime = framesToSeconds(frameIndex, frameRate);
             const nextProjectTime = framesToSeconds(frameIndex + 1, frameRate);
-            const placement = resolveClipAtProjectTime(placements, projectTime);
-            const activeSource = placement ? sourcesById.get(placement.clip.sourceId) ?? null : null;
+            const resolved = resolveVideoFrameRuntimePlacementAtFrame(videoPlan, frameIndex);
+            const activeSource = resolved
+                ? sourcesById.get(resolved.placement.clip.sourceId) ?? null
+                : null;
 
             // Paint first on every iteration. If video ends before subtitle or audio content, this
             // black frame is the deterministic visual tail on which subtitles still render.
-            context2d.fillStyle = '#000';
-            context2d.fillRect(0, 0, canvasWidth, canvasHeight);
-            if (placement && activeSource) {
+            clearVideoFrameToBlack(context2d, canvasWidth, canvasHeight);
+            if (resolved && activeSource) {
                 const sourceFrame = getSourceFrameAtOrBefore(
-                    projectTimeToSourceTime(placement, projectTime),
+                    resolved.sourceTime,
                     activeSource.fps,
                     activeSource.duration,
                 );

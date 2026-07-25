@@ -4,24 +4,29 @@ import {
 } from '@/lib/audio-runtime-projection';
 import { frameToOutputSample } from '@/lib/audio-timebase';
 import { secondsToFrames } from '@/lib/render-profile';
-import { getTimelineContentEndFrame } from '@/lib/video-timeline';
+import { getTimelineContentEndFrameForRuntime } from '@/lib/video-timeline';
 import type { TimelineStore } from '@/stores/timeline-store-types';
+import { projectTimelineVideoRuntimeDocumentV4 } from '@/stores/timeline-v4-compat';
 import type {
     TimelineAudioEnginePort,
     TimelineAudioEngineSnapshot,
 } from '@/types/timeline-audio-engine';
 import type { RationalFrameRate } from '@/types/video';
 
-export interface TimelineAudioRuntimeInputs extends TimelineAudioRuntimeDocumentInput {
+export type TimelineAudioRuntimeInputs = Omit<
+    TimelineAudioRuntimeDocumentInput,
+    'videoClips' | 'videoTracks'
+> & Pick<TimelineStore, 'videoClips' | 'videoTracks'> & {
     /** Subtitle lanes affect preview only through their exact terminal frame. */
     contentEndFrame: number;
-}
+};
 
 type TimelineAudioRuntimeState = Pick<
     TimelineStore,
     | 'renderProfile'
     | 'videoSources'
     | 'videoClips'
+    | 'videoTracks'
     | 'audioSources'
     | 'audioTracks'
     | 'tracks'
@@ -41,18 +46,18 @@ type TimelineContentEndFrameCalculator = (
     state: TimelineAudioRuntimeState,
 ) => number;
 
-const calculateTimelineContentEndFrame: TimelineContentEndFrameCalculator = (state) => (
-    getTimelineContentEndFrame(
-        state.videoClips,
-        state.tracks,
-        {
-            audioTracks: state.audioTracks,
-            videoSources: state.videoSources,
-            audioSources: state.audioSources,
-            renderProfile: state.renderProfile,
-        },
-    )
-);
+const calculateTimelineContentEndFrame: TimelineContentEndFrameCalculator = (state) => {
+    const videoDocument = projectTimelineVideoRuntimeDocumentV4(state);
+    return getTimelineContentEndFrameForRuntime({
+        renderProfile: state.renderProfile,
+        videoSources: state.videoSources,
+        videoClips: videoDocument.videoClips,
+        videoTracks: videoDocument.videoTracks,
+        audioSources: state.audioSources,
+        audioTracks: state.audioTracks,
+        subtitleTracks: state.tracks,
+    });
+};
 
 /**
  * Selects only references that can change decoded audio plus the scalar content boundary.
@@ -68,6 +73,7 @@ export function selectTimelineAudioRuntimeInputs(
         renderProfile: state.renderProfile,
         videoSources: state.videoSources,
         videoClips: state.videoClips,
+        videoTracks: state.videoTracks,
         audioSources: state.audioSources,
         audioTracks: state.audioTracks,
         contentEndFrame: calculateTimelineContentEndFrame(state),
@@ -96,6 +102,7 @@ export function createTimelineAudioRuntimeInputsSelector(
             && previousState.renderProfile === state.renderProfile
             && previousState.videoSources === state.videoSources
             && previousState.videoClips === state.videoClips
+            && previousState.videoTracks === state.videoTracks
             && previousState.audioSources === state.audioSources
             && previousState.audioTracks === state.audioTracks) {
             return previousInputs!;
@@ -104,6 +111,7 @@ export function createTimelineAudioRuntimeInputsSelector(
             renderProfile: state.renderProfile,
             videoSources: state.videoSources,
             videoClips: state.videoClips,
+            videoTracks: state.videoTracks,
             audioSources: state.audioSources,
             audioTracks: state.audioTracks,
             contentEndFrame: canReuseContentBoundary
@@ -126,6 +134,7 @@ export function haveEqualTimelineAudioRuntimeInputs(
     return left.renderProfile === right.renderProfile
         && left.videoSources === right.videoSources
         && left.videoClips === right.videoClips
+        && left.videoTracks === right.videoTracks
         && left.audioSources === right.audioSources
         && left.audioTracks === right.audioTracks
         && left.contentEndFrame === right.contentEndFrame;
@@ -146,10 +155,12 @@ export function synchronizeTimelineAudioRuntime(
 ): TimelineAudioRuntimeSyncResult | null {
     if (previous && haveEqualTimelineAudioRuntimeInputs(previous, current)) return null;
 
+    const videoDocument = projectTimelineVideoRuntimeDocumentV4(current);
     const document: TimelineAudioRuntimeDocumentInput = {
         renderProfile: current.renderProfile,
         videoSources: current.videoSources,
-        videoClips: current.videoClips,
+        videoClips: videoDocument.videoClips,
+        videoTracks: videoDocument.videoTracks,
         audioSources: current.audioSources,
         audioTracks: current.audioTracks,
     };

@@ -4,6 +4,26 @@ import process from 'node:process';
 
 export const pnpmExecutable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
+const NEXT_PREWARM_PATHS = ['/', '/editor/waptions-e2e-prewarm', '/login'];
+
+/**
+ * Compiles every page family used by the browser suite before Playwright fans out workers.
+ *
+ * Next.js development mode writes shared worker chunks while lazily compiling a newly discovered
+ * route. If an editor test starts a Web Worker while another Playwright worker first opens `/login`,
+ * Chromium can receive that chunk during the rewrite and reject it as invalid JavaScript. Serial
+ * prewarming keeps all route compilation ahead of media execution without serializing the tests.
+ */
+export async function prewarmNextRoutes(port, request = globalThis.fetch) {
+  for (const pathname of NEXT_PREWARM_PATHS) {
+    const response = await request(`http://localhost:${port}${pathname}`, { redirect: 'manual' });
+    await response.arrayBuffer();
+    if (response.status >= 500) {
+      throw new Error(`Next.js route prewarm failed for ${pathname} with status ${response.status}.`);
+    }
+  }
+}
+
 /**
  * Binds the HTTP socket before preparing Next.js, so free-port allocation remains reserved for the
  * full run. Both generic and secure runners use this exact non-secret compiler/server lifecycle.
@@ -53,6 +73,7 @@ export async function startIsolatedNextServer(
     server.on('upgrade', (request, socket, head) => {
       void upgradeHandler(request, socket, head).catch(() => socket.destroy());
     });
+    await prewarmNextRoutes(port);
   } catch (error) {
     await new Promise((resolve) => server.close(resolve));
     await app?.close();

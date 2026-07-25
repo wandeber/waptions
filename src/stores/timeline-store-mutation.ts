@@ -88,7 +88,7 @@ export function durableTimelinePatchIsNoOp(
     });
 }
 
-// This list mirrors EditorManifestV3. Selection, drag state, the derived runtime FPS mirror,
+// This list mirrors EditorManifestV4. Selection, drag state, the derived runtime FPS mirror,
 // scroll, clipboard, and legacy transcription mirrors never create a persistence transaction by
 // themselves. Comparing only fields present in the patch avoids serializing the whole project for
 // every pointer update while retaining normalized-value no-op detection.
@@ -102,6 +102,10 @@ const DURABLE_STATE_KEYS = [
     'audioTracks',
     'activeTrackId',
     'transcriptionByTrackId',
+    'globalEditingMode',
+    'editorialTranscriptDescriptors',
+    'narrative',
+    'dependentLinks',
 ] as const satisfies readonly (keyof TimelineStore)[];
 
 const renderProfilesEqual = (

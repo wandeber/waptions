@@ -2,6 +2,7 @@ import type {
     AudioSourceAsset,
     AudioSourceDescriptor,
     EditorManifestV3,
+    EditorManifestV4,
     VideoSourceAssetV3,
     VideoSourceDescriptorV3,
 } from '@/types/video';
@@ -67,7 +68,7 @@ export async function resolveEditorAudioAsset(
 
 export async function resolveEditorManifestAssets(
     reader: EditorAssetReader,
-    manifest: EditorManifestV3,
+    manifest: EditorManifestV3 | EditorManifestV4,
 ): Promise<{
     videoSources: VideoSourceAssetV3[];
     audioSources: AudioSourceAsset[];

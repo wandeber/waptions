@@ -26,8 +26,7 @@ import { TimelineAudioTrack, getAudioClipVisualData } from './TimelineAudioTrack
 import { TimelineAudioTrackHeader } from './TimelineAudioTrackHeader';
 import { TimelineRowResizeHandle } from './TimelineRowResizeHandle';
 import { VideoCutDialog } from './VideoCutDialog';
-import { buildClipPlacements } from '@/lib/video-timeline';
-import { getVisibleVideoAudioReferences } from '@/lib/video-waveform';
+import { buildVideoTrackPlacementsV4 } from '@/lib/video-placement-v4';
 import { getAudioMediaCacheKey, type AudioMediaReference } from '@/lib/media-asset-ref';
 import { isTextEditingKeyboardTarget } from '@/lib/keyboard-target';
 import { framesToSeconds, secondsToFrames } from '@/lib/render-profile';
@@ -40,12 +39,20 @@ import { TimelineVideoTrackHeader } from './TimelineVideoTrackHeader';
 import { formatShortcutTitle, getShortcutAriaKeys } from '@/config/shortcuts';
 import {
   buildAudioClipSnapPoints,
-  buildVideoClipSnapPoints,
   type TimelineSnapPoint,
 } from '@/lib/timeline-snap';
 import type { VideoCutDetectionRequest } from '@/lib/video-cut/targets';
+import { timelineEditorialRuntime } from '@/stores/timeline-editorial-runtime';
+import { GlobalEditingModeControl } from './text-editor/GlobalEditingModeControl';
+import {
+  buildNarrativeListProjection,
+  getSelectedWordBounds,
+  getTimelineNarrativeSplitSample,
+} from './text-editor/text-editor-model';
+import { useTextEditorCommands } from './text-editor/useTextEditorCommands';
 
 interface TimelineProps {
+  active?: boolean;
   onSubtitleClick?: (subtitle: Subtitle | null) => void;
   showThirdsGuide?: boolean;
   onThirdsGuideToggle?: () => void;
@@ -68,6 +75,7 @@ interface TimelineRowHeightState {
 }
 
 export function Timeline({
+  active = true,
   onSubtitleClick,
   showThirdsGuide = false,
   onThirdsGuideToggle,
@@ -86,7 +94,7 @@ export function Timeline({
     cuts, isDragging, videoSources, videoClips, videoTracks, selectedClipId,
     audioSources, audioTracks, renderProfile, transientSelection,
     splitSelectedMediaAtFrame, deleteSelectedMedia, reorderVideoClips, addAudioTrack,
-    addVideoTrack, removeVideoTrack, selectClip,
+    addVideoTrack, removeVideoTrack, selectClip, revision, narrative, globalEditingMode,
   } = useTimelineStore(useShallow((state) => ({
     zoomLevel: state.zoomLevel,
     setZoom: state.setZoom,
@@ -114,18 +122,77 @@ export function Timeline({
     addVideoTrack: state.addVideoTrack,
     removeVideoTrack: state.removeVideoTrack,
     selectClip: state.selectClip,
+    revision: state.revision,
+    narrative: state.narrative,
+    globalEditingMode: state.globalEditingMode,
   })));
-  const clipPlacements = useMemo(
-    () => buildClipPlacements(videoClips, renderProfile.fps),
-    [renderProfile.fps, videoClips],
+  const v4Document = useMemo(
+    () => {
+      if (!Number.isSafeInteger(revision)) throw new Error('Timeline revision must be a safe integer.');
+      return useTimelineStore.getState().buildEditorDocumentV4();
+    },
+    [revision],
   );
+  const clipPlacements = useMemo(() => buildVideoTrackPlacementsV4(v4Document)
+    .flatMap((track) => track.placements)
+    .map((placement) => ({
+      projectStart: placement.startSeconds,
+      projectEnd: placement.endSeconds,
+    })), [v4Document]);
+  const { runNarrative, runMode } = useTextEditorCommands();
   const selectedClipIndex = selectedClipId
     ? videoClips.findIndex((clip) => clip.id === selectedClipId)
     : -1;
-  const hasSelectedMedia = transientSelection.kind === 'video-clip' || transientSelection.kind === 'audio-clip';
+  const selectedNarrativeBlock = transientSelection.kind === 'narrative'
+    ? narrative?.blocks[transientSelection.blockId]
+    : undefined;
+  const selectedNarrativeIndex = selectedNarrativeBlock && narrative
+    ? narrative.blockIds.indexOf(selectedNarrativeBlock.id)
+    : -1;
+  const narrativeProjection = useMemo(() => v4Document.narrative
+    ? buildNarrativeListProjection({
+      narrative: v4Document.narrative,
+      bodies: timelineEditorialRuntime.getResolvedBodies(),
+      videoClips: v4Document.videoClips,
+      videoTracks: v4Document.videoTracks,
+      dependentLinks: v4Document.dependentLinks,
+      renderProfile: v4Document.renderProfile,
+    })
+    : null, [v4Document]);
+  const selectedNarrativeRow = selectedNarrativeBlock
+    ? narrativeProjection?.blockRowById.get(selectedNarrativeBlock.id)
+    : undefined;
+  const selectedNarrativeBounds = selectedNarrativeRow && transientSelection.kind === 'narrative'
+    ? getSelectedWordBounds(selectedNarrativeRow, transientSelection.sourceWordIds)
+    : null;
+  const selectedNarrativeSource = selectedNarrativeBlock
+    ? videoSources.find((source) => source.id === selectedNarrativeBlock.sourceId)
+    : undefined;
+  const narrativeSplitSample = selectedNarrativeRow && selectedNarrativeSource
+    ? getTimelineNarrativeSplitSample({
+      row: selectedNarrativeRow,
+      body: timelineEditorialRuntime.getResolvedBodies()[selectedNarrativeRow.block.transcriptRecordId],
+      sourceFps: selectedNarrativeSource.fps,
+      playheadFrame: secondsToFrames(
+        usePlaybackStore.getState().currentTime,
+        renderProfile.fps,
+        'nearest',
+      ),
+      renderProfile,
+    })
+    : null;
+  const hasSelectedMedia = transientSelection.kind === 'video-clip'
+    || transientSelection.kind === 'audio-clip'
+    || transientSelection.kind === 'narrative';
   const mediaSnapPoints = useMemo<TimelineSnapPoint[]>(() => {
     const points: TimelineSnapPoint[] = [{ frame: 0, ownerKey: 'timeline:start' }];
-    points.push(...buildVideoClipSnapPoints(videoClips, renderProfile.fps));
+    buildVideoTrackPlacementsV4(v4Document).forEach((track) => track.placements.forEach((placement) => {
+      const ownerKey = `video:${placement.clip.id}`;
+      points.push(
+        { frame: placement.startFrame, ownerKey },
+        { frame: placement.endFrame, ownerKey },
+      );
+    }));
     tracks.forEach((track) => track.subtitles.forEach((subtitle) => {
       points.push(
         {
@@ -145,7 +212,7 @@ export function Timeline({
       audioSources,
     ));
     return points;
-  }, [audioSources, audioTracks, renderProfile.fps, tracks, videoClips, videoSources]);
+  }, [audioSources, audioTracks, renderProfile.fps, tracks, v4Document, videoSources]);
 
   const tracksContentRef = useRef<HTMLDivElement>(null);
   const rulerContentRef = useRef<HTMLDivElement>(null);
@@ -241,12 +308,18 @@ export function Timeline({
     if (!tracksElement || effectivePixelsPerSecond <= 0) return;
     const visibleStart = tracksElement.scrollLeft / effectivePixelsPerSecond;
     const visibleEnd = (tracksElement.scrollLeft + tracksElement.clientWidth) / effectivePixelsPerSecond;
-    const nextReferences = getVisibleVideoAudioReferences(
-      videoClips,
-      renderProfile.fps,
-      visibleStart,
-      visibleEnd,
-    );
+    const seenVideoAudioSources = new Set<string>();
+    const nextReferences: AudioMediaReference[] = buildVideoTrackPlacementsV4(v4Document)
+      .flatMap((track) => track.placements)
+      .flatMap((placement) => {
+        const clip = placement.clip;
+        const intersects = placement.endSeconds > visibleStart && placement.startSeconds < visibleEnd;
+        if (!intersects || clip.audio?.linkState !== 'linked' || seenVideoAudioSources.has(clip.sourceId)) {
+          return [];
+        }
+        seenVideoAudioSources.add(clip.sourceId);
+        return [{ kind: 'video-source-audio' as const, videoSourceId: clip.sourceId }];
+      });
     audioTracks.forEach((track) => track.clips.forEach((clip) => {
       const visual = getAudioClipVisualData(clip, renderProfile.fps, videoSources, audioSources);
       if (!visual) return;
@@ -269,7 +342,7 @@ export function Timeline({
         ? currentReferences
         : uniqueReferences;
     });
-  }, [audioSources, audioTracks, effectivePixelsPerSecond, renderProfile.fps, videoClips, videoSources]);
+  }, [audioSources, audioTracks, effectivePixelsPerSecond, renderProfile.fps, v4Document, videoSources]);
 
   useEffect(() => {
     const tracksElement = tracksContentRef.current;
@@ -542,7 +615,10 @@ export function Timeline({
   }, [pixelsPerSecond, zoomLevel]);
 
   const memoizedKeyPoints = useMemo(() => {
-    const mediaDuration = clipPlacements[clipPlacements.length - 1]?.projectEnd ?? 0;
+    const mediaDuration = clipPlacements.reduce(
+      (maximum, placement) => Math.max(maximum, placement.projectEnd),
+      0,
+    );
 
     const keyPoints = new Set<number>([0, mediaDuration, duration]);
     clipPlacements.forEach((placement) => {
@@ -567,6 +643,7 @@ export function Timeline({
 
   // Keyboard navigation (Frame-by-Frame)
   useEffect(() => {
+    if (!active) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       // Native and custom editing surfaces keep their own selection and navigation keystrokes.
       if (isTextEditingKeyboardTarget(e.target)) return;
@@ -620,27 +697,106 @@ export function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fps, duration, onTimeUpdate, memoizedKeyPoints, scrollToTime]);
+  }, [active, fps, duration, onTimeUpdate, memoizedKeyPoints, scrollToTime]);
+
+  const splitCurrentSelection = () => {
+    if (selectedNarrativeBlock) {
+      if (!selectedNarrativeRow || !selectedNarrativeSource) return;
+      const splitSample = getTimelineNarrativeSplitSample({
+        row: selectedNarrativeRow,
+        body: timelineEditorialRuntime.getResolvedBodies()[selectedNarrativeRow.block.transcriptRecordId],
+        sourceFps: selectedNarrativeSource.fps,
+        playheadFrame: secondsToFrames(
+          usePlaybackStore.getState().currentTime,
+          renderProfile.fps,
+          'nearest',
+        ),
+        renderProfile,
+      });
+      if (splitSample === null) return;
+      void runNarrative({
+        type: 'split-block',
+        blockId: selectedNarrativeBlock.id,
+        splitSample,
+      }, { structural: true });
+      return;
+    }
+    splitSelectedMediaAtFrame(secondsToFrames(
+      usePlaybackStore.getState().currentTime,
+      renderProfile.fps,
+      'nearest',
+    ));
+  };
+
+  const deleteCurrentSelection = () => {
+    if (!selectedNarrativeRow) {
+      deleteSelectedMedia();
+      return;
+    }
+    const currentPlayheadFrame = secondsToFrames(
+      usePlaybackStore.getState().currentTime,
+      renderProfile.fps,
+      'nearest',
+    );
+    if (selectedNarrativeBounds) {
+      void runNarrative({
+        type: 'delete-words',
+        firstBlockId: selectedNarrativeRow.id,
+        firstWordId: selectedNarrativeBounds.firstWordId,
+        lastBlockId: selectedNarrativeRow.id,
+        lastWordId: selectedNarrativeBounds.lastWordId,
+        currentPlayheadFrame,
+      }, { structural: true });
+      return;
+    }
+    void runNarrative({
+      type: 'delete-range',
+      selection: {
+        start: {
+          blockId: selectedNarrativeRow.id,
+          sample: selectedNarrativeRow.block.coreStartSample,
+        },
+        end: {
+          blockId: selectedNarrativeRow.id,
+          sample: selectedNarrativeRow.block.coreEndSample,
+        },
+      },
+      currentPlayheadFrame,
+    }, { structural: true });
+  };
+
+  const reorderCurrentNarrative = (direction: -1 | 1) => {
+    if (!selectedNarrativeBlock || !narrative || globalEditingMode !== 'ripple') return;
+    const targetIndex = direction < 0 ? selectedNarrativeIndex - 1 : selectedNarrativeIndex + 1;
+    void runNarrative({
+      type: 'reorder-blocks',
+      blockIds: [selectedNarrativeBlock.id],
+      targetIndex,
+    }, { structural: true });
+  };
 
   return (
     <div
       ref={containerRef}
       className="flex h-full min-w-0 flex-col overflow-hidden bg-slate-950"
     >
-      <div className="relative z-30 flex h-10 flex-none items-center gap-2 overflow-x-auto border-b border-slate-800 bg-slate-900/95 px-2">
+      <div
+        data-testid="timeline-toolbar"
+        className="relative z-30 flex h-10 flex-none items-center gap-2 overflow-x-auto border-b border-slate-800 bg-slate-900/95 px-2"
+      >
+        {/* EditorWorkspace renders the single persistent pane selector over this fixed slot. */}
+        <div className="w-40 flex-none" aria-hidden="true" />
         <div className="flex items-center gap-1" role="group" aria-label="Timeline edit tools">
           <Button
             variant="ghost"
             size="sm"
             className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
             data-testid="split-selected-media"
-            onClick={() => splitSelectedMediaAtFrame(secondsToFrames(
-              usePlaybackStore.getState().currentTime,
-              renderProfile.fps,
-              'nearest',
-            ))}
-            disabled={!hasSelectedMedia}
-            title="Split selected media at playhead"
+            onClick={splitCurrentSelection}
+            disabled={!hasSelectedMedia || (selectedNarrativeBlock !== undefined && narrativeSplitSample === null)}
+            title={selectedNarrativeBlock
+              ? 'Split controlled media at the nearest retained source-word boundary'
+              : 'Split selected media at playhead'}
             aria-label="Split selected media at playhead"
           >
             <Scissors className="h-4 w-4" />
@@ -650,13 +806,21 @@ export function Timeline({
             size="sm"
             className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
             onClick={() => {
+              if (selectedNarrativeBlock) {
+                reorderCurrentNarrative(-1);
+                return;
+              }
               if (selectedClipIndex <= 0) return;
               const ids = videoClips.map((clip) => clip.id);
               [ids[selectedClipIndex - 1], ids[selectedClipIndex]] = [ids[selectedClipIndex], ids[selectedClipIndex - 1]];
               reorderVideoClips(ids);
             }}
-            disabled={selectedClipIndex <= 0}
-            title="Move selected video clip left"
+            disabled={selectedNarrativeBlock
+              ? globalEditingMode !== 'ripple' || selectedNarrativeIndex <= 0
+              : selectedClipIndex <= 0}
+            title={selectedNarrativeBlock && globalEditingMode === 'absolute'
+              ? 'Use the Text inspector to set an exact absolute start frame'
+              : 'Move selected video occurrence left'}
             aria-label="Move selected video clip left"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -666,13 +830,22 @@ export function Timeline({
             size="sm"
             className="h-7 w-7 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white"
             onClick={() => {
+              if (selectedNarrativeBlock) {
+                reorderCurrentNarrative(1);
+                return;
+              }
               if (selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1) return;
               const ids = videoClips.map((clip) => clip.id);
               [ids[selectedClipIndex], ids[selectedClipIndex + 1]] = [ids[selectedClipIndex + 1], ids[selectedClipIndex]];
               reorderVideoClips(ids);
             }}
-            disabled={selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1}
-            title="Move selected video clip right"
+            disabled={selectedNarrativeBlock
+              ? globalEditingMode !== 'ripple' || !narrative
+                || selectedNarrativeIndex >= narrative.blockIds.length - 1
+              : selectedClipIndex < 0 || selectedClipIndex >= videoClips.length - 1}
+            title={selectedNarrativeBlock && globalEditingMode === 'absolute'
+              ? 'Use the Text inspector to set an exact absolute start frame'
+              : 'Move selected video occurrence right'}
             aria-label="Move selected video clip right"
           >
             <ChevronRight className="h-4 w-4" />
@@ -682,7 +855,7 @@ export function Timeline({
             size="sm"
             className="h-7 w-7 bg-transparent text-red-300 hover:bg-red-500/15 hover:text-red-200"
             data-testid="delete-selected-media"
-            onClick={deleteSelectedMedia}
+            onClick={deleteCurrentSelection}
             disabled={!hasSelectedMedia}
             title={formatShortcutTitle('Delete selected media', 'DELETE')}
             aria-label="Delete selected media"
@@ -703,6 +876,11 @@ export function Timeline({
           >
             <Magnet className="h-4 w-4" />
           </Button>
+          <GlobalEditingModeControl
+            mode={globalEditingMode}
+            onChange={(mode) => void runMode(mode)}
+            compact
+          />
         </div>
 
         <div className="ml-auto flex items-center gap-1">
@@ -930,7 +1108,9 @@ export function Timeline({
                   className={`relative flex-none ${row.kind === 'video'
                     && videoTrackDragPreview?.target?.kind === 'track'
                     && videoTrackDragPreview.target.trackId === row.track.id
-                    ? 'bg-sky-500/15 ring-1 ring-inset ring-sky-400/70'
+                    ? videoTrackDragPreview.invalid
+                      ? 'bg-red-500/15 ring-1 ring-inset ring-red-400/70'
+                      : 'bg-sky-500/15 ring-1 ring-inset ring-sky-400/70'
                     : ''}`}
                   style={{ height: getRowHeight(row.key) }}
                   data-testid="timeline-row-content"
@@ -938,19 +1118,39 @@ export function Timeline({
                   data-row-kind={row.kind}
                   data-subtitle-track-id={row.kind === 'subtitle' ? row.track.id : undefined}
                   data-video-track-id={row.kind === 'video' ? row.track.id : undefined}
+                  data-video-drag-target={row.kind === 'video'
+                    && videoTrackDragPreview?.target?.kind === 'track'
+                    && videoTrackDragPreview.target.trackId === row.track.id
+                    ? 'true'
+                    : undefined}
+                  data-video-drag-invalid={row.kind === 'video'
+                    && videoTrackDragPreview?.target?.kind === 'track'
+                    && videoTrackDragPreview.target.trackId === row.track.id
+                    && videoTrackDragPreview.invalid
+                    ? 'true'
+                    : undefined}
                 >
                   {row.kind === 'video' && videoTrackDragPreview && (
                     <div
                       className={`absolute -top-2 inset-x-0 z-40 h-4 ${videoTrackDragPreview.target?.kind === 'insertion'
                         && videoTrackDragPreview.target.insertionIndex === row.videoTrackIndex
-                        ? 'bg-sky-400/15'
+                        ? videoTrackDragPreview.invalid ? 'bg-red-400/15' : 'bg-sky-400/15'
                         : ''}`}
                       data-video-track-insertion-index={row.videoTrackIndex}
+                      data-video-drag-target={videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === row.videoTrackIndex
+                        ? 'true'
+                        : undefined}
+                      data-video-drag-invalid={videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === row.videoTrackIndex
+                        && videoTrackDragPreview.invalid
+                        ? 'true'
+                        : undefined}
                       aria-hidden="true"
                     >
                       <div className={`absolute inset-x-0 top-1/2 h-px -translate-y-1/2 ${videoTrackDragPreview.target?.kind === 'insertion'
                         && videoTrackDragPreview.target.insertionIndex === row.videoTrackIndex
-                        ? 'bg-sky-300'
+                        ? videoTrackDragPreview.invalid ? 'bg-red-300' : 'bg-sky-300'
                         : 'bg-transparent'}`} />
                     </div>
                   )}
@@ -974,6 +1174,7 @@ export function Timeline({
                       onClearClipSelection={clearVideoClipSelection}
                       onOpenCutDetection={setCutDetectionRequest}
                       onDragPreviewChange={setVideoTrackDragPreview}
+                      snapPoints={mediaSnapPoints}
                     />
                   )}
                   {row.kind === 'audio' && (
@@ -994,14 +1195,23 @@ export function Timeline({
                     <div
                       className={`absolute -bottom-2 inset-x-0 z-40 h-4 ${videoTrackDragPreview.target?.kind === 'insertion'
                         && videoTrackDragPreview.target.insertionIndex === videoTracks.length
-                        ? 'bg-sky-400/15'
+                        ? videoTrackDragPreview.invalid ? 'bg-red-400/15' : 'bg-sky-400/15'
                         : ''}`}
                       data-video-track-insertion-index={videoTracks.length}
+                      data-video-drag-target={videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === videoTracks.length
+                        ? 'true'
+                        : undefined}
+                      data-video-drag-invalid={videoTrackDragPreview.target?.kind === 'insertion'
+                        && videoTrackDragPreview.target.insertionIndex === videoTracks.length
+                        && videoTrackDragPreview.invalid
+                        ? 'true'
+                        : undefined}
                       aria-hidden="true"
                     >
                       <div className={`absolute inset-x-0 top-1/2 h-px -translate-y-1/2 ${videoTrackDragPreview.target?.kind === 'insertion'
                         && videoTrackDragPreview.target.insertionIndex === videoTracks.length
-                        ? 'bg-sky-300'
+                        ? videoTrackDragPreview.invalid ? 'bg-red-300' : 'bg-sky-300'
                         : 'bg-transparent'}`} />
                     </div>
                   )}
@@ -1025,6 +1235,7 @@ function TimelineSnapIndicator({ pixelsPerSecond }: { pixelsPerSecond: number })
   if (activeSnapTime === null) return null;
   return (
     <div
+      data-testid="timeline-snap-indicator"
       className="absolute top-0 bottom-0 w-px bg-cyan-400/50 z-30 pointer-events-none"
       style={{
         left: `${Math.round(activeSnapTime * pixelsPerSecond)}px`,

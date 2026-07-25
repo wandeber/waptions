@@ -7,5 +7,9 @@ describe('shortcut presentation', () => {
         expect(formatShortcutTitle('Play', 'PLAY_PAUSE')).toBe('Play (Space)');
         expect(formatShortcut('PREVIOUS_FRAME')).toBe('Left Arrow');
         expect(getShortcutAriaKeys('SAVE')).toBe('Control+s Meta+s');
+        expect(formatShortcut('TEXT_SPLIT_BLOCK')).toBe('Shift+S');
+        expect(formatShortcutTitle('Delete silences', 'TEXT_DELETE_ALL_SILENCES'))
+            .toBe('Delete silences (Shift+Delete)');
+        expect(getShortcutAriaKeys('TEXT_DELETE_SELECTION')).toBe('Delete');
     });
 });

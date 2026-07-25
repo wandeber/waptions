@@ -1,4 +1,4 @@
-import type { EditorDocumentV3 } from './video';
+import type { EditorDocumentV3, EditorDocumentV4 } from './video';
 
 export type ExportFormat = 'mp4' | 'webm';
 export type ExportQuality = 'low' | 'medium' | 'high' | 'very_high';
@@ -39,9 +39,9 @@ export type ExportDestination =
         memoryAllowanceBytes: number;
     };
 
-/** Canonical export request. Every render surface consumes one immutable v3 graph snapshot. */
+/** Canonical export request. Every render surface consumes one immutable validated graph snapshot. */
 export interface ExportProjectContext {
-    document: EditorDocumentV3;
+    document: EditorDocumentV3 | EditorDocumentV4;
     options: ExportOptions;
     destination: ExportDestination;
 }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { createEditorDocumentV4Fixture } from '@/types/editorial.test-fixtures';
 import type { VideoClip, VideoClipV3 } from '@/types/video';
 import {
     assembleAudioSegmentCrops,
     buildAudioOutputSegments,
     buildV3VideoAudioOutputSegments,
+    buildV4VideoAudioOutputSegments,
     calculateAudioSegmentCrop,
     findAudioTimelineSilenceRanges,
     getCumulativeSampleBoundaries,
@@ -58,6 +60,34 @@ describe('audio output sample math', () => {
         expect(segments.map((segment) => [segment.startSample, segment.endSample])).toEqual([
             [0, 1_602],
             [1_602, 3_203],
+        ]);
+    });
+
+    it('keeps cross-track V4 linked-audio segments at their explicit overlapping starts', () => {
+        const document = createEditorDocumentV4Fixture({
+            videoTracks: [
+                { id: 'top', name: 'Top', visible: true, locked: false },
+                { id: 'lower', name: 'Lower', visible: true, locked: false },
+            ],
+            videoClips: [{
+                id: 'top_clip', sourceId: 'video_source_editorial', trackId: 'top',
+                timelineStartFrame: 30, sourceStart: 0, sourceEnd: 1,
+                audio: { linkState: 'linked', muted: false, gainDb: 0, fadeInFrames: 0, fadeOutFrames: 0 },
+            }, {
+                id: 'lower_clip', sourceId: 'video_source_editorial', trackId: 'lower',
+                timelineStartFrame: 45, sourceStart: 1, sourceEnd: 2,
+                audio: { linkState: 'linked', muted: false, gainDb: 0, fadeInFrames: 0, fadeOutFrames: 0 },
+            }],
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+
+        expect(buildV4VideoAudioOutputSegments(document).map((segment) => [
+            segment.startSample,
+            segment.endSample,
+        ])).toEqual([
+            [48_000, 96_000],
+            [72_000, 120_000],
         ]);
     });
 });

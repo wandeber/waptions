@@ -1,7 +1,14 @@
-import type { ClipPlacement, RationalFrameRate, VideoClip, VideoClipV3 } from '@/types/video';
+import type {
+    ClipPlacement,
+    EditorDocumentV4,
+    RationalFrameRate,
+    VideoClip,
+    VideoClipV3,
+} from '@/types/video';
 import { frameToOutputSample } from './audio-timebase';
 import { secondsToFrames } from './render-profile';
 import { buildClipPlacements } from './video-timeline';
+import { buildVideoTrackPlacementsV4 } from './video-placement-v4';
 
 export const DEFAULT_OUTPUT_SAMPLE_RATE = 48_000;
 
@@ -116,6 +123,36 @@ export function buildV3VideoAudioOutputSegments(
         frameCursor = endFrame;
         const startSample = frameToOutputSample(startFrame, frameRate);
         const endSample = frameToOutputSample(endFrame, frameRate);
+        return {
+            clipId: clip.id,
+            sourceId: clip.sourceId,
+            sourceStart: clip.sourceStart,
+            sourceEnd: clip.sourceEnd,
+            startSample,
+            endSample,
+            sampleCount: endSample - startSample,
+        };
+    });
+}
+
+/**
+ * Builds linked-video source segments from explicit V4 project placements.
+ *
+ * Segments may overlap because clips on different video tracks mix normally. Visual visibility is
+ * intentionally irrelevant to this projection; clip/link mute controls are applied by the mix
+ * planner rather than by source-segment geometry.
+ */
+export function buildV4VideoAudioOutputSegments(
+    document: Pick<EditorDocumentV4, 'renderProfile' | 'videoTracks' | 'videoClips'>,
+): AudioOutputSegment[] {
+    const placementsByClipId = new Map(buildVideoTrackPlacementsV4(document).flatMap(
+        (track) => track.placements.map((placement) => [placement.clip.id, placement] as const),
+    ));
+    return document.videoClips.map((clip) => {
+        const placement = placementsByClipId.get(clip.id);
+        if (!placement) throw new Error(`Missing explicit audio placement for video clip "${clip.id}".`);
+        const startSample = frameToOutputSample(placement.startFrame, document.renderProfile.fps);
+        const endSample = frameToOutputSample(placement.endFrame, document.renderProfile.fps);
         return {
             clipId: clip.id,
             sourceId: clip.sourceId,

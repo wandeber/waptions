@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+    createEditorDocumentV4Fixture,
+    createSubtitleTrackV4Fixture,
+} from '@/types/editorial.test-fixtures';
 import type { Subtitle, SubtitleTrack } from '@/types/timeline';
 import type {
     AudioSourceDescriptor,
@@ -20,7 +24,9 @@ import {
     getImportedSourceEnd,
     getSourceFrameAtOrBefore,
     getTimelineDurations,
+    getTimelineDurationsV4,
     getTimelineContentEndFrame,
+    getTimelineContentEndFrameV4,
     reorderVideoClips,
     resolveClipAtProjectTime,
     snapProjectTime,
@@ -97,6 +103,45 @@ const documentWith = (overrides: Partial<EditorDocumentV2> = {}): EditorDocument
         ...overrides,
     };
 };
+
+describe('V4 explicit timeline duration', () => {
+    it('uses the maximum explicit video, independent-audio, and subtitle tail', () => {
+        const document = createEditorDocumentV4Fixture({
+            videoTracks: [{ id: 'video_track', name: 'Video', visible: true, locked: false }],
+            videoClips: [{
+                id: 'video_clip', sourceId: 'video_source_editorial', trackId: 'video_track',
+                timelineStartFrame: 30, sourceStart: 0, sourceEnd: 1,
+                audio: { linkState: 'linked', muted: false, gainDb: 0, fadeInFrames: 0, fadeOutFrames: 0 },
+            }],
+            audioTracks: [{
+                id: 'detached_track', name: 'Detached audio', muted: false, solo: false,
+                locked: false, gainDb: 0, clips: [{
+                    id: 'detached_clip',
+                    source: { kind: 'video-source-audio', videoSourceId: 'video_source_editorial' },
+                    timelineStartFrame: 90,
+                    sourceStart: 2,
+                    sourceEnd: 3,
+                    muted: false,
+                    gainDb: 0,
+                    fadeInFrames: 0,
+                    fadeOutFrames: 0,
+                }],
+            }],
+            subtitleTracks: [createSubtitleTrackV4Fixture({
+                subtitles: [{ id: 'tail', startTime: 4, endTime: 5, text: 'Tail' }],
+            })],
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+
+        expect(getTimelineContentEndFrameV4(document)).toBe(150);
+        expect(getTimelineDurationsV4(document)).toEqual({
+            mediaDuration: 2,
+            contentDuration: 5,
+            viewDuration: 65,
+        });
+    });
+});
 
 describe('video document validation', () => {
     it('accepts a complete source, clip, and track graph', () => {

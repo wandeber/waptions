@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { drawContainedVideoFrame, getContainRectangle } from './video-compositor';
+import {
+    drawContainedVideoFrame,
+    drawContainedVideoFrameOrBlack,
+    getContainRectangle,
+} from './video-compositor';
 
 describe('video compositor', () => {
     it('centres landscape media without changing its aspect ratio', () => {
@@ -20,5 +24,18 @@ describe('video compositor', () => {
 
         expect(rectangle).toEqual({ x: 359.375, y: 0, width: 281.25, height: 500 });
         expect(drawImage).toHaveBeenCalledWith(frame, 359.375, 0, 281.25, 500);
+    });
+
+    it('clears every gap frame to black without drawing retained video pixels', () => {
+        const context = {
+            fillStyle: '',
+            fillRect: vi.fn(),
+            drawImage: vi.fn(),
+        } as unknown as CanvasRenderingContext2D;
+
+        expect(drawContainedVideoFrameOrBlack(context, null, 0, 0, 640, 360)).toBeNull();
+        expect(context.fillStyle).toBe('#000');
+        expect(context.fillRect).toHaveBeenCalledWith(0, 0, 640, 360);
+        expect(context.drawImage).not.toHaveBeenCalled();
     });
 });

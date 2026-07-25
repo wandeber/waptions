@@ -23,6 +23,7 @@ import {
 import {
   createGenericNextRequestErrorReporter,
   defaultNextRequestErrorReporter,
+  prewarmNextRoutes,
 } from './playwright-runtime.mjs';
 
 const sentinel = () => randomBytes(32).toString('base64url');
@@ -40,6 +41,56 @@ test('rejects legacy caller credentials without echoing their value', () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /WAPTIONS_E2E_DIARIZATION_ENDPOINT/u);
+  assert.equal(result.stderr.includes(secret), false);
+  assert.equal(result.stdout.includes(secret), false);
+});
+
+test('fixes the Text live model and rejects caller-owned endpoint or credentials', () => {
+  const secret = sentinel();
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith('WAPTIONS_E2E_TEXT_EDITOR_')) delete environment[name];
+  }
+  environment.WAPTIONS_E2E_TEXT_EDITOR_ENDPOINT = secret;
+  environment.WAPTIONS_E2E_TEXT_EDITOR_API_KEY = secret;
+  environment.WAPTIONS_E2E_TEXT_EDITOR_MODEL = secret;
+  const result = spawnSync(process.execPath, ['scripts/e2e/run-text-editor-live.mjs'], {
+    cwd: process.cwd(),
+    env: environment,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /WAPTIONS_E2E_TEXT_EDITOR_ENDPOINT/u);
+  assert.match(result.stderr, /WAPTIONS_E2E_TEXT_EDITOR_API_KEY/u);
+  assert.match(result.stderr, /WAPTIONS_E2E_TEXT_EDITOR_MODEL/u);
+  assert.equal(result.stderr.includes(secret), false);
+  assert.equal(result.stdout.includes(secret), false);
+});
+
+test('does not let stale diarization runner variables leak into the Text live profile', () => {
+  const secret = sentinel();
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith('WAPTIONS_E2E_TEXT_EDITOR_')
+      || name.startsWith('WAPTIONS_E2E_DIARIZATION_')) delete environment[name];
+  }
+  Object.assign(environment, {
+    WAPTIONS_E2E_TEXT_EDITOR_REFERENCE_REPO: process.cwd(),
+    WAPTIONS_E2E_TEXT_EDITOR_MEDIA: path.join(process.cwd(), 'package.json'),
+    WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO: secret,
+    WAPTIONS_E2E_DIARIZATION_MEDIA: secret,
+    WAPTIONS_E2E_DIARIZATION_ENDPOINT: secret,
+    WAPTIONS_E2E_DIARIZATION_API_KEY: secret,
+    WAPTIONS_E2E_DIARIZATION_MODEL: secret,
+  });
+  const result = spawnSync(process.execPath, ['scripts/e2e/run-text-editor-live.mjs'], {
+    cwd: process.cwd(),
+    env: environment,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /WAPTIONS_E2E_DIARIZATION_(?:ENDPOINT|API_KEY)/u);
   assert.equal(result.stderr.includes(secret), false);
   assert.equal(result.stdout.includes(secret), false);
 });
@@ -94,6 +145,33 @@ test('keeps normal Next request diagnostics and makes secure diagnostics generic
   assert.equal(secureOutput, 'The isolated Next.js request handler failed.\n');
   assert.equal(secureOutput.includes(secret), false);
   assert.equal(secureOutput.includes(artifactRoot), false);
+});
+
+test('prewarms Next route families serially before Playwright starts', async () => {
+  const requests = [];
+  const completed = [];
+  await prewarmNextRoutes(54321, async (url, options) => {
+    requests.push({ url, options, completedBeforeRequest: [...completed] });
+    return {
+      status: url.endsWith('/login') ? 307 : 200,
+      async arrayBuffer() {
+        completed.push(url);
+        return new ArrayBuffer(0);
+      },
+    };
+  });
+
+  assert.deepEqual(requests.map((entry) => entry.url), [
+    'http://localhost:54321/',
+    'http://localhost:54321/editor/waptions-e2e-prewarm',
+    'http://localhost:54321/login',
+  ]);
+  assert.deepEqual(requests.map((entry) => entry.options), [
+    { redirect: 'manual' },
+    { redirect: 'manual' },
+    { redirect: 'manual' },
+  ]);
+  assert.deepEqual(requests.map((entry) => entry.completedBeforeRequest.length), [0, 1, 2]);
 });
 
 test('preserves a venv symlink launcher and reaches readiness without an initialization failure', {

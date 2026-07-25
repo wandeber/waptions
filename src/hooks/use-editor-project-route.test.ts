@@ -120,7 +120,7 @@ describe('editor project route synchronization', () => {
         });
         expect(useTimelineStore.getState().revision).toBe(1);
         expect(loadEditorDocument).toHaveBeenCalledTimes(1);
-        expect(loadEditorDocument).toHaveBeenCalledWith(activeId);
+        expect(loadEditorDocument).toHaveBeenCalledWith(activeId, { targetVersion: 4 });
         expect(attach).toHaveBeenCalledTimes(1);
         expect(attach).toHaveBeenCalledWith(activeId);
     });

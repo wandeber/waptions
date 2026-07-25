@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildTimelineAudioRuntimeSnapshot } from './audio-runtime-projection';
 import { defaultAnimationStyle } from '@/components/video-editor/subtitle-editor/types';
+import { createEditorDocumentV4Fixture } from '@/types/editorial.test-fixtures';
 import type { EditorDocumentV3 } from '@/types/video';
 
 function makeDocument(): EditorDocumentV3 {
@@ -33,6 +34,26 @@ function makeDocument(): EditorDocumentV3 {
 }
 
 describe('timeline audio runtime projection', () => {
+    it('tracks explicit V4 linked-audio movement while ignoring visual-only visibility', () => {
+        const document = createEditorDocumentV4Fixture({
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+        const original = buildTimelineAudioRuntimeSnapshot(document, 48_000);
+
+        document.videoTracks[0] = { ...document.videoTracks[0], visible: false };
+        const hidden = buildTimelineAudioRuntimeSnapshot(document, 48_000);
+        expect(hidden.audibleMixKey).toBe(original.audibleMixKey);
+
+        document.videoClips[0] = { ...document.videoClips[0], timelineStartFrame: 30 };
+        const moved = buildTimelineAudioRuntimeSnapshot(document, 96_000);
+        expect(moved.audibleMixKey).not.toBe(original.audibleMixKey);
+        expect(moved.mixPlan.contributors[0]).toMatchObject({
+            outputStartSample: 48_000,
+            outputEndSample: 96_000,
+        });
+    });
+
     it('ignores revision, selection, and subtitle metadata while preserving content end', () => {
         const first = makeDocument();
         const second = structuredClone(first);

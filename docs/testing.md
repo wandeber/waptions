@@ -1,7 +1,8 @@
 # Testing
 
 Waptions separates fast unit coverage, an enforceable critical-runtime profile, deterministic
-Chromium scenarios, and an optional developer-media stress test.
+Chromium scenarios, mandatory secure live Text acceptance, and an optional developer-media stress
+test.
 
 ## Complete verification
 
@@ -16,8 +17,9 @@ This non-interactive command runs, in order:
 3. the complete unit suite under wider coverage and its exact recorded-ratio baseline;
 4. critical-runtime coverage and hard thresholds;
 5. TypeScript and ESLint;
-6. the production Next.js build; and
-7. all configured Chromium E2E tests with the line reporter.
+6. the production Next.js build;
+7. the fail-closed browser secret-containment regression; and
+8. all configured Chromium E2E tests with the line reporter.
 
 The latest HTML Playwright report is available separately through `pnpm run test:report`; it is not
 part of the CI-safe aggregate command. Traces, screenshots, and videos are retained only for failed
@@ -35,6 +37,7 @@ pnpm exec tsc --noEmit
 pnpm run lint
 pnpm run build
 pnpm run test:e2e
+pnpm run test:e2e:text-editor-live
 ```
 
 The E2E package scripts ask the operating system for a free localhost port. Every invocation owns
@@ -45,6 +48,10 @@ product's normal port, so browser verification can run while `pnpm run dev` cont
 `localhost:59940`. `build:verify` uses a unique isolated output tree and temporary tsconfig for the
 same reason; concurrent verification builds cannot affect each other, and the normal `build` and
 `dev` commands keep their standard `.next` behavior.
+
+Before Playwright fans out, the wrapper compiles the dashboard, editor, and login route families in
+sequence. This prevents a lazy Next.js route compilation from rewriting the shared waveform-worker
+chunk while another browser worker is starting it; the browser tests themselves remain parallel.
 
 Failed browser artifacts remain under `test-results/<run-id>`, while each HTML run is stored under
 `playwright-report/<run-id>`. `pnpm run test:report` opens the newest available HTML report and also
@@ -104,6 +111,84 @@ samples known red and blue frames through a browser canvas, reimports it into a 
 for its linked waveform, and plays from its audio clock. The persistence scenario injects one
 transaction failure through the native IndexedDB prototype, restores it, retries from the status
 bar, and reloads the durably recovered edit.
+
+## Deterministic Text editor E2E
+
+`e2e/text-editor.spec.ts` uses the committed VP9/Opus fixture and intercepts a browser-mode
+`/v1/audio/transcriptions` request. It never starts a model and production code has no test route.
+The exact response is committed at `e2e/fixtures/editorial/edit-max-v1-32000.json`; its name records
+the fixture family, while its current timeline contains the media's exact 32,006-sample ceil-rounded
+duration.
+
+Run it alone with:
+
+```bash
+pnpm run test:e2e:verify -- e2e/text-editor.spec.ts
+```
+
+The scenario splits one 29.97 fps source on an exact native frame, activates both crops with one
+full-source request, and asserts the fixed multipart fields, mono PCM16 16 kHz WAV, and exact sample
+count. It then verifies source-backed speech/silence rows, word selection, instance correction,
+Undo/Redo, document-scope Delete-all-silences, persistence/reload cache reuse, descriptor/body CAS
+separation, canonical record hashing, bundle 4.0 sidecar hashing, and absence of the sentinel API
+key from browser persistence and the bundle. Separate provider- and parser-failure cases prove no
+record/index/narrative publication and reopen the previous project after reload.
+
+Pure and store tests cover the larger combinatorial matrix without hiding browser integration:
+V3 migration parity, multi-track overlap-component exclusion, unified cross-track ripple/absolute
+placement, split/merge/recover/insert/margins, active-track silence scope, exact bindings and unique
+overlap links, cancellation/stale/CAS/quota failures, pin/GC behavior, and bundle corruption/limits.
+The deterministic browser test is the committed integration proof for those already-tested
+contracts, not a replacement for them.
+
+## Mandatory secure live Text E2E
+
+`e2e/text-editor.live.spec.ts` runs only through the hardened runner and performs real
+`qwen-1.7b-edit-max` inference. This is a release-closure gate in addition to every deterministic
+command; a mock result does not satisfy it.
+
+The runner accepts two required non-secret inputs:
+
+- `WAPTIONS_E2E_TEXT_EDITOR_REFERENCE_REPO`: absolute path to a clean authorized
+  `lazy-whisper-api` checkout; and
+- `WAPTIONS_E2E_TEXT_EDITOR_MEDIA`: absolute path to a short spoken video outside both repositories.
+
+Optional platform inputs are
+`WAPTIONS_E2E_TEXT_EDITOR_REFERENCE_TEMPLATE` (an absolute tracked public template inside the
+reference checkout) and `WAPTIONS_E2E_TEXT_EDITOR_REFERENCE_PYTHON` (an absolute executable). The
+default template is `.env.apple.example` and the default interpreter is the checkout's `.venv`
+Python. A file named `.env`, an untracked/out-of-checkout template, dirty reference checkout,
+in-repository media, or missing runtime fails before service startup.
+
+```bash
+WAPTIONS_E2E_TEXT_EDITOR_REFERENCE_REPO="${LOCAL_LAZY_WHISPER_REPOSITORY}" \
+WAPTIONS_E2E_TEXT_EDITOR_MEDIA="${LOCAL_SHORT_SPOKEN_VIDEO}" \
+pnpm run test:e2e:text-editor-live
+```
+
+Do not pass a model, endpoint, API key, Authorization header, or persistent service credential.
+`WAPTIONS_E2E_TEXT_EDITOR_MODEL`, `WAPTIONS_E2E_TEXT_EDITOR_ENDPOINT`, and
+`WAPTIONS_E2E_TEXT_EDITOR_API_KEY` are rejected. The runner fixes the model, reserves its own
+localhost ports, starts `python -m uvicorn whisper_api:app` with `shell: false`, and generates a
+256-bit ephemeral credential. It never reads or sources the ignored reference `.env`.
+
+The live browser asserts the exact WAV/multipart request and edit-max response contract, valid
+words/regions/boundaries, descriptor-only manifest plus verified CAS hash, one materialized unified
+narrative, a second activation with no ASR request, reload and Undo/Redo, short preview, real WebM
+export, and bundle sidecar integrity. When `/healthz` advertises a ready diarization runtime, it also
+runs a separate speaker-enabled request and validates the returned speaker catalog/segments.
+
+The shared secure runner disables trace, video, screenshots, and Playwright AI copy capture. It
+redacts child output chunk-safely, scans every raw and nested-ZIP artifact for the exact ephemeral
+key, purges fail-closed on a match or incomplete inspection, stores browser profiles only under the
+scanned temporary root, handles signals with bounded cleanup, and stops only its own Playwright,
+Next.js, and reference-service processes. It compares both checkout statuses with their invocation
+baselines; existing Waptions task changes are allowed, but the runner may add none.
+
+If readiness cannot complete, report the checkout/clean-state result, sanitized startup or
+readiness category, missing model/runtime/config/media prerequisite, cleanup result, and the
+deterministic commands that passed. The implementation verdict remains blocked until the gate runs
+or the user explicitly changes that requirement after seeing the blocker.
 
 ## Optional live speaker-diarization E2E
 

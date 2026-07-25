@@ -44,6 +44,7 @@ function makeRuntimeState() {
                 fadeOutFrames: 0,
             },
         }],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', clipIds: ['clip'] }],
         audioSources: [],
         audioTracks: [],
     };
@@ -64,6 +65,39 @@ function makeEngine(): TimelineAudioEnginePort {
 }
 
 describe('timeline audio runtime synchronization', () => {
+    it('projects an empty transitional Timeline graph before building the V4 audio snapshot', () => {
+        const state = {
+            ...makeRuntimeState(),
+            tracks: [],
+            videoSources: [],
+            videoClips: [],
+            videoTracks: [{
+                id: 'video_track_1',
+                name: 'Video 1',
+                visible: true,
+                locked: false,
+                clipIds: [],
+            }],
+        };
+        const inputs = selectTimelineAudioRuntimeInputs(state);
+        const engine = makeEngine();
+
+        synchronizeTimelineAudioRuntime(engine, null, inputs, 0);
+
+        const snapshot = vi.mocked(engine.applySnapshot).mock.calls[0][0];
+        expect(snapshot.document.videoTracks).toEqual([{
+            id: 'video_track_1',
+            name: 'Video 1',
+            visible: true,
+            locked: false,
+        }]);
+        expect(snapshot.mixPlan).toMatchObject({
+            totalSampleCount: 0,
+            videoSampleCount: 0,
+            contributors: [],
+        });
+    });
+
     it('does zero snapshot projection for the duplicate mount effect or subtitle metadata', () => {
         const state = makeRuntimeState();
         const boundaryCalculator = vi.fn((runtimeState: RuntimeState) => (

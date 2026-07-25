@@ -13,7 +13,12 @@ import {
     cloneTransientSelection,
     cloneVideoClips,
 } from './timeline-store-snapshot';
-import { cloneVideoTracks } from '@/lib/video-tracks';
+import {
+    buildTimelineVideoTrackMirrors,
+    projectTransientSelectionMirrorsV4,
+    projectVideoClipsV4,
+    projectVideoTracksV4,
+} from './timeline-v4-compat';
 
 /** Only these roots may be addressed by serialized history patches. */
 export const TIMELINE_HISTORY_ROOTS = new Set<keyof TimelineHistoryProjection>([
@@ -32,6 +37,10 @@ export const TIMELINE_HISTORY_ROOTS = new Set<keyof TimelineHistoryProjection>([
     'rawTranscription',
     'transcriptionGroups',
     'transcriptionContainerIds',
+    'globalEditingMode',
+    'editorialTranscriptDescriptors',
+    'narrative',
+    'dependentLinks',
 ]);
 
 /**
@@ -39,10 +48,22 @@ export const TIMELINE_HISTORY_ROOTS = new Set<keyof TimelineHistoryProjection>([
  * Source catalogs remain outside history because their File objects are immutable project assets.
  */
 export function projectTimelineHistory(state: TimelineStore): TimelineHistoryProjection {
+    const subtitleTracks = cloneSubtitleTracks(state.tracks);
+    const legacyV3Projection = state.globalEditingMode === undefined;
     return {
-        tracks: cloneSubtitleTracks(state.tracks),
-        videoClips: cloneVideoClips(state.videoClips),
-        videoTracks: cloneVideoTracks(state.videoTracks),
+        tracks: legacyV3Projection
+            ? subtitleTracks
+            : subtitleTracks.map((track) => {
+                const { timingDomain: _legacyTimingDomain, ...v4Track } = track;
+                void _legacyTimingDomain;
+                return v4Track;
+            }),
+        videoClips: legacyV3Projection
+            ? cloneVideoClips(state.videoClips)
+            : projectVideoClipsV4(state.videoClips, state.videoTracks, state.renderProfile),
+        videoTracks: legacyV3Projection
+            ? state.videoTracks.map((track) => ({ ...track, clipIds: [...track.clipIds] }))
+            : projectVideoTracksV4(state.videoTracks),
         renderProfile: cloneRenderProfile(state.renderProfile),
         audioTracks: cloneAudioTracks(state.audioTracks),
         transientSelection: cloneTransientSelection(state.transientSelection),
@@ -55,6 +76,10 @@ export function projectTimelineHistory(state: TimelineStore): TimelineHistoryPro
         rawTranscription: cloneSubtitles(state.rawTranscription),
         transcriptionGroups: cloneTranscriptionGroups(state.transcriptionGroups),
         transcriptionContainerIds: cloneContainerIds(state.transcriptionContainerIds),
+        globalEditingMode: state.globalEditingMode,
+        editorialTranscriptDescriptors: structuredClone(state.editorialTranscriptDescriptors),
+        narrative: structuredClone(state.narrative),
+        dependentLinks: structuredClone(state.dependentLinks),
     };
 }
 
@@ -67,8 +92,8 @@ export function projectTimelineHistory(state: TimelineStore): TimelineHistoryPro
 export function selectTimelineHistoryProjection(state: TimelineStore): TimelineHistoryProjection {
     return {
         tracks: state.tracks,
-        videoClips: state.videoClips,
-        videoTracks: state.videoTracks,
+        videoClips: projectVideoClipsV4(state.videoClips, state.videoTracks, state.renderProfile),
+        videoTracks: projectVideoTracksV4(state.videoTracks),
         renderProfile: state.renderProfile,
         audioTracks: state.audioTracks,
         transientSelection: state.transientSelection,
@@ -81,6 +106,10 @@ export function selectTimelineHistoryProjection(state: TimelineStore): TimelineH
         rawTranscription: state.rawTranscription,
         transcriptionGroups: state.transcriptionGroups,
         transcriptionContainerIds: state.transcriptionContainerIds,
+        globalEditingMode: state.globalEditingMode,
+        editorialTranscriptDescriptors: state.editorialTranscriptDescriptors,
+        narrative: state.narrative,
+        dependentLinks: state.dependentLinks,
     };
 }
 
@@ -91,16 +120,42 @@ export function restoreTimelineHistoryProjection(
     const activeTranscription = projection.activeTrackId
         ? projection.transcriptionByTrackId[projection.activeTrackId] ?? null
         : null;
+    const transientSelection = cloneTransientSelection(projection.transientSelection);
+    const narrative = structuredClone(projection.narrative ?? null);
+    const selectionMirrors = transientSelection.kind === 'narrative'
+        ? projectTransientSelectionMirrorsV4(transientSelection, narrative)
+        : {
+            selectedSubtitleIds: [...projection.selectedSubtitleIds],
+            lastSelectedId: projection.lastSelectedId,
+            selectedClipId: projection.selectedClipId,
+            isVideoSelected: projection.isVideoSelected,
+        };
     return {
         ...projection,
         tracks: cloneSubtitleTracks(projection.tracks),
         videoClips: cloneVideoClips(projection.videoClips),
-        videoTracks: cloneVideoTracks(projection.videoTracks),
+        videoTracks: buildTimelineVideoTrackMirrors(
+            projection.videoTracks.map((track) => ({
+                id: track.id,
+                name: track.name,
+                visible: 'visible' in track ? track.visible ?? true : true,
+                locked: 'locked' in track ? track.locked ?? false : false,
+            })),
+            projection.videoClips.map((clip) => ({
+                id: clip.id,
+                trackId: clip.trackId
+                    ?? projection.videoTracks.find((track) => (
+                        track.clipIds?.includes(clip.id)
+                    ))?.id
+                    ?? projection.videoTracks[0]?.id
+                    ?? '',
+            })),
+        ),
         renderProfile: cloneRenderProfile(projection.renderProfile),
         projectFps: frameRateToNumber(projection.renderProfile.fps),
         audioTracks: cloneAudioTracks(projection.audioTracks),
-        transientSelection: cloneTransientSelection(projection.transientSelection),
-        selectedSubtitleIds: [...projection.selectedSubtitleIds],
+        transientSelection,
+        ...selectionMirrors,
         transcriptionByTrackId: cloneTranscriptionByTrackId(projection.transcriptionByTrackId),
         // These fields are compatibility mirrors for the active subtitle track. History can
         // restore activeTrackId and provenance together, so derive the mirrors instead of keeping
@@ -108,5 +163,9 @@ export function restoreTimelineHistoryProjection(
         rawTranscription: cloneSubtitles(activeTranscription?.raw ?? null),
         transcriptionGroups: cloneTranscriptionGroups(activeTranscription?.groups ?? null),
         transcriptionContainerIds: cloneContainerIds(activeTranscription?.containerIds ?? null),
+        globalEditingMode: projection.globalEditingMode ?? 'ripple',
+        editorialTranscriptDescriptors: structuredClone(projection.editorialTranscriptDescriptors ?? []),
+        narrative,
+        dependentLinks: structuredClone(projection.dependentLinks ?? []),
     };
 }

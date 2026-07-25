@@ -3,13 +3,14 @@
 import { useState, memo } from 'react';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { usePlaybackStore } from '@/stores/playback-store';
-import { getMediaDuration } from '@/lib/video-timeline';
 import { getClampedSubtitleTrackShift } from '@/lib/editor-layout';
 import { Subtitle, SubtitleTrack } from '@/types/timeline';
 import { useShallow } from 'zustand/react/shallow';
 import { useEditorTransactionCoordinator } from './EditorTransactionContext';
-import { buildAudioClipSnapPoints, buildVideoClipSnapPoints } from '@/lib/timeline-snap';
+import { buildAudioClipSnapPoints } from '@/lib/timeline-snap';
 import { framesToSeconds } from '@/lib/render-profile';
+import { Link2 } from 'lucide-react';
+import { buildVideoTrackPlacementsV4 } from '@/lib/video-placement-v4';
 
 interface TimelineTrackOverlayProps {
     duration: number;
@@ -62,6 +63,7 @@ export const TimelineTrackOverlay = memo(function TimelineTrackOverlay({
                 <SubtitleBlock
                     key={subtitle.id}
                     subtitle={subtitle}
+                    trackId={track.id}
                     pps={pps}
                     fps={fps}
                     isSelected={selectedSubtitleIds.includes(subtitle.id)}
@@ -77,6 +79,7 @@ export const TimelineTrackOverlay = memo(function TimelineTrackOverlay({
 // Internal component for Subtitle Block (simplification of current SubtitleTrack logic)
 interface SubtitleBlockProps {
     subtitle: Subtitle;
+    trackId: string;
     pps: number;
     fps: number;
     isSelected: boolean;
@@ -85,11 +88,12 @@ interface SubtitleBlockProps {
     duration: number;
 }
 
-const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, onClick, onUpdate }: SubtitleBlockProps) {
+const SubtitleBlock = memo(function SubtitleBlock({ subtitle, trackId, fps, isSelected, onClick, onUpdate }: SubtitleBlockProps) {
     const transactionCoordinator = useEditorTransactionCoordinator();
-    const { pixelsPerSecond, zoomLevel } = useTimelineStore(useShallow((state) => ({
+    const { pixelsPerSecond, zoomLevel, dependentLinks } = useTimelineStore(useShallow((state) => ({
         pixelsPerSecond: state.pixelsPerSecond,
         zoomLevel: state.zoomLevel,
+        dependentLinks: state.dependentLinks,
     })));
     const [activeHandle, setActiveHandle] = useState<'start' | 'end' | null>(null);
     const pps = pixelsPerSecond * zoomLevel;
@@ -181,15 +185,22 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
                 audioSources,
                 audioTracks,
                 renderProfile,
-                videoClips,
                 videoSources,
             } = useTimelineStore.getState();
-            const mediaDuration = getMediaDuration(videoClips, renderProfile.fps);
+            const documentV4 = useTimelineStore.getState().buildEditorDocumentV4();
+            const videoPlacements = buildVideoTrackPlacementsV4(documentV4)
+                .flatMap((videoTrack) => videoTrack.placements);
+            const mediaDuration = videoPlacements.reduce(
+                (maximum, placement) => Math.max(maximum, placement.endSeconds),
+                0,
+            );
 
             pointsMap.set(0, false);
             pointsMap.set(mediaDuration, false);
-            buildVideoClipSnapPoints(videoClips, renderProfile.fps)
-                .forEach((point) => pointsMap.set(framesToSeconds(point.frame, renderProfile.fps), false));
+            videoPlacements.forEach((placement) => {
+                pointsMap.set(placement.startSeconds, false);
+                pointsMap.set(placement.endSeconds, false);
+            });
             // Independent audio is a first-class editing surface, so both clip edges attract
             // subtitle moves and trims just like video and neighboring subtitle boundaries.
             buildAudioClipSnapPoints(audioTracks, renderProfile.fps, videoSources, audioSources)
@@ -398,11 +409,17 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
 
     const left = subtitle.startTime * pps;
     const width = (subtitle.endTime - subtitle.startTime) * pps;
+    const dependentLink = dependentLinks.find((link) => (
+        link.target.kind === 'subtitle'
+        && link.target.trackId === trackId
+        && link.target.subtitleId === subtitle.id
+    ));
 
     return (
         <div
             data-testid="timeline-subtitle-clip"
             data-subtitle-id={subtitle.id}
+            title={`${subtitle.text}${dependentLink?.association.kind === 'transcript-bound' ? ' · Exact bound' : dependentLink ? ' · Overlap linked' : ''}`}
             className={`absolute bottom-2 top-2 flex cursor-move select-none items-center justify-center rounded border text-[10px] transition-colors ${isSelected
                 ? 'z-20 border-violet-300 bg-violet-500/30 shadow-[0_0_0_1px_rgba(196,181,253,0.35)]'
                 : 'z-10 border-violet-400/45 bg-violet-500/15 hover:border-violet-300/70 hover:bg-violet-500/25'
@@ -421,6 +438,16 @@ const SubtitleBlock = memo(function SubtitleBlock({ subtitle, fps, isSelected, o
             <span className="px-2 truncate text-white/90 pointer-events-none">
                 {subtitle.text}
             </span>
+            {dependentLink?.association.kind === 'transcript-bound' && (
+                <span className="pointer-events-none absolute right-1 top-0.5 rounded bg-violet-950/90 px-1 text-[8px] text-violet-100">
+                    <Link2 className="inline h-2 w-2" /> Exact
+                </span>
+            )}
+            {dependentLink?.association.kind === 'overlap' && (
+                <span className="pointer-events-none absolute right-1 top-0.5 rounded bg-teal-950/90 px-1 text-[8px] text-teal-100">
+                    <Link2 className="inline h-2 w-2" /> Overlap
+                </span>
+            )}
 
             {/* Drag Handles */}
             {isSelected && (

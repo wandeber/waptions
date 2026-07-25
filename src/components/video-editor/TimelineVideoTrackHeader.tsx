@@ -1,15 +1,14 @@
 'use client';
 
-'use client';
-
 import { useRef, useState } from 'react';
-import { Clapperboard, Trash2 } from 'lucide-react';
-import type { VideoTrack } from '@/types/video';
+import { Clapperboard, Link2, Lock, Trash2 } from 'lucide-react';
+import type { TimelineVideoTrack } from '@/stores/timeline-v4-compat';
 import type { VideoCutDetectionRequest } from '@/lib/video-cut/targets';
 import { TimelineContextMenu } from './TimelineContextMenu';
+import { useTimelineStore } from '@/stores/timeline-store';
 
 interface TimelineVideoTrackHeaderProps {
-    track: VideoTrack;
+    track: TimelineVideoTrack;
     index: number;
     canRemove: boolean;
     onRemove: () => void;
@@ -28,7 +27,15 @@ export function TimelineVideoTrackHeader({
 }: TimelineVideoTrackHeaderProps) {
     const headerRef = useRef<HTMLDivElement>(null);
     const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+    const narrative = useTimelineStore((state) => state.narrative);
+    const dependentLinks = useTimelineStore((state) => state.dependentLinks);
     const openMenu = (x: number, y: number) => setMenu({ x, y });
+    const controlled = narrative?.controlledTrackIds.includes(track.id) ?? false;
+    const trackLinks = dependentLinks.filter((link) => (
+        link.target.kind === 'video-clip' && track.clipIds.includes(link.target.clipId)
+    ));
+    const exactCount = trackLinks.filter((link) => link.association.kind === 'transcript-bound').length;
+    const overlapCount = trackLinks.length - exactCount;
 
     return (
         <div
@@ -54,6 +61,22 @@ export function TimelineVideoTrackHeader({
             </span>
             <Clapperboard className="h-3.5 w-3.5 flex-none" />
             <span className="min-w-0 flex-1 truncate" title={track.name}>{track.name}</span>
+            {controlled && (
+                <span className="rounded bg-sky-500/15 px-1 py-0.5 text-[9px] text-sky-200" title="Text controls every video occurrence on this track">
+                    Controlled
+                </span>
+            )}
+            {exactCount > 0 && (
+                <span className="rounded bg-violet-500/15 px-1 py-0.5 text-[9px] text-violet-200" title={`${exactCount} exact-bound video targets`}>
+                    <Link2 className="inline h-2.5 w-2.5" /> E{exactCount}
+                </span>
+            )}
+            {overlapCount > 0 && (
+                <span className="rounded bg-teal-500/15 px-1 py-0.5 text-[9px] text-teal-200" title={`${overlapCount} overlap-linked video targets`}>
+                    O{overlapCount}
+                </span>
+            )}
+            {track.locked && <Lock className="h-3 w-3 flex-none text-amber-300" aria-label="Locked video track" />}
             {canRemove && (
                 <button
                     type="button"

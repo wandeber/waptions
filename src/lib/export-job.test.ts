@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { EditorDocumentV3 } from '@/types/video';
+import { createEditorDocumentV4Fixture } from '@/types/editorial.test-fixtures';
+import type { EditorDocumentV3, VideoClipV4 } from '@/types/video';
 import {
     awaitExportPhase,
     createExportDocumentSnapshot,
     createExportProgressReporter,
+    createExportRuntimeSnapshot,
     estimateExportOutputBytes,
 } from './export-job';
+import { resolveVideoFrameRuntimePlacementAtFrame } from './video-frame-plan';
 
 function makeDocument(): EditorDocumentV3 {
     const file = new File(['media'], 'media.mp4', { type: 'video/mp4' });
@@ -44,6 +47,66 @@ function makeDocument(): EditorDocumentV3 {
 }
 
 describe('export job contracts', () => {
+    it('captures one validated immutable V4 placement plan before live graph changes', () => {
+        const audio = {
+            linkState: 'linked' as const,
+            muted: false,
+            gainDb: 0,
+            fadeInFrames: 0,
+            fadeOutFrames: 0,
+        };
+        const clips: VideoClipV4[] = [{
+            id: 'lower', sourceId: 'video_source_editorial', trackId: 'lower_track',
+            timelineStartFrame: 0, sourceStart: 0, sourceEnd: 3, audio,
+        }, {
+            id: 'top', sourceId: 'video_source_editorial', trackId: 'top_track',
+            timelineStartFrame: 30, sourceStart: 3, sourceEnd: 4, audio: { ...audio },
+        }];
+        const document = createEditorDocumentV4Fixture({
+            videoTracks: [
+                { id: 'top_track', name: 'Top', visible: true, locked: false },
+                { id: 'lower_track', name: 'Lower', visible: true, locked: false },
+            ],
+            videoClips: clips,
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+
+        const snapshot = createExportRuntimeSnapshot(document);
+        expect(Object.isFrozen(snapshot)).toBe(true);
+        expect(Object.isFrozen(snapshot.document)).toBe(true);
+        expect(Object.isFrozen(snapshot.videoPlan)).toBe(true);
+        expect(resolveVideoFrameRuntimePlacementAtFrame(snapshot.videoPlan, 35)?.placement.clip.id)
+            .toBe('top');
+
+        document.videoTracks[0].visible = false;
+        document.videoClips[1].timelineStartFrame = 120;
+        document.videoClips[1].audio!.muted = true;
+        expect(resolveVideoFrameRuntimePlacementAtFrame(snapshot.videoPlan, 35)?.placement.clip.id)
+            .toBe('top');
+        expect(snapshot.document.videoClips[1]).toMatchObject({
+            timelineStartFrame: 30,
+            audio: { muted: false },
+        });
+    });
+
+    it('rejects an invalid V4 graph before producing an export plan', () => {
+        const document = createEditorDocumentV4Fixture({
+            videoClips: [{
+                ...createEditorDocumentV4Fixture().videoClips[0],
+                id: 'first',
+            }, {
+                ...createEditorDocumentV4Fixture().videoClips[0],
+                id: 'overlap',
+                timelineStartFrame: 1,
+            }],
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+        });
+
+        expect(() => createExportRuntimeSnapshot(document)).toThrow(/invalid V4 editor graph/i);
+    });
+
     it('captures a deeply immutable graph while preserving File identity', () => {
         const document = makeDocument();
         const snapshot = createExportDocumentSnapshot(document);

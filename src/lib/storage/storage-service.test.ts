@@ -3,11 +3,15 @@ import type {
     AudioSourceAsset,
     EditorDocumentV3,
     EditorManifestV2,
-    EditorManifestV3,
+    EditorManifestV4,
     VideoSourceAssetV3,
 } from '@/types/video';
 import { createVideoSourceFingerprint } from '@/lib/video-timeline';
 import { createEditorManifestV3, migrateEditorDocumentV2ToV3 } from '@/lib/editor-document-migration';
+import {
+    createEditorManifestV4,
+    migrateEditorDocumentV3ToV4,
+} from '@/lib/editor-document-v4-migration';
 import { createSerializablePatches } from '@/lib/serializable-patch';
 import { recordTimelineHistory } from '@/stores/timeline-history';
 import { TIMELINE_HISTORY_ROOTS } from '@/stores/timeline-history-projection';
@@ -24,6 +28,8 @@ import {
 import {
     EDITOR_DOCUMENT_V2_KEY,
     EDITOR_DOCUMENT_V3_KEY,
+    EDITOR_DOCUMENT_V4_KEY,
+    EDITOR_DOCUMENT_V3_TOMBSTONE,
     StorageService,
     type EditorPersistentAsset,
 } from './storage-service';
@@ -170,6 +176,31 @@ const setup = () => {
 };
 
 describe('v3 storage service', () => {
+    it('prioritizes V4, rejects malformed V4 without fallback, and honors the V3 tombstone', async () => {
+        const current = setup();
+        const legacy = v3Document();
+        const v4 = migrateEditorDocumentV3ToV4({ ...legacy, revision: 9 });
+        current.adapter.values.set(EDITOR_DOCUMENT_V4_KEY, createEditorManifestV4(v4));
+        current.adapter.values.set(EDITOR_DOCUMENT_V3_KEY, createEditorManifestV3({ ...legacy, revision: 2 }));
+        current.adapter.values.set('video-source:shared', legacy.videoSources[0].file);
+        current.adapter.values.set('audio-source:shared', legacy.audioSources[0].file);
+
+        const loaded = await current.service.loadEditorDocument('project', { targetVersion: 4 });
+
+        expect(loaded).toMatchObject({ version: 4, revision: 9 });
+
+        const malformed = setup();
+        malformed.adapter.values.set(EDITOR_DOCUMENT_V4_KEY, { version: 4, revision: 99 });
+        malformed.adapter.values.set(EDITOR_DOCUMENT_V3_KEY, createEditorManifestV3(legacy));
+        await expect(malformed.service.loadEditorDocument('project', { targetVersion: 4 }))
+            .rejects.toThrow('invalid editor-document-v4 manifest');
+
+        const tombstoned = setup();
+        tombstoned.adapter.values.set(EDITOR_DOCUMENT_V3_KEY, EDITOR_DOCUMENT_V3_TOMBSTONE);
+        await expect(tombstoned.service.loadEditorDocument('project', { targetVersion: 4 }))
+            .rejects.toThrow('V3 tombstone but no V4 manifest');
+    });
+
     it('reloads detached and imported audio with typed same-ID media isolation', async () => {
         const { service, adapter } = setup();
         const document = v3Document();
@@ -190,7 +221,8 @@ describe('v3 storage service', () => {
         expect(reloaded?.videoSources[0].fingerprint).toBe(loaded?.videoSources[0].fingerprint);
         expect(reloaded?.audioSources[0].fingerprint).toBe(loaded?.audioSources[0].fingerprint);
         expect(adapter.batches).toHaveLength(1);
-        const persisted = adapter.values.get(EDITOR_DOCUMENT_V3_KEY) as EditorManifestV3;
+        expect(adapter.values.get(EDITOR_DOCUMENT_V3_KEY)).toEqual(EDITOR_DOCUMENT_V3_TOMBSTONE);
+        const persisted = adapter.values.get(EDITOR_DOCUMENT_V4_KEY) as EditorManifestV4;
         expect(persisted.videoSourceDescriptors[0].fingerprint).toBe(loaded?.videoSources[0].fingerprint);
         expect(persisted.audioSourceDescriptors[0].fingerprint).toBe(loaded?.audioSources[0].fingerprint);
     });
@@ -208,8 +240,9 @@ describe('v3 storage service', () => {
         expect(loaded?.videoTracks).toEqual([{
             id: 'video_track_1', name: 'Video 1', clipIds: ['video_clip'],
         }]);
-        expect((first.adapter.values.get(EDITOR_DOCUMENT_V3_KEY) as EditorManifestV3).videoTracks)
-            .toEqual(loaded?.videoTracks);
+        expect(first.adapter.values.get(EDITOR_DOCUMENT_V3_KEY)).toEqual(EDITOR_DOCUMENT_V3_TOMBSTONE);
+        expect((first.adapter.values.get(EDITOR_DOCUMENT_V4_KEY) as EditorManifestV4).videoTracks)
+            .toEqual([{ id: 'video_track_1', name: 'Video 1', visible: true, locked: false }]);
 
         const second = setup();
         const malformed = createEditorManifestV3(v3Document());
@@ -250,13 +283,15 @@ describe('v3 storage service', () => {
 
         expect(loaded?.version).toBe(3);
         expect(loaded?.videoSources[0].fingerprint).toMatch(/^v2_/);
-        expect((adapter.values.get(EDITOR_DOCUMENT_V3_KEY) as EditorManifestV3)
+        expect((adapter.values.get(EDITOR_DOCUMENT_V4_KEY) as EditorManifestV4)
             .videoSourceDescriptors[0].fingerprint).toBe(loaded?.videoSources[0].fingerprint);
+        expect(adapter.values.get(EDITOR_DOCUMENT_V3_KEY)).toEqual(EDITOR_DOCUMENT_V3_TOMBSTONE);
         expect(adapter.values.get('source:video_a')).toBe(video.file);
         expect(adapter.values.has('video-source:video_a')).toBe(false);
-        expect(adapter.batches.at(-1)).toEqual([expect.objectContaining({
-            type: 'put', key: EDITOR_DOCUMENT_V3_KEY,
-        })]);
+        expect(adapter.batches.at(-1)).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'put', key: EDITOR_DOCUMENT_V4_KEY }),
+            expect.objectContaining({ type: 'put', key: EDITOR_DOCUMENT_V3_KEY }),
+        ]));
     });
 
     it('migrates v1 only after caller-supplied inspection and retains scalar records', async () => {

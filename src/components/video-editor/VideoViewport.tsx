@@ -20,11 +20,12 @@ import { generateThumbnail } from '@/lib/mediabunny-utils';
 import { classifyMediaImportCandidate, inspectMediaBatch } from '@/lib/media-import';
 import { secondsToFrames } from '@/lib/render-profile';
 import {
-  buildClipPlacements,
   getSourceFrameAtOrBefore,
-  projectTimeToSourceTime,
-  resolveClipAtProjectTime,
 } from '@/lib/video-timeline';
+import {
+  resolveVideoFrameRuntimePlacementAtTime,
+} from '@/lib/video-frame-plan';
+import { buildTimelineVideoFrameRuntimePlanV4 } from '@/stores/timeline-v4-compat';
 import { renderSubtitles } from '@/lib/subtitle-renderer';
 import { drawContainedVideoFrame } from '@/lib/video-compositor';
 import { setPreviewTargetResolution } from '@/lib/preview-target-resolution';
@@ -86,12 +87,14 @@ export function VideoViewport({
     tracks,
     videoSources,
     videoClips,
+    videoTracks,
     renderProfile,
     appendMixedMediaCandidate,
   } = useTimelineStore(useShallow((state) => ({
     tracks: state.tracks,
     videoSources: state.videoSources,
     videoClips: state.videoClips,
+    videoTracks: state.videoTracks,
     renderProfile: state.renderProfile,
     appendMixedMediaCandidate: state.appendMixedMediaCandidate,
   })));
@@ -117,9 +120,9 @@ export function VideoViewport({
 
   // Clip boundaries must use the same rational frame grid as timeline edits and export. Using
   // raw source seconds here can otherwise show the next clip one fractional frame too early.
-  const placements = useMemo(
-    () => buildClipPlacements(videoClips, renderProfile.fps),
-    [renderProfile.fps, videoClips],
+  const framePlan = useMemo(
+    () => buildTimelineVideoFrameRuntimePlanV4({ renderProfile, videoClips, videoTracks }),
+    [renderProfile, videoClips, videoTracks],
   );
   const sourcesById = useMemo(
     () => new Map(videoSources.map((source) => [source.id, source])),
@@ -242,7 +245,7 @@ export function VideoViewport({
     lastCompositeKeyRef.current = null;
     persistentVideoCanvasRef.current?.removeAttribute('data-has-frame');
     invalidateStaleRender();
-  }, [invalidateStaleRender, videoClips, videoSources]);
+  }, [invalidateStaleRender, videoClips, videoSources, videoTracks]);
 
   useEffect(() => {
     visualRevisionRef.current += 1;
@@ -285,11 +288,11 @@ export function VideoViewport({
 
     const playback = usePlaybackStore.getState();
     const projectTime = playback.previewTime ?? playback.currentTime;
-    const placement = resolveClipAtProjectTime(placements, projectTime);
-    const source = placement ? sourcesById.get(placement.clip.sourceId) ?? null : null;
-    const sourceFrame = source && placement
+    const resolved = resolveVideoFrameRuntimePlacementAtTime(framePlan, projectTime);
+    const source = resolved ? sourcesById.get(resolved.placement.clip.sourceId) ?? null : null;
+    const sourceFrame = source && resolved
       ? getSourceFrameAtOrBefore(
-        projectTimeToSourceTime(placement, projectTime),
+        resolved.sourceTime,
         source.fps,
         source.duration,
       )
@@ -298,8 +301,14 @@ export function VideoViewport({
     const displayWidth = Math.max(1, Math.round(rect.width));
     const displayHeight = Math.max(1, Math.round(rect.height));
     const layoutKey = `${displayWidth}x${displayHeight}:${Math.round(rect.left)}:${Math.round(rect.top)}`;
-    const mediaKey = source && sourceFrame ? `${source.id}:${sourceFrame.index}` : 'black-tail';
-    const canonicalProjectFrame = secondsToFrames(projectTime, renderProfile.fps, 'nearest');
+    const mediaKey = source && sourceFrame
+      ? `${source.id}:${source.fingerprint}:${sourceFrame.index}`
+      : 'black-tail';
+    const canonicalProjectFrame = resolved?.projectFrameIndex ?? secondsToFrames(
+      projectTime,
+      renderProfile.fps,
+      framePlan.version === 4 ? 'floor' : 'nearest',
+    );
     const compositeKey = `${mediaKey}:${canonicalProjectFrame}:${layoutKey}:${showSubtitles ? visualRevisionRef.current : 'no-subtitles'}`;
     if (lastCompositeKeyRef.current === compositeKey && canvas.getAttribute('data-has-content') === 'true') return;
 
@@ -392,7 +401,7 @@ export function VideoViewport({
   }, [
     canvasRef,
     measureDisplayRectangle,
-    placements,
+    framePlan,
     projectCanvasSize,
     renderProfile.fps,
     showSubtitles,

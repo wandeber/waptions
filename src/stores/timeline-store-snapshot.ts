@@ -1,21 +1,28 @@
 import { finalizeAudioGraphMutation, type AudioGraphMutationImpact } from '@/lib/audio-graph-signature';
+import { createEditorManifestV4 } from '@/lib/editor-document-v4-migration';
 import { createEditorManifestV3 } from '@/lib/editor-document-migration';
 import { cloneAudioTracks } from '@/lib/audio-timeline';
-import type { Subtitle, SubtitleTrack } from '@/types/timeline';
+import type { Subtitle, SubtitleTrack, SubtitleTrackV4 } from '@/types/timeline';
 import type {
+    EditorDocumentV4,
     EditorDocumentV3,
+    EditorManifestV4,
     EditorManifestV3,
     RenderProfile,
     TrackTranscriptionProvenanceV3,
-    TransientMediaSelection,
-    VideoClip,
+    TransientMediaSelectionV4,
     VideoClipAudioSettings,
-    VideoClipV3,
-    VideoTrack,
+    VideoClip,
+    VideoClipV4,
+    VideoTrackV4,
 } from '@/types/video';
-import type { TimelineStore, TimelineVideoClip } from './timeline-store-types';
-import { getTrackTimingDomain } from './timeline-store-selectors';
-import { cloneVideoTracks } from '@/lib/video-tracks';
+import type { TimelineStore, TimelineSubtitleTrack, TimelineVideoClip } from './timeline-store-types';
+import {
+    buildTimelineVideoTrackMirrors,
+    projectVideoClipsV4,
+    projectVideoTracksV4,
+    type TimelineVideoTrack,
+} from './timeline-v4-compat';
 
 export const DEFAULT_VIDEO_CLIP_AUDIO: VideoClipAudioSettings = {
     linkState: 'linked',
@@ -25,8 +32,26 @@ export const DEFAULT_VIDEO_CLIP_AUDIO: VideoClipAudioSettings = {
     fadeOutFrames: 0,
 };
 
-export const cloneSubtitleTracks = (tracks: readonly SubtitleTrack[]): SubtitleTrack[] => (
-    JSON.parse(JSON.stringify(tracks)) as SubtitleTrack[]
+export const cloneSubtitleTracks = (tracks: readonly SubtitleTrack[]): TimelineSubtitleTrack[] => (
+    tracks.map((track) => {
+        const candidate = track as SubtitleTrack & Partial<SubtitleTrackV4> & {
+            timingDomain?: 'video-ripple' | 'absolute';
+        };
+        const unlinkedVideoEditResponse = candidate.unlinkedVideoEditResponse
+            ?? (candidate.timingDomain === 'absolute' ? 'stay-absolute' : 'follow-project-ripple');
+        return {
+            ...candidate,
+            style: {
+                ...candidate.style,
+                ...(candidate.style.position
+                    ? { position: { ...candidate.style.position } }
+                    : {}),
+            },
+            subtitles: candidate.subtitles.map((subtitle) => ({ ...subtitle })),
+            unlinkedVideoEditResponse,
+            timingDomain: unlinkedVideoEditResponse === 'stay-absolute' ? 'absolute' : 'video-ripple',
+        };
+    })
 );
 
 export const cloneSubtitles = (subtitles: readonly Subtitle[] | null): Subtitle[] | null => (
@@ -44,14 +69,13 @@ export const cloneContainerIds = (ids: readonly string[] | null): string[] | nul
 );
 
 export const cloneVideoClips = (
-    clips: readonly (VideoClip | VideoClipV3)[],
-): TimelineVideoClip[] => clips.map((clip) => {
-    const extended = clip as VideoClip & { audio?: VideoClipAudioSettings | null };
-    return {
-        ...extended,
-        audio: extended.audio === null ? null : { ...(extended.audio ?? DEFAULT_VIDEO_CLIP_AUDIO) },
-    };
-});
+    clips: readonly (TimelineVideoClip | VideoClip)[],
+): TimelineVideoClip[] => clips.map((clip) => ({
+    ...clip,
+    audio: 'audio' in clip
+        ? (clip.audio ? { ...clip.audio } : null)
+        : { ...DEFAULT_VIDEO_CLIP_AUDIO },
+}));
 
 export const cloneRenderProfile = (profile: RenderProfile): RenderProfile => ({
     ...profile,
@@ -59,10 +83,12 @@ export const cloneRenderProfile = (profile: RenderProfile): RenderProfile => ({
 });
 
 export const cloneTransientSelection = (
-    selection: TransientMediaSelection,
-): TransientMediaSelection => (
+    selection: TransientMediaSelectionV4,
+): TransientMediaSelectionV4 => (
     selection.kind === 'subtitles'
         ? { ...selection, subtitleIds: [...selection.subtitleIds] }
+        : selection.kind === 'narrative'
+            ? { ...selection, sourceWordIds: [...selection.sourceWordIds], boundary: selection.boundary ? { ...selection.boundary } : null }
         : { ...selection }
 );
 
@@ -72,27 +98,82 @@ export const cloneTranscriptionByTrackId = (
     JSON.parse(JSON.stringify(provenance)) as Record<string, TrackTranscriptionProvenanceV3>
 );
 
-export const buildEditorDocumentFromState = (state: TimelineStore): EditorDocumentV3 => ({
-    version: 3,
+export const buildEditorDocumentFromState = (state: TimelineStore): EditorDocumentV4 => ({
+    version: 4,
     revision: state.revision,
     audioGraphRevision: state.audioGraphRevision,
     renderProfile: cloneRenderProfile(state.renderProfile),
-    subtitleTracks: cloneSubtitleTracks(state.tracks).map((track) => ({
-        ...track,
-        timingDomain: getTrackTimingDomain(track),
-    })),
+    subtitleTracks: cloneSubtitleTracks(state.tracks).map((track) => {
+        const { timingDomain: _legacyTimingDomain, ...v4Track } = track;
+        void _legacyTimingDomain;
+        return {
+            ...v4Track,
+            // cloneSubtitleTracks always materializes this V4 policy; the transitional public
+            // type keeps it optional only so pre-WP8 callers can still provide legacy fixtures.
+            unlinkedVideoEditResponse: track.unlinkedVideoEditResponse ?? 'follow-project-ripple',
+        };
+    }),
     videoSources: state.videoSources.map((source) => ({ ...source })),
-    videoClips: cloneVideoClips(state.videoClips),
-    videoTracks: cloneVideoTracks(state.videoTracks),
+    videoClips: projectVideoClipsV4(state.videoClips, state.videoTracks, state.renderProfile),
+    videoTracks: projectVideoTracksV4(state.videoTracks),
     audioSources: state.audioSources.map((source) => ({ ...source })),
     audioTracks: cloneAudioTracks(state.audioTracks),
     activeSubtitleTrackId: state.activeTrackId,
     transientSelection: cloneTransientSelection(state.transientSelection),
     transcriptionByTrackId: cloneTranscriptionByTrackId(state.transcriptionByTrackId),
+    globalEditingMode: state.globalEditingMode,
+    editorialTranscriptDescriptors: structuredClone(state.editorialTranscriptDescriptors),
+    narrative: structuredClone(state.narrative),
+    dependentLinks: structuredClone(state.dependentLinks),
 });
 
-export const buildEditorManifestFromState = (state: TimelineStore): EditorManifestV3 => (
-    createEditorManifestV3(buildEditorDocumentFromState(state))
+export const buildEditorManifestFromState = (state: TimelineStore): EditorManifestV4 => (
+    createEditorManifestV4(buildEditorDocumentFromState(state))
+);
+
+/**
+ * Read-only compatibility projection for legacy subtitle-transcription/bundle consumers.
+ *
+ * V3 cannot encode explicit gaps or cross-track overlap, so this adapter must never feed V4
+ * persistence or structural commands. It exists only until WP7/WP8 move those callers to the
+ * canonical methods and deliberately drops narrative selection to `none`.
+ */
+export const buildLegacyEditorDocumentFromState = (state: TimelineStore): EditorDocumentV3 => ({
+    version: 3,
+    revision: state.revision,
+    audioGraphRevision: state.audioGraphRevision,
+    renderProfile: cloneRenderProfile(state.renderProfile),
+    subtitleTracks: cloneSubtitleTracks(state.tracks).map((track) => {
+        const { unlinkedVideoEditResponse, ...base } = track;
+        return {
+            ...base,
+            timingDomain: unlinkedVideoEditResponse === 'stay-absolute' ? 'absolute' : 'video-ripple',
+        };
+    }),
+    videoSources: state.videoSources.map((source) => ({ ...source })),
+    videoClips: state.videoClips.map((clip) => ({
+        id: clip.id,
+        sourceId: clip.sourceId,
+        sourceStart: clip.sourceStart,
+        sourceEnd: clip.sourceEnd,
+        audio: clip.audio ? { ...clip.audio } : null,
+    })),
+    videoTracks: state.videoTracks.map((track) => ({
+        id: track.id,
+        name: track.name,
+        clipIds: [...track.clipIds],
+    })),
+    audioSources: state.audioSources.map((source) => ({ ...source })),
+    audioTracks: cloneAudioTracks(state.audioTracks),
+    activeSubtitleTrackId: state.activeTrackId,
+    transientSelection: state.transientSelection.kind === 'narrative'
+        ? { kind: 'none' }
+        : cloneTransientSelection(state.transientSelection) as import('@/types/video').TransientMediaSelection,
+    transcriptionByTrackId: cloneTranscriptionByTrackId(state.transcriptionByTrackId),
+});
+
+export const buildLegacyEditorManifestFromState = (state: TimelineStore): EditorManifestV3 => (
+    createEditorManifestV3(buildLegacyEditorDocumentFromState(state))
 );
 
 /** Applies audio-graph revision and transcription provenance policy to a durable state patch. */
@@ -118,7 +199,10 @@ export const finalizeDurableTimelinePatch = (
             revision: state.revision + 1,
             audioGraphRevision: state.audioGraphRevision,
             contentBoundaryRevision,
-            transcriptionByTrackId: patch.transcriptionByTrackId ?? state.transcriptionByTrackId,
+            transcriptionByTrackId: preserveEqualTranscriptionReference(
+                state.transcriptionByTrackId,
+                patch.transcriptionByTrackId ?? state.transcriptionByTrackId,
+            ),
         };
     }
 
@@ -138,9 +222,19 @@ export const finalizeDurableTimelinePatch = (
         revision: state.revision + 1,
         audioGraphRevision: finalized.audioGraphRevision,
         contentBoundaryRevision,
-        transcriptionByTrackId: finalized.transcriptionByTrackId,
+        transcriptionByTrackId: preserveEqualTranscriptionReference(
+            state.transcriptionByTrackId,
+            finalized.transcriptionByTrackId,
+        ),
     };
 };
+
+const preserveEqualTranscriptionReference = (
+    current: Record<string, TrackTranscriptionProvenanceV3>,
+    next: Record<string, TrackTranscriptionProvenanceV3>,
+): Record<string, TrackTranscriptionProvenanceV3> => (
+    JSON.stringify(current) === JSON.stringify(next) ? current : next
+);
 
 const AUDIO_GRAPH_STATE_KEYS = [
     'renderProfile',
@@ -150,4 +244,10 @@ const AUDIO_GRAPH_STATE_KEYS = [
     'audioTracks',
 ] as const satisfies readonly (keyof TimelineStore)[];
 
-export const cloneTimelineVideoTracks = (tracks: readonly VideoTrack[]): VideoTrack[] => cloneVideoTracks(tracks);
+export const cloneTimelineVideoTracks = (
+    tracks: readonly (VideoTrackV4 | TimelineVideoTrack)[],
+    clips: readonly VideoClipV4[],
+): TimelineVideoTrack[] => buildTimelineVideoTrackMirrors(
+    tracks.map(({ id, name, visible = true, locked = false }) => ({ id, name, visible, locked })),
+    clips,
+);

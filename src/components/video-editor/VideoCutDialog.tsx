@@ -12,7 +12,7 @@ import {
     WebCodecsFrameSource,
     type Cut,
 } from '@/lib/video-cut';
-import { buildClipPlacements } from '@/lib/video-timeline';
+import { buildVideoTrackPlacementsV4 } from '@/lib/video-placement-v4';
 import {
     getDefaultVideoCutDetectionScope,
     resolveVideoCutDetectionClipIds,
@@ -107,7 +107,9 @@ export function VideoCutDialog({ request, onClose }: VideoCutDialogProps) {
 
     const handleDetect = async () => {
         if (isDetecting || targetClips.length === 0) return;
-        const placements = new Map(buildClipPlacements(videoClips, renderProfile.fps)
+        const documentV4 = useTimelineStore.getState().buildEditorDocumentV4();
+        const placements = new Map(buildVideoTrackPlacementsV4(documentV4)
+            .flatMap((videoTrack) => videoTrack.placements)
             .map((placement) => [placement.clip.id, placement]));
         const clipsBySource = new Map<string, typeof targetClips>();
         targetClips.forEach((clip) => {
@@ -144,7 +146,7 @@ export function VideoCutDialog({ request, onClose }: VideoCutDialogProps) {
                         if (!placement) return;
                         sourceCuts.forEach((cut) => {
                             if (cut.timeSec < clip.sourceStart || cut.timeSec >= clip.sourceEnd) return;
-                            const timeSec = placement.projectStart + cut.timeSec - clip.sourceStart;
+                            const timeSec = placement.startSeconds + cut.timeSec - clip.sourceStart;
                             detectedTimelineCuts.push({
                                 ...cut,
                                 timeSec,

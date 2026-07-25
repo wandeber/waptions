@@ -1,0 +1,11 @@
+{
+  "id": "sinc64-kaiser8.6-p1024-v1",
+  "encoding": "float64-little-endian-phase-major",
+  "taps": 64,
+  "phases": 1024,
+  "outputRateHz": 16000,
+  "digestsByInputRateHz": {
+    "44100": "sha256:a76f6ab77b00eba6419dafa17dc45241ae145ca17c6ab7edcf043f52102548c8",
+    "48000": "sha256:c7f317f976a1a4145a19c198f58608171edcc31c421c133e5bb4e655bbf99a3f"
+  }
+}

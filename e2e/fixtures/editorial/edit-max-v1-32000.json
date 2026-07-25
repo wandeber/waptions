@@ -1,0 +1,70 @@
+{
+  "model": "qwen3-asr-1.7b",
+  "text": "alpha bravo charlie",
+  "words": [
+    {
+      "start": 0.25,
+      "end": 0.55,
+      "word": "alpha",
+      "probability": 0.99
+    },
+    {
+      "start": 0.55,
+      "end": 0.85,
+      "word": "bravo",
+      "probability": 0.98
+    },
+    {
+      "start": 0.85,
+      "end": 1.15,
+      "word": "charlie",
+      "probability": 0.97
+    }
+  ],
+  "editing": {
+    "schema_version": 1,
+    "profile": "edit-max-v1",
+    "requested_model": "qwen-1.7b-edit-max",
+    "canonical_model": "qwen3-asr-1.7b",
+    "timeline": {
+      "sample_rate_hz": 16000,
+      "sample_count": 32006,
+      "duration": 2.000375,
+      "time_origin": "decoded_audio_start"
+    },
+    "speech_regions": [
+      {
+        "id": 0,
+        "start_sample": 4000,
+        "end_sample": 18400,
+        "start": 0.25,
+        "end": 1.15,
+        "evidence": "alignment_acoustic",
+        "word_start_index": 0,
+        "word_end_index": 3,
+        "vad_peak_probability": 0.99,
+        "vad_mean_probability": 0.94,
+        "start_energy_confirmed": true,
+        "end_energy_confirmed": true
+      }
+    ],
+    "edit_boundaries": [
+      {
+        "region_id": 0,
+        "type": "speech_start",
+        "sample": 4000,
+        "time": 0.25,
+        "evidence": "alignment_acoustic",
+        "energy_confirmed": true
+      },
+      {
+        "region_id": 0,
+        "type": "speech_end",
+        "sample": 18400,
+        "time": 1.15,
+        "evidence": "alignment_acoustic",
+        "energy_confirmed": true
+      }
+    ]
+  }
+}

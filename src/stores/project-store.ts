@@ -7,12 +7,13 @@ import {
     useTimelineStore,
 } from './timeline-store';
 import { usePlaybackStore } from './playback-store';
-import type { EditorDocumentV3, TrackTranscriptionState } from '@/types/video';
+import type { EditorDocumentV4, TrackTranscriptionState } from '@/types/video';
 import { inspectVideoSource } from '@/lib/video-source';
 import {
-    createEditorManifestV3,
-    migrateLegacyEditorDocumentToV3,
-} from '@/lib/editor-document-migration';
+    createEditorManifestV4,
+    migrateLoadedEditorDocumentToV4,
+    migrateLegacyEditorDocumentToV4,
+} from '@/lib/editor-document-v4-migration';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
 import {
     selectPersistentEditorAssets,
@@ -22,8 +23,27 @@ import {
     editorPersistenceRegistry,
     type EditorPersistenceStatus,
 } from '@/lib/storage/editor-persistence';
-import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
-import { projectEditorDocumentHistory } from '@/lib/storage/editor-history-storage';
+import { validateEditorDocumentV4 } from '@/lib/editor-document-v4';
+import { projectEditorDocumentHistoryV4 } from '@/lib/storage/editor-history-storage-v4';
+import { timelineEditorialRuntime } from './timeline-editorial-runtime';
+import { createMediabunnyEditorialPcmWindowDecoder } from '@/lib/editorial-transcription/pcm-window-decoder';
+import { approximateSecondsAsRationalDuration } from './timeline-editorial-runtime';
+
+// Bounded quiet-boundary decoding resolves the currently mounted immutable source by fingerprint.
+// The closure reads Files only on demand and never copies them into the runtime service, history,
+// transcript CAS, or the derived PCM cache.
+const editorPcmWindowDecoder = createMediabunnyEditorialPcmWindowDecoder({
+    resolveSource: (sourceFingerprint) => {
+        const source = useTimelineStore.getState().videoSources.find((candidate) => (
+            candidate.fingerprint === sourceFingerprint
+        ));
+        return source ? {
+            file: source.file,
+            declaredDuration: approximateSecondsAsRationalDuration(source.duration),
+        } : null;
+    },
+});
+timelineEditorialRuntime.configure({ quietWindowDecoder: editorPcmWindowDecoder });
 
 export type PersistenceRetryKind = 'editor-document' | 'project-save' | 'recovery-load';
 export type ProjectLoadErrorKind = 'not-found' | 'unreadable';
@@ -102,6 +122,13 @@ const attachProjectPersistence = (projectId: string) => {
         projectId,
         generation: attachment.generation,
         enqueue: (manifest, sourceAssets, history) => editorPersistenceRegistry.enqueue(
+            projectId,
+            attachment.generation,
+            manifest,
+            sourceAssets,
+            history,
+        ),
+        enqueueV4: (manifest, sourceAssets, history) => editorPersistenceRegistry.enqueue(
             projectId,
             attachment.generation,
             manifest,
@@ -198,7 +225,7 @@ const enqueueProjectMetadataWrite = (
 
 const buildLegacyEditorDocument = async (
     legacy: Awaited<ReturnType<typeof storageService.loadLegacyProjectPayload>>,
-): Promise<EditorDocumentV3> => {
+): Promise<EditorDocumentV4> => {
     const tracks = legacy.tracks ?? [];
     const activeTrackId = tracks[0]?.id ?? null;
     const transcriptionByTrackId: Record<string, TrackTranscriptionState> = {};
@@ -214,7 +241,7 @@ const buildLegacyEditorDocument = async (
     // A scalar legacy project has no stream descriptor. Inspection is the only safe way to
     // recover its audio flag and render profile before the pure V3 migration is applied.
     const source = legacy.videoFile ? await inspectVideoSource(legacy.videoFile) : null;
-    return migrateLegacyEditorDocumentToV3({
+    return migrateLegacyEditorDocumentToV4({
         tracks,
         rawTranscription: activeTrackId ? transcriptionByTrackId[activeTrackId]?.raw ?? null : null,
         transcriptionGroups: activeTrackId ? transcriptionByTrackId[activeTrackId]?.groups ?? null : null,
@@ -281,6 +308,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
     createProject: async (name: string) => {
         invalidateProjectLoadRequests();
+        const previous = get();
         const newProject: TProject = {
             id: crypto.randomUUID(),
             name,
@@ -288,7 +316,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             updatedAt: new Date(),
         };
 
+        // A newly created editor is a real project switch. Clear the previous session credential/
+        // body cache before installing the new persistence and transcript publication guards.
+        await timelineEditorialRuntime.detachProject().catch(() => undefined);
+        if (previous.activeProject) {
+            editorPersistenceRegistry.close(previous.activeProject.id, previous.persistenceGeneration);
+        }
         const attachment = attachProjectPersistence(newProject.id);
+        timelineEditorialRuntime.attachProject({
+            projectId: newProject.id,
+            persistenceGeneration: attachment.generation,
+            sessionId: `editor-${attachment.generation}-${crypto.randomUUID()}`,
+        });
         set({
             activeProject: newProject,
             persistenceGeneration: attachment.generation,
@@ -331,6 +370,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             return newProject.id;
         } catch (error) {
             editorPersistenceRegistry.close(newProject.id, attachment.generation);
+            await timelineEditorialRuntime.detachProject().catch(() => undefined);
             setTimelinePersistenceBinding(null);
             // Project discovery is created before the first document flush. If that flush fails,
             // remove both records so the dashboard cannot expose an empty, unreopenable project.
@@ -415,7 +455,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             if (!isLatestRequest()) return;
             if (!project) throw new ProjectNotFoundError(id);
 
-            let document = await storageService.loadEditorDocument(id);
+            const loadedDocument = await storageService.loadEditorDocument(id, { targetVersion: 4 });
+            let document = loadedDocument ? migrateLoadedEditorDocumentToV4(loadedDocument) : null;
             if (!isLatestRequest()) return;
             const legacy = document ? null : await storageService.loadLegacyProjectPayload(id);
             if (!isLatestRequest()) return;
@@ -426,7 +467,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 if (!isLatestRequest()) return;
                 migratedLegacy = true;
             }
-            const validation = validateEditorDocumentV3(document);
+            const validation = validateEditorDocumentV4(document);
             if (!validation.valid) {
                 throw new Error(validation.issues
                     .map((issue) => `${issue.path}: ${issue.message}`)
@@ -442,10 +483,20 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                 ? null
                 : await storageService.loadEditorRuntimeState(id, document);
             if (!isLatestRequest()) return;
-            if (runtimeState) document = runtimeState.document;
+            if (runtimeState) document = migrateLoadedEditorDocumentToV4(runtimeState.document);
+            const resolvedEditorialBodies = await timelineEditorialRuntime.resolveDocumentDetached(document);
+            if (!isLatestRequest()) return;
 
             const previous = get();
+            await timelineEditorialRuntime.detachProject().catch(() => undefined);
+            if (!isLatestRequest()) return;
             const attachment = attachProjectPersistence(id);
+            timelineEditorialRuntime.attachProject({
+                projectId: id,
+                persistenceGeneration: attachment.generation,
+                sessionId: `editor-${attachment.generation}-${crypto.randomUUID()}`,
+            });
+            timelineEditorialRuntime.injectResolvedBodies(resolvedEditorialBodies);
             if (previous.activeProject) {
                 editorPersistenceRegistry.close(previous.activeProject.id, previous.persistenceGeneration);
             }
@@ -454,7 +505,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             if (!migratedLegacy) {
                 editorPersistenceRegistry.markManifestDurable(
                     id,
-                    createEditorManifestV3(durableDocument),
+                    createEditorManifestV4(durableDocument),
                     {
                         // WAL history entries are not durable until the recovery checkpoint writes
                         // their editor-history payloads. Mark only the materialized checkpoint as
@@ -462,7 +513,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                         // before atomically clearing the WAL.
                         history: runtimeState?.durableHistory.history ?? [],
                         redoStack: runtimeState?.durableHistory.redoStack ?? [],
-                        projection: projectEditorDocumentHistory(durableDocument),
+                        projection: projectEditorDocumentHistoryV4(durableDocument),
                     },
                     runtimeState?.recoveryEntryKeys ?? [],
                 );
@@ -683,7 +734,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             };
             try {
                 if (!recoveryRevision) throw new Error('Recovered document revision is unavailable.');
-                const recoveredDocument = await storageService.loadEditorDocument(projectId);
+                const recoveredDocument = await storageService.loadEditorDocument(projectId, { targetVersion: 4 });
                 if (!recoveredDocument || recoveredDocument.revision !== recoveryRevision) {
                     throw new Error(`Recovered revision ${recoveryRevision} could not be loaded.`);
                 }
@@ -691,18 +742,36 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                     projectId,
                     recoveredDocument,
                 );
-                if (recoveredRuntime.document.revision !== recoveryRevision) {
+                const recoveredEditorDocument = migrateLoadedEditorDocumentToV4(
+                    recoveredRuntime.document,
+                );
+                if (recoveredEditorDocument.revision !== recoveryRevision) {
                     throw new Error(`Recovered runtime revision ${recoveryRevision} could not be loaded.`);
                 }
+                const runtimeContext = timelineEditorialRuntime.getProjectContext();
+                const resolvedEditorialBodies = await timelineEditorialRuntime.resolveDocumentDetached(
+                    recoveredEditorDocument,
+                );
                 const liveRevision = useTimelineStore.getState().revision;
                 if (
                     ownsRecoveryLoadAttempt()
                     && liveRevision === recoveryRevision
                 ) {
-                    useTimelineStore.getState().hydrateEditorDocument(
-                        recoveredRuntime.document,
-                        recoveredRuntime.history,
+                    const published = timelineEditorialRuntime.publishResolvedDocument(
+                        recoveredEditorDocument,
+                        resolvedEditorialBodies,
+                        runtimeContext,
+                        () => useTimelineStore.getState().hydrateEditorDocument(
+                            recoveredEditorDocument,
+                            recoveredRuntime.history,
+                        ),
                     );
+                    if (!published) {
+                        throw new DOMException(
+                            'Recovered editorial transcript hydration became stale.',
+                            'AbortError',
+                        );
+                    }
                     get().updateLastSavedState();
                 }
                 if (ownsRecoveryLoadAttempt()) {
@@ -733,7 +802,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
         let recoveryReadRevision: number | null = null;
         try {
-            const failedManifest = editorPersistenceRegistry.getFailedManifest(projectId);
+            const failedManifest = editorPersistenceRegistry.getFailedManifestV4(projectId)
+                ?? editorPersistenceRegistry.getFailedManifest(projectId);
             const liveRevisionBeforeRetry = useTimelineStore.getState().revision;
             const shouldHydrateRecoveredManifest = Boolean(
                 failedManifest && liveRevisionBeforeRetry < failedManifest.revision,
@@ -765,7 +835,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             ) {
                 recoveryReadRevision = failedManifest.revision;
                 set({ recoveryDocumentRevision: recoveryReadRevision });
-                const recoveredDocument = await storageService.loadEditorDocument(projectId);
+                const recoveredDocument = await storageService.loadEditorDocument(projectId, { targetVersion: 4 });
                 const ownsRecoveryRead = () => isStillActive()
                     && get().recoveryDocumentRevision === recoveryReadRevision;
                 if (!ownsRecoveryRead()) return;
@@ -776,9 +846,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                     projectId,
                     recoveredDocument,
                 );
-                if (recoveredRuntime.document.revision !== recoveryReadRevision) {
+                const recoveredEditorDocument = migrateLoadedEditorDocumentToV4(
+                    recoveredRuntime.document,
+                );
+                if (recoveredEditorDocument.revision !== recoveryReadRevision) {
                     throw new Error(`Recovered runtime revision ${recoveryReadRevision} could not be loaded.`);
                 }
+                const runtimeContext = timelineEditorialRuntime.getProjectContext();
+                const resolvedEditorialBodies = await timelineEditorialRuntime.resolveDocumentDetached(
+                    recoveredEditorDocument,
+                );
                 const currentTimeline = useTimelineStore.getState();
                 if (
                     ownsRecoveryRead()
@@ -787,10 +864,21 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                     // No live edit raced the retry, so the exact recovered document can safely
                     // become the visible graph. A newer live revision always wins and is already
                     // queued behind the retained failure by the coordinator.
-                    currentTimeline.hydrateEditorDocument(
-                        recoveredRuntime.document,
-                        recoveredRuntime.history,
+                    const published = timelineEditorialRuntime.publishResolvedDocument(
+                        recoveredEditorDocument,
+                        resolvedEditorialBodies,
+                        runtimeContext,
+                        () => currentTimeline.hydrateEditorDocument(
+                            recoveredEditorDocument,
+                            recoveredRuntime.history,
+                        ),
                     );
+                    if (!published) {
+                        throw new DOMException(
+                            'Recovered editorial transcript hydration became stale.',
+                            'AbortError',
+                        );
+                    }
                     get().updateLastSavedState();
                 }
                 if (ownsRecoveryRead()) set({ recoveryDocumentRevision: null });
@@ -850,6 +938,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         invalidateProjectLoadRequests();
         const { activeProject, persistenceGeneration } = get();
         if (activeProject) editorPersistenceRegistry.close(activeProject.id, persistenceGeneration);
+        void timelineEditorialRuntime.detachProject().catch(() => undefined);
         setTimelinePersistenceBinding(null);
         set({
             activeProject: null,
@@ -935,6 +1024,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 }));
 
 editorPersistenceRegistry.setActiveStatusListener((event) => {
+    const runtimeContext = timelineEditorialRuntime.getProjectContext();
+    if (event.status === 'saved'
+        && runtimeContext?.projectId === event.projectId
+        && runtimeContext.persistenceGeneration === event.generation) {
+        void timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+    }
     useProjectStore.setState((state) => {
         if (event.status === 'error') {
             return {

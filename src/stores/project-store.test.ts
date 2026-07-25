@@ -10,7 +10,15 @@ import type { SubtitleTrack } from '@/types/timeline';
 import type { AudioSourceAsset, EditorDocumentV3 } from '@/types/video';
 import { createDefaultRenderProfile } from '@/lib/render-profile';
 import { createEditorManifestV3 } from '@/lib/editor-document-migration';
+import { createEditorManifestV4 } from '@/lib/editor-document-v4-migration';
 import type { TimelineHistoryEntry } from './timeline-store-types';
+import {
+    createEditorDocumentV4Fixture,
+    createEditorialTranscriptBodyFixture,
+    EDITORIAL_TEST_RECORD_ID,
+} from '@/types/editorial.test-fixtures';
+import { timelineEditorialRuntime } from './timeline-editorial-runtime';
+import type { EditorialTranscriptRepository } from '@/lib/storage/editorial-transcript-repository';
 
 const project = (id: string): TProject => ({
     id,
@@ -18,6 +26,9 @@ const project = (id: string): TProject => ({
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
 });
+
+const originalTranscriptRepository = timelineEditorialRuntime.getRepository();
+const originalTranscriptionCoordinator = timelineEditorialRuntime.getCoordinator();
 
 const emptyLegacyPayload = {
     tracks: null,
@@ -75,7 +86,8 @@ const deferred = <T,>() => {
 };
 
 describe('project persistence lifecycle integration', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        await timelineEditorialRuntime.detachProject();
         useProjectStore.setState({
             activeProject: null,
             persistenceGeneration: 0,
@@ -103,9 +115,14 @@ describe('project persistence lifecycle integration', () => {
         vi.spyOn(console, 'error').mockImplementation(() => {});
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         const state = useProjectStore.getState();
         if (state.activeProject) state.closeProject();
+        await timelineEditorialRuntime.detachProject();
+        timelineEditorialRuntime.configure({
+            repository: originalTranscriptRepository,
+            coordinator: originalTranscriptionCoordinator,
+        });
         vi.restoreAllMocks();
     });
 
@@ -831,6 +848,75 @@ describe('project persistence lifecycle integration', () => {
             history: [{ id: 'history-4' }],
             historySequence: 4,
         });
+    });
+
+    it('hydrates a new transcript record atomically with its retained failed V4 manifest', async () => {
+        const id = 'project_retry_new_transcript_record';
+        const durableDocument = createEditorDocumentV4Fixture({
+            revision: 8,
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+            dependentLinks: [],
+        });
+        const retainedDocument = createEditorDocumentV4Fixture({ revision: 9 });
+        const fixtureBody = createEditorialTranscriptBodyFixture();
+        const wordId = `sha256:${'1'.repeat(64)}`;
+        const regionId = `sha256:${'2'.repeat(64)}`;
+        const body = createEditorialTranscriptBodyFixture({
+            words: [{ ...fixtureBody.words[0], id: wordId }],
+            speechRegions: [{ ...fixtureBody.speechRegions[0], id: regionId }],
+            editBoundaries: fixtureBody.editBoundaries.map((boundary, index) => ({
+                ...boundary,
+                id: `sha256:${String(index + 3).repeat(64)}`,
+                regionId,
+            })),
+        });
+        const retainedBlock = retainedDocument.narrative!.blocks.narrative_block_1;
+        if (retainedBlock.kind !== 'speech') throw new Error('Expected a speech fixture block.');
+        retainedDocument.narrative!.blocks.narrative_block_1 = {
+            ...retainedBlock,
+            sourceWordIds: [wordId],
+        };
+        const getRecord = vi.fn(async () => body);
+        timelineEditorialRuntime.configure({
+            repository: { getRecord } as unknown as EditorialTranscriptRepository,
+        });
+        timelineEditorialRuntime.attachProject({
+            projectId: id,
+            persistenceGeneration: 7,
+            sessionId: 'retry-new-transcript-record',
+        });
+        useTimelineStore.getState().hydrateEditorDocument(durableDocument);
+        useProjectStore.setState({
+            activeProject: project(id),
+            persistenceGeneration: 7,
+            persistenceStatus: 'error',
+            persistenceError: new Error('offline'),
+            persistenceRetryKind: 'editor-document',
+        });
+        vi.spyOn(editorPersistenceRegistry, 'getFailedManifestV4')
+            .mockReturnValue(createEditorManifestV4(retainedDocument));
+        vi.spyOn(editorPersistenceRegistry, 'retry').mockResolvedValue(true);
+        vi.spyOn(storageService, 'loadEditorDocument').mockResolvedValue(retainedDocument as never);
+        vi.mocked(storageService.loadEditorRuntimeState).mockResolvedValue({
+            document: retainedDocument as never,
+            durableHistory: emptyRuntimeHistory(),
+            history: emptyRuntimeHistory(),
+            recovered: false,
+            recoveryEntryKeys: [],
+        });
+
+        await useProjectStore.getState().retryPersistence();
+
+        expect(getRecord).toHaveBeenCalledWith(
+            EDITORIAL_TEST_RECORD_ID,
+            expect.objectContaining({ referenced: true }),
+        );
+        expect(useTimelineStore.getState()).toMatchObject({
+            revision: 9,
+            narrative: retainedDocument.narrative,
+        });
+        expect(timelineEditorialRuntime.getResolvedBodies()[EDITORIAL_TEST_RECORD_ID]).toBe(body);
     });
 
     it('skips retained-document hydration when retry drains a newer successful mutation', async () => {

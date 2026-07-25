@@ -188,10 +188,14 @@ test.describe('linked and independent timeline audio', () => {
     const ruler = page.locator('#timeline-playhead-sync').locator('xpath=../following-sibling::div[1]');
     const [audioBox, rulerBox] = await Promise.all([importedAudio.boundingBox(), ruler.boundingBox()]);
     if (!audioBox || !rulerBox) throw new Error('The selected audio clip or ruler is not measurable.');
+    if (rulerBox.height <= 2) throw new Error('The timeline ruler has no clickable lower edge.');
     await ruler.click({
       position: {
         x: audioBox.x + audioBox.width / 2 - rulerBox.x,
-        y: Math.min(16, rulerBox.height / 2),
+        // The playhead handle intentionally owns the upper ruler area around its current frame.
+        // Use the lower edge so this remains a genuine ruler seek even when a short, fit-to-view
+        // audio fixture places its visual center inside the handle's horizontal hit box.
+        y: rulerBox.height - 2,
       },
     });
     await importedAudio.click();
@@ -232,8 +236,17 @@ test.describe('linked and independent timeline audio', () => {
     const restoredAudioWaveforms = page.getByTestId('timeline-audio-clip').locator('canvas');
     await expect(restoredAudioWaveforms).toHaveCount(2);
     for (let index = 0; index < 2; index += 1) {
-      await expect(restoredAudioWaveforms.nth(index))
-        .toHaveAttribute('data-waveform-state', 'ready', { timeout: 60_000 });
+      const waveform = restoredAudioWaveforms.nth(index);
+      const drawableWidth = await waveform.evaluate((canvas) => (
+        Math.round(canvas.getBoundingClientRect().width)
+      ));
+      // The split/delete sequence may leave a one-frame fixture clip below one CSS pixel at the
+      // timeline's minimum scale. Its File and graph are restored above, but the canvas correctly
+      // remains unrendered until zoom gives it drawable pixels.
+      if (drawableWidth > 0) {
+        await expect(waveform)
+          .toHaveAttribute('data-waveform-state', 'ready', { timeout: 60_000 });
+      }
     }
 
     const timelineDivider = page.getByTitle('Drag to resize the timeline');

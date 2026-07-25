@@ -264,7 +264,12 @@ export function TranscriptionModal({
 
     return (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[100] transition-opacity duration-300">
-            <div className="bg-gray-900 border border-gray-700/50 rounded-xl p-0 max-w-4xl w-full mx-4 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 ring-1 ring-white/10 max-h-[90vh] flex flex-col">
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="transcription-modal-title"
+                className="bg-gray-900 border border-gray-700/50 rounded-xl p-0 max-w-4xl w-full mx-4 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 ring-1 ring-white/10 max-h-[90vh] flex flex-col"
+            >
 
                 {/* Header */}
                 <div className="p-6 pb-2 relative overflow-hidden">
@@ -272,7 +277,10 @@ export function TranscriptionModal({
                         <Sparkles className="w-32 h-32 text-purple-500 transform rotate-12" />
                     </div>
 
-                    <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2 relative z-10">
+                    <h2
+                        id="transcription-modal-title"
+                        className="text-2xl font-bold text-white mb-2 flex items-center gap-2 relative z-10"
+                    >
                         <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
                             {paidModelsVisible ? 'Potencia tu contenido' : 'Configura tu transcriptor'}
                         </span>

@@ -310,7 +310,7 @@ describe('inspectMediaTracks', () => {
 
         expect(result).toEqual({
             duration: 2.5,
-            video: { width: 1920, height: 1080, fps: 29.97, codec: 'avc' },
+            video: { width: 1920, height: 1080, fps: 30_000 / 1_001, codec: 'avc' },
             audio: {
                 sampleRate: 48_000,
                 numberOfChannels: 2,
@@ -319,6 +319,28 @@ describe('inspectMediaTracks', () => {
             },
         });
         expect(disposeCount).toBe(1);
+    });
+
+    it('chooses the nearest integer rate instead of the adjacent broadcast rate', async () => {
+        const input = {
+            computeDuration: async () => 2,
+            getPrimaryVideoTrack: async () => ({
+                displayWidth: 320,
+                displayHeight: 180,
+                codec: 'avc',
+                computePacketStats: async () => ({
+                    packetCount: 60,
+                    averagePacketRate: 30,
+                    averageBitrate: 100_000,
+                }),
+            }),
+            getPrimaryAudioTrack: async () => null,
+            dispose() { },
+        } as unknown as MediaInspectionInput;
+
+        const result = await inspectMediaTracks({} as File, () => input);
+
+        expect(result.video?.fps).toBe(30);
     });
 
     it('keeps valid audio when optional bitrate statistics fail', async () => {

@@ -5,6 +5,18 @@ export interface ContainRectangle {
     height: number;
 }
 
+type VideoCompositorContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** Paints the deterministic visual value for project gaps and media tails. */
+export function clearVideoFrameToBlack(
+    context: VideoCompositorContext,
+    targetWidth: number,
+    targetHeight: number,
+): void {
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, Math.max(1, targetWidth), Math.max(1, targetHeight));
+}
+
 export function getContainRectangle(
     sourceWidth: number,
     sourceHeight: number,
@@ -34,7 +46,7 @@ export function getContainRectangle(
  * compositor decides letterboxing, preventing a sink-level contain followed by a second contain.
  */
 export function drawContainedVideoFrame(
-    context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    context: VideoCompositorContext,
     frame: CanvasImageSource,
     sourceWidth: number,
     sourceHeight: number,
@@ -49,4 +61,31 @@ export function drawContainedVideoFrame(
     );
     context.drawImage(frame, rectangle.x, rectangle.y, rectangle.width, rectangle.height);
     return rectangle;
+}
+
+/**
+ * Paints one complete output frame.
+ *
+ * Clearing happens before the optional draw so a null winning V4 placement, a shorter source, or
+ * an audio/subtitle tail can never expose pixels retained from the previous project frame.
+ */
+export function drawContainedVideoFrameOrBlack(
+    context: VideoCompositorContext,
+    frame: CanvasImageSource | null,
+    sourceWidth: number,
+    sourceHeight: number,
+    targetWidth: number,
+    targetHeight: number,
+): ContainRectangle | null {
+    clearVideoFrameToBlack(context, targetWidth, targetHeight);
+    return frame
+        ? drawContainedVideoFrame(
+            context,
+            frame,
+            sourceWidth,
+            sourceHeight,
+            targetWidth,
+            targetHeight,
+        )
+        : null;
 }

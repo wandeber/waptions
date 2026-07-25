@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AnimationStyle, Subtitle, type SubtitleTrack } from '@/types/timeline';
+import { AnimationStyle, Subtitle, type SubtitleTrack, type SubtitleTrackV4 } from '@/types/timeline';
 import { useProjectStore } from './project-store';
 import { useVideoStore } from './video-store';
 import {
@@ -14,11 +14,20 @@ import type {
     VideoClipAudioSettings,
     VideoClip,
     VideoClipV3,
+    EditorDocumentV4,
     VideoSourceAsset,
     VideoTrack,
 } from '@/types/video';
+import type {
+    ResolvedEditorialTranscriptMapV1,
+    TransientNarrativeSelectionV1,
+} from '@/types/editorial';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
-import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
+import {
+    validateEditorDocumentV4,
+    validateHydratedEditorDocumentV4,
+} from '@/lib/editor-document-v4';
+import { migrateLoadedEditorDocumentToV4 } from '@/lib/editor-document-v4-migration';
 import {
     createTranscriptionJobGuard,
     getEditorAudioGraphSignature,
@@ -42,29 +51,20 @@ import {
 import {
     cloneAudioTracks,
     findAudioClip,
+    getAudioClipOutputInterval,
     clampFrameFades,
     clampSampleFades,
 } from '@/lib/audio-timeline';
+import { frameToOutputSample } from '@/lib/audio-timebase';
 import {
     appendVideoClips as appendClipsToTimeline,
     buildClipPlacements,
     cleanSubtitleSelection,
-    deleteVideoClip as deleteClipFromTimeline,
     getTimelineDurations,
     isSafeVideoId,
-    reorderVideoClips as reorderClipsInTimeline,
-    trimVideoClip as trimClipInTimeline,
 } from '@/lib/video-timeline';
 import {
     applyVideoEditToSubtitleDomains,
-    clampVideoClipAudioFades,
-    deleteAudioClipCommand,
-    getCanonicalVideoClipDurationFrames,
-    haveEqualClipPlacements,
-    moveAudioClipCommand,
-    splitAudioClipCommand,
-    splitVideoClipCommand,
-    trimAudioClipCommand,
     updateSubtitleCommand,
 } from '@/lib/editor-commands';
 import type {
@@ -77,6 +77,8 @@ import {
     DEFAULT_VIDEO_CLIP_AUDIO,
     buildEditorDocumentFromState,
     buildEditorManifestFromState,
+    buildLegacyEditorDocumentFromState,
+    buildLegacyEditorManifestFromState,
     cloneContainerIds,
     cloneRenderProfile,
     cloneSubtitleTracks as cloneTracks,
@@ -106,14 +108,53 @@ import type { TimelineHistoryEntry, TimelineHistoryMetadata } from './timeline-s
 import {
     addVideoTrackMembership,
     canonicalizeVideoTrackClipOrder,
-    cloneVideoTracks,
     createDefaultVideoTracks,
-    deleteVideoClipMembership,
-    insertSplitVideoClipMembership,
     moveVideoClipToNewTrackMembership,
-    moveVideoClipToTrackMembership,
     removeEmptyVideoTrackMembership,
 } from '@/lib/video-tracks';
+import {
+    buildTimelineVideoTrackMirrors,
+    normalizeTimelineVideoTrackMirrors,
+    projectTransientSelectionMirrorsV4,
+    projectVideoClipsV4,
+    projectVideoTracksV4,
+} from './timeline-v4-compat';
+import { getVideoClipPlacementV4 } from '@/lib/video-placement-v4';
+import {
+    approximateSecondsAsRationalDuration,
+    timelineEditorialRuntime,
+} from './timeline-editorial-runtime';
+import {
+    planActivateNarrative,
+    planChangeGlobalEditingMode,
+    planReleaseNarrativeTracks,
+    preflightNarrativeActivationCandidates,
+} from '@/lib/narrative/commands';
+import { planEditorialLinksForTargetTransforms } from '@/lib/editorial-links';
+import {
+    EditorialTranscriptionRequestError,
+    type EditorialTranscriptionFailureCode,
+} from '@/lib/editorial-transcription/request';
+import {
+    createEditorialLinkCommandGuard,
+    createNarrativeCommandGuard,
+    createTimelineNarrativeIdFactory,
+    createTimelinePatchFromV4Document,
+    integrateNarrativeCommandLinks,
+    planTimelineEditorialLinkCommand,
+    planTimelineNarrativeCommand,
+    toTimelineCommandSuccess,
+} from './timeline-v4-command-adapter';
+import {
+    planTimelineOrdinaryV4Command,
+    planTimelineSubtitleReplacementV4Command,
+    planTimelineVideoReorderV4Command,
+    type TimelineOrdinaryPlanResult,
+} from './timeline-ordinary-v4-command-adapter';
+import type {
+    ActivateNarrativeRequest,
+    TimelineV4CommandResult,
+} from './timeline-v4-command-types';
 
 export type {
     AudioClipEditableSettings,
@@ -124,14 +165,15 @@ export type {
     TimelineVideoClip,
 } from './timeline-store-types';
 export type { DiarizedTranscriptionMetadata } from './timeline-store-types';
+export type { TimelineNarrativeActivationProgress } from './timeline-v4-command-types';
 
 let timelinePersistenceBinding: TimelinePersistenceBinding | null = null;
 
-export const createTimelinePersistencePayload = (
+export const createTimelinePersistencePayload = <Manifest extends import('@/types/video').EditorManifestV3 | import('@/types/video').EditorManifestV4 = import('@/types/video').EditorManifestV4>(
     timeline: TimelineStore,
     sourceAssets: readonly EditorPersistentAsset[] = [],
-    buildManifest: (state: TimelineStore) => ReturnType<typeof buildEditorManifestFromState>
-        = buildEditorManifestFromState,
+    buildManifest: (state: TimelineStore) => Manifest
+        = buildEditorManifestFromState as unknown as (state: TimelineStore) => Manifest,
 ) => {
     const manifest = buildManifest(timeline);
     return {
@@ -153,10 +195,36 @@ const persistEditorMutation = (
     sourceAssets: readonly EditorPersistentAsset[] = [],
     timeline = useTimelineStore.getState(),
 ) => {
-    // Mutations enqueue one canonical v3 document after Zustand has committed the complete state.
+    // Mutations enqueue one canonical V4 document after Zustand has committed the complete state.
     // The same manifest instance feeds dirty revision tracking and persistence, so a keystroke or
     // pointer commit never rebuilds and serializes the full editor graph merely to test dirtiness.
     const payload = createTimelinePersistencePayload(timeline, sourceAssets);
+    useProjectStore.getState().checkDirty(payload.manifest.revision);
+    if (timelinePersistenceBinding?.enqueueV4) {
+        timelinePersistenceBinding.enqueueV4(payload.manifest, payload.sourceAssets, payload.history);
+    } else if (timelinePersistenceBinding) {
+        // Temporary V3 embedders receive the explicit compatibility projection. Never disguise a
+        // descriptor-only V4 manifest as V3 merely to satisfy the legacy callback type.
+        const legacy = createTimelinePersistencePayload(
+            timeline,
+            sourceAssets,
+            buildLegacyEditorManifestFromState,
+        );
+        timelinePersistenceBinding.enqueue(legacy.manifest, legacy.sourceAssets, legacy.history);
+    }
+};
+
+const persistLegacyEditorMutation = (
+    sourceAssets: readonly EditorPersistentAsset[] = [],
+    timeline = useTimelineStore.getState(),
+) => {
+    // This path is intentionally limited to the V3 compatibility adapter. Building the canonical
+    // V4 payload first would reject a genuine V3 state before the legacy projection can be queued.
+    const payload = createTimelinePersistencePayload(
+        timeline,
+        sourceAssets,
+        buildLegacyEditorManifestFromState,
+    );
     useProjectStore.getState().checkDirty(payload.manifest.revision);
     timelinePersistenceBinding?.enqueue(payload.manifest, payload.sourceAssets, payload.history);
 };
@@ -367,6 +435,185 @@ const allocateUniqueEditorId = (reservedIds: ReadonlySet<string>): string => {
     throw new Error('Unable to allocate a unique subtitle track ID.');
 };
 
+const timelineCommandError = (
+    code: string,
+    message: string,
+    ids: string[],
+): TimelineV4CommandResult => ({
+    kind: 'error',
+    error: { code, message, ids: [...ids] },
+});
+
+/**
+ * Converts only the trusted request error class and its closed code vocabulary into UI copy.
+ * Unknown acquisition/parser/internal exceptions deliberately bypass this mapper so their
+ * potentially provider-controlled messages can never reach the command result.
+ */
+const editorialTranscriptionFailureMessage = (
+    code: EditorialTranscriptionFailureCode,
+    requestMode: ActivateNarrativeRequest['preferences']['requestMode'],
+): string => {
+    switch (code) {
+        case 'network-unreachable':
+            return requestMode === 'browser'
+                ? 'Could not reach the transcription endpoint from this browser. Check that the service is running and allows CORS requests from this Waptions origin.'
+                : 'Could not reach the transcription endpoint from the Waptions server. Check that the service is running and reachable from the server.';
+        case 'provider-unauthorized':
+            return 'The transcription provider rejected the API key. Enter a valid API key, or leave it empty if this endpoint does not require one.';
+        case 'provider-forbidden':
+            return 'The transcription provider denied access. Check the API key permissions and endpoint access.';
+        case 'provider-not-found':
+            return 'The transcription endpoint was not found. Check the configured endpoint path.';
+        case 'provider-rate-limited':
+            return 'The transcription provider is rate limiting requests. Wait and try again.';
+        case 'provider-rejected':
+            return 'The transcription provider rejected the request. Check that it supports the required OpenAI-compatible transcription request.';
+        case 'provider-unavailable':
+            return 'The transcription provider is unavailable. Check the service and try again.';
+        case 'provider-timeout':
+            return 'The transcription provider took too long to respond. Check that the service is still running, then try again.';
+    }
+};
+
+const timelineEditorialTranscriptionError = (
+    error: EditorialTranscriptionRequestError,
+    requestMode: ActivateNarrativeRequest['preferences']['requestMode'],
+): TimelineV4CommandResult => timelineCommandError(
+    `editorial-transcription-${error.code}`,
+    editorialTranscriptionFailureMessage(error.code, requestMode),
+    [],
+);
+
+const timelineCommandNoop = (): TimelineV4CommandResult => ({
+    kind: 'noop',
+    code: 'unchanged',
+    history: { createEntry: false, label: null, mergeKey: null },
+    persistence: { enqueue: false },
+});
+
+/** Optional caller guards fail before acquisition, graph planning, pins, or persistence. */
+const validateRequestedNarrativeGuard = (
+    document: EditorDocumentV4,
+    request: ActivateNarrativeRequest,
+): TimelineV4CommandResult | null => {
+    if (request.expectedDocumentRevision !== undefined
+        && request.expectedDocumentRevision !== document.revision) {
+        return timelineCommandError('stale-document', 'Document revision changed before activation.', []);
+    }
+    if (request.expectedMode !== undefined && request.expectedMode !== document.globalEditingMode) {
+        return timelineCommandError('stale-mode', 'Global editing mode changed before activation.', []);
+    }
+    if (request.expectedNarrativeRevision !== undefined
+        && request.expectedNarrativeRevision !== document.narrative?.revision) {
+        return timelineCommandError('stale-narrative', 'Narrative revision changed before activation.', []);
+    }
+    return null;
+};
+
+/**
+ * Compares only project-time coverage, not lane ownership or selection. A pure cross-track move
+ * therefore keeps the content-boundary token stable, while every split/delete/trim/translation
+ * still invalidates consumers that cache the terminal project interval.
+ */
+const timelineIntervalsEqual = (left: EditorDocumentV4, right: EditorDocumentV4): boolean => {
+    const project = (document: EditorDocumentV4) => {
+        const sources = {
+            videoSources: document.videoSources,
+            audioSources: document.audioSources,
+        };
+        return {
+            video: document.videoClips.map((clip) => {
+                const placement = getVideoClipPlacementV4(document, clip);
+                return [clip.id, placement.startFrame, placement.endFrame] as const;
+            }).sort(([leftId], [rightId]) => leftId.localeCompare(rightId)),
+            audio: document.audioTracks.flatMap((track) => track.clips.map((clip) => {
+                const located = findAudioClip(document.audioTracks, sources, clip.id);
+                if (!located) throw new Error(`Audio clip "${clip.id}" cannot be projected.`);
+                const interval = getAudioClipOutputInterval(clip, located.source, document.renderProfile);
+                return [clip.id, interval.startSample, interval.endSample] as const;
+            })).sort(([leftId], [rightId]) => leftId.localeCompare(rightId)),
+            subtitles: document.subtitleTracks.flatMap((track) => track.subtitles.map((subtitle) => [
+                subtitle.id,
+                subtitle.startTime,
+                subtitle.endTime,
+            ] as const)).sort(([leftId], [rightId]) => leftId.localeCompare(rightId)),
+        };
+    };
+    try {
+        return JSON.stringify(project(left)) === JSON.stringify(project(right));
+    } catch {
+        return false;
+    }
+};
+
+const projectSubtitleTracksV4 = (tracks: readonly SubtitleTrack[]): SubtitleTrackV4[] => (
+    tracks.map((track) => {
+        const candidate = track as SubtitleTrack & {
+            timingDomain?: 'video-ripple' | 'absolute';
+            unlinkedVideoEditResponse?: SubtitleTrackV4['unlinkedVideoEditResponse'];
+        };
+        const { timingDomain: _timingDomain, ...base } = candidate;
+        void _timingDomain;
+        return {
+            ...structuredClone(base),
+            unlinkedVideoEditResponse: candidate.unlinkedVideoEditResponse
+                ?? (getTrackTimingDomain(track) === 'absolute'
+                    ? 'stay-absolute'
+                    : 'follow-project-ripple'),
+        } as SubtitleTrackV4;
+    })
+);
+
+/**
+ * Builds a runtime-only narrative selection after proving every requested identity against the
+ * current owned block and hydrated immutable transcript body. The caller receives `null` instead
+ * of a partially repaired selection so stale Text events can never overwrite newer UI state.
+ */
+const createValidatedNarrativeSelection = (
+    state: TimelineStore,
+    blockId: string,
+    sourceWordIds: readonly string[],
+    boundary?: TransientNarrativeSelectionV1['boundary'],
+): { selection: TransientNarrativeSelectionV1; clipId: string } | null => {
+    if (!Array.isArray(sourceWordIds)) return null;
+    const document = buildEditorDocumentFromState(state);
+    const narrative = document.narrative;
+    const block = narrative?.blocks[blockId];
+    if (!block || !narrative.controlledTrackIds.includes(block.trackId)) return null;
+
+    const wordIndexById = new Map(block.sourceWordIds.map((wordId, index) => [wordId, index]));
+    let previousWordIndex = -1;
+    for (const wordId of sourceWordIds) {
+        const wordIndex = wordIndexById.get(wordId);
+        if (wordIndex === undefined || wordIndex <= previousWordIndex) return null;
+        previousWordIndex = wordIndex;
+    }
+
+    const requestedBoundary = boundary ?? null;
+    const bodies = timelineEditorialRuntime.getResolvedBodies();
+    if (requestedBoundary) {
+        const body = bodies[block.transcriptRecordId];
+        const selectedBoundary = body?.editBoundaries.find((value) => (
+            value.id === requestedBoundary.boundaryId
+        ));
+        if (!selectedBoundary
+            || selectedBoundary.sample < block.coreStartSample
+            || selectedBoundary.sample > block.coreEndSample) return null;
+    }
+    const selection: TransientNarrativeSelectionV1 = {
+        kind: 'narrative',
+        trackId: block.trackId,
+        blockId: block.id,
+        sourceWordIds: [...sourceWordIds],
+        boundary: requestedBoundary ? { ...requestedBoundary } : null,
+    };
+    const validation = validateHydratedEditorDocumentV4({
+        ...document,
+        transientSelection: selection,
+    }, bodies);
+    return validation.valid ? { selection, clipId: block.clipId } : null;
+};
+
 export const useTimelineStore = create<TimelineStore>((set, get) => {
     let subtitleDragPreview: SubtitleDragPreviewSession | null = null;
 
@@ -379,6 +626,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             history?: TimelineHistoryMetadata;
             sourceAssets?: readonly EditorPersistentAsset[];
             persist?: boolean;
+            persistLegacyV3?: boolean;
             recalculateContentBoundary?: boolean;
         } = {},
     ): boolean => {
@@ -386,12 +634,38 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const durableState = preview
             ? { ...state, tracks: preview.durableTracks }
             : state;
-        const durablePatch = preview && patch.tracks
+        const previewAdjustedPatch = preview && patch.tracks
             ? {
                 ...patch,
                 tracks: removeSubtitlePreviewFromTracks(patch.tracks, state.tracks, preview),
             }
             : patch;
+        const subtitleNormalizedPatch = previewAdjustedPatch.tracks
+            ? {
+                ...previewAdjustedPatch,
+                tracks: previewAdjustedPatch.tracks.map((track) => {
+                    const unlinkedVideoEditResponse = ('unlinkedVideoEditResponse' in track
+                        ? track.unlinkedVideoEditResponse
+                        : undefined)
+                        ?? (getTrackTimingDomain(track) === 'absolute'
+                            ? 'stay-absolute'
+                            : 'follow-project-ripple');
+                    return {
+                        ...track,
+                        unlinkedVideoEditResponse,
+                        timingDomain: unlinkedVideoEditResponse === 'stay-absolute'
+                            ? 'absolute' as const
+                            : 'video-ripple' as const,
+                    };
+                }),
+            }
+            : previewAdjustedPatch;
+        const durablePatch = subtitleNormalizedPatch.videoTracks
+            ? {
+                ...subtitleNormalizedPatch,
+                videoTracks: normalizeTimelineVideoTrackMirrors(subtitleNormalizedPatch.videoTracks),
+            }
+            : subtitleNormalizedPatch;
         const prepared = prepareDurableTimelineMutation(durableState, durablePatch, options);
         if (!prepared) return false;
 
@@ -407,7 +681,11 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         // Persistence reads the complete committed state. Keeping the enqueue after set prevents a
         // manifest from observing only one half of a linked video/audio or provenance mutation.
         if (options.persist !== false) {
-            persistEditorMutation(options.sourceAssets, committedDurableState);
+            if (options.persistLegacyV3) {
+                persistLegacyEditorMutation(options.sourceAssets, committedDurableState);
+            } else {
+                persistEditorMutation(options.sourceAssets, committedDurableState);
+            }
         }
         return true;
     };
@@ -452,6 +730,108 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         return durableState;
     };
 
+    /**
+     * Ordinary commands preflight against the durable subtitle graph hidden underneath a pointer
+     * preview. The visible state is still passed to the commit boundary so a successful unrelated
+     * command can rebase that overlay, while an error/no-op leaves every preview byte untouched.
+     */
+    const getOrdinaryPlanningState = (state: TimelineStore): TimelineStore => (
+        subtitleDragPreview
+            ? { ...state, tracks: subtitleDragPreview.durableTracks } as TimelineStore
+            : state
+    );
+
+    /**
+     * Publishes a complete detached V4 proposal through the one existing durable transaction.
+     * Planner-owned speculative revisions are intentionally ignored: prepareDurableTimelineMutation
+     * remains the sole authority for revision, audioGraphRevision, history, and persistence enqueue.
+     */
+    const commitV4CommandDocument = (input: {
+        state: TimelineStore;
+        document: EditorDocumentV4;
+        historyLabel: string;
+        mergeKey?: string;
+        audioGraph: boolean;
+        recalculateContentBoundary: boolean;
+    }): boolean => {
+        const patch = createTimelinePatchFromV4Document(
+            input.document,
+            timelineEditorialRuntime.getResolvedBodies(),
+        );
+        return commitDurableMutation(input.state, patch, {
+            impact: input.audioGraph ? 'invalidate-transcription' : 'preserve-transcription',
+            history: {
+                label: input.historyLabel,
+                ...(input.mergeKey ? { mergeKey: input.mergeKey } : {}),
+            },
+            recalculateContentBoundary: input.recalculateContentBoundary,
+        });
+    };
+
+    /** Integrates WP5 and publishes any ordinary V4 proposal through the sole durable boundary. */
+    const commitOrdinaryPlan = (input: {
+        state: TimelineStore;
+        before: EditorDocumentV4;
+        planned: TimelineOrdinaryPlanResult;
+        history?: TimelineHistoryMetadata;
+    }): TimelineV4CommandResult => {
+        if (input.planned.kind === 'error') return input.planned;
+        if (input.planned.kind === 'noop') return timelineCommandNoop();
+        let document = input.planned.document;
+        if (input.before.narrative) {
+            const integrated = planEditorialLinksForTargetTransforms({
+                before: input.before,
+                afterTargetCommand: document,
+                guard: createEditorialLinkCommandGuard(input.before),
+                targetTransforms: input.planned.targetTransforms,
+            });
+            if (integrated.kind === 'error') return integrated;
+            if (integrated.kind === 'success') document = integrated.document;
+        }
+        try {
+            const committed = commitV4CommandDocument({
+                state: input.state,
+                document,
+                historyLabel: input.history?.label ?? input.planned.label,
+                ...(input.history?.mergeKey ? { mergeKey: input.history.mergeKey } : {}),
+                audioGraph: input.planned.audioGraph,
+                recalculateContentBoundary: !timelineIntervalsEqual(input.before, document),
+            });
+            return committed
+                ? {
+                    kind: 'success',
+                    command: input.planned.command,
+                    playhead: input.planned.playhead,
+                    targetTransforms: structuredClone(input.planned.targetTransforms),
+                }
+                : timelineCommandNoop();
+        } catch {
+            return timelineCommandError('invalid-proposal', 'Ordinary command produced an invalid V4 graph.', []);
+        }
+    };
+
+    const planAndCommitSubtitleReplacement = (input: {
+        state: TimelineStore;
+        tracks: SubtitleTrack[];
+        activeTrackId: string | null;
+        transientSelection: TimelineStore['transientSelection'];
+        history: TimelineHistoryMetadata;
+    }): TimelineV4CommandResult => {
+        const before = buildEditorDocumentFromState(input.state);
+        const planned = planTimelineSubtitleReplacementV4Command(before, {
+            subtitleTracks: projectSubtitleTracksV4(input.tracks),
+            activeSubtitleTrackId: input.activeTrackId,
+            transientSelection: cloneTransientSelection(input.transientSelection),
+            label: input.history.label,
+        });
+        return commitOrdinaryPlan({
+            state: input.state,
+            before,
+            planned,
+            history: input.history,
+        });
+    };
+
     return ({
     zoomLevel: 1,
     scrollLeft: 0,
@@ -467,11 +847,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     renderProfile: createDefaultRenderProfile(),
     videoSources: [],
     videoClips: [],
-    videoTracks: createDefaultVideoTracks([]),
+    videoTracks: normalizeTimelineVideoTrackMirrors(createDefaultVideoTracks([])),
     audioSources: [],
     audioTracks: [],
     transientSelection: { kind: 'none' },
     transcriptionByTrackId: {},
+    globalEditingMode: 'ripple',
+    editorialTranscriptDescriptors: [],
+    narrative: null,
+    dependentLinks: [],
     lastSelectedId: null,
     snapEnabled: true,
     activeSnapTime: null,
@@ -514,15 +898,35 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             historyBytes: state.historyBytes,
         });
         const restored = restoreTimelineHistoryProjection(projection);
-        set({
-            ...finalizeDurablePatch(
-                state,
-                restored,
-                entry.audioGraphMutationImpact,
-                entry.recalculatesContentBoundary,
-            ),
-            ...boundedHistory,
-        });
+        const document = buildEditorDocumentFromState({ ...state, ...restored } as TimelineStore);
+        const runtimeContext = timelineEditorialRuntime.getProjectContext();
+        let bodies: ResolvedEditorialTranscriptMapV1;
+        try {
+            bodies = await timelineEditorialRuntime.resolveDocumentDetached(document);
+        } catch {
+            // Missing/corrupt CAS data leaves both the graph and history cursor untouched. The
+            // Project store surfaces load/recovery failures; history UI intentionally has no
+            // unhandled rejection because its actions are fire-and-forget.
+            return;
+        }
+        // CAS reads are asynchronous. A normal durable command may finish while the target
+        // projection is hydrating without changing the runtime resolver generation, so guard the
+        // publication against the exact store revision captured above as well.
+        if (get().revision !== state.revision) return;
+        if (!timelineEditorialRuntime.publishResolvedDocument(
+            document,
+            bodies,
+            runtimeContext,
+            () => set({
+                ...finalizeDurablePatch(
+                    state,
+                    restored,
+                    entry.audioGraphMutationImpact,
+                    entry.recalculatesContentBoundary,
+                ),
+                ...boundedHistory,
+            }),
+        )) return;
         persistEditorMutation();
     },
 
@@ -544,15 +948,29 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             historyBytes: state.historyBytes,
         });
         const restored = restoreTimelineHistoryProjection(projection);
-        set({
-            ...finalizeDurablePatch(
-                state,
-                restored,
-                entry.audioGraphMutationImpact,
-                entry.recalculatesContentBoundary,
-            ),
-            ...boundedHistory,
-        });
+        const document = buildEditorDocumentFromState({ ...state, ...restored } as TimelineStore);
+        const runtimeContext = timelineEditorialRuntime.getProjectContext();
+        let bodies: ResolvedEditorialTranscriptMapV1;
+        try {
+            bodies = await timelineEditorialRuntime.resolveDocumentDetached(document);
+        } catch {
+            return;
+        }
+        if (get().revision !== state.revision) return;
+        if (!timelineEditorialRuntime.publishResolvedDocument(
+            document,
+            bodies,
+            runtimeContext,
+            () => set({
+                ...finalizeDurablePatch(
+                    state,
+                    restored,
+                    entry.audioGraphMutationImpact,
+                    entry.recalculatesContentBoundary,
+                ),
+                ...boundedHistory,
+            }),
+        )) return;
         persistEditorMutation();
     },
 
@@ -604,15 +1022,30 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             historySequence: state.historySequence,
             historyBytes: state.historyBytes,
         });
-        set({
-            ...finalizeDurablePatch(
-                state,
-                restoreTimelineHistoryProjection(projection),
-                impact,
-                recalculatesContentBoundary,
-            ),
-            ...bounded,
-        });
+        const restored = restoreTimelineHistoryProjection(projection);
+        const document = buildEditorDocumentFromState({ ...state, ...restored } as TimelineStore);
+        const runtimeContext = timelineEditorialRuntime.getProjectContext();
+        let bodies: ResolvedEditorialTranscriptMapV1;
+        try {
+            bodies = await timelineEditorialRuntime.resolveDocumentDetached(document);
+        } catch {
+            return;
+        }
+        if (get().revision !== state.revision) return;
+        if (!timelineEditorialRuntime.publishResolvedDocument(
+            document,
+            bodies,
+            runtimeContext,
+            () => set({
+                ...finalizeDurablePatch(
+                    state,
+                    restored,
+                    impact,
+                    recalculatesContentBoundary,
+                ),
+                ...bounded,
+            }),
+        )) return;
         persistEditorMutation();
     },
 
@@ -657,6 +1090,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                 subtitles: [],
                 isVisible: true,
                 isLocked: false,
+                // New subtitle lanes default to absolute response. Following an uncontrolled
+                // video ripple is an explicit visible policy, never an implicit second mode.
+                unlinkedVideoEditResponse: 'stay-absolute',
             }],
             activeTrackId: id,
         }, {
@@ -721,12 +1157,17 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     addSubtitleToTrack: (trackId, subtitle) => {
         const newId = crypto.randomUUID();
         const state = get();
-        commitDurableMutation(state, {
-            tracks: state.tracks.map((track) => track.id === trackId
+        const tracks = state.tracks.map((track) => track.id === trackId
                 ? { ...track, subtitles: [...track.subtitles, { ...subtitle, id: newId }] }
-                : track),
-        }, { history: { label: 'Add subtitle' }, recalculateContentBoundary: true });
-        return newId;
+                : track);
+        const result = planAndCommitSubtitleReplacement({
+            state,
+            tracks,
+            activeTrackId: state.activeTrackId,
+            transientSelection: state.transientSelection,
+            history: { label: 'Add subtitle' },
+        });
+        return result.kind === 'success' ? newId : '';
     },
 
     updateSubtitleInTrack: (trackId, subtitleId, updates, options) => {
@@ -759,14 +1200,14 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             });
             return;
         }
-        commitDurableMutation(state, {
+        planAndCommitSubtitleReplacement({
+            state,
             tracks,
-        }, {
-            recordHistory: !options?.skipHistory,
+            activeTrackId: state.activeTrackId,
+            transientSelection: state.transientSelection,
             history: {
                 label: subtitleUpdatesTiming(updates) ? 'Edit subtitle timing' : 'Edit subtitle',
             },
-            recalculateContentBoundary: subtitleUpdatesTiming(updates),
         });
     },
 
@@ -798,13 +1239,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             }
             : track);
 
-        commitDurableMutation(state, {
+        planAndCommitSubtitleReplacement({
+            state,
             tracks: finalTracks,
             activeTrackId: targetTrackId,
             transientSelection: state.transientSelection.kind === 'subtitles'
                 ? transientSubtitleSelection(finalTracks, state.selectedSubtitleIds, targetTrackId)
                 : state.transientSelection,
-        }, { history: { label: 'Move subtitle to track' }, recalculateContentBoundary: true });
+            history: { label: 'Move subtitle to track' },
+        });
     },
 
     moveSubtitlesToTrack: (subtitleIds, deltaTrackIndex, options) => {
@@ -892,15 +1335,14 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             return;
         }
 
-        commitDurableMutation(state, {
+        planAndCommitSubtitleReplacement({
+            state,
             tracks: newTracks,
+            activeTrackId: state.activeTrackId,
             transientSelection: state.transientSelection.kind === 'subtitles'
                 ? transientSubtitleSelection(newTracks, state.selectedSubtitleIds, state.activeTrackId)
                 : state.transientSelection,
-        }, {
-            recordHistory: !options?.skipHistory,
             history: { label: 'Move subtitles between tracks' },
-            recalculateContentBoundary: true,
         });
     },
 
@@ -908,51 +1350,54 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         const state = get();
         const track = state.tracks.find(t => t.id === trackId);
         if (!track?.subtitles.some(s => s.id === subtitleId)) return;
-        const newTracks = state.tracks.map(t => t.id === trackId
+        const tracks = state.tracks.map(t => t.id === trackId
             ? { ...t, subtitles: t.subtitles.filter(s => s.id !== subtitleId) }
             : t);
         const selectedSubtitleIds = state.selectedSubtitleIds.filter(id => id !== subtitleId);
-        commitDurableMutation(state, {
-            tracks: newTracks,
-            selectedSubtitleIds,
+        planAndCommitSubtitleReplacement({
+            state,
+            tracks,
+            activeTrackId: state.activeTrackId,
             transientSelection: state.transientSelection.kind === 'subtitles'
-                ? transientSubtitleSelection(newTracks, selectedSubtitleIds, state.activeTrackId)
+                ? transientSubtitleSelection(tracks, selectedSubtitleIds, state.activeTrackId)
                 : state.transientSelection,
-        }, { history: { label: 'Delete subtitle' }, recalculateContentBoundary: true });
+            history: { label: 'Delete subtitle' },
+        });
     },
 
     hydrateEditorDocument: (document, historyState) => {
-        const validation = validateEditorDocumentV3(document);
+        const migrated = migrateLoadedEditorDocumentToV4(document);
+        const validation = validateEditorDocumentV4(migrated);
         if (!validation.valid) {
             throw new Error(validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
         }
-        const provenance = cloneTranscriptionByTrackId(document.transcriptionByTrackId);
-        const legacy = getLegacyTranscriptionForTrack(provenance, document.activeSubtitleTrackId);
-        const projectFps = frameRateToNumber(document.renderProfile.fps);
-        const tracks = cloneTracks(document.subtitleTracks);
+        const provenance = cloneTranscriptionByTrackId(migrated.transcriptionByTrackId);
+        const legacy = getLegacyTranscriptionForTrack(provenance, migrated.activeSubtitleTrackId);
+        const projectFps = frameRateToNumber(migrated.renderProfile.fps);
+        const tracks = cloneTracks(migrated.subtitleTracks);
         const contentBoundaryRevision = get().contentBoundaryRevision + 1;
+        const transientSelection = cloneTransientSelection(migrated.transientSelection);
+        const selectionMirrors = projectTransientSelectionMirrorsV4(
+            transientSelection,
+            migrated.narrative,
+        );
         set({
-            revision: document.revision,
-            audioGraphRevision: document.audioGraphRevision,
+            revision: migrated.revision,
+            audioGraphRevision: migrated.audioGraphRevision,
             contentBoundaryRevision,
             projectFps,
-            renderProfile: cloneRenderProfile(document.renderProfile),
+            renderProfile: cloneRenderProfile(migrated.renderProfile),
             tracks,
-            videoSources: document.videoSources.map((source) => ({ ...source })),
-            videoClips: cloneVideoClips(document.videoClips),
-            videoTracks: cloneVideoTracks(document.videoTracks),
-            audioSources: document.audioSources.map((source) => ({ ...source })),
-            audioTracks: cloneAudioTracks(document.audioTracks),
+            videoSources: migrated.videoSources.map((source) => ({ ...source })),
+            videoClips: cloneVideoClips(migrated.videoClips),
+            videoTracks: buildTimelineVideoTrackMirrors(migrated.videoTracks, migrated.videoClips),
+            audioSources: migrated.audioSources.map((source) => ({ ...source })),
+            audioTracks: cloneAudioTracks(migrated.audioTracks),
             // Durable manifests intentionally omit selection; direct runtime hydration accepts
             // a validated selection but keeps the legacy mirror fields synchronized with it.
-            transientSelection: cloneTransientSelection(document.transientSelection),
-            activeTrackId: document.activeSubtitleTrackId,
-            selectedSubtitleIds: document.transientSelection.kind === 'subtitles'
-                ? [...document.transientSelection.subtitleIds]
-                : [],
-            selectedClipId: document.transientSelection.kind === 'video-clip'
-                ? document.transientSelection.clipId
-                : null,
+            transientSelection,
+            activeTrackId: migrated.activeSubtitleTrackId,
+            ...selectionMirrors,
             transcriptionByTrackId: provenance,
             rawTranscription: cloneSubtitles(legacy?.raw ?? null),
             transcriptionGroups: cloneTranscriptionGroups(legacy?.groups ?? null),
@@ -961,12 +1406,14 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             redoStack: historyState?.redoStack ?? [],
             historySequence: historyState?.historySequence ?? 0,
             historyBytes: historyState?.historyBytes ?? 0,
-            lastSelectedId: null,
-            isVideoSelected: document.transientSelection.kind === 'video-clip',
+            globalEditingMode: migrated.globalEditingMode,
+            editorialTranscriptDescriptors: structuredClone(migrated.editorialTranscriptDescriptors),
+            narrative: structuredClone(migrated.narrative),
+            dependentLinks: structuredClone(migrated.dependentLinks),
             isDragging: false,
         });
         subtitleDragPreview = null;
-        useVideoStore.getState().syncSourceCatalog(document.videoSources);
+        useVideoStore.getState().syncSourceCatalog(migrated.videoSources);
     },
 
     resetEditorDocument: () => {
@@ -981,7 +1428,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             tracks: [],
             videoSources: [],
             videoClips: [],
-            videoTracks: createDefaultVideoTracks([]),
+            videoTracks: normalizeTimelineVideoTrackMirrors(createDefaultVideoTracks([])),
             audioSources: [],
             audioTracks: [],
             transientSelection: { kind: 'none' },
@@ -989,6 +1436,10 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             selectedSubtitleIds: [],
             selectedClipId: null,
             transcriptionByTrackId: {},
+            globalEditingMode: 'ripple',
+            editorialTranscriptDescriptors: [],
+            narrative: null,
+            dependentLinks: [],
             rawTranscription: null,
             transcriptionGroups: null,
             transcriptionContainerIds: null,
@@ -1142,6 +1593,13 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                     : track),
                 nextVideoClips,
             );
+            // Import helpers still return the transitional V3 clip shape. Complete explicit V4
+            // ownership/placement before the candidate enters state, history, or persistence.
+            nextVideoClips = projectVideoClipsV4(
+                nextVideoClips,
+                nextVideoTracks,
+                nextRenderProfile,
+            );
             nextTracks = transformed.tracks;
             nextSubtitleSelection = transformed.selectedSubtitleIds;
         }
@@ -1165,7 +1623,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         };
         if (!hasHistoricalMutation) return;
         const validationPatch = finalizeDurablePatch(state, patch, 'invalidate-transcription');
-        const validation = validateEditorDocumentV3(buildEditorDocumentFromState({ ...state, ...validationPatch } as TimelineStore));
+        const validation = validateEditorDocumentV4(buildEditorDocumentFromState({ ...state, ...validationPatch } as TimelineStore));
         if (!validation.valid) {
             throw new Error(validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
         }
@@ -1243,138 +1701,51 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     splitVideoClip: (clipId, projectTime, rightClipId) => {
         const state = get();
-        const splitVideoClips = splitVideoClipCommand(
-            state.videoClips,
-            clipId,
-            projectTime,
-            rightClipId,
-            state.renderProfile,
-        );
-        if (!splitVideoClips) return;
-        commitDurableMutation(state, {
-            videoClips: splitVideoClips,
-            videoTracks: insertSplitVideoClipMembership(
-                state.videoTracks,
-                splitVideoClips,
-                clipId,
-                rightClipId,
-            ),
-        }, {
-            history: { label: 'Split video clip' },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const splitFrame = secondsToFrames(projectTime, state.renderProfile.fps, 'nearest');
+        state.executeOrdinaryV4Command({
+            target: { kind: 'video-clip', clipId },
+            action: { kind: 'split', at: splitFrame, childId: rightClipId },
         });
     },
 
     trimVideoClip: (clipId, sourceStart, sourceEnd) => {
         const state = get();
-        if (!state.videoClips.some((clip) => clip.id === clipId)) return;
-        const edit = trimClipInTimeline(
-            state.videoClips,
-            clipId,
-            sourceStart,
-            sourceEnd,
-            state.videoSources,
-            state.projectFps,
-            getTimelineDurations(state.videoClips, state.tracks).contentDuration,
-        );
-        // Pointer deltas can be smaller than half a project frame. Once canonical snapping
-        // returns the existing placement sequence, this is not an edit and must not invalidate
-        // transcription provenance, consume history, increment revision, or enqueue persistence.
-        if (haveEqualClipPlacements(state.videoClips, edit.videoClips)) return;
-        const transformed = applyVideoEditToSubtitleDomains(
-            state.tracks,
-            state.selectedSubtitleIds,
-            edit,
-        );
-        const trimmedVideoClips = cloneVideoClips(edit.videoClips).map((clip): TimelineVideoClip => {
-            if (clip.id !== clipId || !clip.audio) return clip;
-            // Trimming preserves the complete mix envelope. Only its two fade lengths are
-            // proportionally reduced when their sum no longer fits the canonical new crop.
-            return {
-                ...clip,
-                audio: clampVideoClipAudioFades(
-                    clip.audio,
-                    getCanonicalVideoClipDurationFrames(clip, state.renderProfile),
-                ),
-            };
-        });
-        commitDurableMutation(state, {
-            videoClips: trimmedVideoClips,
-            tracks: transformed.tracks,
-            selectedSubtitleIds: transformed.selectedSubtitleIds,
-            transientSelection: state.transientSelection.kind === 'subtitles'
-                ? transientSubtitleSelection(transformed.tracks, transformed.selectedSubtitleIds, state.activeTrackId)
-                : state.transientSelection,
-        }, {
-            history: { label: 'Trim video clip', mergeKey: `video-trim:${clipId}` },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const document = buildEditorDocumentFromState(state);
+        const clip = document.videoClips.find((value) => value.id === clipId);
+        if (!clip) return;
+        const placement = getVideoClipPlacementV4(document, clip);
+        const frameRate = document.renderProfile.fps.numerator / document.renderProfile.fps.denominator;
+        const startDelta = Math.round((sourceStart - clip.sourceStart) * frameRate);
+        const endDelta = Math.round((sourceEnd - clip.sourceEnd) * frameRate);
+        state.executeOrdinaryV4Command({
+            target: { kind: 'video-clip', clipId },
+            action: {
+                kind: 'resize',
+                start: placement.startFrame + startDelta,
+                end: placement.endFrame + endDelta,
+            },
         });
     },
 
     deleteVideoClip: (clipId) => {
-        const state = get();
-        if (!state.videoClips.some((clip) => clip.id === clipId)) return;
-        const edit = deleteClipFromTimeline(
-            state.videoClips,
-            clipId,
-            getTimelineDurations(state.videoClips, state.tracks).contentDuration,
-            state.renderProfile.fps,
-        );
-        const transformed = applyVideoEditToSubtitleDomains(
-            state.tracks,
-            state.selectedSubtitleIds,
-            edit,
-        );
-        commitDurableMutation(state, {
-            videoClips: cloneVideoClips(edit.videoClips),
-            videoTracks: deleteVideoClipMembership(state.videoTracks, clipId),
-            tracks: transformed.tracks,
-            selectedSubtitleIds: transformed.selectedSubtitleIds,
-            selectedClipId: state.selectedClipId === clipId ? null : state.selectedClipId,
-            transientSelection: state.transientSelection.kind === 'video-clip'
-                && state.transientSelection.clipId === clipId
-                ? { kind: 'none' }
-                : state.transientSelection.kind === 'subtitles'
-                    ? transientSubtitleSelection(transformed.tracks, transformed.selectedSubtitleIds, state.activeTrackId)
-                    : state.transientSelection,
-        }, {
-            history: { label: 'Delete video clip' },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        get().executeOrdinaryV4Command({
+            target: { kind: 'video-clip', clipId },
+            action: { kind: 'delete' },
         });
     },
 
     reorderVideoClips: (orderedClipIds) => {
         const state = get();
-        if (
-            orderedClipIds.length === state.videoClips.length
-            && orderedClipIds.every((id, index) => state.videoClips[index]?.id === id)
-        ) return;
-        const edit = reorderClipsInTimeline(
-            state.videoClips,
-            orderedClipIds,
-            getTimelineDurations(state.videoClips, state.tracks).contentDuration,
-            state.renderProfile.fps,
-        );
-        const transformed = applyVideoEditToSubtitleDomains(
-            state.tracks,
-            state.selectedSubtitleIds,
-            edit,
-        );
-        commitDurableMutation(state, {
-            videoClips: cloneVideoClips(edit.videoClips),
-            videoTracks: canonicalizeVideoTrackClipOrder(state.videoTracks, edit.videoClips),
-            tracks: transformed.tracks,
-            selectedSubtitleIds: transformed.selectedSubtitleIds,
-            transientSelection: state.transientSelection.kind === 'subtitles'
-                ? transientSubtitleSelection(transformed.tracks, transformed.selectedSubtitleIds, state.activeTrackId)
-                : state.transientSelection,
-        }, {
-            history: { label: 'Reorder video clips' },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const planningState = getOrdinaryPlanningState(state);
+        const before = buildEditorDocumentFromState(planningState);
+        commitOrdinaryPlan({
+            state,
+            before,
+            planned: planTimelineVideoReorderV4Command(
+                before,
+                orderedClipIds,
+                planningState.selectedClipId,
+            ),
         });
     },
 
@@ -1403,49 +1774,159 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         });
     },
 
+    moveVideoClip: (clipId, targetTrackId, targetStartFrame) => (
+        get().executeOrdinaryV4Command({
+            target: { kind: 'video-clip', clipId },
+            action: {
+                kind: 'move',
+                targetTrackId,
+                targetStart: targetStartFrame,
+            },
+        })
+    ),
+
     moveVideoClipToTrack: (clipId, targetTrackId) => {
         const state = get();
-        const result = moveVideoClipToTrackMembership(
-            state.videoTracks,
-            state.videoClips,
+        const document = buildEditorDocumentFromState(getOrdinaryPlanningState(state));
+        const clip = document.videoClips.find((value) => value.id === clipId);
+        if (!clip) return;
+        state.moveVideoClip(clipId, targetTrackId, clip.timelineStartFrame);
+    },
+
+    moveVideoClipToNewTrackAtFrame: (
+        clipId,
+        insertionIndex,
+        targetStartFrame,
+        requestedId,
+        name,
+    ) => {
+        const state = get();
+        const planningState = getOrdinaryPlanningState(state);
+        const id = requestedId ?? crypto.randomUUID();
+        const result = moveVideoClipToNewTrackMembership(
+            planningState.videoTracks,
+            planningState.videoClips,
             clipId,
-            targetTrackId,
+            { id, name: name?.trim() || `Video ${planningState.videoTracks.length + 1}` },
+            insertionIndex,
         );
-        if (!result.changed) return;
-        commitDurableMutation(state, { videoTracks: result.videoTracks }, {
-            history: { label: 'Move video clip to track' },
+        if (!result.changed) {
+            return timelineCommandError(
+                'invalid-destination',
+                'Video destination lane could not be created.',
+                [clipId, id],
+            );
+        }
+        const before = buildEditorDocumentFromState(planningState);
+        const clip = before.videoClips.find((value) => value.id === clipId);
+        if (!clip) {
+            return timelineCommandError('missing-target', 'Video clip does not exist.', [clipId]);
+        }
+        const planningTracks = projectVideoTracksV4(result.videoTracks);
+        const sourceTrack = before.videoTracks.find((track) => track.id === clip.trackId);
+        if (sourceTrack && !planningTracks.some((track) => track.id === sourceTrack.id)) {
+            planningTracks.push(sourceTrack);
+        }
+        const planned = planTimelineOrdinaryV4Command({
+            ...before,
+            videoTracks: planningTracks,
+        }, {
+            target: { kind: 'video-clip', clipId },
+            action: {
+                kind: 'move',
+                targetTrackId: id,
+                targetStart: targetStartFrame,
+            },
         });
+        if (planned.kind === 'success') {
+            const occupiedTrackIds = new Set(planned.document.videoClips.map((value) => value.trackId));
+            planned.document.videoTracks = planned.document.videoTracks.filter((track) => (
+                occupiedTrackIds.has(track.id)
+            ));
+        }
+        return commitOrdinaryPlan({ state, before, planned });
     },
 
     moveVideoClipToNewTrack: (clipId, insertionIndex, requestedId, name) => {
         const state = get();
+        const document = buildEditorDocumentFromState(getOrdinaryPlanningState(state));
+        const clip = document.videoClips.find((value) => value.id === clipId);
+        if (!clip) return '';
         const id = requestedId ?? crypto.randomUUID();
-        const result = moveVideoClipToNewTrackMembership(
-            state.videoTracks,
-            state.videoClips,
+        const result = state.moveVideoClipToNewTrackAtFrame(
             clipId,
-            { id, name: name?.trim() || `Video ${state.videoTracks.length + 1}` },
             insertionIndex,
+            clip.timelineStartFrame,
+            id,
+            name,
         );
-        if (!result.changed) return '';
-        commitDurableMutation(state, { videoTracks: result.videoTracks }, {
-            history: { label: 'Move video clip to new track' },
-        });
-        return id;
+        return result.kind === 'success' ? id : '';
     },
 
-    selectClip: (clipId) => set((state) => {
-        const selectedClipId = clipId && state.videoClips.some((clip) => clip.id === clipId) ? clipId : null;
-        return {
-            selectedClipId,
-            selectedSubtitleIds: [],
-            lastSelectedId: null,
-            isVideoSelected: selectedClipId !== null,
-            transientSelection: selectedClipId
-                ? { kind: 'video-clip', clipId: selectedClipId }
-                : { kind: 'none' },
-        };
-    }),
+    selectClip: (clipId) => {
+        const state = get();
+        const selectedClip = clipId
+            ? state.videoClips.find((clip) => clip.id === clipId)
+            : null;
+        if (!selectedClip) {
+            set({
+                selectedClipId: null,
+                selectedSubtitleIds: [],
+                lastSelectedId: null,
+                isVideoSelected: false,
+                transientSelection: { kind: 'none' },
+            });
+            return;
+        }
+
+        const ownedBlock = Object.values(state.narrative?.blocks ?? {}).find((block) => (
+            block.clipId === selectedClip.id
+            && state.narrative?.controlledTrackIds.includes(block.trackId)
+        ));
+        if (ownedBlock) {
+            const current = state.transientSelection.kind === 'narrative'
+                && state.transientSelection.blockId === ownedBlock.id
+                ? state.transientSelection
+                : null;
+            const retainedWordIds = current
+                ? ownedBlock.sourceWordIds.filter((wordId) => current.sourceWordIds.includes(wordId))
+                : [];
+            let validated = createValidatedNarrativeSelection(
+                state,
+                ownedBlock.id,
+                retainedWordIds,
+                current?.boundary,
+            );
+            // A body refresh can retire a boundary while the owned occurrence and selected words
+            // remain valid. Timeline selection keeps that valid range and drops only the stale handle.
+            if (!validated && current?.boundary) {
+                validated = createValidatedNarrativeSelection(state, ownedBlock.id, retainedWordIds);
+            }
+            if (!validated) return;
+            set({
+                transientSelection: validated.selection,
+                ...projectTransientSelectionMirrorsV4(validated.selection, state.narrative),
+            });
+            return;
+        }
+
+        const transientSelection = { kind: 'video-clip' as const, clipId: selectedClip.id };
+        set({
+            transientSelection,
+            ...projectTransientSelectionMirrorsV4(transientSelection, state.narrative),
+        });
+    },
+
+    selectNarrativeRange: (blockId, sourceWordIds, boundary) => {
+        const state = get();
+        const validated = createValidatedNarrativeSelection(state, blockId, sourceWordIds, boundary);
+        if (!validated) return false;
+        set({
+            transientSelection: validated.selection,
+            ...projectTransientSelectionMirrorsV4(validated.selection, state.narrative),
+        });
+        return true;
+    },
 
     selectAudioClip: (trackId, clipId) => set((state) => {
         const track = state.audioTracks.find((item) => item.id === trackId);
@@ -1461,58 +1942,57 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     moveAudioClip: (clipId, targetTrackId, timelineStartFrame) => {
         const state = get();
-        const audioTracks = moveAudioClipCommand(state, clipId, targetTrackId, timelineStartFrame);
-        if (!audioTracks) return;
-        commitDurableMutation(state, {
-            audioTracks,
-            transientSelection: { kind: 'audio-clip', trackId: targetTrackId, clipId },
-        }, {
-            history: { label: 'Move audio clip', mergeKey: `audio-move:${clipId}` },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const located = findAudioClip(state.audioTracks, getAudioTimelineSources(state), clipId);
+        if (!located) return;
+        state.executeOrdinaryV4Command({
+            target: { kind: 'audio-clip', trackId: located.track.id, clipId },
+            action: {
+                kind: 'move',
+                targetTrackId,
+                targetStart: frameToOutputSample(Math.round(timelineStartFrame), state.renderProfile.fps),
+            },
         });
     },
 
     trimAudioClip: (clipId, side, timelineFrame) => {
         const state = get();
-        const audioTracks = trimAudioClipCommand(state, clipId, side, timelineFrame);
-        if (!audioTracks) return;
-        commitDurableMutation(state, { audioTracks }, {
-            history: { label: 'Trim audio clip', mergeKey: `audio-trim:${clipId}:${side}` },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const sources = getAudioTimelineSources(state);
+        const located = findAudioClip(state.audioTracks, sources, clipId);
+        if (!located) return;
+        const interval = getAudioClipOutputInterval(located.clip, located.source, state.renderProfile);
+        const boundary = frameToOutputSample(Math.round(timelineFrame), state.renderProfile.fps);
+        state.executeOrdinaryV4Command({
+            target: { kind: 'audio-clip', trackId: located.track.id, clipId },
+            action: {
+                kind: 'resize',
+                start: side === 'left' ? boundary : interval.startSample,
+                end: side === 'right' ? boundary : interval.endSample,
+            },
         });
     },
 
     splitAudioClip: (clipId, timelineFrame, rightClipId) => {
         if (!isSafeVideoId(rightClipId)) return;
         const state = get();
-        const result = splitAudioClipCommand(state, clipId, timelineFrame, rightClipId);
-        if (!result) return;
-        commitDurableMutation(state, {
-            audioTracks: result.audioTracks,
-            transientSelection: { kind: 'audio-clip', trackId: result.trackId, clipId: rightClipId },
-        }, {
-            history: { label: 'Split audio clip' },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const located = findAudioClip(state.audioTracks, getAudioTimelineSources(state), clipId);
+        if (!located) return;
+        state.executeOrdinaryV4Command({
+            target: { kind: 'audio-clip', trackId: located.track.id, clipId },
+            action: {
+                kind: 'split',
+                at: frameToOutputSample(Math.round(timelineFrame), state.renderProfile.fps),
+                childId: rightClipId,
+            },
         });
     },
 
     deleteAudioClip: (clipId) => {
         const state = get();
-        const audioTracks = deleteAudioClipCommand(state, clipId);
-        if (!audioTracks) return;
-        commitDurableMutation(state, {
-            audioTracks,
-            transientSelection: state.transientSelection.kind === 'audio-clip'
-                && state.transientSelection.clipId === clipId
-                ? { kind: 'none' }
-                : state.transientSelection,
-        }, {
-            history: { label: 'Delete audio clip' },
-            impact: 'invalidate-transcription',
-            recalculateContentBoundary: true,
+        const located = findAudioClip(state.audioTracks, getAudioTimelineSources(state), clipId);
+        if (!located) return;
+        state.executeOrdinaryV4Command({
+            target: { kind: 'audio-clip', trackId: located.track.id, clipId },
+            action: { kind: 'delete' },
         });
     },
 
@@ -1685,11 +2165,35 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     setSubtitleTrackTimingDomain: (trackId, timingDomain) => {
         const state = get();
+        // V4 exposes `unlinkedVideoEditResponse` directly. Keeping this adapter behind the actual
+        // V3 discriminator prevents an old hidden timing-domain control from overriding that policy.
+        if (state.globalEditingMode !== undefined) return;
         const track = state.tracks.find((item) => item.id === trackId);
         if (!track || getTrackTimingDomain(track) === timingDomain) return;
         commitDurableMutation(state, {
             tracks: state.tracks.map((item) => item.id === trackId ? { ...item, timingDomain } : item),
-        }, { history: { label: 'Change subtitle timing domain' } });
+        }, {
+            history: { label: 'Change subtitle timing domain' },
+            persistLegacyV3: true,
+        });
+    },
+
+    setSubtitleTrackUnlinkedVideoEditResponse: (trackId, policy) => {
+        const state = get();
+        if (state.globalEditingMode === undefined
+            || (policy !== 'follow-project-ripple' && policy !== 'stay-absolute')) return;
+        const track = state.tracks.find((item) => item.id === trackId);
+        if (!track || track.isLocked || track.unlinkedVideoEditResponse === policy) return;
+        commitDurableMutation(state, {
+            tracks: state.tracks.map((item) => item.id === trackId
+                ? {
+                    ...item,
+                    unlinkedVideoEditResponse: policy,
+                    // The legacy mirror remains derived until WP8 removes its final readers.
+                    timingDomain: policy === 'stay-absolute' ? 'absolute' : 'video-ripple',
+                }
+                : item),
+        }, { history: { label: 'Change subtitle video edit response' } });
     },
 
     setTrackTranscriptionState: (trackId, provenance) => {
@@ -1786,7 +2290,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             return false;
         }
 
-        const currentDocument = buildEditorDocumentFromState(state);
+        const currentDocument = buildLegacyEditorDocumentFromState(state);
         if (!isDiarizationJobGuardCurrent(guard, currentDocument)) return false;
 
         const targetTrack = state.tracks.find((track) => track.id === targetTrackId);
@@ -1922,8 +2426,310 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         return provenance ? cloneTranscriptionByTrackId({ value: provenance }).value : null;
     },
 
-    buildEditorDocument: () => buildEditorDocumentFromState(get()),
-    buildEditorManifest: () => buildEditorManifestFromState(get()),
+    buildEditorDocument: () => buildLegacyEditorDocumentFromState(get()),
+    buildEditorManifest: () => buildLegacyEditorManifestFromState(get()),
+    buildEditorDocumentV4: () => buildEditorDocumentFromState(get()),
+    buildEditorManifestV4: () => buildEditorManifestFromState(get()),
+
+    activateNarrative: async (request) => {
+        const state = discardActiveDragPreview();
+        const before = buildEditorDocumentFromState(state);
+        const explicitGuardError = validateRequestedNarrativeGuard(before, request);
+        if (explicitGuardError) return explicitGuardError;
+        const preflight = preflightNarrativeActivationCandidates({
+            document: before,
+            selectedTrackIds: request.selectedTrackIds,
+        });
+        if (preflight.kind === 'error') return preflight;
+        if (preflight.kind === 'noop') {
+            return {
+                kind: 'noop',
+                code: preflight.code,
+                history: { createEntry: false, label: null, mergeKey: null },
+                persistence: { enqueue: false },
+                activationReport: {
+                    acceptedClipIds: [...preflight.acceptedClipIds],
+                    exclusions: structuredClone(preflight.exclusions),
+                },
+            };
+        }
+        const context = timelineEditorialRuntime.getProjectContext();
+        if (!context) {
+            return timelineCommandError(
+                'project-context-unavailable',
+                'Editorial acquisition requires an attached project session.',
+                [],
+            );
+        }
+        const accepted = new Set(preflight.acceptedClipIds);
+        const sourceIds = Array.from(new Set(before.videoClips
+            .filter((clip) => accepted.has(clip.id))
+            .map((clip) => clip.sourceId)));
+        const sources = sourceIds.map((sourceId) => {
+            const source = before.videoSources.find((value) => value.id === sourceId);
+            if (!source) throw new Error(`Activation source "${sourceId}" is unavailable.`);
+            return {
+                sourceId: source.id,
+                sourceFingerprint: source.fingerprint,
+                file: source.file,
+                declaredDuration: request.declaredDurationBySourceId?.[source.id]
+                    ?? approximateSecondsAsRationalDuration(source.duration),
+            };
+        });
+        let acquired;
+        try {
+            acquired = await timelineEditorialRuntime.getCoordinator().acquireSources({
+                sources,
+                preferences: request.preferences,
+                apiKey: request.apiKey,
+                guard: {
+                    projectId: context.projectId,
+                    persistenceGeneration: context.persistenceGeneration,
+                    documentRevision: before.revision,
+                    sessionId: context.sessionId,
+                },
+                signal: request.signal,
+                regenerate: request.regenerate,
+                onProgress: request.onProgress,
+                isGuardCurrent: (guard) => {
+                    const currentContext = timelineEditorialRuntime.getProjectContext();
+                    const current = get();
+                    return currentContext?.projectId === guard.projectId
+                        && currentContext.persistenceGeneration === guard.persistenceGeneration
+                        && currentContext.sessionId === guard.sessionId
+                        && current.revision === guard.documentRevision
+                        && current.videoSources.some((source) => (
+                            source.fingerprint === guard.sourceFingerprint
+                            && sourceIds.includes(source.id)
+                        ));
+                },
+            });
+        } catch (error) {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            const stale = error instanceof DOMException && error.name === 'AbortError';
+            if (stale) {
+                return timelineCommandError(
+                    'stale-document',
+                    'Editorial acquisition became stale before publication.',
+                    sourceIds,
+                );
+            }
+            if (error instanceof EditorialTranscriptionRequestError) {
+                return timelineEditorialTranscriptionError(error, request.preferences.requestMode);
+            }
+            return timelineCommandError(
+                'transcript-acquisition-failed',
+                'Editorial transcript acquisition failed before publication.',
+                sourceIds,
+            );
+        }
+        if (get().revision !== before.revision) {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            return timelineCommandError('stale-document', 'Document revision changed during acquisition.', []);
+        }
+        const descriptors = [...before.editorialTranscriptDescriptors];
+        acquired.forEach((descriptor) => {
+            if (!descriptors.some((value) => (
+                value.recordId === descriptor.recordId && value.sourceId === descriptor.sourceId
+            ))) descriptors.push(descriptor);
+        });
+        const acquisitionDocument: EditorDocumentV4 = {
+            ...before,
+            editorialTranscriptDescriptors: descriptors,
+        };
+        let bodies;
+        try {
+            bodies = await timelineEditorialRuntime.hydrateDocument(acquisitionDocument, context);
+        } catch {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            return timelineCommandError(
+                'missing-transcript',
+                'An acquired editorial transcript could not be verified from content-addressed storage.',
+                acquired.map((descriptor) => descriptor.recordId),
+            );
+        }
+        if (get().revision !== before.revision) {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            return timelineCommandError('stale-document', 'Document revision changed during transcript hydration.', []);
+        }
+        const recordIdBySourceId = Object.fromEntries(acquired.map((descriptor) => [
+            descriptor.sourceId,
+            descriptor.recordId,
+        ]));
+        request.onProgress?.({
+            stage: 'building-text-edit',
+            sourceCount: sources.length,
+        });
+        const planned = planActivateNarrative({
+            document: acquisitionDocument,
+            guard: createNarrativeCommandGuard(acquisitionDocument),
+            selectedTrackIds: request.selectedTrackIds,
+            recordIdBySourceId,
+            bodies,
+            idFactory: createTimelineNarrativeIdFactory(),
+            nowIso: new Date().toISOString(),
+            splitOnSpeakerChange: request.splitOnSpeakerChange,
+        });
+        if (planned.kind !== 'success') {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            return planned;
+        }
+        const integrated = integrateNarrativeCommandLinks({
+            before: acquisitionDocument,
+            narrativeResult: planned,
+            discoverNewOverlaps: true,
+        });
+        if (integrated.kind !== 'success') {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            return integrated;
+        }
+        try {
+            const committed = commitV4CommandDocument({
+                state,
+                document: integrated.document,
+                historyLabel: planned.history.label ?? 'Enable text editing',
+                ...(planned.history.mergeKey ? { mergeKey: planned.history.mergeKey } : {}),
+                audioGraph: planned.impact.audioGraph,
+                recalculateContentBoundary: true,
+            });
+            if (!committed) {
+                await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+                return timelineCommandNoop();
+            }
+        } catch {
+            await timelineEditorialRuntime.releaseCurrentSessionPins().catch(() => undefined);
+            return timelineCommandError('invalid-proposal', 'Activation produced an invalid V4 graph.', []);
+        }
+        return toTimelineCommandSuccess(planned);
+    },
+
+    releaseNarrativeTracks: async (trackIds) => {
+        const state = discardActiveDragPreview();
+        const before = buildEditorDocumentFromState(state);
+        const planned = planReleaseNarrativeTracks({
+            document: before,
+            guard: createNarrativeCommandGuard(before),
+            trackIds,
+            nowIso: new Date().toISOString(),
+        });
+        if (planned.kind !== 'success') return planned;
+        const integrated = integrateNarrativeCommandLinks({
+            before,
+            narrativeResult: planned,
+            discoverNewOverlaps: false,
+        });
+        if (integrated.kind !== 'success') return integrated;
+        try {
+            const committed = commitV4CommandDocument({
+                state,
+                document: integrated.document,
+                historyLabel: planned.history.label ?? 'Release controlled tracks',
+                audioGraph: planned.impact.audioGraph,
+                recalculateContentBoundary: planned.impact.audioGraph,
+            });
+            return committed ? toTimelineCommandSuccess(planned) : timelineCommandNoop();
+        } catch {
+            return timelineCommandError('invalid-proposal', 'Release produced an invalid V4 graph.', trackIds);
+        }
+    },
+
+    executeNarrativeCommand: async (request) => {
+        const state = discardActiveDragPreview();
+        const before = buildEditorDocumentFromState(state);
+        if (request.type === 'refine-boundary'
+            && request.origin === 'quiet-assisted'
+            && !timelineEditorialRuntime.getQuietWindowDecoder()) {
+            return timelineCommandError(
+                'quiet-refinement-unavailable',
+                'Quiet-assisted refinement requires a real bounded PCM decoder.',
+                [request.blockId],
+            );
+        }
+        const planned = planTimelineNarrativeCommand({
+            document: before,
+            bodies: timelineEditorialRuntime.getResolvedBodies(),
+            request,
+            nowIso: new Date().toISOString(),
+        });
+        if (planned.kind !== 'success') return planned;
+        const integrated = integrateNarrativeCommandLinks({
+            before,
+            narrativeResult: planned,
+            discoverNewOverlaps: false,
+        });
+        if (integrated.kind !== 'success') return integrated;
+        try {
+            const committed = commitV4CommandDocument({
+                state,
+                document: integrated.document,
+                historyLabel: planned.history.label ?? planned.command,
+                ...(planned.history.mergeKey ? { mergeKey: planned.history.mergeKey } : {}),
+                audioGraph: planned.impact.audioGraph,
+                recalculateContentBoundary: planned.impact.audioGraph,
+            });
+            return committed ? toTimelineCommandSuccess(planned) : timelineCommandNoop();
+        } catch {
+            return timelineCommandError('invalid-proposal', 'Narrative command produced an invalid V4 graph.', []);
+        }
+    },
+
+    executeEditorialLinkCommand: (request) => {
+        const state = discardActiveDragPreview();
+        const before = buildEditorDocumentFromState(state);
+        const planned = planTimelineEditorialLinkCommand({ document: before, request });
+        if (planned.kind !== 'success') return planned;
+        try {
+            const committed = commitV4CommandDocument({
+                state,
+                document: planned.document,
+                historyLabel: planned.history.label ?? planned.command,
+                audioGraph: planned.impact.audioGraph,
+                recalculateContentBoundary: planned.targetMutations.length > 0,
+            });
+            return committed
+                ? {
+                    kind: 'success',
+                    command: planned.command,
+                    playhead: { kind: 'keep', reason: 'non-structural' },
+                }
+                : timelineCommandNoop();
+        } catch {
+            return timelineCommandError('invalid-proposal', 'Link command produced an invalid V4 graph.', []);
+        }
+    },
+
+    executeOrdinaryV4Command: (request) => {
+        const state = get();
+        const before = buildEditorDocumentFromState(getOrdinaryPlanningState(state));
+        return commitOrdinaryPlan({
+            state,
+            before,
+            planned: planTimelineOrdinaryV4Command(before, request),
+        });
+    },
+
+    setGlobalEditingMode: (mode) => {
+        const state = discardActiveDragPreview();
+        const before = buildEditorDocumentFromState(state);
+        const planned = planChangeGlobalEditingMode({
+            document: before,
+            expectedDocumentRevision: before.revision,
+            mode,
+        });
+        if (planned.kind !== 'success') return planned;
+        try {
+            const committed = commitV4CommandDocument({
+                state,
+                document: planned.document,
+                historyLabel: planned.history.label ?? 'Change editing mode',
+                audioGraph: false,
+                recalculateContentBoundary: false,
+            });
+            return committed ? toTimelineCommandSuccess(planned) : timelineCommandNoop();
+        } catch {
+            return timelineCommandError('invalid-proposal', 'Editing mode command produced an invalid V4 graph.', []);
+        }
+    },
 
     splitSelectedMediaAtFrame: (timelineFrame, requestedRightClipId) => {
         const state = get();
@@ -1963,22 +2769,37 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
     setTracks: (tracks, options) => {
         const state = get();
-        const isValidActive = tracks.some(t => t.id === state.activeTrackId);
-        const activeTrackId = isValidActive ? state.activeTrackId : (tracks.length > 0 ? tracks[0].id : null);
-        const trackIds = new Set(tracks.map((track) => track.id));
+        const normalizedTracks = cloneTracks(tracks);
+        const isValidActive = normalizedTracks.some(t => t.id === state.activeTrackId);
+        const activeTrackId = isValidActive ? state.activeTrackId : (normalizedTracks.length > 0 ? normalizedTracks[0].id : null);
+        const trackIds = new Set(normalizedTracks.map((track) => track.id));
         const transcriptionByTrackId = Object.fromEntries(
             Object.entries(state.transcriptionByTrackId).filter(([trackId]) => trackIds.has(trackId)),
         );
         const legacy = getLegacyTranscriptionForTrack(transcriptionByTrackId, activeTrackId);
-        const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, tracks);
+        const selectedSubtitleIds = cleanSubtitleSelection(state.selectedSubtitleIds, normalizedTracks);
+        const transientSelection = state.transientSelection.kind === 'subtitles'
+            ? transientSubtitleSelection(normalizedTracks, selectedSubtitleIds, activeTrackId)
+            : state.transientSelection;
+
+        const hasSameTrackCatalog = normalizedTracks.length === state.tracks.length
+            && normalizedTracks.every((track, index) => track.id === state.tracks[index]?.id);
+        if (!options?.resetHistory && !options?.skipHistory && !options?.skipSave && hasSameTrackCatalog) {
+            planAndCommitSubtitleReplacement({
+                state,
+                tracks: normalizedTracks,
+                activeTrackId,
+                transientSelection,
+                history: { label: 'Replace subtitle tracks' },
+            });
+            return;
+        }
 
         const patch: Partial<TimelineStore> = {
-            tracks,
+            tracks: normalizedTracks,
             activeTrackId,
             selectedSubtitleIds,
-            transientSelection: state.transientSelection.kind === 'subtitles'
-                ? transientSubtitleSelection(tracks, selectedSubtitleIds, activeTrackId)
-                : state.transientSelection,
+            transientSelection,
             selectedClipId: state.selectedClipId
                 && state.videoClips.some((clip) => clip.id === state.selectedClipId)
                 ? state.selectedClipId
@@ -2067,13 +2888,20 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
 
         const durableState = { ...current, tracks: preview.durableTracks } as TimelineStore;
         const finalTracks = applySubtitlePreviewToDurableTracks(preview);
-        const prepared = prepareDurableTimelineMutation(durableState, {
+        const result = planAndCommitSubtitleReplacement({
+            state: durableState,
             tracks: finalTracks,
-        }, {
+            activeTrackId: durableState.activeTrackId,
+            transientSelection: durableState.transientSelection.kind === 'subtitles'
+                ? transientSubtitleSelection(
+                    finalTracks,
+                    durableState.selectedSubtitleIds,
+                    durableState.activeTrackId,
+                )
+                : durableState.transientSelection,
             history: preview.historyMetadata,
-            recalculateContentBoundary,
         });
-        if (!prepared) {
+        if (result.kind !== 'success') {
             set({
                 tracks: preview.durableTracks,
                 isDragging: false,
@@ -2083,10 +2911,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
             });
             return;
         }
-
-        const committedState = { ...durableState, ...prepared, isDragging: false } as TimelineStore;
-        set({ ...prepared, isDragging: false });
-        persistEditorMutation([], committedState);
+        set({ isDragging: false });
     },
 
     cancelSubtitleDrag: () => {
@@ -2236,16 +3061,12 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
         });
 
         const selectedSubtitleIds = [...newSelectionIds];
-        commitDurableMutation(state, {
+        planAndCommitSubtitleReplacement({
+            state,
             tracks: newTracks,
-            selectedSubtitleIds,
-            lastSelectedId: selectedSubtitleIds.at(-1) ?? null,
-            selectedClipId: null,
-            isVideoSelected: false,
+            activeTrackId,
             transientSelection: transientSubtitleSelection(newTracks, selectedSubtitleIds, activeTrackId),
-        }, {
             history: { label: 'Paste subtitles' },
-            recalculateContentBoundary: true,
         });
     },
 
@@ -2394,20 +3215,15 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                 }],
             }
             : track);
-        commitDurableMutation(state, {
+        const addResult = planAndCommitSubtitleReplacement({
+            state,
             tracks: nextTracks,
             activeTrackId: targetTrackId,
-            selectedSubtitleIds: [newId],
-            lastSelectedId: newId,
-            selectedClipId: null,
-            isVideoSelected: false,
             transientSelection: transientSubtitleSelection(nextTracks, [newId], targetTrackId),
-        }, {
             history: { label: 'Add subtitle' },
-            recalculateContentBoundary: true,
         });
 
-        set({ requestEditSubtitleId: newId });
+        if (addResult.kind === 'success') set({ requestEditSubtitleId: newId });
     },
 
     clearEditRequest: () => set({ requestEditSubtitleId: null }),

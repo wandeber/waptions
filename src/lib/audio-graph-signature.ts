@@ -1,25 +1,51 @@
 import type { SubtitleTrack } from '@/types/timeline';
 import type {
     EditorDocumentV3,
+    EditorDocumentV4,
     TrackTranscriptionProvenanceV3,
     TranscriptionJobGuard,
 } from '@/types/video';
 import { getEditorAudioGraphSignature } from './editor-document-v3';
+import { getEditorAudioGraphSignatureV4 } from './editor-document-v4';
 
 export { getEditorAudioGraphSignature } from './editor-document-v3';
+export { getEditorAudioGraphSignatureV4 } from './editor-document-v4';
 
 export type AudioGraphMutationImpact = 'invalidate-transcription' | 'preserve-transcription';
 
-type AudioGraphDocument = Pick<
-    EditorDocumentV3,
-    | 'renderProfile'
-    | 'videoSources'
-    | 'videoClips'
-    | 'audioSources'
-    | 'audioTracks'
-    | 'audioGraphRevision'
-    | 'transcriptionByTrackId'
->;
+type AudioGraphDocument =
+    | Pick<
+        EditorDocumentV3,
+        | 'version'
+        | 'renderProfile'
+        | 'videoSources'
+        | 'videoClips'
+        | 'audioSources'
+        | 'audioTracks'
+        | 'audioGraphRevision'
+        | 'transcriptionByTrackId'
+    >
+    | Pick<
+        EditorDocumentV4,
+        | 'version'
+        | 'renderProfile'
+        | 'videoSources'
+        | 'videoClips'
+        | 'audioSources'
+        | 'audioTracks'
+        | 'audioGraphRevision'
+        | 'transcriptionByTrackId'
+    >;
+
+type AudioGraphGuardDocument =
+    | Pick<
+        EditorDocumentV3,
+        'version' | 'revision' | 'audioGraphRevision' | 'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
+    >
+    | Pick<
+        EditorDocumentV4,
+        'version' | 'revision' | 'audioGraphRevision' | 'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
+    >;
 
 export interface FinalizedAudioGraphMutation {
     audioGraphRevision: number;
@@ -40,8 +66,8 @@ export function finalizeAudioGraphMutation(
     impact: AudioGraphMutationImpact,
 ): FinalizedAudioGraphMutation {
     void impact;
-    const previousSignature = getEditorAudioGraphSignature(previousDocument);
-    const nextSignature = getEditorAudioGraphSignature(nextDocument);
+    const previousSignature = getCanonicalEditorAudioGraphSignature(previousDocument);
+    const nextSignature = getCanonicalEditorAudioGraphSignature(nextDocument);
     if (previousSignature !== nextSignature) {
         return {
             audioGraphRevision: previousDocument.audioGraphRevision + 1,
@@ -64,13 +90,13 @@ export function finalizeAudioGraphMutation(
 
 /** Captures all guards required before an asynchronous transcription result may replace a lane. */
 export function createTranscriptionJobGuard(
-    document: Pick<EditorDocumentV3, 'revision' | 'audioGraphRevision' | 'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'>,
+    document: AudioGraphGuardDocument,
     targetTrack: SubtitleTrack,
 ): TranscriptionJobGuard {
     return {
         documentRevision: document.revision,
         audioGraphRevision: document.audioGraphRevision,
-        audioGraphSignature: getEditorAudioGraphSignature(document),
+        audioGraphSignature: getCanonicalEditorAudioGraphSignature(document),
         targetTrackSignature: getSubtitleTrackSignature(targetTrack),
     };
 }
@@ -78,12 +104,21 @@ export function createTranscriptionJobGuard(
 /** A completed job is accepted only while both its media graph and target lane remain unchanged. */
 export function isTranscriptionJobGuardCurrent(
     guard: TranscriptionJobGuard,
-    document: Pick<EditorDocumentV3, 'revision' | 'audioGraphRevision' | 'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'>,
+    document: AudioGraphGuardDocument,
     targetTrack: SubtitleTrack,
 ): boolean {
     return guard.audioGraphRevision === document.audioGraphRevision
-        && guard.audioGraphSignature === getEditorAudioGraphSignature(document)
+        && guard.audioGraphSignature === getCanonicalEditorAudioGraphSignature(document)
         && guard.targetTrackSignature === getSubtitleTrackSignature(targetTrack);
+}
+
+/** Selects the only signature authority valid for the document's persisted graph version. */
+export function getCanonicalEditorAudioGraphSignature(
+    document: AudioGraphDocument | AudioGraphGuardDocument,
+): string {
+    return document.version === 4
+        ? getEditorAudioGraphSignatureV4(document)
+        : getEditorAudioGraphSignature(document);
 }
 
 /** The target signature is separate from the canonical audio graph and includes lane subtitles. */

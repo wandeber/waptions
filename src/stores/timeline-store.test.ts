@@ -4,7 +4,7 @@ import type {
     AudioClip,
     AudioSourceAsset,
     AudioTrack,
-    EditorManifestV3,
+    EditorManifestV4,
     VideoSourceAsset,
 } from '@/types/video';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
@@ -147,7 +147,7 @@ const resetStores = () => {
     });
 };
 
-describe('canonical V3 timeline state', () => {
+describe('timeline store media and compatibility actions', () => {
     beforeEach(resetStores);
 
     it('persists video lanes and moves clips vertically as one history transaction without timing or audio changes', async () => {
@@ -160,7 +160,7 @@ describe('canonical V3 timeline state', () => {
             ],
         });
         expect(useTimelineStore.getState().videoTracks).toEqual([{
-            id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a', 'clip_b'],
+            id: 'video_track_1', name: 'Video 1', visible: true, locked: false, clipIds: ['clip_a', 'clip_b'],
         }]);
 
         useTimelineStore.getState().addVideoTrack('Upper video', 'video_track_2');
@@ -172,10 +172,12 @@ describe('canonical V3 timeline state', () => {
         const moved = useTimelineStore.getState();
 
         expect(moved.videoTracks).toEqual([
-            { id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a'] },
-            { id: 'video_track_2', name: 'Upper video', clipIds: ['clip_b'] },
+            { id: 'video_track_1', name: 'Video 1', visible: true, locked: false, clipIds: ['clip_a'] },
+            { id: 'video_track_2', name: 'Upper video', visible: true, locked: false, clipIds: ['clip_b'] },
         ]);
-        expect(moved.videoClips).toEqual(before.videoClips);
+        expect(moved.videoClips).toEqual(before.videoClips.map((clip) => clip.id === 'clip_b'
+            ? { ...clip, trackId: 'video_track_2' }
+            : clip));
         expect(moved.audioGraphRevision).toBe(before.audioGraphRevision);
         expect(moved.contentBoundaryRevision).toBe(before.contentBoundaryRevision);
         expect(moved.transcriptionByTrackId).toBe(before.transcriptionByTrackId);
@@ -208,8 +210,8 @@ describe('canonical V3 timeline state', () => {
         useTimelineStore.getState().moveVideoClipToTrack('clip_b', 'video_track_2');
         useTimelineStore.getState().reorderVideoClips(['clip_b', 'clip_a', 'clip_right']);
         expect(useTimelineStore.getState().videoTracks).toEqual([
-            { id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a', 'clip_right'] },
-            { id: 'video_track_2', name: 'Second', clipIds: ['clip_b'] },
+            { id: 'video_track_1', name: 'Video 1', visible: true, locked: false, clipIds: ['clip_a', 'clip_right'] },
+            { id: 'video_track_2', name: 'Second', visible: true, locked: false, clipIds: ['clip_b'] },
         ]);
 
         const historyCountBeforeCreateAndMove = useTimelineStore.getState().history.length;
@@ -227,7 +229,7 @@ describe('canonical V3 timeline state', () => {
 
         useTimelineStore.getState().deleteVideoClip('clip_b');
         expect(useTimelineStore.getState().videoTracks).toEqual([{
-            id: 'video_track_1', name: 'Video 1', clipIds: ['clip_a', 'clip_right'],
+            id: 'video_track_1', name: 'Video 1', visible: true, locked: false, clipIds: ['clip_a', 'clip_right'],
         }]);
     });
 
@@ -238,15 +240,18 @@ describe('canonical V3 timeline state', () => {
         before.moveVideoClipToNewTrack('video_clip', 1, 'replacement_lane', 'Replacement');
         const moved = useTimelineStore.getState();
         expect(moved.videoTracks).toEqual([{
-            id: 'replacement_lane', name: 'Replacement', clipIds: ['video_clip'],
+            id: 'replacement_lane', name: 'Replacement', visible: true, locked: false, clipIds: ['video_clip'],
         }]);
-        expect(moved.videoClips).toEqual(before.videoClips);
+        expect(moved.videoClips).toEqual(before.videoClips.map((clip) => ({
+            ...clip,
+            trackId: 'replacement_lane',
+        })));
         expect(moved.audioGraphRevision).toBe(before.audioGraphRevision);
         expect(moved.contentBoundaryRevision).toBe(before.contentBoundaryRevision);
 
         moved.deleteVideoClip('video_clip');
         expect(useTimelineStore.getState().videoTracks).toEqual([{
-            id: 'replacement_lane', name: 'Replacement', clipIds: [],
+            id: 'replacement_lane', name: 'Replacement', visible: true, locked: false, clipIds: [],
         }]);
     });
 
@@ -961,12 +966,13 @@ describe('canonical V3 timeline state', () => {
         randomUUID.mockRestore();
     });
 
-    it('builds and enqueues a typed V3 manifest with both source kinds', () => {
-        const calls: Array<{ manifest: EditorManifestV3; assets: readonly EditorPersistentAsset[] }> = [];
+    it('builds and enqueues a typed V4 manifest with both source kinds', () => {
+        const calls: Array<{ manifest: EditorManifestV4; assets: readonly EditorPersistentAsset[] }> = [];
         setTimelinePersistenceBinding({
             projectId: 'project',
             generation: 1,
-            enqueue: (manifest, assets) => calls.push({ manifest, assets }),
+            enqueue: () => undefined,
+            enqueueV4: (manifest, assets) => calls.push({ manifest, assets }),
         });
         const video = videoSource();
         const audio = audioSource();
@@ -978,7 +984,7 @@ describe('canonical V3 timeline state', () => {
         });
 
         expect(calls).toHaveLength(1);
-        expect(calls[0].manifest).toMatchObject({ version: 3, revision: useTimelineStore.getState().revision });
+        expect(calls[0].manifest).toMatchObject({ version: 4, revision: useTimelineStore.getState().revision });
         expect(calls[0].assets.map((entry) => entry.kind)).toEqual(['video-source', 'audio-source']);
         expect(useTimelineStore.getState().buildEditorDocument().version).toBe(3);
     });

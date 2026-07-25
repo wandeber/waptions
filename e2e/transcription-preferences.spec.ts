@@ -25,23 +25,24 @@ test.describe('transcription preferences', () => {
     await createEditorProject(page, 'Transcription preferences');
     await importAudibleFixture(page);
     await openTranscriptionModal(page);
+    const modal = page.getByRole('dialog', { name: /Configura tu transcriptor|Potencia tu contenido/ });
 
     const localRoute = page.getByTestId('transcription-route-local-browser');
     await expect(localRoute).toHaveAttribute('data-selected', 'true');
-    await page.getByLabel('Runtime').selectOption('wasm');
-    await page.getByLabel('Language').selectOption('es');
-    await page.getByLabel(/Allow slow WASM fallback/).check();
-    await expect(page.getByLabel('Speaker diarization')).toHaveCount(0);
+    await modal.getByLabel('Runtime').selectOption('wasm');
+    await modal.getByLabel('Language').selectOption('es');
+    await modal.getByLabel(/Allow slow WASM fallback/).check();
+    await expect(modal.getByLabel('Speaker diarization')).toHaveCount(0);
 
     const customRoute = page.getByTestId('transcription-route-custom-openai-compatible');
     await customRoute.click();
     await expect(customRoute).toHaveAttribute('data-selected', 'true');
     await expect(localRoute).toHaveAttribute('data-selected', 'false');
-    await page.getByRole('button', { name: /Server/ }).click();
-    await page.getByLabel('Endpoint').fill('https://transcriber.test/v1');
-    await page.getByLabel('Model').fill('whisper-1');
-    await page.getByLabel('Optional API key').fill('  exact local test key  ');
-    await page.getByLabel('Speaker diarization').check();
+    await modal.getByRole('button', { name: /Server/ }).click();
+    await modal.getByLabel('Endpoint').fill('https://transcriber.test/v1');
+    await modal.getByLabel('Model').fill('whisper-1');
+    await modal.getByLabel('Optional API key').fill('  exact local test key  ');
+    await modal.getByLabel('Speaker diarization').check();
 
     await expect.poll(() => page.evaluate(({ customKey, localKey }) => ({
       custom: JSON.parse(window.localStorage.getItem(customKey) ?? '{}'),
@@ -71,20 +72,21 @@ test.describe('transcription preferences', () => {
     await page.reload();
     await expect(page.getByTestId('timeline-video-clip')).toHaveCount(1);
     await openTranscriptionModal(page);
+    const restoredModal = page.getByRole('dialog', { name: /Configura tu transcriptor|Potencia tu contenido/ });
 
     await expect(page.getByTestId('transcription-route-custom-openai-compatible'))
       .toHaveAttribute('data-selected', 'true');
-    await expect(page.getByLabel('Endpoint')).toHaveValue('https://transcriber.test/v1');
-    await expect(page.getByLabel('Model')).toHaveValue('whisper-1');
-    await expect(page.getByLabel('Optional API key')).toHaveValue('  exact local test key  ');
-    await expect(page.getByRole('button', { name: /Server/ })).toHaveClass(/border-blue-500/);
-    await expect(page.getByLabel('Speaker diarization')).toBeChecked();
+    await expect(restoredModal.getByLabel('Endpoint')).toHaveValue('https://transcriber.test/v1');
+    await expect(restoredModal.getByLabel('Model')).toHaveValue('whisper-1');
+    await expect(restoredModal.getByLabel('Optional API key')).toHaveValue('  exact local test key  ');
+    await expect(restoredModal.getByRole('button', { name: /Server/ })).toHaveClass(/border-blue-500/);
+    await expect(restoredModal.getByLabel('Speaker diarization')).toBeChecked();
 
     await page.getByTestId('transcription-route-local-browser').click();
-    await expect(page.getByLabel('Runtime')).toHaveValue('wasm');
-    await expect(page.getByLabel('Language')).toHaveValue('es');
-    await expect(page.getByLabel(/Allow slow WASM fallback/)).toBeChecked();
-    await expect(page.getByLabel('Speaker diarization')).toHaveCount(0);
+    await expect(restoredModal.getByLabel('Runtime')).toHaveValue('wasm');
+    await expect(restoredModal.getByLabel('Language')).toHaveValue('es');
+    await expect(restoredModal.getByLabel(/Allow slow WASM fallback/)).toBeChecked();
+    await expect(restoredModal.getByLabel('Speaker diarization')).toHaveCount(0);
     expect(failures.errors).toEqual([]);
   });
 
@@ -119,6 +121,7 @@ test.describe('transcription preferences', () => {
     await createEditorProject(page, 'Unavailable transcription storage');
     await importAudibleFixture(page);
     await openTranscriptionModal(page);
+    const modal = page.getByRole('dialog', { name: /Configura tu transcriptor|Potencia tu contenido/ });
 
     const warning = page.getByTestId('transcription-preferences-storage-warning');
     await expect(warning).toHaveText(
@@ -126,9 +129,9 @@ test.describe('transcription preferences', () => {
     );
     await expect(page.getByTestId('transcription-route-local-browser')).toHaveAttribute('data-selected', 'true');
     await page.getByTestId('transcription-route-custom-openai-compatible').click();
-    await page.getByLabel('Endpoint').fill('https://session-only.test/v1');
-    await page.getByLabel('Speaker diarization').check();
-    await expect(page.getByLabel('Speaker diarization')).toBeChecked();
+    await modal.getByLabel('Endpoint').fill('https://session-only.test/v1');
+    await modal.getByLabel('Speaker diarization').check();
+    await expect(modal.getByLabel('Speaker diarization')).toBeChecked();
 
     const modalText = await page.locator('.fixed.inset-0').innerText();
     expect(modalText).not.toContain(secret);

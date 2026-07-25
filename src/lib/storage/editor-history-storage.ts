@@ -9,6 +9,8 @@ import { cloneAudioTracks } from '@/lib/audio-timeline';
 import { validateEditorDocumentV3 } from '@/lib/editor-document-v3';
 import { cloneVideoTracks } from '@/lib/video-tracks';
 import type { EditorDocumentV3, EditorManifestV3 } from '@/types/video';
+import type { EditorDocumentV4, EditorManifestV4 } from '@/types/video';
+import type { Sha256Digest } from '@/types/editorial';
 import { normalizeTimelineHistory } from '@/stores/timeline-history';
 import {
     projectTimelineHistory,
@@ -24,32 +26,39 @@ import {
     getLegacyTranscriptionForTrack,
     getTrackTimingDomain,
 } from '@/stores/timeline-store-selectors';
+import { restoreEditorRuntimeStateV4 } from './editor-history-storage-v4';
 
 export const EDITOR_HISTORY_INDEX_KEY = 'editor-history:index';
 export const EDITOR_HISTORY_ENTRY_PREFIX = 'editor-history:entry:';
 export const EDITOR_RECOVERY_INDEX_KEY = 'editor-recovery:index';
 export const EDITOR_RECOVERY_ENTRY_PREFIX = 'editor-recovery:entry:';
-// V2 projections include durable video-lane membership. V1 entries are discarded instead of
-// replayed because their inverse patches cannot reconstruct exact vertical track ownership.
-export const EDITOR_HISTORY_STORAGE_VERSION = 2;
+// V3 adds descriptor-only record unions while retaining the validated V2 reader for migration.
+export const EDITOR_HISTORY_LEGACY_STORAGE_VERSION = 2;
+export const EDITOR_HISTORY_STORAGE_VERSION = 3;
 
 export interface PersistedHistoryIndex {
-    version: 2;
+    version: 2 | 3;
     documentRevision: number;
     sourceSignature: string;
     historyEntryIds: string[];
     redoEntryIds: string[];
+    /** Present on descriptor-only storage v3 checkpoints for CAS pin reconciliation. */
+    currentRecordIds?: Sha256Digest[];
+    historyRecordIds?: Sha256Digest[];
+    redoRecordIds?: Sha256Digest[];
 }
 
 export interface PersistedRecoveryIndex {
-    version: 2;
+    version: 2 | 3;
     documentRevision: number;
     sourceSignature: string;
     entryKeys: string[];
+    /** Complete record union required while the recovery chain remains live. */
+    walRecordIds?: Sha256Digest[];
 }
 
 export interface PersistedRecoveryEntry {
-    version: 2;
+    version: 2 | 3;
     fromRevision: number;
     toRevision: number;
     fromAudioGraphRevision: number;
@@ -68,7 +77,7 @@ export interface EditorHistoryCheckpoint {
 }
 
 export interface LoadedEditorRuntimeState {
-    document: EditorDocumentV3;
+    document: EditorDocumentV3 | EditorDocumentV4;
     /** History already materialized under editor-history:entry:* in the durable checkpoint. */
     durableHistory: ReturnType<typeof normalizeTimelineHistory>;
     /** Effective history after applying the complete recovery chain, when one is valid. */
@@ -82,7 +91,7 @@ export const historyEntryStorageKey = (entryId: string) => `${EDITOR_HISTORY_ENT
 export const recoveryEntryStorageKey = (revision: number) => `${EDITOR_RECOVERY_ENTRY_PREFIX}${revision}`;
 
 /** Source identity is a recovery barrier: patches never introduce or replace File-backed assets. */
-export function getManifestSourceSignature(manifest: EditorManifestV3): string {
+export function getManifestSourceSignature(manifest: EditorManifestV3 | EditorManifestV4): string {
     return JSON.stringify({
         video: [...manifest.videoSourceDescriptors]
             .map(({ id, fingerprint }) => ({ id, fingerprint }))
@@ -94,15 +103,47 @@ export function getManifestSourceSignature(manifest: EditorManifestV3): string {
 }
 
 export function createHistoryIndex(
-    manifest: EditorManifestV3,
+    manifest: EditorManifestV3 | EditorManifestV4,
     runtime: TimelineHistoryRuntimeState,
 ): PersistedHistoryIndex {
+    const currentRecordIds = manifest.version === 4
+        ? Array.from(new Set(manifest.editorialTranscriptDescriptors.map(({ recordId }) => recordId))).sort()
+        : [];
+    const historyRecordIds = new Set<Sha256Digest>();
+    const redoRecordIds = new Set<Sha256Digest>();
+    if (manifest.version === 4) {
+        // History pinning follows the same cursor order as TimelineStore Undo/Redo. Reconstructing
+        // each reachable projection catches descriptors that were removed from the current graph
+        // but remain required by an inverse or future command; transcript bodies never enter the
+        // projection or the resulting index.
+        let past = runtime.projection;
+        [...runtime.history].reverse().forEach((entry) => {
+            past = applySerializablePatches(
+                past,
+                entry.inversePatches,
+                TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+            );
+            collectProjectionRecordIds(past).forEach((recordId) => historyRecordIds.add(recordId));
+        });
+        let future = runtime.projection;
+        [...runtime.redoStack].reverse().forEach((entry) => {
+            future = applySerializablePatches(
+                future,
+                entry.patches,
+                TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
+            );
+            collectProjectionRecordIds(future).forEach((recordId) => redoRecordIds.add(recordId));
+        });
+    }
     return {
         version: EDITOR_HISTORY_STORAGE_VERSION,
         documentRevision: manifest.revision,
         sourceSignature: getManifestSourceSignature(manifest),
         historyEntryIds: runtime.history.map((entry) => entry.id),
         redoEntryIds: runtime.redoStack.map((entry) => entry.id),
+        currentRecordIds,
+        historyRecordIds: Array.from(historyRecordIds).sort(),
+        redoRecordIds: Array.from(redoRecordIds).sort(),
     };
 }
 
@@ -114,13 +155,26 @@ export function createHistoryIndex(
  * prefixes are deliberately never exposed to callers.
  */
 export function restoreEditorRuntimeState(
-    document: EditorDocumentV3,
-    persistedManifest: EditorManifestV3,
+    document: EditorDocumentV3 | EditorDocumentV4,
+    persistedManifest: EditorManifestV3 | EditorManifestV4,
     historyIndexValue: unknown,
     historyEntriesById: ReadonlyMap<string, unknown>,
     recoveryIndexValue: unknown,
     recoveryEntriesByKey: ReadonlyMap<string, unknown>,
 ): LoadedEditorRuntimeState {
+    if (document.version === 4 && persistedManifest.version === 4) {
+        return restoreEditorRuntimeStateV4(
+            document,
+            persistedManifest,
+            historyIndexValue,
+            historyEntriesById,
+            recoveryIndexValue,
+            recoveryEntriesByKey,
+        );
+    }
+    if (document.version !== 3 || persistedManifest.version !== 3) {
+        throw new Error('Editor history document and manifest versions do not match.');
+    }
     const sourceSignature = getManifestSourceSignature(persistedManifest);
     const historyIndex = parseHistoryIndex(historyIndexValue);
     const historyEntries = historyIndex
@@ -456,12 +510,38 @@ function documentFromProjection(
         videoClips: projection.videoClips,
         // Recovery/history projections own lane membership just like clip order. Clone at this
         // boundary so replay cannot alias the detached patch graph into the live V3 document.
-        videoTracks: cloneVideoTracks(projection.videoTracks),
+        videoTracks: cloneVideoTracks(projection.videoTracks.map((track) => ({
+            id: track.id,
+            name: track.name,
+            clipIds: [...(track.clipIds ?? [])],
+        }))),
         audioTracks: cloneAudioTracks(projection.audioTracks),
         activeSubtitleTrackId,
-        transientSelection: projection.transientSelection,
+        transientSelection: projection.transientSelection.kind === 'narrative'
+            ? { kind: 'none' }
+            : projection.transientSelection,
         transcriptionByTrackId: projection.transcriptionByTrackId,
     };
+}
+
+/**
+ * Materializes one already-validated V3 history projection for the storage-v3 to V4 migration.
+ * Source assets stay borrowed from the current document because history never owns File objects.
+ */
+export function materializeEditorDocumentV3HistoryProjection(
+    baseline: EditorDocumentV3,
+    projection: TimelineHistoryProjection,
+): EditorDocumentV3 {
+    const document = documentFromProjection(
+        baseline,
+        projection,
+        baseline.revision,
+        baseline.audioGraphRevision,
+    );
+    if (!validateEditorDocumentV3(document).valid) {
+        throw new Error('V3 history projection cannot be migrated because its graph is invalid.');
+    }
+    return document;
 }
 
 function parseHistoryIndex(value: unknown): PersistedHistoryIndex | null {
@@ -469,7 +549,7 @@ function parseHistoryIndex(value: unknown): PersistedHistoryIndex | null {
     const candidate = value as Partial<PersistedHistoryIndex>;
     const historyIds = candidate.historyEntryIds;
     const redoIds = candidate.redoEntryIds;
-    return candidate.version === EDITOR_HISTORY_STORAGE_VERSION
+    return isSupportedHistoryStorageVersion(candidate.version)
         && Number.isSafeInteger(candidate.documentRevision)
         && typeof candidate.sourceSignature === 'string'
         && isStringArray(historyIds)
@@ -482,7 +562,7 @@ function parseHistoryIndex(value: unknown): PersistedHistoryIndex | null {
 function parseRecoveryIndex(value: unknown): PersistedRecoveryIndex | null {
     if (!value || typeof value !== 'object') return null;
     const candidate = value as Partial<PersistedRecoveryIndex>;
-    return candidate.version === EDITOR_HISTORY_STORAGE_VERSION
+    return isSupportedHistoryStorageVersion(candidate.version)
         && Number.isSafeInteger(candidate.documentRevision)
         && typeof candidate.sourceSignature === 'string'
         && isStringArray(candidate.entryKeys)
@@ -509,7 +589,7 @@ function isRecoveryEntryStorageKey(value: unknown): value is string {
 function parseRecoveryEntry(value: unknown): PersistedRecoveryEntry | null {
     if (!value || typeof value !== 'object') return null;
     const candidate = value as Partial<PersistedRecoveryEntry>;
-    return candidate.version === EDITOR_HISTORY_STORAGE_VERSION
+    return isSupportedHistoryStorageVersion(candidate.version)
         && Number.isSafeInteger(candidate.fromRevision)
         && Number.isSafeInteger(candidate.toRevision)
         && Number.isSafeInteger(candidate.fromAudioGraphRevision)
@@ -548,3 +628,20 @@ function isHistoryEntry(value: unknown): value is TimelineHistoryEntry {
 const isStringArray = (value: unknown): value is string[] => (
     Array.isArray(value) && value.every((item) => typeof item === 'string')
 );
+
+const isSupportedHistoryStorageVersion = (value: unknown): value is 2 | 3 => (
+    value === EDITOR_HISTORY_LEGACY_STORAGE_VERSION || value === EDITOR_HISTORY_STORAGE_VERSION
+);
+
+/** Returns the descriptor/body IDs needed by CAS without serializing any transcript record body. */
+export function collectProjectionRecordIds(projection: TimelineHistoryProjection): Sha256Digest[] {
+    const recordIds = new Set<Sha256Digest>();
+    projection.editorialTranscriptDescriptors?.forEach(({ recordId }) => recordIds.add(recordId));
+    projection.narrative?.sourceRecordIds.forEach((recordId) => recordIds.add(recordId));
+    projection.dependentLinks?.forEach((link) => {
+        if (link.association.kind === 'transcript-bound') {
+            recordIds.add(link.association.binding.transcriptRecordId);
+        }
+    });
+    return Array.from(recordIds).sort();
+}

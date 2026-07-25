@@ -1,5 +1,14 @@
 import type { AudioMixPlan } from '@/lib/audio-mix-plan';
-import type { EditorDocumentV3 } from './video';
+import type {
+    AudioSourceAsset,
+    AudioTrack,
+    RenderProfile,
+    VideoClipV3,
+    VideoClipV4,
+    VideoSourceAssetV3,
+    VideoTrack,
+    VideoTrackV4,
+} from './video';
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
     ? T
@@ -10,10 +19,14 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
             : T;
 
 /** Minimal media graph required by preview decoding and mix projection. */
-export type TimelineAudioRuntimeDocument = DeepReadonly<Pick<
-    EditorDocumentV3,
-    'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
->>;
+export type TimelineAudioRuntimeDocument = DeepReadonly<{
+    renderProfile: RenderProfile;
+    videoSources: VideoSourceAssetV3[];
+    videoClips: VideoClipV3[] | VideoClipV4[];
+    videoTracks: VideoTrack[] | VideoTrackV4[];
+    audioSources: AudioSourceAsset[];
+    audioTracks: AudioTrack[];
+}>;
 
 /** Immutable handoff from editor state to the real-time audio engine. */
 export interface TimelineAudioEngineSnapshot {

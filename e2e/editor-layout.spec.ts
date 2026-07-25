@@ -1,7 +1,29 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { EDITOR_LAYOUT_STORAGE_KEY } from '../src/lib/editor-layout';
 import { createEditorProject, monitorPageFailures, readTimelineTime } from './support/editor-helpers';
+import { createEditorialRouteFixture } from './support/editorial-transcription-fixture';
 import { mediaFixtures } from './support/media-fixtures';
+
+async function expectSelectorImmediatelyBefore(
+  selector: Locator,
+  toolbar: Locator,
+  firstTool: Locator,
+): Promise<void> {
+  const selectorBox = await selector.boundingBox();
+  const toolbarBox = await toolbar.boundingBox();
+  const firstToolBox = await firstTool.boundingBox();
+  if (!selectorBox || !toolbarBox || !firstToolBox) {
+    throw new Error('Lower workspace toolbar geometry is not measurable.');
+  }
+  expect(selectorBox.x).toBeGreaterThanOrEqual(toolbarBox.x);
+  expect(firstToolBox.x - (selectorBox.x + selectorBox.width)).toBeGreaterThanOrEqual(4);
+  expect(firstToolBox.x - (selectorBox.x + selectorBox.width)).toBeLessThanOrEqual(10);
+  expect(Math.abs(
+    selectorBox.y + selectorBox.height / 2 - (firstToolBox.y + firstToolBox.height / 2),
+  )).toBeLessThanOrEqual(1);
+  expect(selectorBox.y).toBeGreaterThanOrEqual(toolbarBox.y);
+  expect(selectorBox.y + selectorBox.height).toBeLessThanOrEqual(toolbarBox.y + toolbarBox.height);
+}
 
 test.describe('editor layout controls', () => {
   test('resizes focused separators without also running timeline arrow shortcuts', async ({ page }) => {
@@ -178,6 +200,96 @@ test.describe('editor layout controls', () => {
     expect(failures.errors).toEqual([]);
   });
 
+  test('keeps one focused lower-workspace selector inside every pane toolbar', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const failures = monitorPageFailures(page);
+    const routeFixture = await createEditorialRouteFixture();
+    await routeFixture.install(page);
+    await createEditorProject(page, 'Lower workspace selector');
+    await page.locator('input[type="file"][accept="video/*,audio/*"]')
+      .setInputFiles(mediaFixtures.videoA);
+    await expect(page.getByTestId('timeline-video-clip')).toHaveCount(1, { timeout: 30_000 });
+
+    const selector = page.getByTestId('lower-workspace-selector');
+    const timelineTab = selector.getByRole('tab', { name: 'Timeline', exact: true });
+    const textTab = selector.getByRole('tab', { name: 'Text', exact: true });
+    await expect(selector).toHaveCount(1);
+    await expect(selector).toHaveAttribute('aria-orientation', 'horizontal');
+    await expect(page.locator('#editor-timeline-pane-tab')).toHaveCount(1);
+    await expect(page.locator('#editor-text-pane-tab')).toHaveCount(1);
+    await expect(timelineTab).toHaveAttribute('aria-controls', 'editor-timeline-pane');
+    await expect(textTab).toHaveAttribute('aria-controls', 'editor-text-pane');
+    await expect(page.getByText('Arrange project media and subtitles.', { exact: true })).toHaveCount(0);
+
+    const timelineToolbar = page.getByTestId('timeline-toolbar');
+    await expectSelectorImmediatelyBefore(
+      selector,
+      timelineToolbar,
+      page.getByTestId('split-selected-media'),
+    );
+    const lowerWorkspaceSeparator = page.getByRole('separator', { name: 'Resize timeline' });
+    await expect(lowerWorkspaceSeparator).toHaveCount(1);
+    const separatorBox = await lowerWorkspaceSeparator.boundingBox();
+    const timelineToolbarBox = await timelineToolbar.boundingBox();
+    if (!separatorBox || !timelineToolbarBox) throw new Error('Lower workspace boundary is not measurable.');
+    expect(Math.abs(separatorBox.y + separatorBox.height - timelineToolbarBox.y)).toBeLessThanOrEqual(0.5);
+
+    // Roving tab focus must survive the panel becoming hidden/inert because the selector itself
+    // is mounted outside both tabpanels and remains the one keyboard navigation surface.
+    await timelineTab.focus();
+    await timelineTab.press('ArrowRight');
+    await expect(textTab).toHaveAttribute('aria-selected', 'true');
+    await expect(textTab).toHaveAttribute('tabindex', '0');
+    await expect(textTab).toBeFocused();
+    await expect(page.getByTestId('editorial-text-setup')).toBeVisible();
+    await expect(selector).toHaveCount(1);
+
+    const setupToolbar = page.getByTestId('text-setup-toolbar');
+    const setupToolbarBox = await setupToolbar.boundingBox();
+    const setupSelectorBox = await selector.boundingBox();
+    if (!setupToolbarBox || !setupSelectorBox) throw new Error('Text setup toolbar is not measurable.');
+    expect(setupSelectorBox.y).toBeGreaterThanOrEqual(setupToolbarBox.y);
+    expect(setupSelectorBox.y + setupSelectorBox.height)
+      .toBeLessThanOrEqual(setupToolbarBox.y + setupToolbarBox.height);
+
+    await textTab.press('Home');
+    await expect(timelineTab).toHaveAttribute('aria-selected', 'true');
+    await expect(timelineTab).toBeFocused();
+    await timelineTab.press('End');
+    await expect(textTab).toHaveAttribute('aria-selected', 'true');
+    await expect(textTab).toBeFocused();
+
+    // This layout scenario uses a browser-intercepted provider fixture, not the Server default.
+    await page.getByRole('button', { name: 'browser', exact: true }).click();
+    await page.getByRole('textbox', { name: 'OpenAI-compatible endpoint' })
+      .fill('http://localhost:43123/v1/audio/transcriptions');
+    await page.getByRole('textbox', { name: /API key/ }).fill('layout-session-key');
+    await page.getByRole('button', { name: 'Prepare text editor' }).click();
+    await expect(page.getByRole('listbox', { name: 'Unified text edit narrative' }))
+      .toBeVisible({ timeout: 60_000 });
+
+    await expectSelectorImmediatelyBefore(
+      selector,
+      page.getByTestId('text-editor-toolbar'),
+      page.getByRole('button', { name: 'Split', exact: true }),
+    );
+    await expect(selector).toHaveCount(1);
+    await expect(page.locator('#editor-timeline-pane-tab')).toHaveCount(1);
+    await expect(page.locator('#editor-text-pane-tab')).toHaveCount(1);
+
+    await textTab.focus();
+    await textTab.press('ArrowLeft');
+    await expect(timelineTab).toBeFocused();
+    await expect(page.locator('#editor-timeline-pane')).toBeVisible();
+    await timelineTab.press('ArrowRight');
+    await expect(textTab).toBeFocused();
+    await expect(page.locator('#editor-text-pane')).toBeVisible();
+    await expect(page.getByRole('listbox', { name: 'Unified text edit narrative' })).toBeVisible();
+    expect(routeFixture.requests).toHaveLength(1);
+    expect(failures.errors).toEqual([]);
+  });
+
   test('keeps track actions, inspector toggle, tabs, separators, history order, and shortcut hints unambiguous', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     const failures = monitorPageFailures(page);
@@ -269,7 +381,9 @@ test.describe('editor layout controls', () => {
       // Fixed-width icon buttons must not inherit the medium button padding: it leaves only four
       // pixels for the SVG and makes the toolbar controls look empty at normal editor scale.
       const iconSizes = await group.evaluate((element) => Array.from(
-        element.querySelectorAll('button > svg'),
+        // Structural mode is a nested control with its own icon buttons. This assertion remains
+        // scoped to the fixed-width direct toolbar buttons whose sizing contract it documents.
+        element.querySelectorAll(':scope > button > svg'),
         (icon) => {
           const bounds = icon.getBoundingClientRect();
           return { width: bounds.width, height: bounds.height };

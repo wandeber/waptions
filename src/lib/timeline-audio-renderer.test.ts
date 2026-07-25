@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AudioSample } from 'mediabunny';
-import type { EditorDocumentV3 } from '@/types/video';
+import type { EditorDocumentV3, EditorDocumentV4 } from '@/types/video';
 import { buildAudioMixPlan } from './audio-mix-plan';
 import { renderAudioMixWindow } from './audio-dsp';
 import {
@@ -48,6 +48,25 @@ function makeDocument(sampleCount = 10, linked = true): EditorDocumentV3 {
     };
 }
 
+function makeV4Document(sampleCount = 4): EditorDocumentV4 {
+    const legacy = makeDocument(sampleCount);
+    return {
+        ...legacy,
+        version: 4,
+        subtitleTracks: [],
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', visible: true, locked: false }],
+        videoClips: legacy.videoClips.map((clip) => ({
+            ...clip,
+            trackId: 'video_track_1',
+            timelineStartFrame: 2,
+        })),
+        globalEditingMode: 'ripple',
+        editorialTranscriptDescriptors: [],
+        narrative: null,
+        dependentLinks: [],
+    };
+}
+
 function makeDecoder(values: Float32Array) {
     const decoder: TimelineAudioDecoder = {
         setDocument: vi.fn(),
@@ -91,6 +110,21 @@ function flatten(chunks: readonly Float32Array[]): Float32Array {
 }
 
 describe('TimelineAudioRenderer', () => {
+    it('renders explicit V4 linked-audio starts with silence before the occurrence', async () => {
+        const document = makeV4Document();
+        const decoder = makeDecoder(new Float32Array([0.1, 0.2, 0.3, 0.4]));
+        const output = makeCollectingSource();
+
+        await new TimelineAudioRenderer(document, output.source, {
+            createDecoder: () => decoder,
+        }).render({ outputEndSample: 6, windowSampleCount: 3 });
+
+        expect(flatten(output.chunks.map((chunk) => chunk.left))).toEqual(new Float32Array([
+            0, 0, 0.1, 0.2, 0.3, 0.4,
+        ]));
+        expect(decoder.dispose).toHaveBeenCalledTimes(1);
+    });
+
     it('releases the decoder and external abort listener when plan construction fails', async () => {
         const decoder = makeDecoder(new Float32Array(0));
         const source = makeCollectingSource();

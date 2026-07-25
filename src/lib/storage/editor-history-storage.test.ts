@@ -179,7 +179,15 @@ describe('editor history and recovery storage', () => {
                     after,
                     TIMELINE_HISTORY_ROOTS as ReadonlySet<string>,
                 ).patches,
-                historyIndex: createHistoryIndex({ ...manifest, revision: 5, videoTracks: after.videoTracks }, {
+                historyIndex: createHistoryIndex({
+                    ...manifest,
+                    revision: 5,
+                    videoTracks: after.videoTracks.map((track) => ({
+                        id: track.id,
+                        name: track.name,
+                        clipIds: [...(track.clipIds ?? [])],
+                    })),
+                }, {
                     history: [],
                     redoStack: [],
                     projection: after,

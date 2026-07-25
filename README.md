@@ -11,11 +11,12 @@ Production: [https://waptions.wande.dev](https://waptions.wande.dev)
 ## Features
 
 - Local project storage in the browser through IndexedDB.
-- Gapless multi-source video sequence with clip splitting, trimming, deletion, reordering, and linked audio waveforms inside each clip.
+- Explicit multi-track video placement with gaps, cross-track overlaps, splitting, trimming, deletion, reordering, and linked audio waveforms inside each clip.
 - Independent editable audio tracks for imported audio and audio separated from video clips, including move, trim, split, delete, mute, solo, gain, and fades.
 - Resizable, internally scrollable timeline and a collapsible selection-aware media/subtitle inspector.
 - Multi-track subtitle rendering on canvas.
-- Versioned project import/export through `.waptions` bundles, including v1 and v2 migration to the V3 editor document.
+- Unified source-backed Text editing across selected video tracks, with word correction, speaker overrides, ripple/absolute structure, margins, recovery, and silence removal independent from subtitles.
+- Versioned project import/export through `.waptions` bundles, including legacy migration to the V4 editor document and content-addressed transcript sidecars.
 - MP4 and WebM export with rendered subtitles and the same complete audio mix used by preview.
 - Browser-local transcription with WebGPU-first execution and optional WASM fallback.
 - User-configured OpenAI-compatible transcription endpoints.
@@ -62,6 +63,7 @@ pnpm exec tsc --noEmit
 pnpm run lint
 pnpm run build
 pnpm run test:e2e
+pnpm run test:e2e:text-editor-live
 pnpm audit
 ```
 
@@ -70,6 +72,35 @@ validation, unit tests, both coverage gates, TypeScript, lint, production build,
 Its build and browser stages use per-invocation compiler and artifact directories, so the gate can
 run alongside the normal development server and other verification processes. See
 [`docs/testing.md`](docs/testing.md) for the exact test matrix and optional stress suite.
+
+## Text-based video editing
+
+The lower **Text** workspace edits source-backed video; it is separate from subtitle generation and
+never creates or rewrites subtitle cues. Activation can select one or many unlocked video tracks.
+Intervals connected to an overlap are reported and left as ordinary media, while every isolated
+accepted clip enters one unified ordered narrative with its source-track badge intact.
+
+Waptions prepares one canonical full-source mono PCM16 16 kHz request for every distinct source
+profile. Cropped and repeated occurrences reuse that transcript through a verified request index
+and immutable content-addressed body. The fixed production request uses
+`qwen-1.7b-edit-max`, `verbose_json`, `stream=false`, and the `edit-max-v1` response contract.
+
+Speech words and source-backed silence are independently selectable. Corrections are instance-local
+and do not change timing. Structural commands support split, compatible merge, deletion, recovery,
+insertion, cross-track reorder, explicit/global margins, optional quiet-assisted refinement, and
+speaker display/overrides. Ripple mode closes or opens exact materialized duration; absolute mode
+preserves unrelated starts and can leave project gaps. **Delete all silences** removes only
+source-backed silence or untranscribed blocks, either across the document or on the selected
+controlled track; arbitrary gaps and speech remain.
+
+Video, independent audio, and subtitle targets can bind to exact transcript fragments. A separate
+unbound target is auto-linked only when its temporal overlap identifies one unique anchor; ties stay
+unlinked. Follow behavior is explicit and every lock/collision/stale failure is atomic.
+
+Text preferences may remember endpoint, Browser/Server mode, language, and speaker-analysis choice.
+Its API key exists only in the mounted setup component and is never stored in preferences, project
+IndexedDB, history, transcript CAS/request index, bundles, URLs, or logs. **Regenerate** bypasses a
+cache winner deliberately; normal reactivation and reload reuse the verified record.
 
 ## Transcription
 
@@ -80,7 +111,7 @@ ordinary transcription, each linked-video or imported-audio source is transcribe
 retained words are remapped through every audible crop and placement. Muted and solo-suppressed
 clips are skipped.
 
-The modal remembers the selected route and every route-specific choice in browser-global
+The subtitle-transcription modal remembers the selected route and every route-specific choice in browser-global
 `localStorage`: custom enabled state, endpoint, model, request mode, API key and diarization toggle,
 plus the local browser model, runtime, language and WASM-fallback choice. The additive records keep
 the keys `waptions-custom-openai-compatible-transcription` and
@@ -89,6 +120,9 @@ IndexedDB manifests, history or `.waptions` bundles. Persisting an API key is co
 local transcriber, but it is not secret storage: scripts on the same Waptions origin and browser
 extensions may read it. If browser policy blocks preference storage, the current session remains
 usable and the modal displays a generic warning without exposing the stored values.
+
+This differs from the Text workflow above: its API key is session-only and never enters local
+storage.
 
 ### Local Browser Mode
 
@@ -172,11 +206,15 @@ When authentication is enabled, store `AUTHORIZED_EMAILS` as a Cloudflare secret
 - Optional user API keys are stored in browser `localStorage` for the configured transcriber flow;
   treat that as a convenience for local use, not as shared secret storage. They are excluded from
   project manifests, history, bundles and application logs.
+- Text-editor API keys are stricter session-only values. Only the configured endpoint, request mode,
+  language, and speaker-analysis choice may persist; the Text key is excluded from browser storage,
+  manifest/history, CAS/indexes, bundles, URLs, and logs.
 
 ## Video Timeline and Export
 
 - Imported files remain in typed video and audio source catalogs while timeline clips reference cropped source intervals.
-- The video sequence is gapless: deleting, trimming, or reordering a clip ripples later video media and video-ripple subtitle timing.
+- V4 video clips have explicit track/start placement. Ripple commands compact affected intervals;
+  absolute commands preserve unrelated starts and may leave gaps. Same-track clips cannot overlap.
 - A video clip exposes its linked audio waveform inside the clip. **Separate audio** disables that embedded contributor and creates an independent audio clip at the same canonical placement.
 - Imported audio creates an independent track at the playhead. Independent clips can be moved between tracks, trimmed, split, deleted, muted, soloed, faded, and mixed with clip/track gain.
 - Preview audio is rendered through one 48 kHz `AudioWorklet`; no hidden media element competes with the timeline clock. Export uses the same immutable mix plan and DSP.
@@ -185,8 +223,9 @@ When authentication is enabled, store `AUTHORIZED_EMAILS` as a Cloudflare secret
 - MP4 uses AAC audio and WebM uses Opus audio when the browser exposes the required encoders.
 - Constant-frame-rate sources use frame-accurate source sampling. Variable-frame-rate sources use their inspected average packet rate as a best-effort seek grid.
 
-The V3 document, timing domains, typed asset keys, and migration rules are documented in
-[`docs/editor-document-v3.md`](docs/editor-document-v3.md). Media runtime ownership, semantic
+The V4 graph, unified narrative, transcript CAS, links, bundle sidecars, and migration rules are
+documented in [`docs/editor-document-v4.md`](docs/editor-document-v4.md). The legacy V3 contract is
+retained in [`docs/editor-document-v3.md`](docs/editor-document-v3.md). Media runtime ownership, semantic
 invalidation, cache budgets, export destinations, and persistence recovery are documented in
 [`docs/media-runtime-architecture.md`](docs/media-runtime-architecture.md).
 

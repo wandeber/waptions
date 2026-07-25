@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Volume2, VolumeX } from 'lucide-react';
+import { Link2, Volume2, VolumeX } from 'lucide-react';
 import type { AudioClip, RationalFrameRate } from '@/types/video';
 import type { WaveformPeaks } from '@/lib/video-waveform';
 import { framesToSeconds, secondsToFrames } from '@/lib/render-profile';
@@ -72,10 +72,11 @@ export function TimelineAudioClip({
     validatePlacement,
 }: TimelineAudioClipProps) {
     const transactionCoordinator = useEditorTransactionCoordinator();
-    const { selectAudioClip, moveAudioClip, trimAudioClip } = useTimelineStore(useShallow((state) => ({
+    const { selectAudioClip, moveAudioClip, trimAudioClip, dependentLinks } = useTimelineStore(useShallow((state) => ({
         selectAudioClip: state.selectAudioClip,
         moveAudioClip: state.moveAudioClip,
         trimAudioClip: state.trimAudioClip,
+        dependentLinks: state.dependentLinks,
     })));
     const clipRef = useRef<HTMLDivElement>(null);
     const [draft, setDraft] = useState<AudioClipDraft | null>(null);
@@ -90,6 +91,11 @@ export function TimelineAudioClip({
         + sourceDuration * Math.max(0, previewStartFrame - clip.timelineStartFrame) / durationFrames;
     const previewWaveformEnd = waveformSourceEnd
         - sourceDuration * Math.max(0, clip.timelineStartFrame + durationFrames - previewEndFrame) / durationFrames;
+    const dependentLink = dependentLinks.find((link) => (
+        link.target.kind === 'audio-clip'
+        && link.target.trackId === trackId
+        && link.target.clipId === clip.id
+    ));
 
     const runPointerGesture = (
         event: React.PointerEvent,
@@ -257,7 +263,7 @@ export function TimelineAudioClip({
             data-testid="timeline-audio-clip"
             aria-disabled={trackLocked}
             aria-label={`${sourceName}, audio clip`}
-            title={`${sourceName} · ${framesToSeconds(previewStartFrame, frameRate).toFixed(2)}s`}
+            title={`${sourceName} · ${framesToSeconds(previewStartFrame, frameRate).toFixed(2)}s${dependentLink?.association.kind === 'transcript-bound' ? ' · Exact bound' : dependentLink ? ' · Overlap linked' : ''}`}
             className={`absolute bottom-1 top-1 overflow-hidden rounded border focus:outline-none focus:ring-2 focus:ring-teal-200 ${
                 draft?.invalid
                     ? 'border-red-400 bg-red-500/25'
@@ -297,6 +303,12 @@ export function TimelineAudioClip({
                     ? <VolumeX className="h-3 w-3 flex-none text-gray-400" />
                     : <Volume2 className="h-3 w-3 flex-none text-teal-100" />}
                 <span className="truncate text-[10px] font-semibold text-teal-50">{sourceName}</span>
+                {dependentLink?.association.kind === 'transcript-bound' && (
+                    <span className="rounded bg-violet-500/25 px-1 text-[8px] text-violet-100"><Link2 className="inline h-2 w-2" /> Exact</span>
+                )}
+                {dependentLink?.association.kind === 'overlap' && (
+                    <span className="rounded bg-teal-500/25 px-1 text-[8px] text-teal-100"><Link2 className="inline h-2 w-2" /> Overlap</span>
+                )}
             </div>
             <div
                 data-testid="audio-trim-left"

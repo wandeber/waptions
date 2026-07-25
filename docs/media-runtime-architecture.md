@@ -1,8 +1,9 @@
 # Media runtime architecture
 
-This document describes the implemented preview, waveform, export, and persistence runtime. The
-canonical project format remains `EditorDocumentV3`; caches, decoder sessions, and diagnostics are
-runtime-only state and are never serialized into a project manifest or `.waptions` bundle.
+This document describes the implemented preview, waveform, export, editorial PCM, and persistence
+runtime. The canonical project format is `EditorDocumentV4`; caches, decoder sessions, hydrated
+transcript bodies, PCM, and diagnostics are runtime-only state and are never serialized into a
+project manifest or `.waptions` bundle.
 
 ## Runtime ownership
 
@@ -19,6 +20,9 @@ Every expensive browser resource has one explicit owner:
   and current pooled canvas. Disposal closes the input first, then awaits iterator cleanup.
 - Export owns an immutable document snapshot, a separate sequential video session, audio renderer,
   encoders, and destination. It never inserts frames into the preview cache.
+- Editorial full-source PCM preparation owns a dedicated Mediabunny input/track/sink and module
+  worker. Quiet-boundary refinement owns a separate bounded decoder invocation and never decodes a
+  whole source merely to inspect one window.
 - Whole-project diarization owns a detached frozen document snapshot, a bounded timeline audio
   renderer, one audio encoder/output, and the resulting compact in-memory Blob until its single
   transcription request settles.
@@ -28,13 +32,49 @@ Every expensive browser resource has one explicit owner:
 Late decoder or bitmap results carry a generation. A result from a cleared, replaced, aborted, or
 disposed generation is rejected; any newly owned bitmap is closed before rejection.
 
+## Explicit V4 video placement
+
+Video clips carry a durable track and project start. Same-track clips cannot overlap, while clips
+on different tracks may overlap and every track may contain gaps. At a project frame, preview and
+export choose the first visible track containing a clip. With no visible clip, the compositor emits
+black while subtitles and audio continue through the shared content boundary.
+
+Moving a clip does not change its source/frame cache identity. Trimming or rematerializing changes
+only the affected source mapping. Native-frame crops remain authoritative, including Text partition
+seams and ordinary splits at fractional source rates.
+
+## Editorial source-zero PCM
+
+The Text workflow acquires exactly one full-source canonical WAV per request profile, independent
+of the number of retained crops or occurrences. Mediabunny selects the declared primary audio
+track, falling back to the first stable audio-track order only when no primary track exists. A
+source without audio produces a local no-audio transcript record and no provider request.
+
+Decoded timestamps are mapped to native sample indices, channel-mixed to mono, and resampled to
+16 kHz PCM16 from source-zero global phase. Timestamp gaps become zero samples; overlaps discard
+the repeated prefix. Output length is exactly `ceil(source duration * 16000)`, with zero padding or
+tail truncation as required. WAV encoding is deterministic and owns no detached/mixed timeline
+audio.
+
+Production resampling supports native 44.1 kHz and 48 kHz inputs through checked-in immutable
+polyphase coefficient tables. An unsupported native rate fails closed rather than generating a
+machine/runtime-dependent table. The current Mediabunny duration API exposes a JavaScript seconds
+value; Waptions converts that value's exact decimal representation to a rational before the final
+ceil operation instead of applying a floating epsilon.
+
+Quiet-assisted boundary refinement uses the same immutable coefficient tables and source-zero
+phase. The bounded decoder requests only the requested interval, caller padding, and the 64-tap
+filter support required to reproduce the corresponding slice of full-source output. It closes every
+owned sample and input on success, failure, or abort. Project attachment resolves files by immutable
+source fingerprint, so a stale or replaced source cannot satisfy a window request.
+
 ## Audio clock and semantic invalidation
 
 Preview time uses an integer, half-open 48 kHz project sample domain. The worklet converts that
 project cursor to the audio device sample rate and publishes the only playback clock while audible
 contributors exist. The animation-frame fallback does not compete with it.
 
-The editor projects the V3 document into three audio identities:
+The editor projects the V4 document into three audio identities:
 
 - `sourceCatalogKey`: source kind, ID, fingerprint, and whether a video actually exposes audio.
 - `audibleMixKey`: linked, detached, and imported contributor placement plus mute, solo, gain, and
@@ -163,7 +203,7 @@ provenance and extension metadata. It deliberately ignores unrelated tracks and 
 revision, but rejects audio edits or any mutation of a generated member. A stale result never
 publishes a partial set.
 
-The persistence coordinator keeps the newest failed V3 manifest and the exact typed `File` assets
+The persistence coordinator keeps the newest failed V4 manifest and the exact typed `File` assets
 needed by it. The status bar keeps `Changes not saved` visible after a transaction error. `Retry`
 replays that retained request; the error clears only after a confirmed `saved` event. Manifest and
 new source assets commit in one project-specific IndexedDB transaction, so a failed write leaves
@@ -179,5 +219,6 @@ send network telemetry, persist samples, or publish per-frame React state.
 
 The runtime contracts are covered by deterministic unit tests, direct execution of the shipped
 AudioWorklet and waveform-worker entrypoints, committed-media Chromium tests, and an exported-WebM
-round trip. See [testing.md](testing.md) for commands, fixtures, coverage thresholds, and the
-optional developer-media stress suite.
+round trip. Text adds an intercepted deterministic edit-max browser suite and a mandatory secure
+live reference-service gate. See [testing.md](testing.md) for commands, fixtures, coverage
+thresholds, and the optional developer-media stress suite.

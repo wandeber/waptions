@@ -1,26 +1,50 @@
 import type { Cut } from '@/lib/video-cut/core/types';
 import type { EditorPersistentAsset } from '@/lib/storage/storage-service';
-import type { AnimationStyle, Subtitle, SubtitleTrack } from '@/types/timeline';
+import type {
+    AnimationStyle,
+    Subtitle,
+    SubtitleTrack,
+    SubtitleTrackV4,
+    UnlinkedVideoEditResponse,
+} from '@/types/timeline';
 import type {
     AudioClipMixSettings,
     AudioSourceAsset,
     AudioTrack,
     EditorDocumentV3,
+    EditorDocumentV4,
+    EditorManifestV4,
     EditorManifestV3,
     RenderProfile,
     TrackTranscriptionProvenanceV3,
     TrackTranscriptionState,
     TranscriptionJobGuard,
-    TransientMediaSelection,
+    TransientMediaSelectionV4,
     VideoClip,
     VideoClipAudioSettings,
     VideoClipV3,
+    VideoClipV4,
     VideoSourceAsset,
-    VideoTrack,
+    VideoTrackV4,
 } from '@/types/video';
+import type {
+    EditorialDependentLinkV1,
+    EditorialTranscriptDescriptorV1,
+    GlobalEditingMode,
+    NarrativeDocumentV1,
+    TransientNarrativeSelectionV1,
+} from '@/types/editorial';
 import type { AudioGraphMutationImpact } from '@/lib/audio-graph-signature';
 import type { DiarizationJobGuard } from '@/lib/diarization-provenance';
 import type { SerializablePatch } from '@/lib/serializable-patch';
+import type { TimelineVideoTrack } from './timeline-v4-compat';
+import type {
+    ActivateNarrativeRequest,
+    TimelineEditorialLinkCommand,
+    TimelineNarrativeCommand,
+    TimelineOrdinaryCommand,
+    TimelineV4CommandResult,
+} from './timeline-v4-command-types';
 
 export interface TimelinePersistenceBinding {
     projectId: string;
@@ -30,17 +54,35 @@ export interface TimelinePersistenceBinding {
         sourceAssets: readonly EditorPersistentAsset[],
         history: TimelineHistoryRuntimeState,
     ) => void;
+    enqueueV4?: (
+        manifest: EditorManifestV4,
+        sourceAssets: readonly EditorPersistentAsset[],
+        history: TimelineHistoryRuntimeState,
+    ) => void;
 }
 
-export type TimelineVideoClip = VideoClipV3;
+/**
+ * Transitional public clip surface. Store normalization always supplies the V4 placement fields
+ * before document/history serialization; optionality keeps pre-WP8 component fixtures source
+ * compatible while their callers migrate from cumulative V3 placement.
+ */
+export type TimelineVideoClip = VideoClipV3
+    & Partial<Pick<VideoClipV4, 'trackId' | 'timelineStartFrame'>>;
+export type TimelineSubtitleTrack = SubtitleTrack
+    & Partial<Pick<SubtitleTrackV4, 'unlinkedVideoEditResponse'>>
+    & { timingDomain?: 'video-ripple' | 'absolute' };
+export type TimelineHistoryVideoTrack = Pick<VideoTrackV4, 'id' | 'name'>
+    & Partial<Pick<VideoTrackV4, 'visible' | 'locked'>>
+    & { clipIds?: string[] };
 
 export interface TimelineHistoryProjection {
-    tracks: SubtitleTrack[];
+    tracks: TimelineSubtitleTrack[];
     videoClips: TimelineVideoClip[];
-    videoTracks: VideoTrack[];
+    /** V4 projections omit the compatibility-only `clipIds`; V3 migration may still supply it. */
+    videoTracks: TimelineHistoryVideoTrack[];
     renderProfile: RenderProfile;
     audioTracks: AudioTrack[];
-    transientSelection: TransientMediaSelection;
+    transientSelection: TransientMediaSelectionV4;
     activeTrackId: string | null;
     selectedSubtitleIds: string[];
     lastSelectedId: string | null;
@@ -50,6 +92,10 @@ export interface TimelineHistoryProjection {
     rawTranscription: Subtitle[] | null;
     transcriptionGroups: { [key: string]: Subtitle[] } | null;
     transcriptionContainerIds: string[] | null;
+    globalEditingMode?: GlobalEditingMode;
+    editorialTranscriptDescriptors?: EditorialTranscriptDescriptorV1[];
+    narrative?: NarrativeDocumentV1 | null;
+    dependentLinks?: EditorialDependentLinkV1[];
 }
 
 export interface TimelineHistoryEntry {
@@ -114,7 +160,7 @@ export interface DiarizedTranscriptionMetadata {
 export interface TimelineStore {
     zoomLevel: number;
     scrollLeft: number;
-    tracks: SubtitleTrack[];
+    tracks: TimelineSubtitleTrack[];
     pixelsPerSecond: number;
     activeTrackId: string | null;
     selectedSubtitleIds: string[];
@@ -127,10 +173,14 @@ export interface TimelineStore {
     renderProfile: RenderProfile;
     videoSources: VideoSourceAsset[];
     videoClips: TimelineVideoClip[];
-    videoTracks: VideoTrack[];
+    videoTracks: TimelineVideoTrack[];
     audioSources: AudioSourceAsset[];
     audioTracks: AudioTrack[];
-    transientSelection: TransientMediaSelection;
+    transientSelection: TransientMediaSelectionV4;
+    globalEditingMode: GlobalEditingMode;
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    narrative: NarrativeDocumentV1 | null;
+    dependentLinks: EditorialDependentLinkV1[];
     transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
     lastSelectedId: string | null;
     snapEnabled: boolean;
@@ -165,7 +215,7 @@ export interface TimelineStore {
 
     setTracks: (tracks: SubtitleTrack[], options?: SetTracksOptions) => void;
     hydrateEditorDocument: (
-        document: EditorDocumentV3,
+        document: EditorDocumentV3 | EditorDocumentV4,
         historyState?: Pick<TimelineStore, 'history' | 'redoStack' | 'historySequence' | 'historyBytes'>,
     ) => void;
     resetEditorDocument: () => void;
@@ -183,9 +233,28 @@ export interface TimelineStore {
     reorderVideoClips: (orderedClipIds: string[]) => void;
     addVideoTrack: (name?: string, id?: string, insertionIndex?: number) => string;
     removeVideoTrack: (trackId: string) => void;
+    /** Canonical result-bearing video move used by pointer drag/drop. */
+    moveVideoClip: (
+        clipId: string,
+        targetTrackId: string,
+        targetStartFrame: number,
+    ) => TimelineV4CommandResult;
+    /** Atomically creates the destination lane and commits the requested horizontal placement. */
+    moveVideoClipToNewTrackAtFrame: (
+        clipId: string,
+        insertionIndex: number,
+        targetStartFrame: number,
+        id?: string,
+        name?: string,
+    ) => TimelineV4CommandResult;
     moveVideoClipToTrack: (clipId: string, targetTrackId: string) => void;
     moveVideoClipToNewTrack: (clipId: string, insertionIndex: number, id?: string, name?: string) => string;
     selectClip: (clipId: string | null) => void;
+    selectNarrativeRange: (
+        blockId: string,
+        sourceWordIds: readonly string[],
+        boundary?: TransientNarrativeSelectionV1['boundary'],
+    ) => boolean;
     selectAudioClip: (trackId: string, clipId: string) => void;
     moveAudioClip: (clipId: string, targetTrackId: string, timelineStartFrame: number) => void;
     trimAudioClip: (clipId: string, side: 'left' | 'right', timelineFrame: number) => void;
@@ -199,6 +268,10 @@ export interface TimelineStore {
     setAudioTrackLocked: (trackId: string, locked: boolean) => void;
     updateVideoClipAudio: (clipId: string, updates: Partial<VideoClipAudioSettings>) => void;
     setSubtitleTrackTimingDomain: (trackId: string, timingDomain: 'video-ripple' | 'absolute') => void;
+    setSubtitleTrackUnlinkedVideoEditResponse: (
+        trackId: string,
+        policy: UnlinkedVideoEditResponse,
+    ) => void;
     setTrackTranscriptionState: (trackId: string, provenance: TrackTranscriptionState | TrackTranscriptionProvenanceV3 | null) => void;
     createTranscriptionGuard: (trackId: string) => TranscriptionJobGuard | null;
     replaceTrackWithTranscription: (
@@ -214,8 +287,17 @@ export interface TimelineStore {
         guard: DiarizationJobGuard,
     ) => boolean;
     getTrackTranscriptionState: (trackId: string) => TrackTranscriptionProvenanceV3 | null;
+    /** Pre-WP8 compatibility projection; new state/persistence code uses the explicit V4 methods. */
     buildEditorDocument: () => EditorDocumentV3;
     buildEditorManifest: () => EditorManifestV3;
+    buildEditorDocumentV4: () => EditorDocumentV4;
+    buildEditorManifestV4: () => EditorManifestV4;
+    activateNarrative: (request: ActivateNarrativeRequest) => Promise<TimelineV4CommandResult>;
+    releaseNarrativeTracks: (trackIds: string[]) => Promise<TimelineV4CommandResult>;
+    executeNarrativeCommand: (request: TimelineNarrativeCommand) => Promise<TimelineV4CommandResult>;
+    executeEditorialLinkCommand: (request: TimelineEditorialLinkCommand) => TimelineV4CommandResult;
+    executeOrdinaryV4Command: (request: TimelineOrdinaryCommand) => TimelineV4CommandResult;
+    setGlobalEditingMode: (mode: GlobalEditingMode) => TimelineV4CommandResult;
     splitSelectedMediaAtFrame: (timelineFrame: number, rightClipId?: string) => void;
     deleteSelectedMedia: () => void;
     bumpRevision: () => number;

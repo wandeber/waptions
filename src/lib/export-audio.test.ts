@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { EditorDocumentV3 } from '@/types/video';
+import type { EditorDocumentV3, EditorDocumentV4 } from '@/types/video';
 
 const harness = vi.hoisted(() => ({
     outputs: [] as Array<{
@@ -244,6 +244,36 @@ function makeDocument(): EditorDocumentV3 {
     };
 }
 
+function makeV4Document(): EditorDocumentV4 {
+    const legacy = makeDocument();
+    legacy.videoSources[0].file = {
+        name: 'video.mp4',
+        type: 'video/mp4',
+        size: 1,
+        lastModified: 1,
+    } as File;
+    return {
+        ...legacy,
+        version: 4,
+        subtitleTracks: legacy.subtitleTracks.map(({ timingDomain, ...track }) => ({
+            ...track,
+            unlinkedVideoEditResponse: timingDomain === 'video-ripple'
+                ? 'follow-project-ripple'
+                : 'stay-absolute',
+        })),
+        videoTracks: [{ id: 'video_track_1', name: 'Video 1', visible: true, locked: false }],
+        videoClips: legacy.videoClips.map((clip) => ({
+            ...clip,
+            trackId: 'video_track_1',
+            timelineStartFrame: 1,
+        })),
+        globalEditingMode: 'ripple',
+        editorialTranscriptDescriptors: [],
+        narrative: null,
+        dependentLinks: [],
+    };
+}
+
 beforeEach(() => {
     runtimeDiagnostics.reset();
     harness.outputs.length = 0;
@@ -318,6 +348,15 @@ describe('v3 export timeline boundaries', () => {
             }],
         }];
         expect(getExportContentEndFrame(document)).toBe(5);
+    });
+
+    it('resolves explicit V4 gaps without treating clip-array order as placement', () => {
+        const document = makeV4Document();
+
+        expect(getExportContentEndFrame(document)).toBe(3);
+        expect(resolveExportVideoPlacement(document, 0)).toBeNull();
+        expect(resolveExportVideoPlacement(document, 1)?.clip.id).toBe('clip');
+        expect(resolveExportVideoPlacement(document, 2)).toBeNull();
     });
 
     it('omits the audio track completely when includeAudio is false', async () => {
@@ -583,6 +622,28 @@ describe('v3 export timeline boundaries', () => {
         expect(harness.outputs[0].cancel).toHaveBeenCalledTimes(1);
         expect(harness.outputs[0].finalize).not.toHaveBeenCalled();
         expect(runtimeDiagnostics.snapshot().counters.export.aborted).toBe(1);
+    });
+
+    it('cancels a V4 black-gap export and closes every acquired encoder resource', async () => {
+        const controller = new AbortController();
+        harness.onVideoAdd = () => controller.abort();
+
+        const result = await exportProject({
+            document: makeV4Document(),
+            destination: memoryDestination(),
+            options: {
+                format: 'mp4',
+                quality: 'high',
+                includeAudio: true,
+                signal: controller.signal,
+            },
+        });
+
+        expect(result).toEqual({ success: false, cancelled: true });
+        expect(harness.videoSources[0].close).toHaveBeenCalledTimes(1);
+        expect(harness.audioSources[0].close).toHaveBeenCalledTimes(1);
+        expect(harness.outputs[0].cancel).toHaveBeenCalledTimes(1);
+        expect(harness.videoSessions).toHaveLength(0);
     });
 
     it.each([

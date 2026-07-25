@@ -1,8 +1,8 @@
 import { AudioSample, type AudioSampleSource } from 'mediabunny';
-import type { EditorDocumentV3 } from '@/types/video';
 import {
     buildAudioMixPlan,
     type AudioMixContributor,
+    type AudioMixDocument,
 } from './audio-mix-plan';
 import {
     renderAudioMixWindow,
@@ -11,11 +11,12 @@ import {
     type RenderedAudioMix,
 } from './audio-dsp';
 import { MediabunnyAudioDecoder } from './mediabunny-audio-decoder';
+import type { TimelineAudioRuntimeDocument } from '@/types/timeline-audio-engine';
 
 export const DEFAULT_EXPORT_AUDIO_WINDOW_SAMPLES = 16_384;
 
 export interface TimelineAudioDecoder {
-    setDocument(document: EditorDocumentV3, generation: number): void;
+    setDocument(document: TimelineAudioRuntimeDocument, generation: number): void;
     decode(
         contributor: AudioMixContributor,
         request: DecodeAudioContributorRequest,
@@ -57,7 +58,7 @@ export class TimelineAudioRenderer {
     private disposed = false;
 
     constructor(
-        private readonly document: EditorDocumentV3,
+        private readonly document: AudioMixDocument,
         private readonly source: Pick<AudioSampleSource, 'add'>,
         dependencies: TimelineAudioRendererDependencies = {},
     ) {
@@ -166,7 +167,7 @@ export class TimelineAudioRenderer {
 
 /** Convenience wrapper used by exports that do not need to retain a renderer handle. */
 export async function renderTimelineAudio(
-    document: EditorDocumentV3,
+    document: AudioMixDocument,
     source: Pick<AudioSampleSource, 'add'>,
     options: TimelineAudioRenderOptions,
     dependencies: TimelineAudioRendererDependencies = {},

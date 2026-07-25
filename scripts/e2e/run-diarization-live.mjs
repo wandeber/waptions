@@ -27,8 +27,16 @@ import {
 } from './playwright-runtime.mjs';
 
 const execFileAsync = promisify(execFile);
-const SECURE_RUN_MARKER = 'waptions-secure-diarization-v1';
-const LIVE_SPEC = 'e2e/transcription-diarization.live.spec.ts';
+const TEXT_EDITOR_PROFILE = process.env.WAPTIONS_E2E_SECURE_PROFILE === 'text-editor';
+const PUBLIC_CALLER_PREFIX = TEXT_EDITOR_PROFILE
+  ? 'WAPTIONS_E2E_TEXT_EDITOR'
+  : 'WAPTIONS_E2E_DIARIZATION';
+const SECURE_RUN_MARKER = TEXT_EDITOR_PROFILE
+  ? 'waptions-secure-text-editor-v1'
+  : 'waptions-secure-diarization-v1';
+const LIVE_SPEC = TEXT_EDITOR_PROFILE
+  ? 'e2e/text-editor.live.spec.ts'
+  : 'e2e/transcription-diarization.live.spec.ts';
 const OLD_CALLER_VARIABLES = [
   'WAPTIONS_E2E_DIARIZATION_ENDPOINT',
   'WAPTIONS_E2E_DIARIZATION_API_KEY',
@@ -62,6 +70,8 @@ let artifactOutputPaths = [];
 let browserTemporaryRoot;
 let referenceRepository;
 let initialReferenceStatus;
+let waptionsRepository;
+let initialWaptionsStatus;
 let playwrightPassed = false;
 let failureMessage;
 
@@ -69,17 +79,19 @@ try {
   const caller = readCallerConfiguration(process.env);
   const validated = await validateCallerConfiguration(caller);
   throwIfTerminationRequested();
+  waptionsRepository = await realpath(process.cwd());
+  initialWaptionsStatus = await readGitStatus(waptionsRepository);
   referenceRepository = validated.referenceRepository;
   initialReferenceStatus = await readGitStatus(referenceRepository);
   if (initialReferenceStatus !== '') {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO must be a clean checkout.');
+    throw new Error(`${publicCallerVariable('REFERENCE_REPO')} must be a clean checkout.`);
   }
 
   let templateEnvironment;
   try {
     templateEnvironment = parseEnv(await readFile(validated.templatePath, 'utf8'));
   } catch {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE could not be parsed safely.');
+    throw new Error(`${publicCallerVariable('REFERENCE_TEMPLATE')} could not be parsed safely.`);
   }
   throwIfTerminationRequested();
 
@@ -88,7 +100,10 @@ try {
   CHILD_CREDENTIAL_VARIABLES.forEach((name) => delete process.env[name]);
   ephemeralKey = randomBytes(32).toString('base64url');
   const keyDigest = createHash('sha256').update(ephemeralKey, 'utf8').digest('hex');
-  artifactRoot = await mkdtemp(path.join(tmpdir(), 'waptions-diarization-live-'));
+  artifactRoot = await mkdtemp(path.join(
+    tmpdir(),
+    TEXT_EDITOR_PROFILE ? 'waptions-text-editor-live-' : 'waptions-diarization-live-',
+  ));
   // Seed the raw path before canonical expansion: even a realpath failure must be safe to report.
   artifactOutputPaths = [artifactRoot];
   artifactOutputPaths = [...new Set([
@@ -138,10 +153,13 @@ try {
     apiKey: ephemeralKey,
     model: caller.model,
     processRecord: apiProcess,
+    requireDiarization: !TEXT_EDITOR_PROFILE,
   });
   throwIfTerminationRequested();
 
-  nextRun = await createIsolatedNextRun('playwright-diarization');
+  nextRun = await createIsolatedNextRun(
+    TEXT_EDITOR_PROFILE ? 'playwright-text-editor-live' : 'playwright-diarization',
+  );
   throwIfTerminationRequested();
   const outputDir = path.join(artifactRoot, 'test-results');
   const reportDir = path.join(artifactRoot, 'playwright-report');
@@ -152,14 +170,23 @@ try {
 
   const playwrightEnvironment = { ...process.env };
   CHILD_CREDENTIAL_VARIABLES.forEach((name) => delete playwrightEnvironment[name]);
-  Object.assign(playwrightEnvironment, {
-    WAPTIONS_E2E_PORT: String(nextServer.port),
+  const scenarioEnvironment = TEXT_EDITOR_PROFILE ? {
+    WAPTIONS_E2E_TEXT_EDITOR_SECURE_RUN: SECURE_RUN_MARKER,
+    WAPTIONS_E2E_TEXT_EDITOR_ENDPOINT: apiEndpoint,
+    WAPTIONS_E2E_TEXT_EDITOR_API_KEY: ephemeralKey,
+    WAPTIONS_E2E_TEXT_EDITOR_API_KEY_SHA256: keyDigest,
+    WAPTIONS_E2E_TEXT_EDITOR_MEDIA: validated.mediaPath,
+  } : {
     WAPTIONS_E2E_DIARIZATION_SECURE_RUN: SECURE_RUN_MARKER,
     WAPTIONS_E2E_DIARIZATION_ENDPOINT: apiEndpoint,
     WAPTIONS_E2E_DIARIZATION_API_KEY: ephemeralKey,
     WAPTIONS_E2E_DIARIZATION_API_KEY_SHA256: keyDigest,
     WAPTIONS_E2E_DIARIZATION_MODEL: caller.model,
     WAPTIONS_E2E_DIARIZATION_MEDIA: validated.mediaPath,
+  };
+  Object.assign(playwrightEnvironment, {
+    WAPTIONS_E2E_PORT: String(nextServer.port),
+    ...scenarioEnvironment,
     // Playwright browser profiles can serialize localStorage. Keep them under the invocation root
     // so the exact-secret scanner covers them before the root is retained or purged.
     TMPDIR: browserTemporaryRoot,
@@ -209,7 +236,7 @@ try {
       failureMessage ??= 'The isolated Waptions compiler state could not be removed.';
     }
     try {
-      if (apiProcess && apiEndpoint && ephemeralKey) {
+      if (!TEXT_EDITOR_PROFILE && apiProcess && apiEndpoint && ephemeralKey) {
         await waitForNoActiveDiarization(apiEndpoint, ephemeralKey, apiProcess);
       }
     } catch {
@@ -234,6 +261,16 @@ try {
       }
     } catch {
       failureMessage ??= 'The reference checkout could not be revalidated after the run.';
+    }
+    try {
+      if (waptionsRepository && initialWaptionsStatus !== undefined) {
+        const finalWaptionsStatus = await readGitStatus(waptionsRepository);
+        if (finalWaptionsStatus !== initialWaptionsStatus) {
+          failureMessage ??= 'The Waptions checkout changed outside the invocation baseline.';
+        }
+      }
+    } catch {
+      failureMessage ??= 'The Waptions checkout could not be revalidated after the run.';
     }
 
     if (artifactRoot && ephemeralKey && !ownedProcessesStopped) {
@@ -314,35 +351,35 @@ function readCallerConfiguration(environment) {
 
 async function validateCallerConfiguration(caller) {
   if (!path.isAbsolute(caller.referenceRepository)) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO must be an absolute path.');
+    throw new Error(`${publicCallerVariable('REFERENCE_REPO')} must be an absolute path.`);
   }
   const referenceRepository = await realpath(caller.referenceRepository).catch(() => {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO is unavailable.');
+    throw new Error(`${publicCallerVariable('REFERENCE_REPO')} is unavailable.`);
   });
   const referenceStats = await lstat(referenceRepository);
   if (!referenceStats.isDirectory()) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO must identify a checkout directory.');
+    throw new Error(`${publicCallerVariable('REFERENCE_REPO')} must identify a checkout directory.`);
   }
   const gitTopLevel = await runGit(referenceRepository, ['rev-parse', '--show-toplevel'], 'reference checkout');
   if (await realpath(gitTopLevel.trim()) !== referenceRepository) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_REPO must identify the checkout root.');
+    throw new Error(`${publicCallerVariable('REFERENCE_REPO')} must identify the checkout root.`);
   }
 
   const requestedTemplate = caller.template ?? path.join(referenceRepository, '.env.apple.example');
   if (caller.template && !path.isAbsolute(caller.template)) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE must be an absolute path.');
+    throw new Error(`${publicCallerVariable('REFERENCE_TEMPLATE')} must be an absolute path.`);
   }
   if (path.basename(requestedTemplate) === '.env') {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE cannot select .env.');
+    throw new Error(`${publicCallerVariable('REFERENCE_TEMPLATE')} cannot select .env.`);
   }
   const templatePath = await realpath(requestedTemplate).catch(() => {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE is unavailable.');
+    throw new Error(`${publicCallerVariable('REFERENCE_TEMPLATE')} is unavailable.`);
   });
   if (path.basename(templatePath) === '.env') {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE cannot resolve to .env.');
+    throw new Error(`${publicCallerVariable('REFERENCE_TEMPLATE')} cannot resolve to .env.`);
   }
   if (!isInside(referenceRepository, templatePath)) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_TEMPLATE must stay inside the reference checkout.');
+    throw new Error(`${publicCallerVariable('REFERENCE_TEMPLATE')} must stay inside the reference checkout.`);
   }
   const templateRelativePath = path.relative(referenceRepository, templatePath);
   await runGit(referenceRepository, ['ls-files', '--error-unmatch', '--', templateRelativePath], 'tracked template');
@@ -352,38 +389,38 @@ async function validateCallerConfiguration(caller) {
     : path.join(referenceRepository, '.venv', 'bin', 'python');
   const requestedPython = caller.python ?? defaultPython;
   if (!path.isAbsolute(requestedPython)) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_PYTHON must be an absolute path.');
+    throw new Error(`${publicCallerVariable('REFERENCE_PYTHON')} must be an absolute path.`);
   }
   // Keep the validated launcher path for spawn. Canonicalizing `.venv/bin/python` to its Homebrew
   // target discards Python's symlink-based virtualenv prefix detection and loses venv packages.
   const pythonPath = path.resolve(requestedPython);
   const resolvedPythonTarget = await realpath(pythonPath).catch(() => {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_PYTHON is unavailable.');
+    throw new Error(`${publicCallerVariable('REFERENCE_PYTHON')} is unavailable.`);
   });
   const resolvedPythonStats = await lstat(resolvedPythonTarget);
   if (!resolvedPythonStats.isFile()) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_PYTHON must resolve to a file.');
+    throw new Error(`${publicCallerVariable('REFERENCE_PYTHON')} must resolve to a file.`);
   }
   await access(pythonPath, process.platform === 'win32' ? fsConstants.R_OK : fsConstants.X_OK).catch(() => {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_REFERENCE_PYTHON is not executable.');
+    throw new Error(`${publicCallerVariable('REFERENCE_PYTHON')} is not executable.`);
   });
 
   if (!path.isAbsolute(caller.media)) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_MEDIA must be an absolute path.');
+    throw new Error(`${publicCallerVariable('MEDIA')} must be an absolute path.`);
   }
   const mediaPath = await realpath(caller.media).catch(() => {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_MEDIA is unavailable.');
+    throw new Error(`${publicCallerVariable('MEDIA')} is unavailable.`);
   });
   const mediaStats = await lstat(mediaPath);
   if (!mediaStats.isFile()) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_MEDIA must identify a regular file.');
+    throw new Error(`${publicCallerVariable('MEDIA')} must identify a regular file.`);
   }
   await access(mediaPath, fsConstants.R_OK).catch(() => {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_MEDIA is not readable.');
+    throw new Error(`${publicCallerVariable('MEDIA')} is not readable.`);
   });
   const waptionsRepository = await realpath(process.cwd());
   if (isInside(referenceRepository, mediaPath) || isInside(waptionsRepository, mediaPath)) {
-    throw new Error('WAPTIONS_E2E_DIARIZATION_MEDIA must resolve outside both repositories.');
+    throw new Error(`${publicCallerVariable('MEDIA')} must resolve outside both repositories.`);
   }
 
   return { referenceRepository, templatePath, pythonPath, mediaPath };
@@ -472,7 +509,13 @@ function createManagedProcessRecord(child, secret, artifactPaths, selectedExit) 
   return record;
 }
 
-async function waitForReferenceReadiness({ endpoint, apiKey, model, processRecord }) {
+async function waitForReferenceReadiness({
+  endpoint,
+  apiKey,
+  model,
+  processRecord,
+  requireDiarization,
+}) {
   const baseUrl = new URL(endpoint);
   baseUrl.pathname = '/healthz';
   baseUrl.search = '';
@@ -484,7 +527,7 @@ async function waitForReferenceReadiness({ endpoint, apiKey, model, processRecor
     if (processRecord.exited) throw new Error('The fresh reference service exited before readiness.');
     const health = await fetchAuthenticatedJson(baseUrl, apiKey);
     if (health) {
-      lastFailedField = readFailedHealthField(health) ?? '';
+      lastFailedField = requireDiarization ? readFailedHealthField(health) ?? '' : readFailedServiceField(health) ?? '';
       if (!lastFailedField) {
         const models = await fetchAuthenticatedJson(modelsUrl, apiKey);
         if (models && Array.isArray(models.data)
@@ -497,6 +540,10 @@ async function waitForReferenceReadiness({ endpoint, apiKey, model, processRecor
     await delay(250);
   }
   throw new Error(`Reference readiness failed at ${lastFailedField}.`);
+}
+
+function readFailedServiceField(health) {
+  return health && typeof health === 'object' && health.status === 'ok' ? null : 'status';
 }
 
 function readFailedHealthField(health) {
@@ -597,8 +644,12 @@ function isInside(root, candidate) {
     || (!relativePath.startsWith(`..${path.sep}`) && relativePath !== '..' && !path.isAbsolute(relativePath));
 }
 
+function publicCallerVariable(suffix) {
+  return `${PUBLIC_CALLER_PREFIX}_${suffix}`;
+}
+
 function safeFailureMessage(error, secret, artifactPaths) {
-  const fallback = 'The secure live diarization runner failed.';
+  const fallback = 'The secure live E2E runner failed.';
   if (!(error instanceof Error)) return fallback;
   const message = error.message || fallback;
   if (!secret) return message;

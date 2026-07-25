@@ -5,6 +5,7 @@ import { DraggableNumberInput } from '@/components/design-system/DraggableNumber
 import { secondsToFrames } from '@/lib/render-profile';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useShallow } from 'zustand/react/shallow';
+import { EditorialTargetLinkPanel } from './text-editor/EditorialTargetLinkPanel';
 
 interface DraggableSettingProps {
     label: string;
@@ -146,7 +147,9 @@ export function MediaInspector() {
             secondsToFrames(videoClip.sourceEnd - videoClip.sourceStart, renderProfile.fps, 'nearest'),
         );
         const detached = settings?.linkState === 'detached';
-        const selectedVideoTrack = videoTracks.find((track) => track.clipIds.includes(videoClip.id));
+        const selectedVideoTrack = videoTracks.find((track) => (
+            track.id === videoClip.trackId || track.clipIds.includes(videoClip.id)
+        ));
         return (
             <section data-testid="media-inspector" className="grid gap-4 p-4">
                 <div>
@@ -222,6 +225,11 @@ export function MediaInspector() {
                         />
                     </>
                 )}
+                <EditorialTargetLinkPanel
+                    target={{ kind: 'video-clip', clipId: videoClip.id }}
+                    targetLabel={`Video · ${videoSource.originalName}`}
+                    locked={selectedVideoTrack?.locked ?? false}
+                />
             </section>
         );
     }
@@ -357,6 +365,15 @@ export function MediaInspector() {
                     onCommit={(next) => updateAudioClipMix(audioClip.id, 'fadeOutSamples' in audioClip
                         ? { fadeOutSamples: persistFade(next) }
                         : { fadeOutFrames: next })}
+                />
+                <EditorialTargetLinkPanel
+                    target={{
+                        kind: 'audio-clip',
+                        trackId: selectedAudioTrack.id,
+                        clipId: audioClip.id,
+                    }}
+                    targetLabel={`Audio · ${sourceName}`}
+                    locked={locked}
                 />
             </section>
         );

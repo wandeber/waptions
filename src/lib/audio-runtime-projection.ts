@@ -1,11 +1,28 @@
-import { buildAudioMixPlan, type AudioMixPlan } from './audio-mix-plan';
+import {
+    buildAudioMixPlan,
+    type AudioMixDocument,
+    type AudioMixPlan,
+} from './audio-mix-plan';
 import type { TimelineAudioEngineSnapshot } from '@/types/timeline-audio-engine';
-import type { EditorDocumentV3 } from '@/types/video';
+import type {
+    AudioSourceAsset,
+    AudioTrack,
+    RenderProfile,
+    VideoClipV3,
+    VideoClipV4,
+    VideoSourceAssetV3,
+    VideoTrack,
+    VideoTrackV4,
+} from '@/types/video';
 
-export type TimelineAudioRuntimeDocumentInput = Pick<
-    EditorDocumentV3,
-    'renderProfile' | 'videoSources' | 'videoClips' | 'audioSources' | 'audioTracks'
->;
+export interface TimelineAudioRuntimeDocumentInput {
+    renderProfile: RenderProfile;
+    videoSources: VideoSourceAssetV3[];
+    videoClips: VideoClipV3[] | VideoClipV4[];
+    videoTracks: VideoTrack[] | VideoTrackV4[];
+    audioSources: AudioSourceAsset[];
+    audioTracks: AudioTrack[];
+}
 
 interface AudioRuntimeSourceIdentity {
     kind: 'audio-source' | 'video-source-audio';
@@ -28,7 +45,10 @@ export function buildTimelineAudioRuntimeSnapshot(
     if (!Number.isSafeInteger(contentEndSample) || contentEndSample < 0) {
         throw new RangeError('Audio content end must be a non-negative safe integer.');
     }
-    const mixPlan = buildAudioMixPlan(document);
+    // The store transition is incremental, so this adapter exposes correlated V3/V4 arrays as
+    // unions. buildAudioMixPlan performs the explicit-clip shape check and fails closed if a
+    // caller ever supplies a mixed graph rather than one complete document version.
+    const mixPlan = buildAudioMixPlan(document as AudioMixDocument);
     const sourceIdentities = collectSourceIdentities(document);
     const fingerprintsByIdentity = new Map(sourceIdentities.map((source) => [
         `${source.kind}:${source.id}`,

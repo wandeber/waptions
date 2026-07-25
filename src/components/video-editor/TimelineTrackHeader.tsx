@@ -1,6 +1,6 @@
 'use client';
 
-import { SubtitleTrack } from '@/types/timeline';
+import type { TimelineSubtitleTrack } from '@/stores/timeline-store-types';
 import { Captions, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { Button } from '../design-system/Button';
 import { ConfirmDialog } from '../design-system/ConfirmDialog';
@@ -10,21 +10,29 @@ import { InlineEditor } from '../design-system/InlineEditor';
 import { useShallow } from 'zustand/react/shallow';
 
 interface TimelineTrackHeaderProps {
-    track: SubtitleTrack;
+    track: TimelineSubtitleTrack;
     onToggleVisibility: (id: string) => void;
     isActive: boolean;
     onClick: () => void;
 }
 
 export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onClick }: TimelineTrackHeaderProps) {
-    const { removeTrack, trackCount, updateTrackName } = useTimelineStore(useShallow((state) => ({
+    const {
+        removeTrack,
+        trackCount,
+        updateTrackName,
+        setSubtitleTrackUnlinkedVideoEditResponse,
+    } = useTimelineStore(useShallow((state) => ({
         removeTrack: state.removeTrack,
         trackCount: state.tracks.length,
         updateTrackName: state.updateTrackName,
+        setSubtitleTrackUnlinkedVideoEditResponse: state.setSubtitleTrackUnlinkedVideoEditResponse,
     })));
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     const isOnlyTrack = trackCount <= 1;
+    const unlinkedResponse = track.unlinkedVideoEditResponse
+        ?? (track.timingDomain === 'video-ripple' ? 'follow-project-ripple' : 'stay-absolute');
 
     const handleDeleteClick = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -39,21 +47,20 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
 
     return (
         <div
-            className={`relative flex h-full cursor-pointer items-center gap-2 border-b border-slate-800 px-2.5 transition-colors duration-150
+            className={`relative flex h-full cursor-pointer flex-col justify-center gap-0.5 border-b border-slate-800 px-2 transition-colors duration-150
                 ${isActive ? 'bg-violet-500/10 shadow-[inset_3px_0_0_0_#a78bfa]' : 'bg-slate-950 hover:bg-slate-900'}`}
             onClick={onClick}
         >
-            <Captions className={`h-3.5 w-3.5 flex-none ${isActive ? 'text-violet-300' : 'text-slate-500'}`} />
-            <div className="flex-1 min-w-0">
-                <InlineEditor
-                    initialValue={track.name}
-                    onSave={(val) => updateTrackName(track.id, val)}
-                    textClassName="text-xs font-medium text-slate-300"
-                    inputClassName="text-xs font-medium h-6"
-                />
-            </div>
-
-            <div className="flex items-center gap-0.5">
+            <div className="flex w-full min-w-0 items-center gap-1.5">
+                <Captions className={`h-3.5 w-3.5 flex-none ${isActive ? 'text-violet-300' : 'text-slate-500'}`} />
+                <div className="min-w-0 flex-1">
+                    <InlineEditor
+                        initialValue={track.name}
+                        onSave={(val) => updateTrackName(track.id, val)}
+                        textClassName="text-xs font-medium text-slate-300"
+                        inputClassName="text-xs font-medium h-6"
+                    />
+                </div>
                 <Button
                     variant="ghost"
                     size="sm"
@@ -64,7 +71,6 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
                 >
                     {track.isVisible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
                 </Button>
-
                 <Button
                     variant="ghost"
                     size="sm"
@@ -77,6 +83,25 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
                     <Trash2 className="h-3.5 w-3.5" />
                 </Button>
             </div>
+            <button
+                type="button"
+                className="w-full truncate rounded border border-violet-500/20 bg-violet-500/5 px-1.5 py-0.5 text-left text-[9px] text-violet-200 hover:bg-violet-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400"
+                title={unlinkedResponse === 'follow-project-ripple'
+                    ? 'Unlinked cues follow uncontrolled video ripple. Click to keep them absolute.'
+                    : 'Unlinked cues stay absolute during uncontrolled video ripple. Click to make them follow.'}
+                aria-label={`${track.name} unlinked video edit response: ${unlinkedResponse === 'follow-project-ripple' ? 'follow project ripple' : 'stay absolute'}`}
+                onClick={(event) => {
+                    event.stopPropagation();
+                    setSubtitleTrackUnlinkedVideoEditResponse(
+                        track.id,
+                        unlinkedResponse === 'follow-project-ripple'
+                            ? 'stay-absolute'
+                            : 'follow-project-ripple',
+                    );
+                }}
+            >
+                Unlinked: {unlinkedResponse === 'follow-project-ripple' ? 'follow ripple' : 'stay absolute'}
+            </button>
 
             <ConfirmDialog
                 isOpen={showDeleteConfirm}

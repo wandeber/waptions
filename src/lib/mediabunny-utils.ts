@@ -85,17 +85,26 @@ const defaultAudioExtractionDependencies: AudioExtractionDependencies = {
 };
 
 function normalizeFrameRate(averagePacketRate: number): number {
-    let fps = averagePacketRate;
     // Container packet clocks introduce small floating-point deviations around common rates.
-    // Snapping here keeps imports deterministic without changing genuinely unusual frame rates.
-    const commonFrameRates = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
-    for (const common of commonFrameRates) {
-        if (Math.abs(fps - common) < 0.1) {
-            fps = common;
-            break;
-        }
-    }
-    return fps;
+    // Pick the nearest candidate because broadcast and integer rates are closer than the
+    // tolerance (for example, 29.97 and 30). The broadcast entries retain their exact rational
+    // values so source-frame crops and the render profile use the same authoritative grid.
+    const commonFrameRates = [
+        24_000 / 1_001,
+        24,
+        25,
+        30_000 / 1_001,
+        30,
+        50,
+        60_000 / 1_001,
+        60,
+    ];
+    const nearest = commonFrameRates.reduce((best, candidate) => (
+        Math.abs(candidate - averagePacketRate) < Math.abs(best - averagePacketRate)
+            ? candidate
+            : best
+    ));
+    return Math.abs(nearest - averagePacketRate) < 0.1 ? nearest : averagePacketRate;
 }
 
 /**

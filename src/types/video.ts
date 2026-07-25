@@ -1,4 +1,11 @@
-import type { Subtitle, SubtitleTrack } from './timeline';
+import type {
+    EditorialDependentLinkV1,
+    EditorialTranscriptDescriptorV1,
+    GlobalEditingMode,
+    NarrativeDocumentV1,
+    TransientNarrativeSelectionV1,
+} from './editorial';
+import type { Subtitle, SubtitleTrack, SubtitleTrackV4 } from './timeline';
 
 export interface VideoSourceDescriptor {
     id: string;
@@ -98,6 +105,38 @@ export interface VideoTrack {
     id: string;
     name: string;
     clipIds: string[];
+}
+
+/**
+ * Explicit V4 video-layer descriptor.
+ *
+ * Array order is the top-to-bottom visual stacking order. Visibility affects only visual
+ * compositing, while `locked` prevents both direct edits and required follower mutations.
+ * Clip ownership and placement live on VideoClipV4 rather than in a second track-local list.
+ */
+export interface VideoTrackV4 {
+    id: string;
+    name: string;
+    visible: boolean;
+    locked: boolean;
+}
+
+/**
+ * Explicit V4 video occurrence.
+ *
+ * `timelineStartFrame` and `trackId` are durable graph authorities. V4 playback, preview,
+ * audio, duration, and export must not reconstruct either value from clip-array order or from
+ * the legacy V3 lane membership lists. Source bounds remain seconds because decoded source
+ * media uses time-based timestamps; output placement remains an integer frame.
+ */
+export interface VideoClipV4 {
+    id: string;
+    sourceId: string;
+    trackId: string;
+    timelineStartFrame: number;
+    sourceStart: number;
+    sourceEnd: number;
+    audio: VideoClipAudioSettings | null;
 }
 
 export interface AudioSourceDescriptor {
@@ -239,6 +278,69 @@ export interface EditorManifestV3 {
     audioTracks: AudioTrack[];
     activeSubtitleTrackId: string | null;
     transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
+}
+
+/**
+ * V4 keeps the existing stable media selections and adds one narrative projection.
+ * Transient selection is runtime UI state and is intentionally absent from EditorManifestV4.
+ */
+export type TransientMediaSelectionV4 = TransientMediaSelection | TransientNarrativeSelectionV1;
+
+/**
+ * Runtime V4 editor graph.
+ *
+ * The document contains source File objects and transient selection because it is an in-memory
+ * editor projection, but it remains descriptor-only for editorial transcripts. Verified
+ * EditorialTranscriptRecordBodyV1 values are injected separately through the runtime resolver;
+ * adding them to this interface would leak transcript text into history/autosave serialization.
+ */
+export interface EditorDocumentV4 {
+    version: 4;
+    revision: number;
+    audioGraphRevision: number;
+    renderProfile: RenderProfile;
+    subtitleTracks: SubtitleTrackV4[];
+    videoSources: VideoSourceAssetV3[];
+    videoClips: VideoClipV4[];
+    videoTracks: VideoTrackV4[];
+    audioSources: AudioSourceAsset[];
+    audioTracks: AudioTrack[];
+    activeSubtitleTrackId: string | null;
+    transientSelection: TransientMediaSelectionV4;
+    /** This remains subtitle-generation provenance and never stores editorial record IDs. */
+    transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
+    globalEditingMode: GlobalEditingMode;
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    narrative: NarrativeDocumentV1 | null;
+    dependentLinks: EditorialDependentLinkV1[];
+}
+
+/**
+ * Persisted V4 project graph and bundle-manifest payload.
+ *
+ * Only transcript descriptors and stable narrative/link IDs cross this boundary. Canonical
+ * transcript bodies are stored in the separate immutable CAS (or bounded bundle sidecars), and
+ * session-only endpoint credentials are absent unconditionally. Source File objects and
+ * transient selection stay in EditorDocumentV4 and are likewise excluded here.
+ */
+export interface EditorManifestV4 {
+    version: 4;
+    revision: number;
+    audioGraphRevision: number;
+    renderProfile: RenderProfile;
+    subtitleTracks: SubtitleTrackV4[];
+    videoSourceDescriptors: VideoSourceDescriptorV3[];
+    videoClips: VideoClipV4[];
+    videoTracks: VideoTrackV4[];
+    audioSourceDescriptors: AudioSourceDescriptor[];
+    audioTracks: AudioTrack[];
+    activeSubtitleTrackId: string | null;
+    /** This remains subtitle-generation provenance and never stores editorial record IDs. */
+    transcriptionByTrackId: Record<string, TrackTranscriptionProvenanceV3>;
+    globalEditingMode: GlobalEditingMode;
+    editorialTranscriptDescriptors: EditorialTranscriptDescriptorV1[];
+    narrative: NarrativeDocumentV1 | null;
+    dependentLinks: EditorialDependentLinkV1[];
 }
 
 export type EditorDocumentV3ValidationCode =

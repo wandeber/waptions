@@ -4,6 +4,7 @@ import type {
     AudioTrack,
     ClipPlacement,
     EditorDocumentV2,
+    EditorDocumentV4,
     MediaEditResult,
     RationalFrameRate,
     RenderProfile,
@@ -16,9 +17,12 @@ import type {
     VideoDocumentValidationResult,
     VideoSourceAsset,
     VideoSourceDescriptor,
+    VideoTrack,
+    VideoTrackV4,
 } from '@/types/video';
 import { frameToOutputSample, nativeBoundaryToOutputSample, outputSampleToCoveringFrame } from './audio-timebase';
 import { framesToSeconds, secondsToFrames } from './render-profile';
+import { getVideoContentEndFrameV4 as getExplicitVideoContentEndFrameV4 } from './video-placement-v4';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const NUMERICAL_GUARD = 1e-9;
@@ -470,6 +474,90 @@ export function getTimelineContentEndFrame(
         0,
     );
     return Math.max(videoEndFrame, subtitleEndFrame, getIndependentAudioEndFrame(context));
+}
+
+export type TimelineDurationDocumentV4 = Pick<
+    EditorDocumentV4,
+    | 'renderProfile'
+    | 'videoSources'
+    | 'videoClips'
+    | 'videoTracks'
+    | 'audioSources'
+    | 'audioTracks'
+    | 'subtitleTracks'
+>;
+
+export interface TimelineRuntimeDurationDocument {
+    renderProfile: RenderProfile;
+    videoSources: readonly VideoSourceDescriptor[];
+    videoClips: readonly VideoClip[];
+    videoTracks: readonly (VideoTrack | VideoTrackV4)[];
+    audioSources: readonly AudioSourceDescriptor[];
+    audioTracks: readonly AudioTrack[];
+    subtitleTracks: readonly SubtitleTrack[];
+}
+
+/** Returns the maximum V4 tail across explicit video, independent audio, and subtitles. */
+export function getTimelineContentEndFrameV4(document: TimelineDurationDocumentV4): number {
+    const videoEndFrame = getExplicitVideoContentEndFrameV4(document);
+    const subtitleEndFrame = document.subtitleTracks.reduce(
+        (maximum, track) => track.subtitles.reduce(
+            (trackMaximum, subtitle) => Math.max(
+                trackMaximum,
+                secondsToFrames(Math.max(0, subtitle.endTime), document.renderProfile.fps, 'ceil'),
+            ),
+            maximum,
+        ),
+        0,
+    );
+    return Math.max(videoEndFrame, subtitleEndFrame, getIndependentAudioEndFrame({
+        audioTracks: document.audioTracks,
+        videoSources: document.videoSources,
+        audioSources: document.audioSources,
+        renderProfile: document.renderProfile,
+    }));
+}
+
+/** V4 duration projection where explicit gaps count and array order never does. */
+export function getTimelineDurationsV4(document: TimelineDurationDocumentV4): TimelineDurations {
+    const mediaDuration = framesToSeconds(
+        getExplicitVideoContentEndFrameV4(document),
+        document.renderProfile.fps,
+    );
+    const contentDuration = framesToSeconds(
+        getTimelineContentEndFrameV4(document),
+        document.renderProfile.fps,
+    );
+    return {
+        mediaDuration,
+        contentDuration,
+        viewDuration: contentDuration + VIEW_TAIL_SECONDS,
+    };
+}
+
+/**
+ * Version-adaptive boundary used by incremental store/audio integration.
+ *
+ * The explicit V4 shape is selected from durable track fields even for an empty clip catalog, so
+ * an empty V4 timeline with an audio/subtitle tail never falls through a cumulative video helper.
+ */
+export function getTimelineContentEndFrameForRuntime(
+    document: TimelineRuntimeDurationDocument,
+): number {
+    const firstTrack = document.videoTracks[0];
+    if (firstTrack && 'visible' in firstTrack && 'locked' in firstTrack) {
+        return getTimelineContentEndFrameV4(document as TimelineDurationDocumentV4);
+    }
+    return getTimelineContentEndFrame(
+        document.videoClips,
+        document.subtitleTracks,
+        {
+            audioTracks: document.audioTracks,
+            videoSources: document.videoSources,
+            audioSources: document.audioSources,
+            renderProfile: document.renderProfile,
+        },
+    );
 }
 
 export function resolveClipAtProjectTime(

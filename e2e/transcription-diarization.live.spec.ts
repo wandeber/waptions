@@ -282,16 +282,17 @@ test.describe('live whole-project speaker diarization', () => {
     if (!originalTargetTrackId) throw new Error('The imported project has no active subtitle track.');
 
     await openTranscriptionModal(page);
-    const localManifestId = await page.getByLabel('Model').inputValue();
-    await page.getByLabel('Runtime').selectOption('wasm');
-    await page.getByLabel('Language').selectOption('es');
-    await page.getByLabel(/Allow slow WASM fallback/).check();
+    const modal = page.getByRole('dialog', { name: /Configura tu transcriptor|Potencia tu contenido/ });
+    const localManifestId = await modal.getByLabel('Model').inputValue();
+    await modal.getByLabel('Runtime').selectOption('wasm');
+    await modal.getByLabel('Language').selectOption('es');
+    await modal.getByLabel(/Allow slow WASM fallback/).check();
     await page.getByTestId('transcription-route-custom-openai-compatible').click();
-    await page.getByRole('button', { name: /Server/ }).click();
-    await page.getByLabel('Endpoint').fill(config.endpoint);
-    await page.getByLabel('Model').fill(config.model);
-    await page.getByLabel('Optional API key').fill(config.apiKey);
-    await page.getByLabel('Speaker diarization').check();
+    await modal.getByRole('button', { name: /Server/ }).click();
+    await modal.getByLabel('Endpoint').fill(config.endpoint);
+    await modal.getByLabel('Model').fill(config.model);
+    await modal.getByLabel('Optional API key').fill(config.apiKey);
+    await modal.getByLabel('Speaker diarization').check();
 
     // Hash the stored key entirely inside page context. The raw value is never returned and the
     // expected key is never an evaluator parameter, assertion expectation, or diagnostic value.
@@ -334,11 +335,12 @@ test.describe('live whole-project speaker diarization', () => {
     await expect(page.locator('[data-testid="timeline-video-clip"], [data-testid="timeline-audio-clip"]'))
       .toHaveCount(1, { timeout: 120_000 });
     await openTranscriptionModal(page);
+    const restoredModal = page.getByRole('dialog', { name: /Configura tu transcriptor|Potencia tu contenido/ });
     await expect(page.getByTestId('transcription-route-custom-openai-compatible'))
       .toHaveAttribute('data-selected', 'true');
-    await expect(page.getByLabel('Endpoint')).toHaveValue(config.endpoint);
-    await expect(page.getByLabel('Model')).toHaveValue(config.model);
-    const restoredApiKeyDigest = await page.getByLabel('Optional API key').evaluate(async (input) => {
+    await expect(restoredModal.getByLabel('Endpoint')).toHaveValue(config.endpoint);
+    await expect(restoredModal.getByLabel('Model')).toHaveValue(config.model);
+    const restoredApiKeyDigest = await restoredModal.getByLabel('Optional API key').evaluate(async (input) => {
       const bytes = await window.crypto.subtle.digest(
         'SHA-256',
         new TextEncoder().encode((input as HTMLInputElement).value),
@@ -348,14 +350,14 @@ test.describe('live whole-project speaker diarization', () => {
         .join('');
     });
     expect(restoredApiKeyDigest).toBe(config.apiKeyDigest);
-    await expect(page.getByRole('button', { name: /Server/ })).toHaveClass(/border-blue-500/);
-    await expect(page.getByLabel('Speaker diarization')).toBeChecked();
+    await expect(restoredModal.getByRole('button', { name: /Server/ })).toHaveClass(/border-blue-500/);
+    await expect(restoredModal.getByLabel('Speaker diarization')).toBeChecked();
     await page.getByTestId('transcription-route-local-browser').click();
-    await expect(page.getByLabel('Model')).toHaveValue(localManifestId);
-    await expect(page.getByLabel('Runtime')).toHaveValue('wasm');
-    await expect(page.getByLabel('Language')).toHaveValue('es');
-    await expect(page.getByLabel(/Allow slow WASM fallback/)).toBeChecked();
-    await expect(page.getByLabel('Speaker diarization')).toHaveCount(0);
+    await expect(restoredModal.getByLabel('Model')).toHaveValue(localManifestId);
+    await expect(restoredModal.getByLabel('Runtime')).toHaveValue('wasm');
+    await expect(restoredModal.getByLabel('Language')).toHaveValue('es');
+    await expect(restoredModal.getByLabel(/Allow slow WASM fallback/)).toBeChecked();
+    await expect(restoredModal.getByLabel('Speaker diarization')).toHaveCount(0);
     await page.getByTestId('transcription-route-custom-openai-compatible').click();
 
     const preCommandManifest = await readDurableManifest(page, projectId);
