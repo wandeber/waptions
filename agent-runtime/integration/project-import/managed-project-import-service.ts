@@ -510,7 +510,9 @@ function sampleRange(value: unknown, label: string): { startSample: number; endS
 }
 
 function sampleIndex(value: unknown, label: string): number {
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} is invalid.`);
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`${label} is invalid.`);
+    }
     return value;
 }
 
