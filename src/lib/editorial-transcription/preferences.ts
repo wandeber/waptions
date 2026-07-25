@@ -2,6 +2,8 @@ import { normalizeEditorialTranscriptionEndpoint } from './endpoint';
 
 export const LEGACY_EDITORIAL_TRANSCRIPTION_PREFERENCES_KEY = 'waptions-editorial-transcription-v1';
 export const EDITORIAL_TRANSCRIPTION_PREFERENCES_KEY = 'waptions-editorial-transcription-v2';
+export const DEFAULT_EDITORIAL_TRANSCRIPTION_ENDPOINT =
+    'http://localhost:43556/v1/audio/transcriptions';
 
 export type EditorialTranscriptionRequestMode = 'browser' | 'server';
 
@@ -37,7 +39,7 @@ interface PersistedEditorialTranscriptionPreferencesV2 {
 
 export const DEFAULT_EDITORIAL_TRANSCRIPTION_PREFERENCES: EditorialTranscriptionPreferencesV1 = {
     version: 1,
-    endpoint: 'http://localhost:43556/v1/audio/transcriptions',
+    endpoint: DEFAULT_EDITORIAL_TRANSCRIPTION_ENDPOINT,
     requestMode: 'server',
     language: 'es',
     detectSpeakers: false,

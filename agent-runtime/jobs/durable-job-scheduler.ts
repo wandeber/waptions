@@ -80,6 +80,11 @@ export interface JobExecutionContext<Checkpoint> {
 }
 
 export interface DurableJobHandler<Input = unknown, Checkpoint = unknown, Result = unknown> {
+    /**
+     * Optional closed-schema guard run synchronously before the first durable enqueue write.
+     * Secret-bearing capability inputs must not rely on `run()`, which happens after persistence.
+     */
+    validateInput?(input: Input): void;
     run(input: Input, context: JobExecutionContext<Checkpoint>): Promise<{
         result: Result;
         artifactIds?: readonly string[];
@@ -178,6 +183,7 @@ export class DurableJobScheduler {
         if (!this.handlers.has(record.kind)) {
             throw managedError('INVALID_REQUEST', `No managed job handler is registered for ${record.kind}.`);
         }
+        this.handlers.get(record.kind)?.validateInput?.(record.input);
         validateJobValue(record.input, 'job input', 512 * 1024);
         const now = new Date().toISOString();
         const job: DurableJobRecord<Input> = {
