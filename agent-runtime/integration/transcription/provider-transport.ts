@@ -1,9 +1,13 @@
 import { Agent } from 'undici';
+import { resolve4, resolve6 } from 'node:dns/promises';
 import { MediaBudgetManager, type MediaBudgetLease } from '../../../src/lib/media-byte-source/budget-manager';
 import {
-    createServerTranscriptionTransport,
+    assertServerTranscriptionEndpointNetworkAllowedWithResolver,
+    isBlockedNetworkAddress,
+    isIpAddress,
     type ServerTranscriptionTransport,
 } from '../../../src/lib/ai/openai-compatible-transcription-server';
+import { resolveOpenAICompatibleTranscriptionUrl } from '../../../src/lib/ai/openai-compatible-transcription';
 import { parseEditMaxEditorialTranscript } from '../../../src/lib/editorial-transcription/edit-max-parser';
 import {
     EDITORIAL_TRANSCRIPTION_MODEL,
@@ -211,7 +215,7 @@ export class ManagedTranscriptionProvider implements ManagedTranscriptionProvide
         endpoint: ResolvedManagedEndpointCapability,
     ): Promise<ServerTranscriptionTransport> {
         if (endpoint.kind === 'server') {
-            return createServerTranscriptionTransport(
+            return createManagedServerTranscriptionTransport(
                 endpoint.endpoint,
                 this.fetchImpl as typeof fetch | undefined,
             );
@@ -259,6 +263,83 @@ export class ManagedTranscriptionProvider implements ManagedTranscriptionProvide
             dispose: async () => { await agent.close(); },
         };
     }
+}
+
+/**
+ * The managed runtime has a statically linked Node transport, so its provider graph never retains
+ * a deferred module load. It still delegates every endpoint check to the shared SSRF policy before
+ * pinning the address used by Undici's lookup callback.
+ */
+async function createManagedServerTranscriptionTransport(
+    endpoint: string,
+    fetchImpl?: typeof fetch,
+): Promise<ServerTranscriptionTransport> {
+    await assertServerTranscriptionEndpointNetworkAllowedWithResolver(
+        endpoint,
+        resolveManagedServerHostAddresses,
+    );
+    if (fetchImpl) return { fetch: fetchImpl, dispose: async () => undefined };
+
+    const url = new URL(resolveOpenAICompatibleTranscriptionUrl(endpoint));
+    const hostname = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+    const isDevelopmentLocalhost = process.env.NODE_ENV !== 'production'
+        && hostname === 'localhost';
+    let connect: {
+        lookup: (
+            hostname: string,
+            options: unknown,
+            callback: (error: Error | null, address: string, family: number) => void,
+        ) => void;
+    } | undefined;
+    if (!isDevelopmentLocalhost) {
+        const addresses = isIpAddress(hostname)
+            ? [hostname]
+            : await resolveManagedServerHostAddresses(hostname);
+        if (addresses.length === 0 || addresses.some(isBlockedNetworkAddress)) {
+            throw new Error('Managed server endpoint resolved to a blocked network.');
+        }
+        const pinnedAddress = [...addresses].sort()[0];
+        if (!pinnedAddress) {
+            throw new Error('Managed server endpoint resolved to a blocked network.');
+        }
+        const family = pinnedAddress.includes(':') ? 6 : 4;
+        connect = {
+            lookup: (
+                _hostname: string,
+                _options: unknown,
+                callback: (error: Error | null, address: string, family: number) => void,
+            ) => callback(null, pinnedAddress, family),
+        };
+    }
+    const agent = new Agent({
+        headersTimeout: EDITORIAL_PROVIDER_HEADERS_TIMEOUT_MS,
+        bodyTimeout: EDITORIAL_PROVIDER_BODY_TIMEOUT_MS,
+        ...(connect ? { connect } : {}),
+    });
+    return {
+        // Node's global fetch retains the incoming FormData/File brands; Undici's standalone fetch
+        // must not be used because a second implementation serializes them as "[object FormData]".
+        fetch: ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, {
+            ...init,
+            dispatcher: agent,
+            redirect: 'error',
+        } as RequestInit)) as typeof fetch,
+        dispose: async () => { await agent.close(); },
+    };
+}
+
+async function resolveManagedServerHostAddresses(hostname: string): Promise<readonly string[]> {
+    const [ipv4, ipv6] = await Promise.all([
+        resolve4(hostname).catch(error => isNoDataDnsError(error) ? [] : Promise.reject(error)),
+        resolve6(hostname).catch(error => isNoDataDnsError(error) ? [] : Promise.reject(error)),
+    ]);
+    return [...ipv4, ...ipv6];
+}
+
+function isNoDataDnsError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = Reflect.get(error, 'code');
+    return code === 'ENODATA' || code === 'ENOTFOUND' || code === 'EAI_NONAME';
 }
 
 function requireSpeakerLabel(

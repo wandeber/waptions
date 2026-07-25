@@ -43,9 +43,9 @@ export function assertServerTranscriptionEndpointAllowed(endpoint: string) {
  * the first gate; this second gate rejects DNS names that currently point at private, loopback,
  * link-local, multicast, unspecified, or cloud-metadata networks.
  */
-export async function assertServerTranscriptionEndpointNetworkAllowed(
+export async function assertServerTranscriptionEndpointNetworkAllowedWithResolver(
     endpoint: string,
-    resolveHost: (hostname: string) => Promise<readonly string[]> = resolveServerHostAddresses,
+    resolveHost: (hostname: string) => Promise<readonly string[]>,
 ): Promise<void> {
     assertServerTranscriptionEndpointAllowed(endpoint);
     const url = new URL(resolveOpenAICompatibleTranscriptionUrl(endpoint));
@@ -66,6 +66,15 @@ export async function assertServerTranscriptionEndpointNetworkAllowed(
     if (addresses.length === 0 || addresses.some(isBlockedNetworkAddress)) {
         throw new ValidationError("Server-mode transcription endpoint resolves to a blocked network.");
     }
+}
+
+export async function assertServerTranscriptionEndpointNetworkAllowed(
+    endpoint: string,
+): Promise<void> {
+    await assertServerTranscriptionEndpointNetworkAllowedWithResolver(
+        endpoint,
+        resolveServerHostAddresses,
+    );
 }
 
 export interface ServerTranscriptionTransport {
@@ -201,7 +210,7 @@ function isNoDataDnsError(error: unknown): boolean {
     return code === "ENODATA" || code === "ENOTFOUND" || code === "EAI_NONAME";
 }
 
-function isIpAddress(value: string): boolean {
+export function isIpAddress(value: string): boolean {
     return parseIpv4(value) !== null || value.includes(":");
 }
 

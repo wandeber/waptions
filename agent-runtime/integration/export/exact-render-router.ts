@@ -1,5 +1,6 @@
-import type {
-    HeadlessRenderBackendPort,
+import {
+    HeadlessRenderError,
+    type HeadlessRenderBackendPort,
 } from '../../render/contracts';
 import type { HeadlessRenderExecutionPort } from '../../export/contracts';
 
@@ -23,7 +24,6 @@ export class ExactCompositionRenderRouter implements HeadlessRenderExecutionPort
             : this.ffmpeg;
         const capability = await backend.probe(request.plan, request.signal);
         if (!capability.supported) {
-            const { HeadlessRenderError } = await import('../../render/contracts');
             throw new HeadlessRenderError(
                 'CODEC_UNAVAILABLE',
                 `${backend.name} cannot render the resolved plan: ${capability.reason ?? 'unsupported'}`,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     assertServerTranscriptionEndpointAllowed,
-    assertServerTranscriptionEndpointNetworkAllowed,
+    assertServerTranscriptionEndpointNetworkAllowedWithResolver,
     isBlockedNetworkAddress,
 } from './openai-compatible-transcription-server';
 
@@ -87,11 +87,11 @@ describe('assertServerTranscriptionEndpointAllowed', () => {
         vi.stubEnv('NODE_ENV', 'production');
         vi.stubEnv(ALLOWLIST_ENV, 'transcriber.example.com');
 
-        await expect(assertServerTranscriptionEndpointNetworkAllowed(
+        await expect(assertServerTranscriptionEndpointNetworkAllowedWithResolver(
             'https://transcriber.example.com/v1',
             async () => ['203.0.114.1', '10.0.0.1'],
         )).rejects.toThrow('blocked network');
-        await expect(assertServerTranscriptionEndpointNetworkAllowed(
+        await expect(assertServerTranscriptionEndpointNetworkAllowedWithResolver(
             'https://transcriber.example.com/v1',
             async () => ['203.0.114.1'],
         )).resolves.toBeUndefined();

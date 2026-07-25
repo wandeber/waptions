@@ -40,19 +40,15 @@ export interface EditorialProviderTransportInput {
     headers: Headers;
     signal: AbortSignal;
     responseMaxBytes?: number;
-    fetchImpl?: EditorialProviderFetch;
+    fetchImpl: EditorialProviderFetch;
 }
-
-let nodeProviderFetchPromise: Promise<EditorialProviderFetch> | null = null;
 
 /**
  * Runs the complete upstream exchange under one cancellation and deadline owner.
  *
- * Node's bundled fetch uses Undici's five-minute default response-header timeout, so Node loads a
- * dedicated Undici Agent with the explicit editorial policy. Workerd does not expose Node's
- * bundled Undici runtime and keeps its native fetch implementation; the application-level total
- * and body deadlines still apply there. The dynamic import keeps Node socket code off the normal
- * Workerd execution path while allowing both Next and OpenNext to validate the same route.
+ * The caller owns the transport policy and supplies a native `fetch` decorated with the required
+ * dispatcher. Keeping that boundary outside this shared response reader preserves native
+ * FormData/File brands while allowing Node and Workerd callers to remain separately static.
  */
 export async function requestEditorialTranscriptionProvider(
     input: EditorialProviderTransportInput,
@@ -75,10 +71,9 @@ export async function requestEditorialTranscriptionProvider(
     input.signal.addEventListener('abort', abortForCaller, { once: true });
 
     try {
-        const providerFetch = input.fetchImpl ?? await getDefaultEditorialProviderFetch();
         let response: Response;
         try {
-            response = await providerFetch(input.endpoint, {
+            response = await input.fetchImpl(input.endpoint, {
                 method: 'POST',
                 body: input.body,
                 headers: input.headers,
@@ -117,36 +112,6 @@ export async function requestEditorialTranscriptionProvider(
         if (bodyTimer !== null) clearTimeout(bodyTimer);
         input.signal.removeEventListener('abort', abortForCaller);
     }
-}
-
-async function getDefaultEditorialProviderFetch(): Promise<EditorialProviderFetch> {
-    if (!isNodeUndiciRuntime()) {
-        return (input, init) => globalThis.fetch(input, init);
-    }
-    nodeProviderFetchPromise ??= createNodeEditorialProviderFetch();
-    return nodeProviderFetchPromise;
-}
-
-async function createNodeEditorialProviderFetch(): Promise<EditorialProviderFetch> {
-    const undici = await import('undici');
-    const dispatcher = new undici.Agent({
-        headersTimeout: EDITORIAL_PROVIDER_HEADERS_TIMEOUT_MS,
-        bodyTimeout: EDITORIAL_PROVIDER_BODY_TIMEOUT_MS,
-    });
-    return async (input, init) => globalThis.fetch(input, {
-        ...init,
-        dispatcher,
-        // `dispatcher` is Node's documented Undici extension to fetch rather than a WHATWG field.
-        // Keeping the global Node fetch is important: it shares the same FormData/File brands as
-        // the parsed Next request, whereas `undici.fetch` from a separate package instance would
-        // serialize that body as the literal string "[object FormData]".
-    } as RequestInit);
-}
-
-function isNodeUndiciRuntime(): boolean {
-    return typeof process !== 'undefined'
-        && process.release?.name === 'node'
-        && typeof process.versions?.undici === 'string';
 }
 
 function classifyTransportFailure(

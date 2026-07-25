@@ -18,6 +18,10 @@ import { build } from "esbuild";
 const execFileAsync = promisify(execFile);
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 const NODE_ENTRY = "agent-runtime/runtime/plugin-server.ts";
+const STATIC_NODE_RUNTIME_ENTRIES = [
+  "agent-runtime/integration/transcription/provider-transport.ts",
+  "agent-runtime/integration/export/exact-render-router.ts",
+];
 const NODE_ALLOWLIST =
   "agent-runtime/runtime/node-first-party-allowlist.json";
 
@@ -88,6 +92,34 @@ test("agent plugin Node graph exactly matches its first-party allowlist", async 
     )
     .sort();
   assert.deepEqual(actual, allowed);
+});
+
+test("managed runtime entries retain no dynamic imports", async () => {
+  for (const entryPoint of STATIC_NODE_RUNTIME_ENTRIES) {
+    const result = await build({
+      absWorkingDir: PROJECT_ROOT,
+      entryPoints: [entryPoint],
+      outfile: "static-node-runtime-entry.mjs",
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+      write: false,
+      splitting: false,
+      sourcemap: false,
+      minify: true,
+      legalComments: "none",
+      charset: "utf8",
+      tsconfig: resolve(PROJECT_ROOT, "tsconfig.json"),
+      external: ["node:*"],
+      logLevel: "silent",
+    });
+    const output = result.outputFiles.find((file) =>
+      file.path.endsWith("static-node-runtime-entry.mjs"),
+    );
+    assert.ok(output, `${entryPoint} bundle was not emitted`);
+    assert.doesNotMatch(output.text, /\bimport\s*\(/u);
+  }
 });
 
 test("agent plugin build is deterministic and retains a static offline server graph", async () => {

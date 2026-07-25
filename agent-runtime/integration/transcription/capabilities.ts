@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
+import { lookup, resolve4, resolve6 } from 'node:dns/promises';
 import {
-    assertServerTranscriptionEndpointNetworkAllowed,
+    assertServerTranscriptionEndpointNetworkAllowedWithResolver,
     isBlockedNetworkAddress,
 } from '../../../src/lib/ai/openai-compatible-transcription-server';
 import {
@@ -57,7 +57,10 @@ implements ManagedEndpointCapabilityAuthorityPort {
         this.now = options.now ?? Date.now;
         this.resolveLocalhost = options.resolveLocalhost ?? resolveLoopbackAddresses;
         this.validateServerEndpoint = options.validateServerEndpoint
-            ?? assertServerTranscriptionEndpointNetworkAllowed;
+            ?? (endpoint => assertServerTranscriptionEndpointNetworkAllowedWithResolver(
+                endpoint,
+                resolveManagedServerHostAddresses,
+            ));
     }
 
     async issue(request: ManagedEndpointCapabilityIssueRequest): Promise<string> {
@@ -295,6 +298,20 @@ async function resolveLoopbackAddresses(): Promise<readonly {
         address,
         family: family === 6 ? 6 : 4,
     }));
+}
+
+async function resolveManagedServerHostAddresses(hostname: string): Promise<readonly string[]> {
+    const [ipv4, ipv6] = await Promise.all([
+        resolve4(hostname).catch(error => isNoDataDnsError(error) ? [] : Promise.reject(error)),
+        resolve6(hostname).catch(error => isNoDataDnsError(error) ? [] : Promise.reject(error)),
+    ]);
+    return [...ipv4, ...ipv6];
+}
+
+function isNoDataDnsError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = Reflect.get(error, 'code');
+    return code === 'ENODATA' || code === 'ENOTFOUND' || code === 'EAI_NONAME';
 }
 
 function selectLoopbackAddress(
