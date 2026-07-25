@@ -4,6 +4,11 @@ import type {
     MediaByteRange,
 } from '../../src/lib/media-byte-source/types';
 import type { FilesystemStatToken } from '../../src/lib/media-byte-source/filesystem-source';
+import type { ByteRange } from './accounting';
+import type {
+  ImmutableMediaIdentity,
+  OpenMediaSnapshot,
+} from '../source-registry/contracts';
 
 export const MANAGED_MEDIA_ALGORITHM_VERSION = 'managed-media-v1';
 export const MANAGED_MEDIA_HASH_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -120,4 +125,61 @@ export interface ManagedSourceRegistryPort {
         metadata: ProbedMediaMetadata;
     }[]): Promise<readonly ManagedMediaDescriptor[]>;
     acquire(sourceId: string, signal?: AbortSignal): Promise<ManagedSourceLease>;
+}
+
+export interface MediaByteSource {
+  readonly identity: ImmutableMediaIdentity;
+  size(): Promise<number>;
+  read(range: ByteRange, signal?: AbortSignal): Promise<Uint8Array>;
+  stream(range?: ByteRange, signal?: AbortSignal): ReadableStream<Uint8Array>;
+  verify(signal?: AbortSignal): Promise<ImmutableMediaIdentity>;
+  close(): Promise<void>;
+}
+
+export interface VerifiedDirectoryCapability {
+  readonly capabilityId: string;
+}
+
+export interface VerifiedMediaCandidate {
+  readonly displayName: string;
+  readonly sourceCapabilityId: string;
+  readonly fileType: 'regular-file' | 'other';
+}
+
+export interface ManagedJobOpenMediaHandle {
+  readonly handleId: string;
+  readonly sourceCapabilityId: string;
+  readonly displayName: string;
+  readonly snapshot: OpenMediaSnapshot;
+  readonly processInputCapabilityId: string;
+  close(): Promise<void>;
+}
+
+/**
+ * The grant owner resolves and verifies filesystem paths. Media jobs only see
+ * opaque capabilities and already-open handles, so they cannot reopen by path.
+ */
+export interface VerifiedMediaGrantPort {
+  listDirectory(
+    directory: VerifiedDirectoryCapability,
+    options: { readonly maxEntries: number },
+    signal?: AbortSignal,
+  ): AsyncIterable<VerifiedMediaCandidate>;
+
+  openSource(
+    sourceCapabilityId: string,
+    signal?: AbortSignal,
+  ): Promise<ManagedJobOpenMediaHandle>;
+
+  revalidateOpenSource(
+    handle: ManagedJobOpenMediaHandle,
+    signal?: AbortSignal,
+  ): Promise<OpenMediaSnapshot>;
+}
+
+export interface MediaByteSourceFactoryPort {
+  open(
+    handle: ManagedJobOpenMediaHandle,
+    signal?: AbortSignal,
+  ): Promise<MediaByteSource>;
 }

@@ -1,5 +1,7 @@
 import type { ManagedProcessPort, ProbedMediaMetadata } from '../media/contracts';
 import type { FileHandle } from 'node:fs/promises';
+import type { MediaReadAccounting } from '../media/accounting';
+import type { PublishedArtifactDescriptor } from '../media/ports';
 
 export type ReviewKind =
     | 'contact-sheet'
@@ -117,3 +119,114 @@ export interface FfmpegReviewBackendOptions {
     readonly ffmpegExecutable: string;
     readonly toolchainVersion: string;
 }
+export interface MediaTimeRange {
+  readonly startUs: number;
+  readonly endUs: number;
+}
+
+export interface ContactSheetReview {
+  readonly kind: 'contact-sheet';
+  readonly frameCount?: number;
+  readonly cellWidth?: number;
+  readonly cellHeight?: number;
+  readonly columns?: number;
+}
+
+export interface ThumbnailStripReview {
+  readonly kind: 'thumbnail-strip';
+  readonly frameCount?: number;
+  readonly cellWidth?: number;
+  readonly cellHeight?: number;
+  readonly columns?: number;
+}
+
+export interface WaveformReview {
+  readonly kind: 'waveform';
+  readonly bucketDurationUs?: number;
+}
+
+export interface AudioMapReview {
+  readonly kind: 'audio-map';
+  readonly bucketDurationUs?: number;
+}
+
+export interface SilenceMapReview {
+  readonly kind: 'silence-map';
+  readonly bucketDurationUs?: number;
+  readonly thresholdDb?: number;
+  readonly minimumDurationUs?: number;
+}
+
+export interface SpeechMapReview {
+  readonly kind: 'speech-map';
+  readonly bucketDurationUs?: number;
+  readonly thresholdDb?: number;
+  readonly minimumDurationUs?: number;
+}
+
+export interface SceneCandidatesReview {
+  readonly kind: 'scene-candidates';
+  readonly sampleIntervalUs?: number;
+  readonly threshold?: number;
+  readonly minimumGapUs?: number;
+  readonly maxCandidates?: number;
+  readonly analysisWidth?: number;
+}
+
+export interface ReviewProxyReview {
+  readonly kind: 'review-proxy';
+  readonly width?: number;
+  readonly height?: number;
+  readonly maxFrameRate?: number;
+  readonly videoBitRate?: number;
+  readonly audioBitRate?: number;
+  readonly includeAudio?: boolean;
+}
+
+export type MediaReviewSpecification =
+  | ContactSheetReview
+  | ThumbnailStripReview
+  | WaveformReview
+  | AudioMapReview
+  | SilenceMapReview
+  | SpeechMapReview
+  | SceneCandidatesReview
+  | ReviewProxyReview;
+
+export interface UsedRangeReviewScope {
+  readonly kind: 'used-ranges';
+  readonly ranges: readonly MediaTimeRange[];
+}
+
+export interface ConfirmedFullSourceReviewScope {
+  readonly kind: 'full-source';
+  readonly confirmed: true;
+}
+
+export type MediaReviewScope = UsedRangeReviewScope | ConfirmedFullSourceReviewScope;
+
+export interface ManagedMediaReviewRequest {
+  readonly jobId: string;
+  readonly sourceId: string;
+  readonly scope: MediaReviewScope;
+  readonly reviews: readonly MediaReviewSpecification[];
+}
+
+export interface ReviewInterval {
+  readonly startUs: number;
+  readonly endUs: number;
+}
+
+export interface SceneCandidate {
+  readonly timeUs: number;
+  readonly score: number;
+}
+
+export interface ManagedMediaReviewResult {
+  readonly jobId: string;
+  readonly sourceId: string;
+  readonly artifacts: readonly PublishedArtifactDescriptor[];
+  readonly readAccounting: MediaReadAccounting;
+}
+
+export const REVIEW_ALGORITHM_VERSION = 'managed-media-review-v1';

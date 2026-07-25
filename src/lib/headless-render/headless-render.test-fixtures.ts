@@ -65,6 +65,7 @@ export function createHeadlessRenderSnapshotFixture(
         version: 4,
         revision: 7,
         audioGraphRevision: 3,
+        renderBackgroundColor: '#000000',
         renderProfile: {
             fps: { numerator: 30, denominator: 1 },
             width: 320,

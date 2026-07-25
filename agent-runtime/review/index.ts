@@ -3,3 +3,7 @@ export * from './contracts';
 export * from './ffmpeg-review-backend';
 export * from './filesystem-artifact-port';
 export * from './review-service';
+export * from './analysis';
+export * from './planning';
+export * from './range-planning';
+export * from './review-job-runner';
