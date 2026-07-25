@@ -182,6 +182,7 @@ function persistenceCommit(
             videoSources: [],
             audioSources: [],
         },
+        transcriptionPublication: null,
         event,
         receipt: {
             toolName: 'waptions_edit_apply',

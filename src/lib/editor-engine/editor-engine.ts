@@ -12,6 +12,8 @@ import {
     EDITOR_HISTORY_TOOL_NAME,
     EDITOR_MEDIA_IMPORT_TOOL_NAME,
     EDITOR_PLAN_TOOL_NAME,
+    EDITORIAL_TRANSCRIPTION_PUBLICATION_TOOL_NAME,
+    SUBTITLE_TRANSCRIPTION_PUBLICATION_TOOL_NAME,
     parseEditorCommandBatchRequest,
     type EditorCommandBatchRequest,
     type EditorExpectedRevisions,
@@ -57,6 +59,10 @@ import type {
     EditorMediaImportRequest,
     EditorMediaImportResult,
     EditorMediaImportSuccess,
+    EditorialTranscriptionPublicationResult,
+    EditorialTranscriptionPublicationSuccess,
+    SubtitleTranscriptionPublicationResult,
+    SubtitleTranscriptionPublicationSuccess,
 } from './editor-engine-types';
 import type { EditorEngineEvent, EditorEngineListener } from './editor-events';
 import type {
@@ -68,6 +74,16 @@ import {
     applyPreparedEditorMediaImport,
     prepareEditorMediaImport,
 } from './editor-media-import';
+import {
+    parseEditorialTranscriptionPublicationRequest,
+    parseSubtitleTranscriptionPublicationRequest,
+    prepareEditorialTranscriptionPublication,
+    prepareSubtitleTranscriptionPublication,
+    type EditorialTranscriptionPublicationHydration,
+    type EditorialTranscriptionPublicationRequest,
+    type EditorTranscriptionPublicationCommitV1,
+    type SubtitleTranscriptionPublicationRequest,
+} from './editor-transcription-publication';
 
 const DEFAULT_PLAN_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_HISTORY_SUMMARY_LIMIT = 200;
@@ -326,6 +342,33 @@ class EditorEngineImplementation implements EditorEngine {
             )));
         }
         return this.enqueue(() => this.importMediaSerial(rawRequest, hydration));
+    }
+
+    publishEditorialTranscription(
+        rawRequest: EditorialTranscriptionPublicationRequest,
+        hydration?: EditorialTranscriptionPublicationHydration,
+    ): Promise<EditorialTranscriptionPublicationResult> {
+        if (this.closing || this.closed) {
+            return Promise.resolve(toEditorCommandFailure(new EditorCommandError(
+                'COORDINATOR_UNAVAILABLE',
+                'The editor engine is closing or closed.',
+            )));
+        }
+        return this.enqueue(
+            () => this.publishEditorialTranscriptionSerial(rawRequest, hydration),
+        );
+    }
+
+    publishSubtitleTranscription(
+        rawRequest: SubtitleTranscriptionPublicationRequest,
+    ): Promise<SubtitleTranscriptionPublicationResult> {
+        if (this.closing || this.closed) {
+            return Promise.resolve(toEditorCommandFailure(new EditorCommandError(
+                'COORDINATOR_UNAVAILABLE',
+                'The editor engine is closing or closed.',
+            )));
+        }
+        return this.enqueue(() => this.publishSubtitleTranscriptionSerial(rawRequest));
     }
 
     undo(rawRequest: HistoryMutationRequest): Promise<EditorCommandResult> {
@@ -794,6 +837,320 @@ class EditorEngineImplementation implements EditorEngine {
         }
     }
 
+    private async publishEditorialTranscriptionSerial(
+        rawRequest: EditorialTranscriptionPublicationRequest,
+        hydration?: EditorialTranscriptionPublicationHydration,
+    ): Promise<EditorialTranscriptionPublicationResult> {
+        let commandId: string | undefined;
+        try {
+            const request = parseEditorialTranscriptionPublicationRequest(rawRequest);
+            const requestHash = canonicalRequestDigest(request);
+
+            // Replays intentionally require neither live transcript bodies nor current guards.
+            const replay = await this.resolveReceipt<EditorialTranscriptionPublicationResult>(
+                request.toolName,
+                request.idempotencyKey,
+                requestHash,
+            );
+            if (replay) {
+                if (!replay.ok
+                    || !('publicationKind' in replay)
+                    || replay.publicationKind !== 'editorial'
+                    || !('recordIds' in replay)
+                    || !Array.isArray(replay.recordIds)
+                    || !('coverageRecordIds' in replay)
+                    || !Array.isArray(replay.coverageRecordIds)) {
+                    throw new EditorCommandError(
+                        'INTERNAL_ERROR',
+                        'The durable editorial transcription receipt is invalid.',
+                    );
+                }
+                return replay as EditorialTranscriptionPublicationSuccess;
+            }
+
+            this.assertTranscriptionPublicationCapability();
+            this.assertGuards(request.sessionEpoch, request.expected);
+            this.assertTranscriptionPublicationDomainGuards(request.expected);
+            if (!hydration) {
+                throw new EditorCommandError(
+                    'INVALID_REQUEST',
+                    'A new editorial transcription publication requires verified hydration.',
+                );
+            }
+            commandId = this.options.ports.ids.generate(
+                'command',
+                `${this.options.projectId}:${request.toolName}:${request.idempotencyKey}`,
+            );
+            const prepared = await prepareEditorialTranscriptionPublication({
+                current: this.manifest,
+                request,
+                hydration,
+            });
+            await this.validateTranscriptionCandidate(prepared.manifest, prepared.bodies);
+            return await this.commitTranscriptionPublication({
+                toolName: request.toolName,
+                commandId,
+                idempotencyKey: request.idempotencyKey,
+                requestHash,
+                manifest: prepared.manifest,
+                changed: prepared.changed,
+                noOpReason: 'editorial-transcription-already-published',
+                operationIds: prepared.recordIds.map(
+                    (recordId) => `transcription.publish.editorial:${recordId}`,
+                ),
+                label: prepared.recordIds.length === 1
+                    ? 'Publish editorial transcription'
+                    : `Publish ${prepared.recordIds.length} editorial transcriptions`,
+                category: 'transcription',
+                publication: prepared.commit,
+                extras: {
+                    publicationKind: 'editorial' as const,
+                    recordIds: prepared.recordIds,
+                    coverageRecordIds: prepared.coverageRecordIds,
+                },
+            });
+        } catch (error) {
+            this.recordDiagnostics({
+                kind: 'failure',
+                projectId: this.options.projectId,
+                ...(commandId ? { commandId } : {}),
+                message: error instanceof Error
+                    ? error.message
+                    : 'Unknown editorial transcription publication failure.',
+            });
+            return toEditorCommandFailure(error);
+        }
+    }
+
+    private async publishSubtitleTranscriptionSerial(
+        rawRequest: SubtitleTranscriptionPublicationRequest,
+    ): Promise<SubtitleTranscriptionPublicationResult> {
+        let commandId: string | undefined;
+        try {
+            const request = parseSubtitleTranscriptionPublicationRequest(rawRequest);
+            const requestHash = canonicalRequestDigest(request);
+
+            const replay = await this.resolveReceipt<SubtitleTranscriptionPublicationResult>(
+                request.toolName,
+                request.idempotencyKey,
+                requestHash,
+            );
+            if (replay) {
+                if (!replay.ok
+                    || !('publicationKind' in replay)
+                    || replay.publicationKind !== 'subtitle'
+                    || !('trackIds' in replay)
+                    || !Array.isArray(replay.trackIds)) {
+                    throw new EditorCommandError(
+                        'INTERNAL_ERROR',
+                        'The durable subtitle transcription receipt is invalid.',
+                    );
+                }
+                return replay as SubtitleTranscriptionPublicationSuccess;
+            }
+
+            this.assertTranscriptionPublicationCapability();
+            this.assertGuards(request.sessionEpoch, request.expected);
+            this.assertTranscriptionPublicationDomainGuards(request.expected);
+            commandId = this.options.ports.ids.generate(
+                'command',
+                `${this.options.projectId}:${request.toolName}:${request.idempotencyKey}`,
+            );
+            const prepared = prepareSubtitleTranscriptionPublication({
+                current: this.manifest,
+                request,
+                commandScope: `${this.options.projectId}:${commandId}`,
+                ids: this.options.ports.ids,
+            });
+            return await this.commitTranscriptionPublication({
+                toolName: request.toolName,
+                commandId,
+                idempotencyKey: request.idempotencyKey,
+                requestHash,
+                manifest: prepared.manifest,
+                changed: prepared.changed,
+                noOpReason: 'subtitle-transcription-already-published',
+                operationIds: prepared.trackIds.map(
+                    (trackId) => `transcription.publish.subtitle:${trackId}`,
+                ),
+                label: prepared.trackIds.length === 1
+                    ? 'Publish subtitle transcription'
+                    : `Publish subtitle transcription to ${prepared.trackIds.length} tracks`,
+                category: 'transcription',
+                publication: prepared.commit,
+                extras: {
+                    publicationKind: 'subtitle' as const,
+                    trackIds: prepared.trackIds,
+                },
+            });
+        } catch (error) {
+            this.recordDiagnostics({
+                kind: 'failure',
+                projectId: this.options.projectId,
+                ...(commandId ? { commandId } : {}),
+                message: error instanceof Error
+                    ? error.message
+                    : 'Unknown subtitle transcription publication failure.',
+            });
+            return toEditorCommandFailure(error);
+        }
+    }
+
+    private async commitTranscriptionPublication<
+        TExtras extends {
+            publicationKind: 'editorial' | 'subtitle';
+        },
+    >(input: {
+        toolName:
+            | typeof EDITORIAL_TRANSCRIPTION_PUBLICATION_TOOL_NAME
+            | typeof SUBTITLE_TRANSCRIPTION_PUBLICATION_TOOL_NAME;
+        commandId: string;
+        idempotencyKey: string;
+        requestHash: string;
+        manifest: EditorManifestV4;
+        changed: boolean;
+        noOpReason: string;
+        operationIds: string[];
+        label: string;
+        category: string;
+        publication: EditorTranscriptionPublicationCommitV1;
+        extras: TExtras;
+    }): Promise<EditorCommandSuccess & TExtras> {
+        const now = this.options.ports.clock.now();
+        const before = this.snapshot();
+        if (!input.changed) {
+            const durableSemanticResult: Omit<
+                EditorCommandSuccess & TExtras,
+                'snapshot' | 'replayed'
+            > = {
+                ok: true,
+                commandId: input.commandId,
+                noOp: true,
+                noOpReason: input.noOpReason,
+                historyEntryId: null,
+                eventId: null,
+                aliases: {},
+                warnings: [],
+                ...structuredClone(input.extras),
+            } as Omit<EditorCommandSuccess & TExtras, 'snapshot' | 'replayed'>;
+            const receipt: EditorIdempotencyReceipt = {
+                toolName: input.toolName,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+                result: durableSemanticResult,
+            };
+            await this.options.ports.persistence.commit(this.createCommit({
+                toolName: input.toolName,
+                commandId: input.commandId,
+                operationIds: input.operationIds,
+                preparedAt: now.iso,
+                previous: before,
+                next: before,
+                history: this.history,
+                event: null,
+                idempotencyKey: input.idempotencyKey,
+                receipt,
+                transcriptionPublication: input.publication,
+            }));
+            this.recordDiagnostics({
+                kind: 'noop',
+                projectId: this.options.projectId,
+                commandId: input.commandId,
+            });
+            return {
+                ...durableSemanticResult,
+                replayed: false,
+                snapshot: this.snapshot(),
+            } as EditorCommandSuccess & TExtras;
+        }
+
+        const summary = createHistorySummary({
+            id: this.options.ports.ids.generate(
+                'history',
+                `${this.options.projectId}:${input.commandId}`,
+            ),
+            label: input.label,
+            category: input.category,
+            operationIds: input.operationIds,
+            occurredAt: now.iso,
+            before: this.manifest,
+            after: input.manifest,
+            fromSessionRevision: this.sessionRevision,
+            toSessionRevision: this.sessionRevision + 1,
+        });
+        const historyEntry = createEditorHistoryEntry({
+            before: this.manifest,
+            after: input.manifest,
+            beforeProject: this.projectMetadata,
+            afterProject: this.projectMetadata,
+            summary,
+        });
+        const nextHistory = appendEditorHistory(this.history, historyEntry);
+        const next = createSnapshot(
+            this.options.projectId,
+            this.options.sessionEpoch,
+            this.sessionRevision + 1,
+            this.projectMetadata,
+            input.manifest,
+            nextHistory,
+            this.historySummaryLimit,
+        );
+        const event = this.createMutationEvent(
+            input.commandId,
+            input.operationIds,
+            summary.id,
+            next.revisions,
+            now.iso,
+        );
+        const semanticResult: Omit<
+            EditorCommandSuccess & TExtras,
+            'snapshot' | 'replayed'
+        > = {
+            ok: true,
+            commandId: input.commandId,
+            noOp: false,
+            historyEntryId: summary.id,
+            eventId: event.id,
+            aliases: {},
+            warnings: [],
+            ...structuredClone(input.extras),
+        } as Omit<EditorCommandSuccess & TExtras, 'snapshot' | 'replayed'>;
+        const receipt: EditorIdempotencyReceipt = {
+            toolName: input.toolName,
+            idempotencyKey: input.idempotencyKey,
+            requestHash: input.requestHash,
+            result: semanticResult,
+        };
+        await this.options.ports.persistence.commit(this.createCommit({
+            toolName: input.toolName,
+            commandId: input.commandId,
+            operationIds: input.operationIds,
+            preparedAt: now.iso,
+            previous: before,
+            next,
+            history: nextHistory,
+            event,
+            idempotencyKey: input.idempotencyKey,
+            receipt,
+            transcriptionPublication: input.publication,
+        }));
+        this.eventSequence = event.sequence;
+        this.sessionRevision += 1;
+        this.manifest = structuredClone(input.manifest);
+        this.history = cloneHistoryState(nextHistory);
+        await this.publish(next, event);
+        this.recordDiagnostics({
+            kind: 'commit',
+            projectId: this.options.projectId,
+            commandId: input.commandId,
+        });
+        return {
+            ...semanticResult,
+            replayed: false,
+            snapshot: this.snapshot(),
+        } as EditorCommandSuccess & TExtras;
+    }
+
     private historyMutation(
         action: 'undo' | 'redo',
         rawRequest: HistoryMutationRequest,
@@ -938,11 +1295,16 @@ class EditorEngineImplementation implements EditorEngine {
         }
     }
 
-    private async resolveReceipt(
+    private async resolveReceipt<
+        TResult extends
+            | EditorCommandResult
+            | EditorialTranscriptionPublicationResult
+            | SubtitleTranscriptionPublicationResult = EditorCommandResult,
+    >(
         toolName: EditorMutationToolName,
         idempotencyKey: string,
         requestHash: string,
-    ): Promise<EditorCommandResult | null> {
+    ): Promise<TResult | null> {
         const receipt = await this.options.ports.persistence.getReceipt(
             this.options.projectId,
             toolName,
@@ -960,7 +1322,7 @@ class EditorEngineImplementation implements EditorEngine {
             ok: true,
             replayed: true,
             snapshot: this.snapshot(),
-        };
+        } as TResult;
     }
 
     private resolveDispatchOperations(request: EditorCommandBatchRequest): {
@@ -1077,6 +1439,56 @@ class EditorEngineImplementation implements EditorEngine {
         }
     }
 
+    private assertTranscriptionPublicationCapability(): void {
+        if (!this.options.ports.persistence.capabilities?.transcriptionPublication) {
+            throw new EditorCommandError(
+                'COORDINATOR_UNAVAILABLE',
+                'This editor persistence adapter does not support atomic transcription publication.',
+            );
+        }
+    }
+
+    private assertTranscriptionPublicationDomainGuards(
+        expected: EditorExpectedRevisions,
+    ): void {
+        if (expected.audioGraphRevision === undefined) {
+            throw new EditorCommandError(
+                'INVALID_REQUEST',
+                'Transcription publication requires expected.audioGraphRevision.',
+            );
+        }
+        if (this.manifest.narrative && expected.narrativeRevision === undefined) {
+            throw new EditorCommandError(
+                'INVALID_REQUEST',
+                'Transcription publication requires expected.narrativeRevision for an active narrative.',
+            );
+        }
+    }
+
+    private async validateTranscriptionCandidate(
+        candidate: EditorManifestV4,
+        publicationBodies: Record<string, import('@/types/editorial').EditorialTranscriptRecordBodyV1> = {},
+    ): Promise<void> {
+        const existingBodies = await this.hydrateTranscripts(this.manifest, [], true);
+        const hydrated = validateHydratedEditorDocumentV4(
+            manifestToPlanningDocument(
+                candidate,
+                createDescriptorAssetHydration(candidate),
+            ),
+            {
+                ...existingBodies,
+                ...publicationBodies,
+            } as ResolvedEditorialTranscriptMapV1,
+        );
+        if (!hydrated.valid) {
+            throw new EditorCommandError(
+                'INVALID_DOCUMENT',
+                'Transcription publication hydration validation failed.',
+                { details: { issues: hydrated.issues.slice(0, 50) } },
+            );
+        }
+    }
+
     private async hydrateAssets(
         manifest: EditorManifestV4,
         required: {
@@ -1188,6 +1600,7 @@ class EditorEngineImplementation implements EditorEngine {
         idempotencyKey: string;
         receipt: EditorIdempotencyReceipt;
         sourceRegistrations?: EditorAssetHydration;
+        transcriptionPublication?: EditorTranscriptionPublicationCommitV1;
     }): EditorPersistenceCommit {
         const pins = collectHistoryPins(input.history);
         const sourcePins = collectSourcePins(input.history);
@@ -1233,6 +1646,7 @@ class EditorEngineImplementation implements EditorEngine {
                 videoSources: [],
                 audioSources: [],
             }),
+            transcriptionPublication: structuredClone(input.transcriptionPublication ?? null),
             event: structuredClone(input.event),
             receipt: {
                 toolName: input.toolName,

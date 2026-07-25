@@ -5,3 +5,4 @@ export * from './editor-engine-types';
 export * from './editor-events';
 export * from './editor-history';
 export * from './editor-ports';
+export * from './editor-transcription-publication';

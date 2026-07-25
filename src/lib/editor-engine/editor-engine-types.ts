@@ -15,6 +15,11 @@ import type {
 import type { EditorCommandFailure } from './editor-command-errors';
 import type { EditorEngineListener } from './editor-events';
 import type { EditorAssetHydration } from './editor-ports';
+import type {
+    EditorialTranscriptionPublicationHydration,
+    EditorialTranscriptionPublicationRequest,
+    SubtitleTranscriptionPublicationRequest,
+} from './editor-transcription-publication';
 
 export interface EditorEngineRevisions {
     sessionEpoch: string;
@@ -150,6 +155,25 @@ export interface EditorMediaImportSuccess extends EditorCommandSuccess {
 
 export type EditorMediaImportResult = EditorMediaImportSuccess | EditorCommandFailure;
 
+export interface EditorialTranscriptionPublicationSuccess extends EditorCommandSuccess {
+    publicationKind: 'editorial';
+    recordIds: string[];
+    coverageRecordIds: string[];
+}
+
+export type EditorialTranscriptionPublicationResult =
+    | EditorialTranscriptionPublicationSuccess
+    | EditorCommandFailure;
+
+export interface SubtitleTranscriptionPublicationSuccess extends EditorCommandSuccess {
+    publicationKind: 'subtitle';
+    trackIds: string[];
+}
+
+export type SubtitleTranscriptionPublicationResult =
+    | SubtitleTranscriptionPublicationSuccess
+    | EditorCommandFailure;
+
 export interface HistoryMutationRequest {
     apiVersion: '2026-07-25';
     toolName: Extract<EditorMutationToolName, 'waptions_history_apply'>;
@@ -176,6 +200,18 @@ export interface EditorEngine {
         request: EditorMediaImportRequest,
         hydration?: EditorAssetHydration,
     ): Promise<EditorMediaImportResult>;
+    /**
+     * Internal terminal boundary for immutable editorial transcript and coverage records.
+     * Detached bodies are verified separately and never enter the durable request digest.
+     */
+    publishEditorialTranscription(
+        request: EditorialTranscriptionPublicationRequest,
+        hydration?: EditorialTranscriptionPublicationHydration,
+    ): Promise<EditorialTranscriptionPublicationResult>;
+    /** Internal terminal boundary for atomic single-track or diarized subtitle publication. */
+    publishSubtitleTranscription(
+        request: SubtitleTranscriptionPublicationRequest,
+    ): Promise<SubtitleTranscriptionPublicationResult>;
     undo(request: HistoryMutationRequest): Promise<EditorCommandResult>;
     redo(request: HistoryMutationRequest): Promise<EditorCommandResult>;
     jumpToHistory(request: HistoryJumpRequest): Promise<EditorCommandResult>;

@@ -19,6 +19,10 @@ export const EDITOR_PLAN_TOOL_NAME = 'waptions_edit_plan' as const;
 export const EDITOR_APPLY_TOOL_NAME = 'waptions_edit_apply' as const;
 export const EDITOR_HISTORY_TOOL_NAME = 'waptions_history_apply' as const;
 export const EDITOR_MEDIA_IMPORT_TOOL_NAME = 'waptions_media_import' as const;
+export const EDITORIAL_TRANSCRIPTION_PUBLICATION_TOOL_NAME =
+    'waptions_transcription_publish_editorial' as const;
+export const SUBTITLE_TRANSCRIPTION_PUBLICATION_TOOL_NAME =
+    'waptions_transcription_publish_subtitles' as const;
 
 export type EditorCommandToolName =
     | typeof EDITOR_PLAN_TOOL_NAME
@@ -26,7 +30,9 @@ export type EditorCommandToolName =
 export type EditorMutationToolName =
     | typeof EDITOR_APPLY_TOOL_NAME
     | typeof EDITOR_HISTORY_TOOL_NAME
-    | typeof EDITOR_MEDIA_IMPORT_TOOL_NAME;
+    | typeof EDITOR_MEDIA_IMPORT_TOOL_NAME
+    | typeof EDITORIAL_TRANSCRIPTION_PUBLICATION_TOOL_NAME
+    | typeof SUBTITLE_TRANSCRIPTION_PUBLICATION_TOOL_NAME;
 
 export interface EditorExpectedRevisions {
     sessionRevision: number;

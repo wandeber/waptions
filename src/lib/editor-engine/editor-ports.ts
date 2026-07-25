@@ -7,8 +7,13 @@ import type {
     EditorEngineSnapshot,
     EditorHistoryState,
     EditorMediaImportResult,
+    EditorialTranscriptionPublicationResult,
+    SubtitleTranscriptionPublicationResult,
 } from './editor-engine-types';
 import type { EditorEngineEvent } from './editor-events';
+import type {
+    EditorTranscriptionPublicationCommitV1,
+} from './editor-transcription-publication';
 
 export interface EditorClock {
     now(): {
@@ -78,7 +83,15 @@ export interface EditorIdempotencyReceipt {
     requestHash: string;
     result:
         | Omit<Extract<EditorCommandResult, { ok: true }>, 'snapshot' | 'replayed'>
-        | Omit<Extract<EditorMediaImportResult, { ok: true }>, 'snapshot' | 'replayed'>;
+        | Omit<Extract<EditorMediaImportResult, { ok: true }>, 'snapshot' | 'replayed'>
+        | Omit<
+            Extract<EditorialTranscriptionPublicationResult, { ok: true }>,
+            'snapshot' | 'replayed'
+        >
+        | Omit<
+            Extract<SubtitleTranscriptionPublicationResult, { ok: true }>,
+            'snapshot' | 'replayed'
+        >;
 }
 
 export interface EditorPersistenceCommit {
@@ -129,6 +142,11 @@ export interface EditorPersistenceCommit {
      * imports that reuse existing descriptors carry empty arrays.
      */
     sourceRegistrations: EditorAssetHydration;
+    /**
+     * A transcription-specific terminal intent. Managed adapters apply its immutable-record CAS
+     * inside the same recoverable transaction as snapshot, history, pins, event, and receipt.
+     */
+    transcriptionPublication: EditorTranscriptionPublicationCommitV1 | null;
     event: EditorEngineEvent | null;
     receipt: {
         toolName: EditorMutationToolName;
@@ -140,8 +158,13 @@ export interface EditorPersistenceCommit {
 /**
  * The single commit method is the engine's atomic durability boundary. Implementations must
  * publish snapshot, history, transcript pins, event, and receipt as one recoverable transaction.
+ * A losing transcription coverage CAS must throw StaleTranscriptionPublicationError so callers
+ * receive a stable stale result rather than cancellation or a generic coordinator failure.
  */
 export interface EditorPersistencePort {
+    readonly capabilities?: {
+        transcriptionPublication?: true;
+    };
     getReceipt(
         projectId: string,
         toolName: EditorMutationToolName,
