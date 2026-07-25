@@ -669,7 +669,6 @@ export class ManagedCoordinator<
                     ...await this.events.retentionDeletes(projectId),
                 ]);
                 committed = true;
-                await loaded.port.hydrate(nextEnvelope.editor);
                 this.events.publish(event);
                 await Promise.resolve(mutation.afterCommit?.()).catch(() => undefined);
                 return {
@@ -1409,7 +1408,6 @@ export class ManagedCoordinator<
                     ...await this.events.retentionDeletes(record.projectId),
                 ]);
                 committed = true;
-                await loaded.port.hydrate(nextEnvelope.editor);
                 this.events.publish(event);
                 for (const artifact of artifacts) artifact.accept();
                 await Promise.all(outputs.map((output) => output.accept()));

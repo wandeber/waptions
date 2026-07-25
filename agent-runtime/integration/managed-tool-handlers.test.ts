@@ -236,6 +236,84 @@ describe("managed canonical tool handlers", () => {
     expect(receipt?.canonicalRequestHash).toBe(call.requestHash);
   });
 
+  it("keeps Core edit plans valid across independent view mutations", async () => {
+    const runtime = await managedRuntime();
+    const handlers = createManagedToolHandlers({
+      coordinator: runtime.coordinator,
+      delegated: delegatedPort(failure()),
+      editorRender: editorRenderPort(failure()),
+    });
+    const opened = await handlers.waptions_session_open(
+      canonicalCall("waptions_session_open", {
+        apiVersion: "2026-07-25",
+        action: "create",
+        projectId: "project-plan-view",
+        idempotencyKey: "open-plan-view",
+        name: "Plan and view project",
+      }, "0"),
+      context(),
+    );
+    const initialState = successState(opened);
+    const planned = await handlers.waptions_edit_plan(
+      canonicalCall("waptions_edit_plan", {
+        apiVersion: "2026-07-25",
+        sessionId: initialState.sessionId,
+        sessionEpoch: initialState.sessionEpoch,
+        expected: expected(initialState),
+        operations: [{
+          operationId: "rename-after-view",
+          type: "project.set-name",
+          payload: { name: "Plan survived" },
+        }],
+      }, "1"),
+      context(),
+    );
+    if (!planned.ok) throw new Error("Expected edit planning to succeed.");
+    const planId = planned.data.planId;
+    if (typeof planId !== "string") throw new Error("Expected a plan ID.");
+
+    const view = await handlers.waptions_view_update(
+      canonicalCall("waptions_view_update", {
+        apiVersion: "2026-07-25",
+        sessionId: initialState.sessionId,
+        sessionEpoch: initialState.sessionEpoch,
+        expected: expected(initialState),
+        idempotencyKey: "view-between-plan-and-apply",
+        viewId: "view-plan",
+        expectedViewRevision: 0,
+        patch: { zoom: 2 },
+      }, "2"),
+      context(),
+    );
+    expect(view).toMatchObject({
+      ok: true,
+      state: {
+        sessionRevision: initialState.sessionRevision,
+        documentRevision: initialState.documentRevision,
+      },
+    });
+
+    const applied = await handlers.waptions_edit_apply(
+      canonicalCall("waptions_edit_apply", {
+        apiVersion: "2026-07-25",
+        sessionId: initialState.sessionId,
+        sessionEpoch: initialState.sessionEpoch,
+        expected: expected(initialState),
+        idempotencyKey: "apply-after-view",
+        planId,
+      }, "3"),
+      context(),
+    );
+    expect(applied).toMatchObject({
+      ok: true,
+      data: {
+        planId,
+        noOp: false,
+      },
+    });
+    expectCanonicalOutput("waptions_edit_apply", applied);
+  });
+
   it("returns schema-valid canonical envelopes for the direct read handlers", async () => {
     const runtime = await managedRuntime();
     const handlers = createManagedToolHandlers({
