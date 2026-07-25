@@ -1,4 +1,5 @@
 export * from './contracts';
+export * from './durable-media-asset-authority';
 export * from './managed-media-tools';
 export * from './node-bounded-media-process';
 export * from './path-grant-media-adapter';

@@ -26,6 +26,40 @@ descriptors, internal capability IDs, or bridge URLs.
    and managed source record with `PathGrantMediaAdapter.restoreCommitted`. Reopened media then
    uses the content-addressed retained copy while still revalidating the original read grant.
 
+### Durable Core asset authority
+
+`ManagedSourceRegistryRecord` intentionally does not contain the complete media descriptor,
+public identity, probe metadata, or the opaque grant binding required to recreate a committed
+media capability. Composition must therefore persist one path-free
+`DurableManagedMediaCatalogRecord` for each successful Core media registration, created with
+`createDurableManagedMediaCatalogRecord({ grantId, record })`. It contains no canonical path,
+file descriptor, bridge URL, request body, or secret.
+
+During recovery, after registering the recovered path grants and before creating the Core port,
+composition performs this exact sequence:
+
+```ts
+const restored = restoreDurableManagedMediaCatalog({
+    projectId: envelope.projectId,
+    scope: {
+        sessionId: envelope.sessionId,
+        sessionEpoch: envelope.editor.state.sessionState.sessionEpoch,
+    },
+    sourceRegistry: envelope.sourceRegistry,
+    grants: recoveredReadGrants,
+    catalog: durableMediaCatalog,
+    pathGrants,
+});
+const portFactory = new CoreEditorPortFactory(restored.assetAuthority);
+```
+
+The recovery function verifies the registry digest, length, immutable version, descriptor
+fingerprint, active read grant, and persisted descriptor before it calls
+`PathGrantMediaAdapter.restoreCommitted`. `assetAuthority.resolve` then opens and revalidates
+only the source IDs Core requested, returns path-free hydration, and closes every lease before
+Core can commit. The returned `restored.media` is the same recovered catalog that render and
+review adapters must receive. Call `await restored.close()` when the project port closes.
+
 The coordinator must not invoke the revalidation callback when replaying an already committed
 idempotency receipt. Replays return the stored receipt without reopening source authority.
 
