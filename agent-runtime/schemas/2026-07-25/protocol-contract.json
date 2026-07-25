@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": "2026-07-25",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "resource": {
+    "uriTemplate": "ui://waptions/editor/v1/{buildHash}/index.html",
+    "buildHashPattern": "^[0-9a-f]{64}$",
+    "mimeType": "text/html;profile=mcp-app",
+    "localhostBridgeOrigin": "http://localhost:59941"
+  },
+  "limits": {
+    "filesystemRangeReadChunkBytes": 8388608,
+    "localHttpResponseStagingBytes": 4194304,
+    "concurrentFullMediaProbeJobs": 2,
+    "concurrentReviewDecodeJobs": 2,
+    "concurrentTranscriptionJobs": 1,
+    "concurrentExportJobs": 1,
+    "activeVideoDecoderSessionsPerJob": 2,
+    "headlessRenderCanvasFrames": 2,
+    "globalDecodedPixelResidencyMiB": [96, 192, 384],
+    "previewFrameCacheMiB": [64, 128, 256],
+    "agentAudioMixBlockCacheBytes": 33554432,
+    "editorialPcmRamWindowBytes": 8388608,
+    "editorialPcmMaximumWindowSeconds": 30,
+    "editorialPcmDerivedDiskCacheBytes": 67108864,
+    "waveformRamCacheBytes": 33554432,
+    "waveformDiskCacheBytes": 67108864,
+    "exportDestinationStagingMaximumBytesExclusive": 16777216,
+    "structuredToolInputBytes": 524288,
+    "structuredToolOutputBytes": 1048576,
+    "defaultCollectionPageItems": 200,
+    "maximumCollectionPageItems": 500,
+    "eventRetentionCount": 10000,
+    "eventRetentionDays": 30,
+    "idempotencyReceiptCountPerProject": 10000,
+    "idempotencyReceiptTerminalDays": 30,
+    "maximumOperationsPerEdit": 256,
+    "planTtlSeconds": 900
+  },
+  "provenance": {
+    "requiredBuildManifestFields": [
+      "resourceUri",
+      "canonicalAssetList",
+      "assetSha256ByPath",
+      "payloadManifestSha256",
+      "serverBundleSha256",
+      "schemaSha256ById",
+      "sourceCommit"
+    ],
+    "receiptScope": ["projectId", "toolName", "idempotencyKey"],
+    "canonicalRequestIncludes": [
+      "apiVersion",
+      "sessionId",
+      "sessionEpoch",
+      "expected",
+      "toolPayload"
+    ]
+  }
+}

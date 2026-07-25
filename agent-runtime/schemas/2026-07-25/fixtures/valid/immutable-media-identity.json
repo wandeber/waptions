@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "contentDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "descriptorFingerprint": "descriptor-v4-video-1920x1080-h264-audio-48000-stereo",
+  "byteLength": 1048576,
+  "immutableVersion": "source-version-01",
+  "stableStatIdentity": {
+    "device": "device-01",
+    "fileId": "file-01",
+    "modifiedNanoseconds": "1753441200000000000"
+  },
+  "streamMetadataRefs": [
+    {
+      "kind": "probe",
+      "ref": "probe-01",
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}

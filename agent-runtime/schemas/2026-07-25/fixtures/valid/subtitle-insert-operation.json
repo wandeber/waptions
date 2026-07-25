@@ -1,0 +1,13 @@
+{
+  "operationId": "operation-subtitle-insert-01",
+  "type": "subtitle.insert",
+  "payload": {
+    "trackId": "subtitle-track-01",
+    "subtitle": {
+      "id": "subtitle-01",
+      "startOutputSample": 48000,
+      "endOutputSample": 96000,
+      "text": "A sample-accurate subtitle."
+    }
+  }
+}

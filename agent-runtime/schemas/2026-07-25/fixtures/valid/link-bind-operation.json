@@ -1,0 +1,15 @@
+{
+  "operationId": "operation-link-bind-01",
+  "type": "link.bind-target",
+  "payload": {
+    "target": {
+      "kind": "subtitle",
+      "trackId": "subtitle-track-01",
+      "subtitleId": "subtitle-01"
+    },
+    "anchorBlockId": "block-01",
+    "activeStartSample16k": 16000,
+    "activeEndSample16k": 32000,
+    "followPolicy": "follow"
+  }
+}

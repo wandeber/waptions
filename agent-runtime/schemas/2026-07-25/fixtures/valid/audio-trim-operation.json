@@ -1,0 +1,14 @@
+{
+  "operationId": "operation-audio-trim-01",
+  "type": "audio-clip.trim",
+  "payload": {
+    "clipId": "audio-clip-01",
+    "sourceRange": {
+      "domain": "native-samples",
+      "audioSourceId": "audio-source-01",
+      "nativeSampleRateHz": 44100,
+      "startNativeSample": 22050,
+      "endNativeSample": 88200
+    }
+  }
+}

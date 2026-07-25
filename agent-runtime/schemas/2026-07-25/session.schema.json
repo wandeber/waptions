@@ -1,0 +1,1033 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waptions:agent:2026-07-25:session",
+  "title": "Waptions managed session, persistence, job, and event contracts",
+  "$defs": {
+    "SessionPathGrant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "grantId",
+            "kind",
+            "canonicalPath",
+            "allowCreate",
+            "createdAt"
+          ],
+          "properties": {
+            "grantId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "kind": {
+              "const": "read-root"
+            },
+            "canonicalPath": {
+              "$ref": "common.schema.json#/$defs/CanonicalPath"
+            },
+            "allowCreate": {
+              "const": false
+            },
+            "createdAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "revokedAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "grantId",
+            "kind",
+            "canonicalPath",
+            "allowCreate",
+            "createdAt"
+          ],
+          "properties": {
+            "grantId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "kind": {
+              "const": "write-destination"
+            },
+            "canonicalPath": {
+              "$ref": "common.schema.json#/$defs/CanonicalPath"
+            },
+            "allowCreate": {
+              "type": "boolean"
+            },
+            "createdAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "revokedAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "grantId",
+            "kind",
+            "canonicalPath",
+            "allowCreate",
+            "createdAt"
+          ],
+          "properties": {
+            "grantId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "kind": {
+              "const": "overwrite-file"
+            },
+            "canonicalPath": {
+              "$ref": "common.schema.json#/$defs/CanonicalPath"
+            },
+            "allowCreate": {
+              "const": false
+            },
+            "createdAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "revokedAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            }
+          }
+        }
+      ]
+    },
+    "IndexReferenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "generation",
+        "relativeRef",
+        "digest",
+        "entryCount"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "generation": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "relativeRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+        },
+        "digest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "entryCount": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "ManagedProjectEnvelopeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "project",
+        "sessionRevision",
+        "head",
+        "indexes",
+        "sourceRegistry",
+        "coordinator"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "project": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "projectId",
+            "name",
+            "createdAt",
+            "updatedAt",
+            "status"
+          ],
+          "properties": {
+            "projectId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "name": {
+              "$ref": "common.schema.json#/$defs/NonEmptyString"
+            },
+            "createdAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "updatedAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "status": {
+              "enum": [
+                "active",
+                "archived",
+                "tombstoned"
+              ]
+            },
+            "archivedAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "tombstonedAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            }
+          }
+        },
+        "sessionRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "head": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifestRef",
+            "manifestDigest",
+            "documentRevision",
+            "audioGraphRevision",
+            "renderBackgroundColor"
+          ],
+          "properties": {
+            "manifestRef": {
+              "type": "string",
+              "const": "manifest-v4.json"
+            },
+            "manifestDigest": {
+              "$ref": "common.schema.json#/$defs/Sha256Digest"
+            },
+            "documentRevision": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "audioGraphRevision": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "narrativeRevision": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "renderBackgroundColor": {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$",
+              "default": "#000000"
+            }
+          }
+        },
+        "indexes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "history",
+            "wal",
+            "events",
+            "receipts",
+            "transcripts",
+            "jobs",
+            "artifacts"
+          ],
+          "properties": {
+            "history": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            },
+            "wal": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            },
+            "events": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            },
+            "receipts": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            },
+            "transcripts": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            },
+            "jobs": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            },
+            "artifacts": {
+              "$ref": "#/$defs/IndexReferenceV1"
+            }
+          }
+        },
+        "sourceRegistry": {
+          "$ref": "#/$defs/IndexReferenceV1"
+        },
+        "coordinator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lastSessionEpoch",
+            "recoveryCount"
+          ],
+          "properties": {
+            "lastSessionEpoch": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "recoveryCount": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "recoveredAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            },
+            "recoveryOutcome": {
+              "enum": [
+                "clean",
+                "wal-replayed",
+                "wal-rolled-back",
+                "degraded"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "SourceRegistryRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sourceId",
+        "sourceKind",
+        "grantId",
+        "pathReferenceId",
+        "identity",
+        "registeredAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "sourceId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "sourceKind": {
+          "enum": [
+            "video",
+            "audio"
+          ]
+        },
+        "grantId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "pathReferenceId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "identity": {
+          "$ref": "common.schema.json#/$defs/ImmutableMediaIdentityV1"
+        },
+        "registeredAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "invalidatedAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        }
+      }
+    },
+    "IdempotencyReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "projectId",
+        "toolName",
+        "idempotencyKey",
+        "canonicalRequestDigest",
+        "status",
+        "createdAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "projectId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "toolName": {
+          "type": "string",
+          "pattern": "^waptions_[a-z_]+$",
+          "maxLength": 128
+        },
+        "idempotencyKey": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "canonicalRequestDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "status": {
+          "enum": [
+            "prepared",
+            "committed",
+            "failed"
+          ]
+        },
+        "semanticResultDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "committedState": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        },
+        "walTransactionId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "createdAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "terminalAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        }
+      }
+    },
+    "JobKind": {
+      "enum": [
+        "media-probe-import",
+        "contact-sheet",
+        "thumbnail-strip",
+        "waveform-audio-map",
+        "silence-speech-map",
+        "scene-cut-candidates",
+        "review-proxy",
+        "subtitle-transcription",
+        "editorial-transcription",
+        "bundle-import",
+        "bundle-export",
+        "headless-project-validation",
+        "final-video-export",
+        "cleanup-verification"
+      ]
+    },
+    "JobState": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "stale",
+        "interrupted"
+      ]
+    },
+    "StableJobError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "common.schema.json#/$defs/StableErrorCode"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "$ref": "common.schema.json#/$defs/BoundedErrorDetails"
+        }
+      }
+    },
+    "JobRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "jobId",
+        "projectId",
+        "kind",
+        "inputDigest",
+        "capturedState",
+        "jobSequence",
+        "state",
+        "createdAt",
+        "updatedAt",
+        "stage",
+        "cancellationRequested",
+        "resultArtifactIds"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "jobId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "projectId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "kind": {
+          "$ref": "#/$defs/JobKind"
+        },
+        "inputDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "capturedState": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        },
+        "jobSequence": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "state": {
+          "$ref": "#/$defs/JobState"
+        },
+        "createdAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "updatedAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "startedAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "finishedAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "cancellationRequested": {
+          "type": "boolean"
+        },
+        "cancellationRequestedAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "checkpointRef": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "resultArtifactIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "error": {
+          "$ref": "#/$defs/StableJobError"
+        }
+      }
+    },
+    "ArtifactRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "artifactId",
+        "projectId",
+        "kind",
+        "contentDigest",
+        "byteLength",
+        "createdAt",
+        "storageRef"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "artifactId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "projectId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "jobId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "kind": {
+          "enum": [
+            "contact-sheet",
+            "thumbnail-strip",
+            "waveform",
+            "audio-map",
+            "silence-speech-map",
+            "scene-cuts",
+            "review-proxy",
+            "transcript",
+            "project-bundle",
+            "reference-snapshot",
+            "proof-record",
+            "video-export",
+            "validation-report"
+          ]
+        },
+        "contentDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "byteLength": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "createdAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "expiresAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "storageRef": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        }
+      }
+    },
+    "EventType": {
+      "enum": [
+        "session.recovered",
+        "project.snapshot",
+        "project.mutated",
+        "history.changed",
+        "job.changed",
+        "artifact.created",
+        "diagnostics.changed",
+        "presence.changed",
+        "view.changed",
+        "source.invalidated"
+      ]
+    },
+    "EventRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "cursor",
+        "type",
+        "occurredAt",
+        "state",
+        "sequence",
+        "data"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "cursor": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "occurredAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "state": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        },
+        "sequence": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "session.recovered"
+                },
+                "data": {
+                  "$ref": "#/$defs/SessionRecoveredEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "project.snapshot"
+                },
+                "data": {
+                  "$ref": "#/$defs/ProjectSnapshotEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "project.mutated"
+                },
+                "data": {
+                  "$ref": "#/$defs/ProjectMutatedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "history.changed"
+                },
+                "data": {
+                  "$ref": "#/$defs/HistoryChangedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "job.changed"
+                },
+                "data": {
+                  "$ref": "#/$defs/JobChangedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "artifact.created"
+                },
+                "data": {
+                  "$ref": "#/$defs/ArtifactCreatedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "diagnostics.changed"
+                },
+                "data": {
+                  "$ref": "#/$defs/DiagnosticsChangedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "presence.changed"
+                },
+                "data": {
+                  "$ref": "#/$defs/PresenceChangedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "view.changed"
+                },
+                "data": {
+                  "$ref": "#/$defs/ViewChangedEventData"
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "source.invalidated"
+                },
+                "data": {
+                  "$ref": "#/$defs/SourceInvalidatedEventData"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "SessionRecoveredEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "newEpoch",
+        "outcome",
+        "interruptedJobIds"
+      ],
+      "properties": {
+        "previousEpoch": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "newEpoch": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "outcome": {
+          "enum": [
+            "clean",
+            "wal-replayed",
+            "wal-rolled-back",
+            "degraded"
+          ]
+        },
+        "interruptedJobIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "ProjectSnapshotEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifestDigest",
+        "reason"
+      ],
+      "properties": {
+        "manifestDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "reason": {
+          "enum": [
+            "opened",
+            "recovered",
+            "refreshed"
+          ]
+        }
+      }
+    },
+    "ProjectMutatedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commandId",
+        "operationIds",
+        "affectedIds"
+      ],
+      "properties": {
+        "commandId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "planId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "historyEntryId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "operationIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OperationId"
+          }
+        },
+        "affectedIds": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "HistoryChangedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currentIndex",
+        "undoCount",
+        "redoCount"
+      ],
+      "properties": {
+        "currentIndex": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 9007199254740991
+        },
+        "undoCount": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "redoCount": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "headEntryId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        }
+      }
+    },
+    "JobChangedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jobId",
+        "kind",
+        "state",
+        "jobSequence",
+        "stage"
+      ],
+      "properties": {
+        "jobId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "kind": {
+          "$ref": "#/$defs/JobKind"
+        },
+        "state": {
+          "$ref": "#/$defs/JobState"
+        },
+        "jobSequence": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "ArtifactCreatedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "kind",
+        "contentDigest",
+        "byteLength"
+      ],
+      "properties": {
+        "artifactId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "jobId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "contentDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "byteLength": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "DiagnosticsChangedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnosticsRevision",
+        "reason"
+      ],
+      "properties": {
+        "diagnosticsRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "reason": {
+          "enum": [
+            "threshold-crossed",
+            "leak-assertion",
+            "budget-pressure",
+            "job-queue"
+          ]
+        }
+      }
+    },
+    "PresenceChangedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "presenceRevision",
+        "participantIds"
+      ],
+      "properties": {
+        "presenceRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "participantIds": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "ViewChangedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "viewId",
+        "viewRevision",
+        "changedFields"
+      ],
+      "properties": {
+        "viewId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "viewRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "changedFields": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "selection",
+              "playhead",
+              "zoom",
+              "scroll",
+              "rowHeights",
+              "layout",
+              "focus",
+              "presentation"
+            ]
+          }
+        }
+      }
+    },
+    "SourceInvalidatedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceId",
+        "reason"
+      ],
+      "properties": {
+        "sourceId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "reason": {
+          "enum": [
+            "identity-changed",
+            "grant-revoked",
+            "unreadable",
+            "removed"
+          ]
+        },
+        "observedIdentityDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        }
+      }
+    }
+  }
+}

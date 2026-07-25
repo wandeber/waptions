@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "contentDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "descriptorFingerprint": "descriptor-v4-video-1920x1080-h264",
+  "byteLength": 1048576,
+  "immutableVersion": "source-version-01",
+  "canonicalPath": "/private/media/source.mp4",
+  "streamMetadataRefs": []
+}

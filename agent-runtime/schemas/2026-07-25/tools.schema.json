@@ -1,0 +1,2722 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waptions:agent:2026-07-25:tools",
+  "title": "Waptions MCP tool input and output schemas",
+  "$defs": {
+    "SessionReadBase": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "sessionId"
+      ],
+      "properties": {
+        "apiVersion": {
+          "$ref": "common.schema.json#/$defs/ApiVersion"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        }
+      }
+    },
+    "MutationBase": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "sessionId",
+        "sessionEpoch",
+        "expected",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "apiVersion": {
+          "$ref": "common.schema.json#/$defs/ApiVersion"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "sessionEpoch": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "expected": {
+          "$ref": "common.schema.json#/$defs/ExpectedRevisions"
+        },
+        "idempotencyKey": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        }
+      }
+    },
+    "PageFields": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 200
+        }
+      }
+    },
+    "ToolInputSessionList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apiVersion"
+      ],
+      "properties": {
+        "apiVersion": {
+          "$ref": "common.schema.json#/$defs/ApiVersion"
+        },
+        "cursor": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 200
+        },
+        "status": {
+          "enum": [
+            "active",
+            "archived",
+            "tombstoned",
+            "all"
+          ]
+        }
+      }
+    },
+    "ToolInputSessionOpen": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "apiVersion",
+            "action",
+            "projectId",
+            "idempotencyKey",
+            "name"
+          ],
+          "properties": {
+            "apiVersion": {
+              "$ref": "common.schema.json#/$defs/ApiVersion"
+            },
+            "action": {
+              "const": "create"
+            },
+            "projectId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "idempotencyKey": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "name": {
+              "$ref": "common.schema.json#/$defs/NonEmptyString"
+            },
+            "renderProfile": {
+              "$ref": "common.schema.json#/$defs/RenderProfile"
+            },
+            "renderBackgroundColor": {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$",
+              "default": "#000000"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "apiVersion",
+            "action",
+            "projectId",
+            "idempotencyKey"
+          ],
+          "properties": {
+            "apiVersion": {
+              "$ref": "common.schema.json#/$defs/ApiVersion"
+            },
+            "action": {
+              "enum": [
+                "attach",
+                "recover"
+              ]
+            },
+            "projectId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "idempotencyKey": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            }
+          }
+        }
+      ]
+    },
+    "ToolInputSessionManage": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "rename"
+                    },
+                    "name": {
+                      "$ref": "common.schema.json#/$defs/NonEmptyString"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "detach",
+                        "archive",
+                        "restore"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "confirmProjectId"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "delete"
+                    },
+                    "confirmProjectId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputPathGrant": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "inspect"
+                    },
+                    "grantId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "grantKind",
+                    "path",
+                    "allowCreate",
+                    "confirmAuthorityExpansion"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "add"
+                    },
+                    "grantKind": {
+                      "enum": [
+                        "read-root",
+                        "write-destination",
+                        "overwrite-file"
+                      ]
+                    },
+                    "path": {
+                      "$ref": "common.schema.json#/$defs/CanonicalPath"
+                    },
+                    "allowCreate": {
+                      "type": "boolean"
+                    },
+                    "confirmAuthorityExpansion": {
+                      "const": true
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "grantId",
+                    "confirmGrantId"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "revoke"
+                    },
+                    "grantId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    },
+                    "confirmGrantId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputProjectGet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "$ref": "#/$defs/PageFields"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "section": {
+              "enum": [
+                "summary",
+                "tracks",
+                "sources",
+                "jobs",
+                "graph-references"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputProjectImport": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "source"
+          ],
+          "properties": {
+            "source": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "grantId",
+                    "path"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "bundle-path",
+                        "manifest-path"
+                      ]
+                    },
+                    "grantId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    },
+                    "path": {
+                      "$ref": "common.schema.json#/$defs/CanonicalPath"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "manifest"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "inline-manifest"
+                    },
+                    "manifest": {
+                      "type": "object"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputProjectValidate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "scopes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 7,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "structural",
+                  "hydrated",
+                  "sources",
+                  "history-wal",
+                  "transcript-pins",
+                  "renderability",
+                  "all"
+                ]
+              }
+            },
+            "deep": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputMediaProbe": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "grantId",
+            "paths"
+          ],
+          "properties": {
+            "grantId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/CanonicalPath"
+              }
+            },
+            "hashPolicy": {
+              "enum": [
+                "always",
+                "if-needed"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputMediaImport": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "mediaHandles",
+            "placement"
+          ],
+          "properties": {
+            "mediaHandles": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              }
+            },
+            "placement": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "register-only"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ordering",
+                    "timelineStartFrame"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "place"
+                    },
+                    "ordering": {
+                      "const": "natural"
+                    },
+                    "timelineStartFrame": {
+                      "$ref": "common.schema.json#/$defs/SafeInteger"
+                    },
+                    "videoTrackId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    },
+                    "audioTrackId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputMediaReview": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "sourceIds",
+            "reviewKind"
+          ],
+          "properties": {
+            "sourceIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              }
+            },
+            "reviewKind": {
+              "enum": [
+                "contact-sheet",
+                "thumbnail-strip",
+                "waveform-audio-map",
+                "silence-speech-map",
+                "scene-cut-candidates",
+                "transcription-assisted",
+                "review-proxy"
+              ]
+            },
+            "intervalsSeconds": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "startSeconds",
+                  "endSeconds"
+                ],
+                "properties": {
+                  "startSeconds": {
+                    "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+                  },
+                  "endSeconds": {
+                    "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+                  }
+                }
+              }
+            },
+            "maximumSamples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputMediaRelease": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "dryRun"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "release-runtime",
+                "garbage-collect"
+              ]
+            },
+            "dryRun": {
+              "type": "boolean"
+            },
+            "confirmGarbageCollect": {
+              "type": "boolean"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputTimelineQuery": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "$ref": "#/$defs/PageFields"
+        },
+        {
+          "type": "object",
+          "required": [
+            "entityKind"
+          ],
+          "properties": {
+            "entityKind": {
+              "enum": [
+                "tracks",
+                "clips",
+                "subtitles",
+                "narrative-blocks",
+                "narrative-words",
+                "links",
+                "intervals",
+                "selection",
+                "content-boundary"
+              ]
+            },
+            "trackIds": {
+              "type": "array",
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              }
+            },
+            "startFrame": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "endFrame": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputEditPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apiVersion",
+        "sessionId",
+        "sessionEpoch",
+        "expected",
+        "operations"
+      ],
+      "properties": {
+        "apiVersion": {
+          "$ref": "common.schema.json#/$defs/ApiVersion"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "sessionEpoch": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "expected": {
+          "$ref": "common.schema.json#/$defs/ExpectedRevisions"
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "operations.schema.json#/$defs/EditorSemanticOperation"
+          }
+        },
+        "history": {
+          "$ref": "#/$defs/HistoryMetadata"
+        }
+      }
+    },
+    "HistoryMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "category"
+      ],
+      "properties": {
+        "label": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        },
+        "category": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "ToolInputEditApply": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "planId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "$ref": "operations.schema.json#/$defs/EditorSemanticOperation"
+              }
+            },
+            "history": {
+              "$ref": "#/$defs/HistoryMetadata"
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "planId"
+              ]
+            },
+            {
+              "required": [
+                "operations"
+              ]
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputHistoryGet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "$ref": "#/$defs/PageFields"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "enum": [
+                "past",
+                "future",
+                "both"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputHistoryApply": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "undo",
+                        "redo"
+                      ]
+                    },
+                    "steps": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "entryId",
+                    "position"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "jump"
+                    },
+                    "entryId": {
+                      "$ref": "common.schema.json#/$defs/OpaqueId"
+                    },
+                    "position": {
+                      "enum": [
+                        "before",
+                        "after"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputTranscriptionStart": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "transcriptionKind",
+            "targetTrackIds",
+            "language",
+            "speakerMode",
+            "providerPolicy"
+          ],
+          "properties": {
+            "transcriptionKind": {
+              "enum": [
+                "subtitle",
+                "editorial"
+              ]
+            },
+            "targetTrackIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              }
+            },
+            "ranges": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "sourceId",
+                  "startSample16k",
+                  "endSample16k"
+                ],
+                "properties": {
+                  "sourceId": {
+                    "$ref": "common.schema.json#/$defs/OpaqueId"
+                  },
+                  "startSample16k": {
+                    "$ref": "common.schema.json#/$defs/SafeInteger"
+                  },
+                  "endSample16k": {
+                    "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+                  }
+                }
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64
+            },
+            "speakerMode": {
+              "enum": [
+                "none",
+                "diarized"
+              ]
+            },
+            "providerPolicy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "browser-local",
+                    "managed-local-endpoint",
+                    "openai-compatible"
+                  ]
+                },
+                "credentialCapabilityId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueId"
+                },
+                "endpointCapabilityId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueId"
+                },
+                "model": {
+                  "type": "string",
+                  "maxLength": 256
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputJobList": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "$ref": "#/$defs/PageFields"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "session.schema.json#/$defs/JobKind"
+            },
+            "state": {
+              "$ref": "session.schema.json#/$defs/JobState"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputJobGet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "jobId"
+          ],
+          "properties": {
+            "jobId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputJobCancel": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "jobId"
+          ],
+          "properties": {
+            "jobId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputExportStart": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "exportKind",
+            "destination"
+          ],
+          "properties": {
+            "exportKind": {
+              "enum": [
+                "mp4-h264-aac",
+                "webm",
+                "portable-bundle",
+                "reference-snapshot",
+                "proof-record"
+              ]
+            },
+            "destination": {
+              "$ref": "common.schema.json#/$defs/StagedOutputDestinationCapabilityV1"
+            },
+            "overwriteConfirmation": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputArtifactList": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "$ref": "#/$defs/PageFields"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputArtifactGet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "artifactId",
+            "presentation"
+          ],
+          "properties": {
+            "artifactId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "presentation": {
+              "enum": [
+                "metadata",
+                "local-path",
+                "signed-range-url"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputEventsRead": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "afterCursor": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 200
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputViewGet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "viewId"
+          ],
+          "properties": {
+            "viewId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ViewSelection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ids"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "tracks",
+                "clips",
+                "subtitles",
+                "narrative"
+              ]
+            },
+            "ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ToolInputViewUpdate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "viewId",
+            "expectedViewRevision",
+            "patch"
+          ],
+          "properties": {
+            "viewId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "expectedViewRevision": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "patch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "selection": {
+                  "$ref": "#/$defs/ViewSelection"
+                },
+                "playheadFrame": {
+                  "$ref": "common.schema.json#/$defs/SafeInteger"
+                },
+                "zoom": {
+                  "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+                },
+                "scrollLeft": {
+                  "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+                },
+                "focusedPanel": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "presentation": {
+                  "enum": [
+                    "inline",
+                    "fullscreen",
+                    "picture-in-picture"
+                  ]
+                }
+              },
+              "minProperties": 1
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputPlaybackControl": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "viewId",
+            "expectedPlaybackRevision",
+            "action"
+          ],
+          "properties": {
+            "viewId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "expectedPlaybackRevision": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "action": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "play",
+                        "pause",
+                        "claim-presenter",
+                        "release-presenter",
+                        "follow",
+                        "unfollow"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "frame"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "seek"
+                    },
+                    "frame": {
+                      "$ref": "common.schema.json#/$defs/SafeInteger"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "rate"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "set-rate"
+                    },
+                    "rate": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 16
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "volume"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "set-master-volume"
+                    },
+                    "volume": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "muted"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "set-master-mute"
+                    },
+                    "muted": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputDiagnosticsGet": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SessionReadBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sections": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "memory",
+                  "decoders",
+                  "caches",
+                  "jobs",
+                  "coordinator",
+                  "leaks",
+                  "queues",
+                  "all"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolInputEditorRender": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutationBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "viewId",
+            "presentation"
+          ],
+          "properties": {
+            "viewId": {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            "presentation": {
+              "enum": [
+                "inline",
+                "fullscreen",
+                "picture-in-picture"
+              ]
+            },
+            "capabilityTtlSeconds": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessBase": {
+      "type": "object",
+      "required": [
+        "ok",
+        "data",
+        "state",
+        "warnings",
+        "replayed"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "data": {
+          "type": "object"
+        },
+        "state": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "common.schema.json#/$defs/ToolWarning"
+          }
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "committedState": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        }
+      }
+    },
+    "SessionListSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ok",
+        "data",
+        "warnings",
+        "replayed"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "data": {
+          "$ref": "#/$defs/SessionListData"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "common.schema.json#/$defs/ToolWarning"
+          }
+        },
+        "replayed": {
+          "const": false
+        }
+      }
+    },
+    "SessionSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "projectId",
+        "name",
+        "status",
+        "recoveryState",
+        "updatedAt",
+        "state"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "projectId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "archived",
+            "tombstoned"
+          ]
+        },
+        "recoveryState": {
+          "enum": [
+            "clean",
+            "recovered",
+            "degraded"
+          ]
+        },
+        "updatedAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "state": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        }
+      }
+    },
+    "SessionListData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "page"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/SessionSummary"
+          }
+        },
+        "page": {
+          "$ref": "common.schema.json#/$defs/PageInfo"
+        }
+      }
+    },
+    "SessionOpenData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "created",
+        "recovered",
+        "participantId",
+        "session"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "create",
+            "attach",
+            "recover"
+          ]
+        },
+        "created": {
+          "type": "boolean"
+        },
+        "recovered": {
+          "type": "boolean"
+        },
+        "participantId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionSummary"
+        }
+      }
+    },
+    "ActionStatusData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "status"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "PathGrantData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "grants"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "add",
+            "inspect",
+            "revoke"
+          ]
+        },
+        "grants": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "session.schema.json#/$defs/SessionPathGrant"
+          }
+        }
+      }
+    },
+    "ProjectSummaryData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "name",
+        "renderProfile",
+        "renderBackgroundColor",
+        "counts",
+        "activeJobIds",
+        "references",
+        "page"
+      ],
+      "properties": {
+        "projectId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        },
+        "renderProfile": {
+          "$ref": "common.schema.json#/$defs/RenderProfile"
+        },
+        "renderBackgroundColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-f]{6}$"
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tracks",
+            "clips",
+            "subtitles",
+            "sources",
+            "links"
+          ],
+          "properties": {
+            "tracks": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "clips": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "subtitles": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "sources": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "links": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            }
+          }
+        },
+        "activeJobIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "references": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/GraphReference"
+          }
+        },
+        "page": {
+          "$ref": "common.schema.json#/$defs/PageInfo"
+        }
+      }
+    },
+    "GraphReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "startFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "endFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 512
+        }
+      }
+    },
+    "JobStartData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jobId",
+        "job"
+      ],
+      "properties": {
+        "jobId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "job": {
+          "$ref": "session.schema.json#/$defs/JobRecordV1"
+        }
+      }
+    },
+    "ValidationData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valid",
+        "issues"
+      ],
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "issues": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "common.schema.json#/$defs/ValidationIssue"
+          }
+        },
+        "jobId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        }
+      }
+    },
+    "MediaProbeData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handles",
+        "jobIds"
+      ],
+      "properties": {
+        "handles": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "common.schema.json#/$defs/VerifiedMediaHandleV1"
+          }
+        },
+        "jobIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "MediaImportData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceIds",
+        "placedClipIds"
+      ],
+      "properties": {
+        "sourceIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "placedClipIds": {
+          "type": "array",
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "MediaReleaseData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "dryRun",
+        "releasedIds",
+        "retainedRoots"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "release-runtime",
+            "garbage-collect"
+          ]
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "releasedIds": {
+          "type": "array",
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "retainedRoots": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sourceId",
+              "rootKind",
+              "rootId"
+            ],
+            "properties": {
+              "sourceId": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              },
+              "rootKind": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "rootId": {
+                "$ref": "common.schema.json#/$defs/OpaqueId"
+              }
+            }
+          }
+        }
+      }
+    },
+    "TimelineQueryData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entityKind",
+        "items",
+        "page"
+      ],
+      "properties": {
+        "entityKind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/GraphReference"
+          }
+        },
+        "page": {
+          "$ref": "common.schema.json#/$defs/PageInfo"
+        }
+      }
+    },
+    "EditPlanData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planId",
+        "requestDigest",
+        "baseState",
+        "normalizedOperations",
+        "aliases",
+        "predicted",
+        "affectedIds",
+        "history",
+        "warnings",
+        "expiresAt",
+        "planDigest"
+      ],
+      "properties": {
+        "planId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "requestDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "baseState": {
+          "$ref": "common.schema.json#/$defs/StateToken"
+        },
+        "normalizedOperations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "operations.schema.json#/$defs/EditorSemanticOperation"
+          }
+        },
+        "aliases": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]*\\.[A-Za-z][A-Za-z0-9_-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "predicted": {
+          "$ref": "common.schema.json#/$defs/ExpectedRevisions"
+        },
+        "affectedIds": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        },
+        "history": {
+          "$ref": "#/$defs/HistoryMetadata"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "common.schema.json#/$defs/ToolWarning"
+          }
+        },
+        "noOpReason": {
+          "$ref": "common.schema.json#/$defs/NoOpReason"
+        },
+        "expiresAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "planDigest": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        }
+      }
+    },
+    "EditApplyData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commandId",
+        "noOp",
+        "historyEntryId",
+        "eventId",
+        "aliases"
+      ],
+      "properties": {
+        "commandId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "planId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "noOp": {
+          "type": "boolean"
+        },
+        "noOpReason": {
+          "$ref": "common.schema.json#/$defs/NoOpReason"
+        },
+        "historyEntryId": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eventId": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aliases": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]*\\.[A-Za-z][A-Za-z0-9_-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "HistorySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryId",
+        "label",
+        "category",
+        "occurredAt",
+        "operationIds",
+        "fromRevision",
+        "toRevision"
+      ],
+      "properties": {
+        "entryId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "label": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        },
+        "category": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        },
+        "occurredAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        },
+        "operationIds": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OperationId"
+          }
+        },
+        "fromRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "toRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "HistoryGetData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currentIndex",
+        "past",
+        "future",
+        "page"
+      ],
+      "properties": {
+        "currentIndex": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 9007199254740991
+        },
+        "past": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/HistorySummary"
+          }
+        },
+        "future": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/HistorySummary"
+          }
+        },
+        "page": {
+          "$ref": "common.schema.json#/$defs/PageInfo"
+        }
+      }
+    },
+    "JobListData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "page"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "session.schema.json#/$defs/JobRecordV1"
+          }
+        },
+        "page": {
+          "$ref": "common.schema.json#/$defs/PageInfo"
+        }
+      }
+    },
+    "JobGetData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job"
+      ],
+      "properties": {
+        "job": {
+          "$ref": "session.schema.json#/$defs/JobRecordV1"
+        }
+      }
+    },
+    "ArtifactListData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "page"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "session.schema.json#/$defs/ArtifactRecordV1"
+          }
+        },
+        "page": {
+          "$ref": "common.schema.json#/$defs/PageInfo"
+        }
+      }
+    },
+    "ArtifactGetData": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "presentation",
+            "artifact"
+          ],
+          "properties": {
+            "presentation": {
+              "const": "metadata"
+            },
+            "artifact": {
+              "$ref": "session.schema.json#/$defs/ArtifactRecordV1"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "presentation",
+            "artifact",
+            "canonicalLocalPath"
+          ],
+          "properties": {
+            "presentation": {
+              "const": "local-path"
+            },
+            "artifact": {
+              "$ref": "session.schema.json#/$defs/ArtifactRecordV1"
+            },
+            "canonicalLocalPath": {
+              "$ref": "common.schema.json#/$defs/CanonicalPath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "presentation",
+            "artifact",
+            "signedRangeUrl",
+            "expiresAt"
+          ],
+          "properties": {
+            "presentation": {
+              "const": "signed-range-url"
+            },
+            "artifact": {
+              "$ref": "session.schema.json#/$defs/ArtifactRecordV1"
+            },
+            "signedRangeUrl": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^http://localhost:59941/"
+            },
+            "expiresAt": {
+              "$ref": "common.schema.json#/$defs/IsoTimestamp"
+            }
+          }
+        }
+      ]
+    },
+    "EventsReadData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "nextCursor",
+        "hasMore"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "session.schema.json#/$defs/EventRecordV1"
+          }
+        },
+        "nextCursor": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "hasMore": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ViewSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "viewId",
+        "viewRevision",
+        "selection",
+        "playheadFrame",
+        "zoom",
+        "scrollLeft",
+        "presentation",
+        "participantIds"
+      ],
+      "properties": {
+        "viewId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "viewRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "selection": {
+          "$ref": "#/$defs/ViewSelection"
+        },
+        "playheadFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "zoom": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "scrollLeft": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "focusedPanel": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "presentation": {
+          "enum": [
+            "inline",
+            "fullscreen",
+            "picture-in-picture"
+          ]
+        },
+        "participantIds": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueId"
+          }
+        }
+      }
+    },
+    "ViewData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view"
+      ],
+      "properties": {
+        "view": {
+          "$ref": "#/$defs/ViewSnapshot"
+        }
+      }
+    },
+    "PlaybackData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "playbackRevision",
+        "playing",
+        "playheadFrame",
+        "rate",
+        "masterVolume",
+        "masterMuted",
+        "followingPresenter"
+      ],
+      "properties": {
+        "playbackRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "playing": {
+          "type": "boolean"
+        },
+        "playheadFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 16
+        },
+        "masterVolume": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "masterMuted": {
+          "type": "boolean"
+        },
+        "presenterViewId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "followingPresenter": {
+          "type": "boolean"
+        }
+      }
+    },
+    "DiagnosticsData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnosticsRevision",
+        "currentBytes",
+        "peakBytes",
+        "reservedDecoderPixelBytes",
+        "leasedDecoderPixelBytes",
+        "decoderSessions",
+        "queueLengths",
+        "evictions",
+        "cancellations",
+        "lateResultDisposals",
+        "leakedResourceAssertions"
+      ],
+      "properties": {
+        "diagnosticsRevision": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "currentBytes": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "peakBytes": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "reservedDecoderPixelBytes": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "leasedDecoderPixelBytes": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "decoderSessions": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "queueLengths": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/SafeInteger"
+          }
+        },
+        "evictions": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "cancellations": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "lateResultDisposals": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "leakedResourceAssertions": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "EditorRenderData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceUri",
+        "mimeType",
+        "viewId",
+        "presentation",
+        "capabilityId",
+        "capabilityExpiresAt"
+      ],
+      "properties": {
+        "resourceUri": {
+          "type": "string",
+          "pattern": "^ui://waptions/editor/v1/[0-9a-f]{64}/index\\.html$"
+        },
+        "mimeType": {
+          "const": "text/html;profile=mcp-app"
+        },
+        "viewId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "presentation": {
+          "enum": [
+            "inline",
+            "fullscreen",
+            "picture-in-picture"
+          ]
+        },
+        "capabilityId": {
+          "$ref": "common.schema.json#/$defs/OpaqueId"
+        },
+        "capabilityExpiresAt": {
+          "$ref": "common.schema.json#/$defs/IsoTimestamp"
+        }
+      }
+    },
+    "SuccessSessionOpen": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/SessionOpenData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessActionStatus": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/ActionStatusData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessPathGrant": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/PathGrantData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessProjectGet": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/ProjectSummaryData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessJobStart": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/JobStartData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessValidation": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/ValidationData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessMediaProbe": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/MediaProbeData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessMediaImport": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/MediaImportData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessMediaRelease": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/MediaReleaseData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessTimelineQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/TimelineQueryData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessEditPlan": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/EditPlanData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessEditApply": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/EditApplyData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessHistoryGet": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/HistoryGetData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessJobList": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/JobListData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessJobGet": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/JobGetData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessArtifactList": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/ArtifactListData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessArtifactGet": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/ArtifactGetData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessEventsRead": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/EventsReadData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessView": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/ViewData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessPlayback": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/PlaybackData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessDiagnostics": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/DiagnosticsData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SuccessEditorRender": {
+      "allOf": [
+        { "$ref": "#/$defs/SuccessBase" },
+        { "properties": { "data": { "$ref": "#/$defs/EditorRenderData" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ToolOutputSessionList": {
+      "oneOf": [
+        { "$ref": "#/$defs/SessionListSuccess" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputSessionOpen": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessSessionOpen" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputActionStatus": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessActionStatus" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputPathGrant": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessPathGrant" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputProjectGet": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessProjectGet" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputJobStart": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessJobStart" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputValidation": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessValidation" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputMediaProbe": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessMediaProbe" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputMediaImport": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessMediaImport" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputMediaRelease": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessMediaRelease" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputTimelineQuery": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessTimelineQuery" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputEditPlan": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessEditPlan" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputEditApply": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessEditApply" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputHistoryGet": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessHistoryGet" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputJobList": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessJobList" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputJobGet": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessJobGet" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputArtifactList": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessArtifactList" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputArtifactGet": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessArtifactGet" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputEventsRead": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessEventsRead" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputView": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessView" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputPlayback": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessPlayback" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputDiagnostics": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessDiagnostics" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    },
+    "ToolOutputEditorRender": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessEditorRender" },
+        { "$ref": "common.schema.json#/$defs/ToolFailure" }
+      ]
+    }
+  }
+}

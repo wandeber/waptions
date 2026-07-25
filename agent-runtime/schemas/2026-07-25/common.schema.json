@@ -1,0 +1,700 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waptions:agent:2026-07-25:common",
+  "title": "Waptions agent common protocol contracts",
+  "$defs": {
+    "ApiVersion": {
+      "const": "2026-07-25"
+    },
+    "SafeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "PositiveSafeInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "FiniteNumber": {
+      "type": "number",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308
+    },
+    "NonNegativeFiniteNumber": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308
+    },
+    "OpaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "OperationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "OpaqueIdOrAlias": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "not": {
+                "pattern": "^\\$[A-Za-z][A-Za-z0-9_-]*\\.[A-Za-z][A-Za-z0-9_-]*$"
+              }
+            }
+          ]
+        },
+        {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 256,
+          "pattern": "^\\$[A-Za-z][A-Za-z0-9_-]*\\.[A-Za-z][A-Za-z0-9_-]*$"
+        }
+      ]
+    },
+    "Sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "IsoTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64
+    },
+    "BoundedString": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "NonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "CanonicalPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!.*\\u0000).+$"
+    },
+    "SafeOutputName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(?!\\.{1,2}$)(?!.*[\\\\/\\u0000]).+$"
+    },
+    "StateToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "projectId",
+        "sessionEpoch",
+        "sessionRevision",
+        "documentRevision",
+        "audioGraphRevision",
+        "eventCursor"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "projectId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "sessionEpoch": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "sessionRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "documentRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "audioGraphRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "narrativeRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "eventCursor": {
+          "$ref": "#/$defs/OpaqueId"
+        }
+      }
+    },
+    "ExpectedRevisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionRevision",
+        "documentRevision"
+      ],
+      "properties": {
+        "sessionRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "documentRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "audioGraphRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "narrativeRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        }
+      }
+    },
+    "MutationEnvelopeProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apiVersion",
+        "sessionId",
+        "sessionEpoch",
+        "expected",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "apiVersion": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "sessionEpoch": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "expected": {
+          "$ref": "#/$defs/ExpectedRevisions"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/OpaqueId"
+        }
+      }
+    },
+    "PageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 200
+        }
+      }
+    },
+    "PageInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hasMore"
+      ],
+      "properties": {
+        "nextCursor": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "hasMore": {
+          "type": "boolean"
+        }
+      }
+    },
+    "StableErrorCode": {
+      "enum": [
+        "INVALID_REQUEST",
+        "UNSUPPORTED_API_VERSION",
+        "PAYLOAD_TOO_LARGE",
+        "SESSION_NOT_FOUND",
+        "SESSION_EPOCH_MISMATCH",
+        "SESSION_REVISION_CONFLICT",
+        "REVISION_CONFLICT",
+        "NARRATIVE_REVISION_CONFLICT",
+        "AUDIO_REVISION_CONFLICT",
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "PLAN_NOT_FOUND",
+        "PLAN_EXPIRED",
+        "PLAN_INPUT_CHANGED",
+        "NOT_FOUND",
+        "INVALID_DOCUMENT",
+        "INVALID_OPERATION",
+        "OVERLAP_CONFLICT",
+        "LOCKED_TARGET",
+        "ORDER_NOT_MEANINGFUL",
+        "SOURCE_CHANGED",
+        "SOURCE_UNREADABLE",
+        "PATH_NOT_GRANTED",
+        "WRITE_DESTINATION_NOT_GRANTED",
+        "OVERWRITE_NOT_AUTHORIZED",
+        "PATH_IDENTITY_CHANGED",
+        "UNSUPPORTED_MEDIA",
+        "NO_AUDIO",
+        "CODEC_UNAVAILABLE",
+        "TRANSCRIPTION_POLICY_REJECTED",
+        "TRANSCRIPTION_ENDPOINT_UNREACHABLE",
+        "SSRF_POLICY_REJECTED",
+        "JOB_NOT_CANCELLABLE",
+        "EVENT_CURSOR_EXPIRED",
+        "ARTIFACT_EXPIRED",
+        "CAPABILITY_EXPIRED",
+        "COORDINATOR_UNAVAILABLE",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "ValidationIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "path",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "BoundedErrorDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "resourceKind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "ids": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/OpaqueId"
+          }
+        },
+        "issues": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/ValidationIssue"
+          }
+        },
+        "domain": {
+          "enum": [
+            "session",
+            "document",
+            "audio",
+            "narrative",
+            "view",
+            "playback"
+          ]
+        },
+        "expectedRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "actualRevision": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "limitBytes": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "grantId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "jobId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "cursor": {
+          "$ref": "#/$defs/OpaqueId"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "operationId"
+          ]
+        },
+        {
+          "required": [
+            "resourceKind"
+          ]
+        },
+        {
+          "required": [
+            "ids"
+          ]
+        },
+        {
+          "required": [
+            "issues"
+          ]
+        },
+        {
+          "required": [
+            "domain"
+          ]
+        },
+        {
+          "required": [
+            "limitBytes"
+          ]
+        },
+        {
+          "required": [
+            "grantId"
+          ]
+        },
+        {
+          "required": [
+            "jobId"
+          ]
+        },
+        {
+          "required": [
+            "cursor"
+          ]
+        }
+      ]
+    },
+    "ToolFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/StableErrorCode"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "details": {
+              "$ref": "#/$defs/BoundedErrorDetails"
+            }
+          }
+        },
+        "state": {
+          "$ref": "#/$defs/StateToken"
+        }
+      }
+    },
+    "ToolWarning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "NO_OP",
+            "INPUT_NORMALIZED",
+            "PARTIAL_RESULT",
+            "RENDER_BACKEND_FALLBACK",
+            "PRESENTATION_FALLBACK",
+            "SAFE_CACHE_RETAINED"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "operationId": {
+          "$ref": "#/$defs/OperationId"
+        }
+      }
+    },
+    "NoOpReason": {
+      "enum": [
+        "unchanged",
+        "same-order",
+        "no-eligible-silence",
+        "no-accepted-candidates",
+        "no-linkable-overlap",
+        "order-not-meaningful"
+      ]
+    },
+    "RationalFrameRate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "numerator": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "denominator": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        }
+      }
+    },
+    "RenderProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fps",
+        "width",
+        "height",
+        "audioSampleRate",
+        "isFrameRateLocked",
+        "isCanvasSizeLocked"
+      ],
+      "properties": {
+        "fps": {
+          "$ref": "#/$defs/RationalFrameRate"
+        },
+        "width": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "height": {
+          "$ref": "#/$defs/PositiveSafeInteger"
+        },
+        "audioSampleRate": {
+          "const": 48000
+        },
+        "isFrameRateLocked": {
+          "type": "boolean"
+        },
+        "isCanvasSizeLocked": {
+          "type": "boolean"
+        }
+      }
+    },
+    "VideoClipAudioSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "linkState",
+        "muted",
+        "gainDb",
+        "fadeInFrames",
+        "fadeOutFrames"
+      ],
+      "properties": {
+        "linkState": {
+          "enum": [
+            "linked",
+            "detached"
+          ]
+        },
+        "muted": {
+          "type": "boolean"
+        },
+        "gainDb": {
+          "$ref": "#/$defs/FiniteNumber"
+        },
+        "fadeInFrames": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "fadeOutFrames": {
+          "$ref": "#/$defs/SafeInteger"
+        }
+      }
+    },
+    "ImmutableMediaIdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "contentDigest",
+        "descriptorFingerprint",
+        "byteLength",
+        "immutableVersion",
+        "streamMetadataRefs"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "contentDigest": {
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "descriptorFingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "byteLength": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "immutableVersion": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "stableStatIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "device",
+            "fileId",
+            "modifiedNanoseconds"
+          ],
+          "properties": {
+            "device": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "fileId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "modifiedNanoseconds": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "maxLength": 32
+            }
+          }
+        },
+        "streamMetadataRefs": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "ref"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "probe",
+                  "video-stream",
+                  "audio-stream",
+                  "subtitle-stream"
+                ]
+              },
+              "ref": {
+                "$ref": "#/$defs/OpaqueId"
+              },
+              "digest": {
+                "$ref": "#/$defs/Sha256Digest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "VerifiedMediaHandleV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "handleId",
+        "capabilityId",
+        "identity",
+        "verifiedAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "handleId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "capabilityId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "identity": {
+          "$ref": "#/$defs/ImmutableMediaIdentityV1"
+        },
+        "verifiedAt": {
+          "$ref": "#/$defs/IsoTimestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/IsoTimestamp"
+        }
+      }
+    },
+    "StagedOutputDestinationCapabilityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "destinationId",
+        "grantId",
+        "stagingHandleId",
+        "mode",
+        "outputName",
+        "verifiedParentIdentity",
+        "expiresAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "destinationId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "grantId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "stagingHandleId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "mode": {
+          "enum": [
+            "create-only",
+            "overwrite-file"
+          ]
+        },
+        "outputName": {
+          "$ref": "#/$defs/SafeOutputName"
+        },
+        "verifiedParentIdentity": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "overwriteConfirmationId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/IsoTimestamp"
+        }
+      }
+    }
+  }
+}

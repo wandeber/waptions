@@ -1,0 +1,363 @@
+{
+  "registryVersion": 1,
+  "apiVersion": "2026-07-25",
+  "tools": [
+    {
+      "name": "waptions_session_list",
+      "description": "Page managed projects, sessions, and recovery state.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputSessionList",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputSessionList",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_session_open",
+      "description": "Create a blank managed V4 project, attach to an existing project, or recover by opaque ID.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputSessionOpen",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputSessionOpen",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_session_manage",
+      "description": "Rename, detach, archive, restore, or explicitly delete a managed project.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputSessionManage",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputActionStatus",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_path_grant",
+      "description": "Add, inspect, or revoke session-scoped read roots and output grants.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputPathGrant",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputPathGrant",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_project_get",
+      "description": "Read a bounded project summary, revisions, render settings, counts, active jobs, and paged graph references.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputProjectGet",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputProjectGet",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_project_import",
+      "description": "Start bounded import of a V1-V4 bundle or a descriptor-only managed manifest.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputProjectImport",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobStart",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_project_validate",
+      "description": "Validate project structure, hydration, source identity, recovery state, transcript pins, and renderability.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputProjectValidate",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputValidation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_media_probe",
+      "description": "Probe an authorized filesystem source without editing the project.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputMediaProbe",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputMediaProbe",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_media_import",
+      "description": "Register immutable source references and optionally place initial video or audio clips atomically.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputMediaImport",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputMediaImport",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_media_review",
+      "description": "Start contact-sheet, thumbnail, waveform, audio, silence, scene, transcript-assisted, or proxy review work.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputMediaReview",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobStart",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_media_release",
+      "description": "Dry-run or apply runtime release and reachability-safe durable source garbage collection.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputMediaRelease",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputMediaRelease",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_timeline_query",
+      "description": "Page timeline, subtitle, narrative, link, selection, interval, or boundary data at one revision.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputTimelineQuery",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputTimelineQuery",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_edit_plan",
+      "description": "Normalize a bounded semantic batch and return predicted effects, aliases, warnings, and a short-lived plan.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputEditPlan",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputEditPlan",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_edit_apply",
+      "description": "Atomically apply a valid plan or inline semantic batch with guards, idempotency, history, validation, and persistence.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputEditApply",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputEditApply",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_history_get",
+      "description": "Page semantic Undo and Redo summaries and the current history index.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputHistoryGet",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputHistoryGet",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_history_apply",
+      "description": "Undo, redo, or jump with guards, idempotency, and exact transcript-pin semantics.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputHistoryApply",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputEditApply",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_transcription_start",
+      "description": "Start subtitle or independent editorial transcription with explicit range, language, speaker, and provider policy.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputTranscriptionStart",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobStart",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_job_list",
+      "description": "Page jobs by project, kind, or state.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputJobList",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobList",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_job_get",
+      "description": "Read one job and bounded progress or result metadata.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputJobGet",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobGet",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_job_cancel",
+      "description": "Idempotently cancel a cancellable job.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputJobCancel",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobGet",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_export_start",
+      "description": "Start MP4, WebM, portable-bundle, reference-snapshot, or proof export to an authorized destination.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputExportStart",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputJobStart",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_artifact_list",
+      "description": "Page project artifacts and hashes.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputArtifactList",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputArtifactList",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_artifact_get",
+      "description": "Return bounded artifact metadata, an authorized canonical local path, or a short-lived signed range URL.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputArtifactGet",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputArtifactGet",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "waptions_events_read",
+      "description": "Read ordered events after an opaque cursor and report retention gaps.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputEventsRead",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputEventsRead",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_view_get",
+      "description": "Read one view and presence snapshot.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputViewGet",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputView",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_view_update",
+      "description": "Update selection, playhead, zoom, scroll, row heights, layout, focus, or presentation without project history.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputViewUpdate",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputView",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_playback_control",
+      "description": "Control play, pause, seek, rate, master volume or mute, presenter ownership, and follow state.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputPlaybackControl",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputPlayback",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_diagnostics_get",
+      "description": "Read bounded memory, cache, decoder, job, coordinator, and resource-leak diagnostics.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputDiagnosticsGet",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputDiagnostics",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "waptions_editor_render",
+      "description": "Attach or open the versioned MCP App for a session and view, issuing only short-lived UI capabilities.",
+      "inputSchemaRef": "tools.schema.json#/$defs/ToolInputEditorRender",
+      "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputEditorRender",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "resourceUriTemplate": "ui://waptions/editor/v1/{buildHash}/index.html",
+          "visibility": [
+            "model",
+            "app"
+          ]
+        }
+      }
+    }
+  ]
+}

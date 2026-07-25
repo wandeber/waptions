@@ -1,0 +1,9 @@
+{
+  "operationId": "operation-video-trim-legacy-01",
+  "type": "video-clip.trim",
+  "payload": {
+    "clipId": "video-clip-01",
+    "sourceStart": 1.25,
+    "sourceEnd": 3.5
+  }
+}

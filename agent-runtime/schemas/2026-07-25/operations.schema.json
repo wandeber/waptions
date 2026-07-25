@@ -1,0 +1,2417 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waptions:agent:2026-07-25:operations",
+  "title": "Waptions semantic editor operations",
+  "$defs": {
+    "EmptyPayload": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "OrderAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "beforeId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "afterId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "beforeId"
+          ]
+        },
+        {
+          "required": [
+            "afterId"
+          ]
+        }
+      ]
+    },
+    "SemanticSubtitleCue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "startOutputSample",
+        "endOutputSample",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "startOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "endOutputSample": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 32768
+        }
+      }
+    },
+    "SemanticAudioSourceRange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "domain",
+            "audioSourceId",
+            "nativeSampleRateHz",
+            "startNativeSample",
+            "endNativeSample"
+          ],
+          "properties": {
+            "domain": {
+              "const": "native-samples"
+            },
+            "audioSourceId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "nativeSampleRateHz": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            },
+            "startNativeSample": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "endNativeSample": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "domain",
+            "videoSourceId",
+            "startSeconds",
+            "endSeconds"
+          ],
+          "properties": {
+            "domain": {
+              "const": "seconds"
+            },
+            "videoSourceId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "startSeconds": {
+              "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+            },
+            "endSeconds": {
+              "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+            }
+          }
+        }
+      ]
+    },
+    "SemanticMarginBoundaryPolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "mode",
+            "requestedSamples16k"
+          ],
+          "properties": {
+            "kind": {
+              "const": "margin"
+            },
+            "mode": {
+              "const": "inherit-global"
+            },
+            "requestedSamples16k": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "mode",
+            "requestedSamples16k"
+          ],
+          "properties": {
+            "kind": {
+              "const": "margin"
+            },
+            "mode": {
+              "const": "explicit"
+            },
+            "requestedSamples16k": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            }
+          }
+        }
+      ]
+    },
+    "EditorialDependentTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "clipId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "video-clip"
+            },
+            "clipId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "trackId",
+            "clipId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "audio-clip"
+            },
+            "trackId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "clipId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "trackId",
+            "subtitleId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "subtitle"
+            },
+            "trackId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "subtitleId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            }
+          }
+        }
+      ]
+    },
+    "AnimationStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fadeInDuration",
+        "fadeOutDuration",
+        "initialScale",
+        "bounceStrength",
+        "useElasticEffect",
+        "fontSize",
+        "textColor",
+        "strokeWidth",
+        "strokeColor",
+        "fontWeight",
+        "textCase",
+        "textAlign",
+        "hidePunctuation",
+        "punctuationChars",
+        "removeAccents",
+        "fontFamily",
+        "numberOfLines",
+        "position",
+        "backgroundColor",
+        "backgroundOpacity",
+        "backgroundBorderColor",
+        "backgroundBorderWidth",
+        "backgroundMarginVertical",
+        "backgroundMarginHorizontal",
+        "backgroundBorderRadius",
+        "backgroundOffsetX",
+        "backgroundOffsetY"
+      ],
+      "properties": {
+        "fadeInDuration": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "fadeOutDuration": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "initialScale": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "bounceStrength": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "useElasticEffect": {
+          "type": "boolean"
+        },
+        "fontSize": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "textColor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "strokeWidth": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "strokeColor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "fontWeight": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "textCase": {
+          "enum": [
+            "normal",
+            "uppercase",
+            "lowercase"
+          ]
+        },
+        "textAlign": {
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "hidePunctuation": {
+          "type": "boolean"
+        },
+        "punctuationChars": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "removeAccents": {
+          "type": "boolean"
+        },
+        "fontFamily": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "numberOfLines": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "$ref": "common.schema.json#/$defs/FiniteNumber"
+            },
+            "y": {
+              "$ref": "common.schema.json#/$defs/FiniteNumber"
+            }
+          }
+        },
+        "backgroundColor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "backgroundOpacity": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "backgroundBorderColor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "backgroundBorderWidth": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "backgroundMarginVertical": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "backgroundMarginHorizontal": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "backgroundBorderRadius": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "backgroundOffsetX": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        },
+        "backgroundOffsetY": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        }
+      }
+    },
+    "AudioClip": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "timelineStartFrame",
+            "muted",
+            "gainDb",
+            "source",
+            "sourceStartSample",
+            "sourceEndSample",
+            "fadeInSamples",
+            "fadeOutSamples"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "timelineStartFrame": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "muted": {
+              "type": "boolean"
+            },
+            "gainDb": {
+              "$ref": "common.schema.json#/$defs/FiniteNumber"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "audioSourceId"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "audio-source"
+                },
+                "audioSourceId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+                }
+              }
+            },
+            "sourceStartSample": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "sourceEndSample": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            },
+            "timelineDurationSamples": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            },
+            "fadeInSamples": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "fadeOutSamples": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "timelineStartFrame",
+            "muted",
+            "gainDb",
+            "source",
+            "sourceStart",
+            "sourceEnd",
+            "fadeInFrames",
+            "fadeOutFrames"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "timelineStartFrame": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "muted": {
+              "type": "boolean"
+            },
+            "gainDb": {
+              "$ref": "common.schema.json#/$defs/FiniteNumber"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "videoSourceId"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "video-source-audio"
+                },
+                "videoSourceId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+                }
+              }
+            },
+            "sourceStart": {
+              "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+            },
+            "sourceEnd": {
+              "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+            },
+            "fadeInFrames": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "fadeOutFrames": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            }
+          }
+        }
+      ]
+    },
+    "PayloadProjectSetName": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "PayloadRenderSetProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "properties": {
+        "profile": {
+          "$ref": "common.schema.json#/$defs/RenderProfile"
+        }
+      }
+    },
+    "PayloadRenderSetBackground": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "color"
+      ],
+      "properties": {
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      }
+    },
+    "PayloadTrackAdd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackKind",
+        "name"
+      ],
+      "properties": {
+        "trackKind": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle"
+          ]
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        },
+        "beforeTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadTrackRename": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackKind",
+        "trackId",
+        "name"
+      ],
+      "properties": {
+        "trackKind": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle"
+          ]
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "PayloadTrackSetState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackKind",
+        "trackId"
+      ],
+      "properties": {
+        "trackKind": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle"
+          ]
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "muted": {
+          "type": "boolean"
+        },
+        "solo": {
+          "type": "boolean"
+        },
+        "locked": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "visible"
+          ]
+        },
+        {
+          "required": [
+            "muted"
+          ]
+        },
+        {
+          "required": [
+            "solo"
+          ]
+        },
+        {
+          "required": [
+            "locked"
+          ]
+        }
+      ]
+    },
+    "PayloadTrackIdGain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "gainDb"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "gainDb": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        }
+      }
+    },
+    "PayloadSubtitleTrackPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "policy"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "policy": {
+          "enum": [
+            "preserve-absolute",
+            "ripple-with-video-edit",
+            "remove-with-deleted-video-range"
+          ]
+        }
+      }
+    },
+    "PayloadTrackReorder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackKind",
+        "trackId"
+      ],
+      "properties": {
+        "trackKind": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle"
+          ]
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "beforeId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "afterId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "beforeId"
+          ]
+        },
+        {
+          "required": [
+            "afterId"
+          ]
+        }
+      ]
+    },
+    "PayloadTrackReorderClips": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackKind",
+        "trackId",
+        "clipId"
+      ],
+      "properties": {
+        "trackKind": {
+          "enum": [
+            "audio",
+            "subtitle"
+          ]
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "beforeId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "afterId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "beforeId"
+          ]
+        },
+        {
+          "required": [
+            "afterId"
+          ]
+        }
+      ]
+    },
+    "PayloadTrackDelete": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trackKind",
+            "trackId",
+            "policy"
+          ],
+          "properties": {
+            "trackKind": {
+              "enum": [
+                "video",
+                "audio",
+                "subtitle"
+              ]
+            },
+            "trackId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "policy": {
+              "enum": [
+                "empty-only",
+                "delete-contents"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trackKind",
+            "trackId",
+            "policy",
+            "rehomeTrackId"
+          ],
+          "properties": {
+            "trackKind": {
+              "enum": [
+                "video",
+                "audio",
+                "subtitle"
+              ]
+            },
+            "trackId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            "policy": {
+              "const": "rehome"
+            },
+            "rehomeTrackId": {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            }
+          }
+        }
+      ]
+    },
+    "PayloadVideoInsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceId",
+        "trackId",
+        "timelineStartFrame",
+        "sourceStartSeconds",
+        "sourceEndSeconds",
+        "audio"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "sourceId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "timelineStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "sourceStartSeconds": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "sourceEndSeconds": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "audio": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/VideoClipAudioSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "PayloadVideoMove": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "targetTrackId",
+        "timelineStartFrame"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "targetTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "timelineStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadVideoTrim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "sourceStartSeconds",
+        "sourceEndSeconds"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "sourceStartSeconds": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "sourceEndSeconds": {
+          "$ref": "common.schema.json#/$defs/NonNegativeFiniteNumber"
+        },
+        "timelineStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadVideoSplit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "atFrame"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "atFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "rightClipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadClipId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadVideoDuplicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "duplicateId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "targetTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "timelineStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadVideoOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "beforeId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "afterId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "beforeId"
+          ]
+        },
+        {
+          "required": [
+            "afterId"
+          ]
+        }
+      ]
+    },
+    "PayloadVideoSetAudio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "audio"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "audio": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/VideoClipAudioSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "PayloadVideoDetach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "audioTrackId"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "audioTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "detachedClipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadVideoRelink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "videoClipId",
+        "audioTrackId",
+        "audioClipId"
+      ],
+      "properties": {
+        "videoClipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "audioTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "audioClipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadAudioInsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "clip"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "clip": {
+          "$ref": "#/$defs/AudioClip"
+        }
+      }
+    },
+    "PayloadAudioMove": {
+      "$ref": "#/$defs/PayloadVideoMove"
+    },
+    "PayloadAudioTrim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "sourceRange"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "sourceRange": {
+          "$ref": "#/$defs/SemanticAudioSourceRange"
+        }
+      }
+    },
+    "PayloadAudioSplit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "atOutputSample"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "atOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "rightClipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadAudioDuplicate": {
+      "$ref": "#/$defs/PayloadVideoDuplicate"
+    },
+    "PayloadAudioOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "clipId"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "beforeId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "afterId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "beforeId"
+          ]
+        },
+        {
+          "required": [
+            "afterId"
+          ]
+        }
+      ]
+    },
+    "PayloadClipGain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "gainDb"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "gainDb": {
+          "$ref": "common.schema.json#/$defs/FiniteNumber"
+        }
+      }
+    },
+    "PayloadClipFades": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clipId",
+        "fadeInOutputSamples48k",
+        "fadeOutOutputSamples48k"
+      ],
+      "properties": {
+        "clipId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "fadeInOutputSamples48k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "fadeOutOutputSamples48k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadSubtitleInsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitle"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitle": {
+          "$ref": "#/$defs/SemanticSubtitleCue"
+        }
+      }
+    },
+    "PayloadSubtitleUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitleId",
+        "text"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 32768
+        }
+      }
+    },
+    "PayloadSubtitleMove": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitleId",
+        "startOutputSample"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "startOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadSubtitleTrim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitleId",
+        "startOutputSample",
+        "endOutputSample"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "startOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "endOutputSample": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        }
+      }
+    },
+    "PayloadSubtitleSplit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitleId",
+        "atOutputSample"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "atOutputSample": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "rightSubtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadSubtitleId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitleId"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadSubtitleOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitleId"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitleId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "beforeId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "afterId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "beforeId"
+          ]
+        },
+        {
+          "required": [
+            "afterId"
+          ]
+        }
+      ]
+    },
+    "PayloadSubtitleBulkReplace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "subtitles"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "subtitles": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/SemanticSubtitleCue"
+          }
+        }
+      }
+    },
+    "PayloadSubtitleStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackId",
+        "style"
+      ],
+      "properties": {
+        "trackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "style": {
+          "$ref": "#/$defs/AnimationStyle"
+        }
+      }
+    },
+    "PayloadNarrativeActivate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selectedTrackIds",
+        "recordIdBySourceId"
+      ],
+      "properties": {
+        "selectedTrackIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+          }
+        },
+        "recordIdBySourceId": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/Sha256Digest"
+          }
+        },
+        "splitOnSpeakerChange": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PayloadTrackIds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackIds"
+      ],
+      "properties": {
+        "trackIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+          }
+        }
+      }
+    },
+    "PayloadEditingMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "ripple",
+            "absolute"
+          ]
+        }
+      }
+    },
+    "PayloadNarrativeSplit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "splitSample16k"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "splitSample16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadNarrativeMerge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leftBlockId",
+        "rightBlockId"
+      ],
+      "properties": {
+        "leftBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "rightBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadNarrativeDeleteWords": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "firstBlockId",
+        "firstWordId",
+        "lastBlockId",
+        "lastWordId"
+      ],
+      "properties": {
+        "firstBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "firstWordId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "lastBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "lastWordId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "currentPlayheadFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "NarrativePoint16k": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "sample16k"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "sample16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadNarrativeDeleteRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/NarrativePoint16k"
+        },
+        "end": {
+          "$ref": "#/$defs/NarrativePoint16k"
+        },
+        "currentPlayheadFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadNarrativeTrim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "side",
+        "sample16k"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "side": {
+          "enum": [
+            "start",
+            "end"
+          ]
+        },
+        "sample16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadNarrativeReorder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockIds"
+      ],
+      "properties": {
+        "blockIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+          }
+        },
+        "targetIndex": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "targetStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "targetIndex"
+          ]
+        },
+        {
+          "required": [
+            "targetStartFrame"
+          ]
+        }
+      ]
+    },
+    "PayloadNarrativeSourceRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recordId",
+        "sourceId",
+        "sourceRange",
+        "destinationTrackId",
+        "clipAudio"
+      ],
+      "properties": {
+        "recordId": {
+          "$ref": "common.schema.json#/$defs/Sha256Digest"
+        },
+        "sourceId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "sourceRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "startSample16k",
+            "endSample16k"
+          ],
+          "properties": {
+            "startSample16k": {
+              "$ref": "common.schema.json#/$defs/SafeInteger"
+            },
+            "endSample16k": {
+              "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+            }
+          }
+        },
+        "destinationTrackId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "targetIndex": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "timelineStartFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "clipAudio": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/VideoClipAudioSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "targetIndex"
+          ]
+        },
+        {
+          "required": [
+            "timelineStartFrame"
+          ]
+        }
+      ]
+    },
+    "PayloadNarrativeExtend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "newStartSample16k",
+        "newEndSample16k"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "newStartSample16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "newEndSample16k": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        }
+      }
+    },
+    "PayloadNarrativeWordText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "wordId",
+        "text"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "wordId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "text": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32768
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "PayloadNarrativeWordSpeaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "wordId",
+        "speakerId"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "wordId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "speakerId": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "PayloadSpeakerVisibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "showSpeakers"
+      ],
+      "properties": {
+        "showSpeakers": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PayloadBlockMargin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "side",
+        "policy"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "side": {
+          "enum": [
+            "pre",
+            "post"
+          ]
+        },
+        "policy": {
+          "$ref": "#/$defs/SemanticMarginBoundaryPolicy"
+        }
+      }
+    },
+    "PayloadGlobalMargins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preSamples16k",
+        "postSamples16k"
+      ],
+      "properties": {
+        "preSamples16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "postSamples16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadRefineBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "side",
+        "chosenSample16k",
+        "algorithmVersion",
+        "origin"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "side": {
+          "enum": [
+            "start",
+            "end"
+          ]
+        },
+        "chosenSample16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "algorithmVersion": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "origin": {
+          "enum": [
+            "manual",
+            "quiet-assisted"
+          ]
+        }
+      }
+    },
+    "PayloadDeleteSilences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "document"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "trackId"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "track"
+                },
+                "trackId": {
+                  "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+                }
+              }
+            }
+          ]
+        },
+        "currentPlayheadFrame": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        }
+      }
+    },
+    "PayloadLinkCreate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "anchorBlockId"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/EditorialDependentTarget"
+        },
+        "anchorBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "followPolicy": {
+          "enum": [
+            "none",
+            "follow"
+          ]
+        }
+      }
+    },
+    "PayloadLinkBind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "anchorBlockId",
+        "activeStartSample16k",
+        "activeEndSample16k"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/EditorialDependentTarget"
+        },
+        "anchorBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        },
+        "activeStartSample16k": {
+          "$ref": "common.schema.json#/$defs/SafeInteger"
+        },
+        "activeEndSample16k": {
+          "$ref": "common.schema.json#/$defs/PositiveSafeInteger"
+        },
+        "followPolicy": {
+          "enum": [
+            "none",
+            "follow"
+          ]
+        }
+      }
+    },
+    "PayloadLinkTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/EditorialDependentTarget"
+        }
+      }
+    },
+    "PayloadLinkReanchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "anchorBlockId"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/EditorialDependentTarget"
+        },
+        "anchorBlockId": {
+          "$ref": "common.schema.json#/$defs/OpaqueIdOrAlias"
+        }
+      }
+    },
+    "PayloadLinkFollow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "followPolicy"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/EditorialDependentTarget"
+        },
+        "followPolicy": {
+          "enum": [
+            "none",
+            "follow"
+          ]
+        }
+      }
+    },
+    "EditorSemanticOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "type",
+        "payload"
+      ],
+      "properties": {
+        "operationId": {
+          "$ref": "common.schema.json#/$defs/OperationId"
+        },
+        "type": {
+          "enum": [
+            "project.set-name",
+            "render.set-profile",
+            "render.set-background",
+            "track.add",
+            "track.rename",
+            "track.set-state",
+            "audio-track.set-gain",
+            "subtitle-track.set-unlinked-video-policy",
+            "track.reorder",
+            "track.reorder-clips",
+            "track.delete",
+            "video-clip.insert",
+            "video-clip.move",
+            "video-clip.trim",
+            "video-clip.split",
+            "video-clip.delete",
+            "video-clip.duplicate",
+            "video-clip.set-order",
+            "video-clip.set-audio",
+            "video-clip.detach-audio",
+            "video-clip.relink-audio",
+            "audio-clip.insert",
+            "audio-clip.move",
+            "audio-clip.trim",
+            "audio-clip.split",
+            "audio-clip.delete",
+            "audio-clip.duplicate",
+            "audio-clip.set-order",
+            "audio-clip.set-gain",
+            "audio-clip.set-fades",
+            "subtitle.insert",
+            "subtitle.update",
+            "subtitle.move",
+            "subtitle.trim",
+            "subtitle.split",
+            "subtitle.delete",
+            "subtitle.set-order",
+            "subtitle.bulk-replace",
+            "subtitle.set-track-style",
+            "narrative.activate",
+            "narrative.release-tracks",
+            "narrative.set-editing-mode",
+            "narrative.split-block",
+            "narrative.merge-blocks",
+            "narrative.delete-words",
+            "narrative.delete-range",
+            "narrative.trim-block",
+            "narrative.reorder-blocks",
+            "narrative.insert-source-range",
+            "narrative.recover-source-range",
+            "narrative.extend-block",
+            "narrative.set-word-text",
+            "narrative.set-word-speaker",
+            "narrative.set-speaker-visibility",
+            "narrative.change-block-margin",
+            "narrative.change-global-margins",
+            "narrative.refine-boundary",
+            "narrative.delete-all-silences",
+            "link.discover-overlaps",
+            "link.create-overlap",
+            "link.bind-target",
+            "link.unlink-target",
+            "link.unbind-target",
+            "link.reanchor",
+            "link.set-follow-policy"
+          ]
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "type": { "const": "project.set-name" },
+                "payload": { "$ref": "#/$defs/PayloadProjectSetName" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "render.set-profile" },
+                "payload": { "$ref": "#/$defs/PayloadRenderSetProfile" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "render.set-background" },
+                "payload": { "$ref": "#/$defs/PayloadRenderSetBackground" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "track.add" },
+                "payload": { "$ref": "#/$defs/PayloadTrackAdd" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "track.rename" },
+                "payload": { "$ref": "#/$defs/PayloadTrackRename" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "track.set-state" },
+                "payload": { "$ref": "#/$defs/PayloadTrackSetState" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-track.set-gain" },
+                "payload": { "$ref": "#/$defs/PayloadTrackIdGain" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle-track.set-unlinked-video-policy" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleTrackPolicy" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "track.reorder" },
+                "payload": { "$ref": "#/$defs/PayloadTrackReorder" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "track.reorder-clips" },
+                "payload": { "$ref": "#/$defs/PayloadTrackReorderClips" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "track.delete" },
+                "payload": { "$ref": "#/$defs/PayloadTrackDelete" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.insert" },
+                "payload": { "$ref": "#/$defs/PayloadVideoInsert" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.move" },
+                "payload": { "$ref": "#/$defs/PayloadVideoMove" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.trim" },
+                "payload": { "$ref": "#/$defs/PayloadVideoTrim" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.split" },
+                "payload": { "$ref": "#/$defs/PayloadVideoSplit" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.delete" },
+                "payload": { "$ref": "#/$defs/PayloadClipId" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.duplicate" },
+                "payload": { "$ref": "#/$defs/PayloadVideoDuplicate" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.set-order" },
+                "payload": { "$ref": "#/$defs/PayloadVideoOrder" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.set-audio" },
+                "payload": { "$ref": "#/$defs/PayloadVideoSetAudio" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.detach-audio" },
+                "payload": { "$ref": "#/$defs/PayloadVideoDetach" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "video-clip.relink-audio" },
+                "payload": { "$ref": "#/$defs/PayloadVideoRelink" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.insert" },
+                "payload": { "$ref": "#/$defs/PayloadAudioInsert" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.move" },
+                "payload": { "$ref": "#/$defs/PayloadAudioMove" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.trim" },
+                "payload": { "$ref": "#/$defs/PayloadAudioTrim" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.split" },
+                "payload": { "$ref": "#/$defs/PayloadAudioSplit" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.delete" },
+                "payload": { "$ref": "#/$defs/PayloadClipId" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.duplicate" },
+                "payload": { "$ref": "#/$defs/PayloadAudioDuplicate" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.set-order" },
+                "payload": { "$ref": "#/$defs/PayloadAudioOrder" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.set-gain" },
+                "payload": { "$ref": "#/$defs/PayloadClipGain" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "audio-clip.set-fades" },
+                "payload": { "$ref": "#/$defs/PayloadClipFades" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.insert" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleInsert" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.update" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleUpdate" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.move" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleMove" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.trim" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleTrim" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.split" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleSplit" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.delete" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleId" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.set-order" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleOrder" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.bulk-replace" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleBulkReplace" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "subtitle.set-track-style" },
+                "payload": { "$ref": "#/$defs/PayloadSubtitleStyle" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.activate" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeActivate" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.release-tracks" },
+                "payload": { "$ref": "#/$defs/PayloadTrackIds" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.set-editing-mode" },
+                "payload": { "$ref": "#/$defs/PayloadEditingMode" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.split-block" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeSplit" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.merge-blocks" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeMerge" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.delete-words" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeDeleteWords" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.delete-range" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeDeleteRange" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.trim-block" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeTrim" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.reorder-blocks" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeReorder" }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "enum": [
+                    "narrative.insert-source-range",
+                    "narrative.recover-source-range"
+                  ]
+                },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeSourceRange" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.extend-block" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeExtend" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.set-word-text" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeWordText" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.set-word-speaker" },
+                "payload": { "$ref": "#/$defs/PayloadNarrativeWordSpeaker" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.set-speaker-visibility" },
+                "payload": { "$ref": "#/$defs/PayloadSpeakerVisibility" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.change-block-margin" },
+                "payload": { "$ref": "#/$defs/PayloadBlockMargin" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.change-global-margins" },
+                "payload": { "$ref": "#/$defs/PayloadGlobalMargins" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.refine-boundary" },
+                "payload": { "$ref": "#/$defs/PayloadRefineBoundary" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "narrative.delete-all-silences" },
+                "payload": { "$ref": "#/$defs/PayloadDeleteSilences" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "link.discover-overlaps" },
+                "payload": { "$ref": "#/$defs/EmptyPayload" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "link.create-overlap" },
+                "payload": { "$ref": "#/$defs/PayloadLinkCreate" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "link.bind-target" },
+                "payload": { "$ref": "#/$defs/PayloadLinkBind" }
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "enum": [
+                    "link.unlink-target",
+                    "link.unbind-target"
+                  ]
+                },
+                "payload": { "$ref": "#/$defs/PayloadLinkTarget" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "link.reanchor" },
+                "payload": { "$ref": "#/$defs/PayloadLinkReanchor" }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "link.set-follow-policy" },
+                "payload": { "$ref": "#/$defs/PayloadLinkFollow" }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

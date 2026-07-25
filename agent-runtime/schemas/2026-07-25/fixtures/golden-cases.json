@@ -1,0 +1,42 @@
+{
+  "valid": [
+    {
+      "path": "valid/state-token.json",
+      "schemaRef": "common.schema.json#/$defs/StateToken"
+    },
+    {
+      "path": "valid/immutable-media-identity.json",
+      "schemaRef": "common.schema.json#/$defs/ImmutableMediaIdentityV1"
+    },
+    {
+      "path": "valid/audio-trim-operation.json",
+      "schemaRef": "operations.schema.json#/$defs/EditorSemanticOperation"
+    },
+    {
+      "path": "valid/subtitle-insert-operation.json",
+      "schemaRef": "operations.schema.json#/$defs/EditorSemanticOperation"
+    },
+    {
+      "path": "valid/link-bind-operation.json",
+      "schemaRef": "operations.schema.json#/$defs/EditorSemanticOperation"
+    }
+  ],
+  "invalid": [
+    {
+      "path": "invalid/state-token-unknown-field.json",
+      "schemaRef": "common.schema.json#/$defs/StateToken"
+    },
+    {
+      "path": "invalid/video-legacy-source-fields.json",
+      "schemaRef": "operations.schema.json#/$defs/EditorSemanticOperation"
+    },
+    {
+      "path": "invalid/subtitle-raw-time-fields.json",
+      "schemaRef": "operations.schema.json#/$defs/EditorSemanticOperation"
+    },
+    {
+      "path": "invalid/media-identity-path.json",
+      "schemaRef": "common.schema.json#/$defs/ImmutableMediaIdentityV1"
+    }
+  ]
+}

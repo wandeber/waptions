@@ -1,0 +1,10 @@
+{
+  "sessionId": "session-01",
+  "projectId": "project-01",
+  "sessionEpoch": "epoch-01",
+  "sessionRevision": 7,
+  "documentRevision": 5,
+  "audioGraphRevision": 3,
+  "narrativeRevision": 2,
+  "eventCursor": "cursor-07"
+}

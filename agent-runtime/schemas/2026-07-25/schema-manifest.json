@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": "2026-07-25",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "schemas": [
+    {
+      "path": "common.schema.json",
+      "id": "urn:waptions:agent:2026-07-25:common"
+    },
+    {
+      "path": "operations.schema.json",
+      "id": "urn:waptions:agent:2026-07-25:operations"
+    },
+    {
+      "path": "session.schema.json",
+      "id": "urn:waptions:agent:2026-07-25:session"
+    },
+    {
+      "path": "tools.schema.json",
+      "id": "urn:waptions:agent:2026-07-25:tools"
+    }
+  ],
+  "instances": [
+    "protocol-contract.json",
+    "tool-registry.json"
+  ]
+}
