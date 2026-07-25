@@ -45,6 +45,34 @@ const FAULT_POINTS = [
 ] as const;
 
 describe('ManagedFilesystemStore', () => {
+    it('creates bootstrap state and receipt in one recoverable transaction', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const store = new ManagedFilesystemStore(runtime.path);
+        await store.initialize();
+        const initial = testEnvelope('bootstrap-project', 'bootstrap-session');
+        const receipt: DurableReceipt = {
+            schemaVersion: 2,
+            projectId: initial.projectId,
+            toolName: 'waptions_session_open',
+            idempotencyKey: 'bootstrap-key',
+            canonicalRequestHash: `sha256:${'1'.repeat(64)}`,
+            result: { action: 'create' },
+            committedSessionRevision: 0,
+            createdAt: new Date().toISOString(),
+            retainedSourceIds: [],
+        };
+
+        await store.createProjectAtomic(initial, [store.receiptWrite(receipt)]);
+
+        expect(await store.readProject(initial.projectId)).toEqual(initial);
+        expect(await store.readReceipt(
+            initial.projectId,
+            receipt.toolName,
+            receipt.idempotencyKey,
+        )).toEqual(receipt);
+    });
+
     for (const faultPoint of FAULT_POINTS) {
         it(`recovers a complete old or new revision after ${faultPoint}`, async () => {
             const runtime = await temporaryRuntime();

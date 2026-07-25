@@ -175,11 +175,7 @@ export class ManagedFilesystemStore {
     }
 
     async createProject<State>(envelope: ManagedProjectEnvelopeV1<State>): Promise<void> {
-        const root = this.projectPath(envelope.projectId);
-        await ensurePrivateDirectory(root);
-        for (const namespace of ['wal', 'receipts', 'jobs', 'events', 'artifacts', 'grants']) {
-            await ensurePrivateDirectory(join(root, namespace));
-        }
+        const root = await this.ensureProjectLayout(envelope.projectId);
         const statePath = join(root, 'state.json');
         const serializedEnvelope = serializeBoundedJson(
             envelope,
@@ -199,6 +195,21 @@ export class ManagedFilesystemStore {
             await handle?.close().catch(() => undefined);
         }
         await fsyncDirectory(root);
+    }
+
+    async createProjectAtomic<State>(
+        envelope: ManagedProjectEnvelopeV1<State>,
+        writes: readonly DurableWrite[],
+    ): Promise<void> {
+        await this.ensureProjectLayout(envelope.projectId);
+        if (await this.readProject(envelope.projectId)) {
+            throw managedError('INVALID_REQUEST', 'The managed project already exists.');
+        }
+        await this.transact({
+            envelope,
+            baseSessionRevision: envelope.sessionRevision,
+            writes,
+        });
     }
 
     async transact<State>(input: StoreTransactionInput<State>): Promise<string> {
@@ -333,6 +344,25 @@ export class ManagedFilesystemStore {
     private receiptPath(projectId: string, toolName: string, idempotencyKey: string): string {
         const scopeHash = canonicalDigest({ projectId, toolName, idempotencyKey }).slice(7);
         return this.projectPath(projectId, 'receipts', `${scopeHash}.json`);
+    }
+
+    private async ensureProjectLayout(projectId: string): Promise<string> {
+        const root = this.projectPath(projectId);
+        await ensurePrivateDirectory(root);
+        for (const namespace of [
+            'wal',
+            'receipts',
+            'jobs',
+            'events',
+            'artifacts',
+            'grants',
+            'views',
+            'outputs',
+            'core',
+        ]) {
+            await ensurePrivateDirectory(join(root, namespace));
+        }
+        return root;
     }
 
     private async replay(transaction: ManagedTransaction): Promise<void> {

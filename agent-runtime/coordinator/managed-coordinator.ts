@@ -100,6 +100,24 @@ export interface ManagedCoordinatorOptions {
     renderStagingQuotas?: RenderStagingQuotaPolicy;
 }
 
+export interface ManagedSessionOpenInput<State> {
+    apiVersion: typeof MANAGED_RUNTIME_API_VERSION;
+    action: 'create' | 'attach' | 'recover';
+    projectId: string;
+    idempotencyKey: string;
+    canonicalRequestHash: string;
+    name?: string;
+    initialSnapshot?: ManagedEditorSnapshot<State>;
+}
+
+export interface ManagedSessionOpenResult {
+    action: 'create' | 'attach' | 'recover';
+    created: boolean;
+    recovered: boolean;
+    participantId: string;
+    project: ManagedSessionSummary;
+}
+
 export interface RegistryMutation<State, Result extends Record<string, unknown>> {
     update(envelope: ManagedProjectEnvelopeV1<State>): ManagedProjectEnvelopeV1<State>;
     writes?: readonly DurableWrite[];
@@ -308,6 +326,145 @@ export class ManagedCoordinator<
             await port.close().catch(() => undefined);
             throw error;
         }
+    }
+
+    async openSessionReceiptFirst(
+        input: ManagedSessionOpenInput<State>,
+    ): Promise<ManagedMutationResult<ManagedSessionOpenResult>> {
+        return this.serialized(input.projectId, async () => {
+            let port: ManagedEditorPort<State, Command, Result> | undefined;
+            try {
+                if (
+                    input.apiVersion !== MANAGED_RUNTIME_API_VERSION
+                    || !input.projectId
+                    || !input.idempotencyKey
+                    || !/^sha256:[a-f0-9]{64}$/.test(input.canonicalRequestHash)
+                ) {
+                    throw managedError('INVALID_REQUEST', 'The session open identity is invalid.');
+                }
+                await this.store.recoverProject(input.projectId);
+                const existingReceipt = await this.store.readReceipt<ManagedSessionOpenResult>(
+                    input.projectId,
+                    'waptions_session_open',
+                    input.idempotencyKey,
+                );
+                if (existingReceipt) {
+                    if (existingReceipt.canonicalRequestHash !== input.canonicalRequestHash) {
+                        throw managedError(
+                            'IDEMPOTENCY_KEY_CONFLICT',
+                            'The idempotency key was already used with a different request.',
+                        );
+                    }
+                    if (!this.projects.has(input.projectId)) {
+                        await this.loadProject(input.projectId);
+                    }
+                    const loaded = this.requireProject(input.projectId);
+                    return {
+                        ok: true,
+                        data: existingReceipt.result,
+                        state: this.stateToken(loaded.envelope),
+                        committedState: this.stateToken(loaded.envelope),
+                        warnings: [],
+                        replayed: true,
+                    };
+                }
+
+                if (input.action === 'create') {
+                    if (!input.initialSnapshot) {
+                        throw managedError(
+                            'INVALID_REQUEST',
+                            'Creating a session requires an initial editor snapshot.',
+                        );
+                    }
+                    if (await this.store.readProject(input.projectId)) {
+                        throw managedError(
+                            'IDEMPOTENCY_KEY_CONFLICT',
+                            'The project already exists under a different bootstrap request.',
+                        );
+                    }
+                    const sessionId = `session_${canonicalDigest({
+                        projectId: input.projectId,
+                    }).slice(7, 39)}`;
+                    const now = new Date().toISOString();
+                    const envelope: ManagedProjectEnvelopeV1<State> = {
+                        schemaVersion: MANAGED_RUNTIME_SCHEMA_VERSION,
+                        projectId: input.projectId,
+                        sessionId,
+                        name: input.name?.trim().slice(0, 200) || 'Untitled project',
+                        createdAt: now,
+                        updatedAt: now,
+                        sessionRevision: 0,
+                        editor: input.initialSnapshot,
+                        eventSequence: 0,
+                        receiptRevision: 1,
+                        jobRevision: 0,
+                        artifactRevision: 0,
+                        grantRevision: 0,
+                        sourceRegistryRevision: 0,
+                        playback: {
+                            revision: 0,
+                            presenterViewId: null,
+                            playing: false,
+                            outputSample: 0,
+                            rate: 1,
+                            masterVolume: 1,
+                            masterMuted: false,
+                        },
+                        sourceRegistry: [],
+                        lastCoordinatorEpoch: this.epoch,
+                        recoveryCount: 0,
+                    };
+                    validateProjectEnvelope(envelope);
+                    const state = this.stateToken(envelope);
+                    const result = sessionOpenResult(input, envelope);
+                    const receipt = bootstrapReceipt(input, result, envelope);
+                    port = await this.portFactory.create(
+                        input.initialSnapshot,
+                        this.persistencePort(input.projectId),
+                        this.publicationPort(input.projectId),
+                    );
+                    await port.hydrate(input.initialSnapshot);
+                    await this.store.createProjectAtomic(envelope, [
+                        this.store.receiptWrite(receipt),
+                    ]);
+                    this.projects.set(input.projectId, { envelope, port, poisoned: false });
+                    port = undefined;
+                    return {
+                        ok: true,
+                        data: result,
+                        state,
+                        committedState: state,
+                        warnings: [],
+                        replayed: false,
+                    };
+                }
+
+                const loaded = this.requireProject(input.projectId);
+                const result = sessionOpenResult(input, loaded.envelope);
+                const nextEnvelope = {
+                    ...loaded.envelope,
+                    receiptRevision: loaded.envelope.receiptRevision + 1,
+                    updatedAt: new Date().toISOString(),
+                };
+                await this.commit(loaded, nextEnvelope, [
+                    this.store.receiptWrite(bootstrapReceipt(input, result, nextEnvelope)),
+                    ...await this.store.receiptRetentionDeletes(input.projectId),
+                ]);
+                const state = this.stateToken(nextEnvelope);
+                return {
+                    ok: true,
+                    data: result,
+                    state,
+                    committedState: state,
+                    warnings: [],
+                    replayed: false,
+                };
+            } catch (error) {
+                return { ok: false, error: asManagedRuntimeError(error).toJSON() };
+            } finally {
+                await port?.close().catch(() => undefined);
+            }
+        });
     }
 
     listSessions(): ManagedSessionSummary[] {
@@ -715,6 +872,33 @@ export class ManagedCoordinator<
                     )).find((candidate) => candidate.jobId === job.jobId);
                     if (durable) await this.jobs.acceptEnqueued(durable);
                 },
+            };
+        });
+    }
+
+    async cancelJobReceiptFirst(
+        projectId: string,
+        request: ManagedMutationEnvelope,
+        jobId: string,
+    ): Promise<ManagedMutationResult<{ job: DurableJobRecord }>> {
+        return this.mutateRegistry(projectId, request, () => {
+            const job = this.jobs.prepareCancel(jobId);
+            if (job.projectId !== projectId) {
+                throw managedError('NOT_FOUND', 'The managed job does not belong to this project.');
+            }
+            return {
+                update: (current) => ({
+                    ...current,
+                    jobRevision: current.jobRevision + 1,
+                }),
+                writes: [{
+                    relativePath: `jobs/${job.jobId}.json`,
+                    value: job,
+                }],
+                result: { job },
+                eventKind: 'job.changed',
+                eventData: jobEventData(job),
+                afterCommit: () => this.jobs.acceptPreparedCancellation(job),
             };
         });
     }
@@ -1587,6 +1771,40 @@ function summary<State>(envelope: ManagedProjectEnvelopeV1<State>): ManagedSessi
         documentRevision: envelope.editor.documentRevision,
         archived: envelope.archivedAt !== undefined,
         recovered: envelope.recoveryCount > 0,
+    };
+}
+
+function sessionOpenResult<State>(
+    input: ManagedSessionOpenInput<State>,
+    envelope: ManagedProjectEnvelopeV1<State>,
+): ManagedSessionOpenResult {
+    return {
+        action: input.action,
+        created: input.action === 'create',
+        recovered: input.action === 'recover',
+        participantId: `participant_${canonicalDigest({
+            projectId: envelope.projectId,
+            idempotencyKey: input.idempotencyKey,
+        }).slice(7, 39)}`,
+        project: summary(envelope),
+    };
+}
+
+function bootstrapReceipt<State>(
+    input: ManagedSessionOpenInput<State>,
+    result: ManagedSessionOpenResult,
+    envelope: ManagedProjectEnvelopeV1<State>,
+): DurableReceipt<ManagedSessionOpenResult> {
+    return {
+        schemaVersion: 2,
+        projectId: input.projectId,
+        toolName: 'waptions_session_open',
+        idempotencyKey: input.idempotencyKey,
+        canonicalRequestHash: input.canonicalRequestHash,
+        result,
+        committedSessionRevision: envelope.sessionRevision,
+        createdAt: new Date().toISOString(),
+        retainedSourceIds: [...envelope.editor.reachableSourceIds],
     };
 }
 

@@ -233,6 +233,16 @@ export class DurableJobScheduler {
     }
 
     async cancel(jobId: string): Promise<DurableJobRecord> {
+        const current = this.jobs.get(jobId);
+        if (!current) throw managedError('NOT_FOUND', 'The managed job does not exist.');
+        if (TERMINAL.has(current.state)) return current;
+        const prepared = this.prepareCancel(jobId);
+        await this.persist(prepared);
+        await this.acceptPreparedCancellation(prepared);
+        return prepared;
+    }
+
+    prepareCancel(jobId: string): DurableJobRecord {
         const record = this.jobs.get(jobId);
         if (!record) throw managedError('NOT_FOUND', 'The managed job does not exist.');
         if (TERMINAL.has(record.state)) return record;
@@ -241,7 +251,7 @@ export class DurableJobScheduler {
         }
         const now = new Date().toISOString();
         if (record.state === 'queued') {
-            const cancelled: DurableJobRecord = {
+            return {
                 ...record,
                 sequence: record.sequence + 1,
                 state: 'cancelled',
@@ -250,14 +260,8 @@ export class DurableJobScheduler {
                 updatedAt: now,
                 finishedAt: now,
             };
-            await this.persist(cancelled);
-            this.jobs.set(jobId, cancelled);
-            await this.cleanup(cancelled);
-            await this.notify(cancelled);
-            this.refreshDiagnostics();
-            return cancelled;
         }
-        const cancelling: DurableJobRecord = {
+        return {
             ...record,
             sequence: record.sequence + 1,
             state: 'cancelling',
@@ -265,11 +269,17 @@ export class DurableJobScheduler {
             cancellationRequestedAt: record.cancellationRequestedAt ?? now,
             updatedAt: now,
         };
-        await this.persist(cancelling);
-        this.jobs.set(jobId, cancelling);
-        this.controllers.get(jobId)?.abort(new DOMException('Cancelled', 'AbortError'));
-        await this.notify(cancelling);
-        return cancelling;
+    }
+
+    async acceptPreparedCancellation(record: DurableJobRecord): Promise<void> {
+        this.jobs.set(record.jobId, record);
+        if (record.state === 'cancelling') {
+            this.controllers.get(record.jobId)?.abort(new DOMException('Cancelled', 'AbortError'));
+        } else if (record.state === 'cancelled') {
+            await this.cleanup(record);
+        }
+        await this.notify(record);
+        this.refreshDiagnostics();
     }
 
     async close(): Promise<void> {
