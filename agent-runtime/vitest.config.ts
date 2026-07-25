@@ -12,6 +12,8 @@ export default defineConfig({
     environment: 'node',
     include: ['agent-runtime/**/*.test.ts'],
     testTimeout: 15_000,
+    hookTimeout: 15_000,
+    pool: 'forks',
     fileParallelism: false,
     coverage: {
       provider: 'v8',
