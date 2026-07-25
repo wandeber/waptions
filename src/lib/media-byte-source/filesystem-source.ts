@@ -42,6 +42,17 @@ export interface VerifiedFilesystemHandleCapability {
     readonly stagingBudget?: MediaBudgetManager;
 }
 
+export class FilesystemHandleAdoptionError extends Error {
+    constructor(
+        message: string,
+        readonly adoptionError: unknown,
+        readonly cleanupError: unknown,
+    ) {
+        super(message, { cause: adoptionError });
+        this.name = 'FilesystemHandleAdoptionError';
+    }
+}
+
 function tokenFromStat(value: Awaited<ReturnType<FileHandle['stat']>>): FilesystemStatToken {
     const bigintStat = value as typeof value & {
         dev: bigint;
@@ -160,7 +171,15 @@ export class FilesystemMediaByteSource implements MediaByteSource {
                 capability.stagingBudget ?? mediaRuntimeBudgets.compressedBytes,
             );
         } catch (error) {
-            await capability.handle.close().catch(() => undefined);
+            try {
+                await capability.handle.close();
+            } catch (cleanupError) {
+                throw new FilesystemHandleAdoptionError(
+                    'The verified filesystem handle failed adoption and cleanup.',
+                    error,
+                    cleanupError,
+                );
+            }
             throw error;
         }
     }
