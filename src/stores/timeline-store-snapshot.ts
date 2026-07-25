@@ -49,7 +49,9 @@ export const cloneSubtitleTracks = (tracks: readonly SubtitleTrack[]): TimelineS
             },
             subtitles: candidate.subtitles.map((subtitle) => ({ ...subtitle })),
             unlinkedVideoEditResponse,
-            timingDomain: unlinkedVideoEditResponse === 'stay-absolute' ? 'absolute' : 'video-ripple',
+            timingDomain: unlinkedVideoEditResponse === 'follow-project-ripple'
+                ? 'video-ripple'
+                : 'absolute',
         };
     })
 );
@@ -148,7 +150,9 @@ export const buildLegacyEditorDocumentFromState = (state: TimelineStore): Editor
         const { unlinkedVideoEditResponse, ...base } = track;
         return {
             ...base,
-            timingDomain: unlinkedVideoEditResponse === 'stay-absolute' ? 'absolute' : 'video-ripple',
+            timingDomain: unlinkedVideoEditResponse === 'follow-project-ripple'
+                ? 'video-ripple'
+                : 'absolute',
         };
     }),
     videoSources: state.videoSources.map((source) => ({ ...source })),

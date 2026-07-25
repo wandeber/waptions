@@ -7,6 +7,7 @@ import { useTimelineStore } from './timeline-store';
 import {
     buildEditorDocumentFromState,
     buildEditorManifestFromState,
+    buildLegacyEditorDocumentFromState,
 } from './timeline-store-snapshot';
 import {
     projectTimelineHistory,
@@ -133,5 +134,20 @@ describe('timeline store snapshots', () => {
         expect(projection).not.toHaveProperty('projectFps');
         expect(restored.projectFps).toBe(30);
         expect(restored.renderBackgroundColor).toBe('#123abc');
+    });
+
+    it('preserves deleted-range policy in V4 and projects it safely to absolute V3 timing', () => {
+        const state = stateFixture();
+        state.tracks[0].unlinkedVideoEditResponse = 'remove-with-deleted-video-range';
+
+        expect(buildEditorDocumentFromState(state).subtitleTracks[0]).toMatchObject({
+            unlinkedVideoEditResponse: 'remove-with-deleted-video-range',
+        });
+        expect(buildEditorManifestFromState(state).subtitleTracks[0]).toMatchObject({
+            unlinkedVideoEditResponse: 'remove-with-deleted-video-range',
+        });
+        expect(buildLegacyEditorDocumentFromState(state).subtitleTracks[0]).toMatchObject({
+            timingDomain: 'absolute',
+        });
     });
 });

@@ -748,6 +748,71 @@ describe('Timeline store V4 command boundary', () => {
         expect(enqueueV4).toHaveBeenCalledTimes(1);
     });
 
+    it('removes only unlinked cues overlapping a deleted video range and restores them atomically', async () => {
+        const { document: baseDocument, body } = createHydratedNarrativeFixture();
+        timelineEditorialRuntime.configure({
+            repository: { getRecord: vi.fn(async () => body) } as unknown as EditorialTranscriptRepository,
+        });
+        const uncontrolledClip = {
+            ...baseDocument.videoClips[0],
+            id: 'video_clip_deleted_range',
+            timelineStartFrame: 30,
+            sourceStart: 1,
+            sourceEnd: 2,
+        };
+        const subtitleTrack = createSubtitleTrackV4Fixture({
+            unlinkedVideoEditResponse: 'remove-with-deleted-video-range',
+            subtitles: [
+                { id: 'subtitle_before', startTime: 0, endTime: 0.75, text: 'Before' },
+                { id: 'subtitle_1', startTime: 1.25, endTime: 1.75, text: 'Linked overlap' },
+                { id: 'subtitle_removed', startTime: 1.5, endTime: 2.5, text: 'Unlinked overlap' },
+                { id: 'subtitle_after', startTime: 2.5, endTime: 3.5, text: 'After' },
+            ],
+        });
+        timelineEditorialRuntime.injectResolvedBodies({ [EDITORIAL_TEST_RECORD_ID]: body });
+        useTimelineStore.getState().hydrateEditorDocument({
+            ...baseDocument,
+            subtitleTracks: [subtitleTrack],
+            activeSubtitleTrackId: subtitleTrack.id,
+            videoClips: [...baseDocument.videoClips, uncontrolledClip],
+            dependentLinks: [createEditorialDependentLinkFixture({
+                relativeStartOutputSample: 60_000,
+                relativeEndOutputSample: 84_000,
+            })],
+        }, emptyHistory);
+        const enqueueV4 = vi.fn();
+        setTimelinePersistenceBinding({
+            projectId: 'project_remove_subtitles_with_deleted_video',
+            generation: 1,
+            enqueue: vi.fn(),
+            enqueueV4,
+        });
+        const before = useTimelineStore.getState();
+
+        before.deleteVideoClip(uncontrolledClip.id);
+
+        const afterDelete = useTimelineStore.getState();
+        expect(afterDelete.tracks[0].subtitles).toEqual([
+            { id: 'subtitle_before', startTime: 0, endTime: 0.75, text: 'Before' },
+            { id: 'subtitle_1', startTime: 1.25, endTime: 1.75, text: 'Linked overlap' },
+            { id: 'subtitle_after', startTime: 2.5, endTime: 3.5, text: 'After' },
+        ]);
+        expect(afterDelete.dependentLinks).toHaveLength(1);
+        expect(afterDelete.revision).toBe(before.revision + 1);
+        expect(afterDelete.history).toHaveLength(1);
+        expect(enqueueV4).toHaveBeenCalledTimes(1);
+
+        await afterDelete.undo();
+        expect(useTimelineStore.getState().tracks[0].subtitles).toEqual(subtitleTrack.subtitles);
+        await useTimelineStore.getState().redo();
+        expect(useTimelineStore.getState().tracks[0].subtitles.map((subtitle) => subtitle.id)).toEqual([
+            'subtitle_before',
+            'subtitle_1',
+            'subtitle_after',
+        ]);
+        expect(enqueueV4).toHaveBeenCalledTimes(3);
+    });
+
     it('treats an identical video placement as a strict no-op before subtitle ripple processing', () => {
         const fixture = createEditorDocumentV4Fixture();
         const subtitleTrack = createSubtitleTrackV4Fixture({

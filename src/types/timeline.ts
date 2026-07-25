@@ -50,6 +50,7 @@ export interface SubtitleTrack {
 export const UNLINKED_VIDEO_EDIT_RESPONSES = [
     'follow-project-ripple',
     'stay-absolute',
+    'remove-with-deleted-video-range',
 ] as const;
 
 /**

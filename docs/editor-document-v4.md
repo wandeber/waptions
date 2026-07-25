@@ -157,6 +157,14 @@ at version-aware IndexedDB and bundle read boundaries; present malformed colors 
 Before Text activation, migrated preview, audio, subtitle, and export behavior is semantically
 identical to V3.
 
+Each V4 subtitle track stores one visible fallback policy for cues without a durable dependent
+link. `stay-absolute` preserves their project times, `follow-project-ripple` applies the
+uncontrolled video ripple, and `remove-with-deleted-video-range` removes an unlinked cue when its
+half-open time interval overlaps a deleted video range while leaving all other cues at absolute
+times. Video insertions and moves do not remove cues under the third policy. Explicit dependent
+links always take precedence. The V3 compatibility projection maps the removal policy to
+`absolute`, because V3 cannot encode its delete-range semantics.
+
 V4 becomes the durable authority after a successful save. The legacy V3 record is then a tombstone
 candidate; readers do not merge V3 and V4 or silently fall back from a corrupt V4 record. Failed
 migration or persistence leaves the old project data intact.

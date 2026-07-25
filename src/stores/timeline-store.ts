@@ -654,9 +654,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                     return {
                         ...track,
                         unlinkedVideoEditResponse,
-                        timingDomain: unlinkedVideoEditResponse === 'stay-absolute'
-                            ? 'absolute' as const
-                            : 'video-ripple' as const,
+                        timingDomain: unlinkedVideoEditResponse === 'follow-project-ripple'
+                            ? 'video-ripple' as const
+                            : 'absolute' as const,
                     };
                 }),
             }
@@ -2185,7 +2185,9 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
     setSubtitleTrackUnlinkedVideoEditResponse: (trackId, policy) => {
         const state = get();
         if (state.globalEditingMode === undefined
-            || (policy !== 'follow-project-ripple' && policy !== 'stay-absolute')) return;
+            || (policy !== 'follow-project-ripple'
+                && policy !== 'stay-absolute'
+                && policy !== 'remove-with-deleted-video-range')) return;
         const track = state.tracks.find((item) => item.id === trackId);
         if (!track || track.isLocked || track.unlinkedVideoEditResponse === policy) return;
         commitDurableMutation(state, {
@@ -2194,7 +2196,7 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                     ...item,
                     unlinkedVideoEditResponse: policy,
                     // The legacy mirror remains derived until WP8 removes its final readers.
-                    timingDomain: policy === 'stay-absolute' ? 'absolute' : 'video-ripple',
+                    timingDomain: policy === 'follow-project-ripple' ? 'video-ripple' : 'absolute',
                 }
                 : item),
         }, { history: { label: 'Change subtitle video edit response' } });

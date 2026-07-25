@@ -664,9 +664,11 @@ function validateSubtitlePolicies(graph: V4GraphView, addIssue: AddIssue): void 
                 'V4 subtitle tracks must not retain the hidden V3 timing domain.');
         }
         if (track.unlinkedVideoEditResponse !== 'follow-project-ripple'
-            && track.unlinkedVideoEditResponse !== 'stay-absolute') {
+            && track.unlinkedVideoEditResponse !== 'stay-absolute'
+            && track.unlinkedVideoEditResponse !== 'remove-with-deleted-video-range') {
             addIssue('invalid-subtitle-policy', `${path}.unlinkedVideoEditResponse`,
-                'Unlinked video-edit response must be follow-project-ripple or stay-absolute.');
+                'Unlinked video-edit response must be follow-project-ripple, stay-absolute, '
+                + 'or remove-with-deleted-video-range.');
         }
         if (typeof track.isVisible !== 'boolean' || typeof track.isLocked !== 'boolean') {
             addIssue('invalid-subtitle-policy', path,

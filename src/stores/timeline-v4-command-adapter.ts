@@ -207,9 +207,9 @@ export function createTimelinePatchFromV4Document(
         renderBackgroundColor: document.renderBackgroundColor,
         tracks: document.subtitleTracks.map((track) => ({
             ...structuredClone(track),
-            timingDomain: track.unlinkedVideoEditResponse === 'stay-absolute'
-                ? 'absolute' as const
-                : 'video-ripple' as const,
+            timingDomain: track.unlinkedVideoEditResponse === 'follow-project-ripple'
+                ? 'video-ripple' as const
+                : 'absolute' as const,
         })),
         videoClips: structuredClone(document.videoClips),
         videoTracks: buildTimelineVideoTrackMirrors(document.videoTracks, document.videoClips),

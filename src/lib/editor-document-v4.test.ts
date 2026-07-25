@@ -282,6 +282,20 @@ describe('V4 editor graph validation', () => {
         ]));
     });
 
+    it('accepts the durable deleted-video-range subtitle response in documents and manifests', () => {
+        const document = cloneDocument();
+        document.subtitleTracks = [createSubtitleTrackV4Fixture({
+            unlinkedVideoEditResponse: 'remove-with-deleted-video-range',
+        })];
+        document.activeSubtitleTrackId = document.subtitleTracks[0].id;
+        expect(validateEditorDocumentV4(document)).toEqual({ valid: true, issues: [] });
+
+        const manifest = createEditorManifestV4Fixture({
+            subtitleTracks: document.subtitleTracks,
+        });
+        expect(validateEditorManifestV4(manifest)).toEqual({ valid: true, issues: [] });
+    });
+
     it('rejects same-track video overlap but allows cross-track visual overlap', () => {
         const sameTrack = cloneDocument();
         sameTrack.videoClips.push({

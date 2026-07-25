@@ -8,6 +8,33 @@ import { useTimelineStore } from '@/stores/timeline-store';
 import { useState } from 'react';
 import { InlineEditor } from '../design-system/InlineEditor';
 import { useShallow } from 'zustand/react/shallow';
+import type { UnlinkedVideoEditResponse } from '@/types/timeline';
+
+const UNLINKED_RESPONSE_PRESENTATION: Record<UnlinkedVideoEditResponse, {
+    label: string;
+    ariaLabel: string;
+    title: string;
+    next: UnlinkedVideoEditResponse;
+}> = {
+    'follow-project-ripple': {
+        label: 'follow ripple',
+        ariaLabel: 'follow project ripple',
+        title: 'Unlinked cues follow uncontrolled video ripple. Click to keep them absolute.',
+        next: 'stay-absolute',
+    },
+    'stay-absolute': {
+        label: 'stay absolute',
+        ariaLabel: 'stay absolute',
+        title: 'Unlinked cues stay absolute during uncontrolled video edits. Click to remove cues overlapping deleted video.',
+        next: 'remove-with-deleted-video-range',
+    },
+    'remove-with-deleted-video-range': {
+        label: 'remove in deleted range',
+        ariaLabel: 'remove with deleted video range',
+        title: 'Unlinked cues overlapping deleted video are removed. Click to make them follow ripple.',
+        next: 'follow-project-ripple',
+    },
+};
 
 interface TimelineTrackHeaderProps {
     track: TimelineSubtitleTrack;
@@ -33,6 +60,7 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
     const isOnlyTrack = trackCount <= 1;
     const unlinkedResponse = track.unlinkedVideoEditResponse
         ?? (track.timingDomain === 'video-ripple' ? 'follow-project-ripple' : 'stay-absolute');
+    const responsePresentation = UNLINKED_RESPONSE_PRESENTATION[unlinkedResponse];
 
     const handleDeleteClick = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -86,21 +114,17 @@ export function TimelineTrackHeader({ track, onToggleVisibility, isActive, onCli
             <button
                 type="button"
                 className="w-full truncate rounded border border-violet-500/20 bg-violet-500/5 px-1.5 py-0.5 text-left text-[9px] text-violet-200 hover:bg-violet-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400"
-                title={unlinkedResponse === 'follow-project-ripple'
-                    ? 'Unlinked cues follow uncontrolled video ripple. Click to keep them absolute.'
-                    : 'Unlinked cues stay absolute during uncontrolled video ripple. Click to make them follow.'}
-                aria-label={`${track.name} unlinked video edit response: ${unlinkedResponse === 'follow-project-ripple' ? 'follow project ripple' : 'stay absolute'}`}
+                title={responsePresentation.title}
+                aria-label={`${track.name} unlinked video edit response: ${responsePresentation.ariaLabel}`}
                 onClick={(event) => {
                     event.stopPropagation();
                     setSubtitleTrackUnlinkedVideoEditResponse(
                         track.id,
-                        unlinkedResponse === 'follow-project-ripple'
-                            ? 'stay-absolute'
-                            : 'follow-project-ripple',
+                        responsePresentation.next,
                     );
                 }}
             >
-                Unlinked: {unlinkedResponse === 'follow-project-ripple' ? 'follow ripple' : 'stay absolute'}
+                Unlinked: {responsePresentation.label}
             </button>
 
             <ConfirmDialog

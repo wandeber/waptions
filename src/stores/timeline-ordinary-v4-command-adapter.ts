@@ -1423,9 +1423,17 @@ function applyUnlinkedSubtitleVideoResponse(input: {
     )));
     const lockedChangedTracks: string[] = [];
     const subtitleTracks = input.before.subtitleTracks.map((track) => {
-        if (track.unlinkedVideoEditResponse !== 'follow-project-ripple') return track;
+        if (track.unlinkedVideoEditResponse === 'stay-absolute') return track;
         const subtitles = track.subtitles.flatMap((subtitle) => {
             if (explicitlyLinked.has(`${track.id}\u0000${subtitle.id}`)) return [subtitle];
+            if (track.unlinkedVideoEditResponse === 'remove-with-deleted-video-range') {
+                return edits.some((edit) => (
+                    edit.kind === 'delete'
+                    && subtitleOverlapsDeletedVideoRange(subtitle, edit, input.before)
+                ))
+                    ? []
+                    : [subtitle];
+            }
             if (movedVideo) {
                 return [applySubtitleVideoMove(subtitle, movedVideo.before, movedVideo.after, input.before)];
             }
@@ -1448,7 +1456,7 @@ function applyUnlinkedSubtitleVideoResponse(input: {
             kind: 'error',
             error: {
                 code: 'locked-target',
-                message: 'A locked subtitle follower cannot apply the video ripple.',
+                message: 'A locked subtitle track cannot apply its video-edit response.',
                 ids: lockedChangedTracks.sort(),
             },
         };
@@ -1457,6 +1465,16 @@ function applyUnlinkedSubtitleVideoResponse(input: {
         kind: 'success',
         document: { ...input.after, subtitleTracks },
     };
+}
+
+function subtitleOverlapsDeletedVideoRange(
+    subtitle: Subtitle,
+    edit: Extract<SubtitleTimelineEdit, { kind: 'delete' }>,
+    document: EditorDocumentV4,
+): boolean {
+    const start = framesToSeconds(edit.startFrame, document.renderProfile.fps);
+    const end = framesToSeconds(edit.endFrame, document.renderProfile.fps);
+    return subtitle.startTime < end && subtitle.endTime > start;
 }
 
 /**

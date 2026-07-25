@@ -95,6 +95,7 @@ export function durableTimelinePatchIsNoOp(
 const DURABLE_STATE_KEYS = [
     'tracks',
     'renderProfile',
+    'renderBackgroundColor',
     'videoSources',
     'videoClips',
     'videoTracks',

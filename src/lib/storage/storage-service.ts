@@ -657,7 +657,9 @@ function projectLoadedDocumentVersion(
             const { unlinkedVideoEditResponse, ...base } = structuredClone(track);
             return {
                 ...base,
-                timingDomain: unlinkedVideoEditResponse === 'stay-absolute' ? 'absolute' : 'video-ripple',
+                timingDomain: unlinkedVideoEditResponse === 'follow-project-ripple'
+                    ? 'video-ripple'
+                    : 'absolute',
             };
         }),
         videoSources: document.videoSources.map((source) => ({ ...source })),
