@@ -1829,7 +1829,11 @@ function planRangeRemoval(input: {
         });
         cumulativeRemoved += removedDurations.get(blockId)!;
     }
-    const replacedOldClipIds = new Set(replacementsByBlockId.keys().map(blockId => context.narrative.blocks[blockId].clipId));
+    const replacedOldClipIds = new Set(
+        Array.from(replacementsByBlockId.keys()).map(
+            (blockId) => context.narrative.blocks[blockId].clipId,
+        ),
+    );
     const videoClips = context.document.videoClips.flatMap(clip => {
         if (replacedOldClipIds.has(clip.id)) {
             const oldBlock = Object.values(context.narrative.blocks).find(block => block.clipId === clip.id)!;
