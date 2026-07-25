@@ -47,6 +47,11 @@ export interface SessionPathGrantRecord {
     authorityMac: string;
 }
 
+export interface GrantedReadRootFile {
+    readonly requestedPath: string;
+    readonly displayName: string;
+}
+
 export interface PreparedPathGrantMutation {
     record: SessionPathGrantRecord;
     /**
@@ -786,6 +791,47 @@ export class PathGrantAuthority {
         } catch (error) {
             await handle.close().catch(() => undefined);
             throw error;
+        }
+    }
+
+    /**
+     * Enumerates one bounded, immutable snapshot of the immediate regular files under a read root.
+     *
+     * Paths remain inside the authority boundary. Callers must convert them into opaque source
+     * capabilities before returning any result across the tool protocol.
+     */
+    async listReadRootFiles(
+        grantId: string,
+        scope: PathGrantScope,
+        maximumEntries: number,
+    ): Promise<readonly GrantedReadRootFile[]> {
+        if (!Number.isSafeInteger(maximumEntries) || maximumEntries <= 0 || maximumEntries > 500) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The directory candidate bound is outside allowed limits.',
+            );
+        }
+        const grant = this.resolve(grantId, scope, 'read-root');
+        await validateReadRootIdentity(grant);
+        const bound = await openBoundDirectory(grant.canonicalPath);
+        try {
+            const entries = await readdir(bound.canonicalPath, { withFileTypes: true });
+            if (entries.length > maximumEntries) {
+                throw managedError(
+                    'PAYLOAD_TOO_LARGE',
+                    'The granted directory exceeds the requested candidate bound.',
+                );
+            }
+            await validateBoundPath(bound);
+            await validateReadRootIdentity(grant);
+            return Object.freeze(entries
+                .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+                .map((entry) => Object.freeze({
+                    requestedPath: join(bound.canonicalPath, entry.name),
+                    displayName: entry.name,
+                })));
+        } finally {
+            await bound.handle.close().catch(() => undefined);
         }
     }
 

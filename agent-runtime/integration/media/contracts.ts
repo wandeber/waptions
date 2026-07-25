@@ -35,7 +35,13 @@ export interface ManagedMediaProbeRequest {
     readonly sessionId: string;
     readonly sessionEpoch: string;
     readonly grantId: string;
-    readonly paths: readonly string[];
+    readonly paths?: readonly string[];
+    readonly selection?: {
+        readonly kind: 'granted-directory';
+        readonly maximumResults: number;
+        readonly maximumCandidates?: number;
+        readonly requireVideo?: boolean;
+    };
     readonly hashPolicy?: 'always' | 'if-needed';
     readonly signal?: AbortSignal;
 }

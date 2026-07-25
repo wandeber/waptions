@@ -18,6 +18,11 @@ import type {
     PathGrantScope,
     VerifiedReadHandle,
 } from '../../path-grants/path-grant-authority';
+import {
+    compareCanonicalNaturalNames,
+    hasSupportedVideoExtension,
+    isSafeCandidateName,
+} from '../../source-registry/natural-sort';
 import type {
     ManagedMediaCatalogRecord,
     ManagedMediaHandleCatalogPort,
@@ -94,6 +99,39 @@ export class PathGrantMediaAdapter implements
         capability.expiryTimer.unref?.();
         this.capabilities.set(capabilityId, capability);
         return capabilityId;
+    }
+
+    async registerProbeDirectory(input: {
+        grantId: string;
+        scope: PathGrantScope;
+        maximumCandidates: number;
+        requireVideo: boolean;
+    }): Promise<readonly {
+        readonly requestedPath: string;
+        readonly capabilityId: string;
+    }[]> {
+        const listed = await this.paths.listReadRootFiles(
+            input.grantId,
+            input.scope,
+            input.maximumCandidates,
+        );
+        return Object.freeze(listed
+            .filter((entry) => (
+                isSafeCandidateName(entry.displayName)
+                && (!input.requireVideo || hasSupportedVideoExtension(entry.displayName))
+            ))
+            .sort((left, right) => (
+                compareCanonicalNaturalNames(left.displayName, right.displayName)
+            ))
+            .map((entry) => Object.freeze({
+                requestedPath: entry.requestedPath,
+                capabilityId: this.registerProbePath({
+                    grantId: input.grantId,
+                    requestedPath: entry.requestedPath,
+                    displayName: entry.displayName,
+                    scope: input.scope,
+                }),
+            })));
     }
 
     publishCatalogRecord(

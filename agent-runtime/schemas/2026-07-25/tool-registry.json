@@ -88,7 +88,7 @@
     },
     {
       "name": "waptions_media_probe",
-      "description": "Probe an authorized filesystem source without editing the project.",
+      "description": "Probe explicit authorized files or a bounded natural selection from an authorized directory without editing the project.",
       "inputSchemaRef": "tools.schema.json#/$defs/ToolInputMediaProbe",
       "outputSchemaRef": "tools.schema.json#/$defs/ToolOutputMediaProbe",
       "annotations": {

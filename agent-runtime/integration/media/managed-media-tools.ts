@@ -43,12 +43,24 @@ export class ManagedMediaToolService {
     ) {}
 
     async probe(request: ManagedMediaProbeRequest): Promise<ManagedMediaProbeResponse> {
-        validateCount(request.paths.length, 'Media probe paths');
-        if (new Set(request.paths).size !== request.paths.length) {
+        const hasPaths = request.paths !== undefined;
+        const hasSelection = request.selection !== undefined;
+        if (hasPaths === hasSelection) {
+            throw new ManagedMediaError(
+                'INVALID_REQUEST',
+                'Media probe requires exactly one explicit-path or granted-directory selection.',
+            );
+        }
+        if (request.selection) {
+            return this.probeGrantedDirectory(request);
+        }
+        const paths = request.paths ?? [];
+        validateCount(paths.length, 'Media probe paths');
+        if (new Set(paths).size !== paths.length) {
             throw new ManagedMediaError('INVALID_REQUEST', 'Media probe paths must be unique.');
         }
         throwIfAborted(request.signal);
-        const capabilities = request.paths.map((requestedPath) => ({
+        const capabilities = paths.map((requestedPath) => ({
             requestedPath,
             capabilityId: this.adapter.registerProbePath({
                 grantId: request.grantId,
@@ -84,6 +96,103 @@ export class ManagedMediaToolService {
                 }))),
                 jobIds: Object.freeze([]) as readonly [],
             });
+        } catch (error) {
+            await this.adapter.discardUncommittedCapabilities(
+                capabilities.map(({ capabilityId }) => capabilityId),
+            );
+            throw error;
+        }
+    }
+
+    private async probeGrantedDirectory(
+        request: ManagedMediaProbeRequest,
+    ): Promise<ManagedMediaProbeResponse> {
+        const selection = request.selection!;
+        validateCount(selection.maximumResults, 'Directory media probe results');
+        const maximumCandidates = selection.maximumCandidates ?? MAX_MEDIA_HANDLES;
+        if (
+            !Number.isSafeInteger(maximumCandidates)
+            || maximumCandidates < selection.maximumResults
+            || maximumCandidates > 500
+        ) {
+            throw new ManagedMediaError(
+                'INVALID_REQUEST',
+                'Directory media probe candidate bound is outside allowed limits.',
+            );
+        }
+        throwIfAborted(request.signal);
+        const capabilities = await this.adapter.registerProbeDirectory({
+            grantId: request.grantId,
+            scope: {
+                sessionId: request.sessionId,
+                sessionEpoch: request.sessionEpoch,
+            },
+            maximumCandidates,
+            requireVideo: selection.requireVideo ?? true,
+        });
+        const retained = new Set<string>();
+        try {
+            const records: ManagedMediaCatalogRecord[] = [];
+            let offset = 0;
+            while (offset < capabilities.length && records.length < selection.maximumResults) {
+                const remaining = selection.maximumResults - records.length;
+                const batch = capabilities.slice(
+                    offset,
+                    offset + Math.min(MAX_CONCURRENT_PROBES, remaining),
+                );
+                offset += batch.length;
+                const settled = await Promise.allSettled(batch.map(async (candidate, index) => {
+                    const probed = await this.probes.probeCapability(
+                        candidate.capabilityId,
+                        `${request.operationId}:directory:${offset - batch.length + index}`,
+                        request.signal,
+                    );
+                    if (
+                        (selection.requireVideo ?? true)
+                        && probed.metadata.videoStreams.length === 0
+                    ) {
+                        throw new ManagedMediaError(
+                            'UNSUPPORTED_MEDIA',
+                            'Directory selection requires a supported video stream.',
+                        );
+                    }
+                    return this.publishProbe(candidate.capabilityId, probed);
+                }));
+                for (let index = 0; index < settled.length; index += 1) {
+                    const outcome = settled[index]!;
+                    const capabilityId = batch[index]!.capabilityId;
+                    if (outcome.status === 'fulfilled') {
+                        retained.add(capabilityId);
+                        records.push(outcome.value);
+                        continue;
+                    }
+                    if (
+                        outcome.reason instanceof ManagedMediaError
+                        && outcome.reason.code === 'UNSUPPORTED_MEDIA'
+                    ) {
+                        continue;
+                    }
+                    throw outcome.reason;
+                }
+            }
+            if (records.length < selection.maximumResults) {
+                throw new ManagedMediaError(
+                    'NOT_ENOUGH_VIDEO_SOURCES',
+                    'The granted directory did not contain enough supported media sources.',
+                    {
+                        details: {
+                            requested: selection.maximumResults,
+                            discovered: records.length,
+                        },
+                    },
+                );
+            }
+            await this.adapter.discardUncommittedCapabilities(
+                capabilities
+                    .map(({ capabilityId }) => capabilityId)
+                    .filter((capabilityId) => !retained.has(capabilityId)),
+            );
+            return responseFromRecords(records);
         } catch (error) {
             await this.adapter.discardUncommittedCapabilities(
                 capabilities.map(({ capabilityId }) => capabilityId),
@@ -273,6 +382,22 @@ export class ManagedMediaToolService {
         this.adapter.publishCatalogRecord(capabilityId, record);
         return record;
     }
+}
+
+function responseFromRecords(
+    records: readonly ManagedMediaCatalogRecord[],
+): ManagedMediaProbeResponse {
+    return Object.freeze({
+        handles: Object.freeze(records.map((record) => record.handle)),
+        media: Object.freeze(records.map((record) => Object.freeze({
+            handle: record.handle,
+            displayName: record.displayName,
+            mediaClass: record.class,
+            mimeType: record.mimeType,
+            metadata: Object.freeze(structuredClone(record.metadata)),
+        }))),
+        jobIds: Object.freeze([]) as readonly [],
+    });
 }
 
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {

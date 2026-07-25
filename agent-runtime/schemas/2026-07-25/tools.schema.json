@@ -470,8 +470,7 @@
         {
           "type": "object",
           "required": [
-            "grantId",
-            "paths"
+            "grantId"
           ],
           "properties": {
             "grantId": {
@@ -486,13 +485,63 @@
                 "$ref": "common.schema.json#/$defs/CanonicalPath"
               }
             },
+            "selection": {
+              "type": "object",
+              "required": [
+                "kind",
+                "maximumResults"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "granted-directory"
+                },
+                "maximumResults": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 256
+                },
+                "maximumCandidates": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 500,
+                  "default": 256
+                },
+                "requireVideo": {
+                  "type": "boolean",
+                  "default": true
+                }
+              },
+              "additionalProperties": false
+            },
             "hashPolicy": {
               "enum": [
                 "always",
                 "if-needed"
               ]
             }
-          }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "paths"
+              ],
+              "not": {
+                "required": [
+                  "selection"
+                ]
+              }
+            },
+            {
+              "required": [
+                "selection"
+              ],
+              "not": {
+                "required": [
+                  "paths"
+                ]
+              }
+            }
+          ]
         }
       ],
       "unevaluatedProperties": false

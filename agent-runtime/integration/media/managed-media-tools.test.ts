@@ -111,6 +111,91 @@ function requestBase(): Omit<EditorMediaImportRequest, 'sources' | 'placement'> 
 }
 
 describe('managed media tool integration', () => {
+    it('discovers a bounded natural video selection from the granted directory', async () => {
+        const test = await fixture();
+        const names = [
+            'Canarias 10.mp4',
+            'Canarias 2.mp4',
+            'Canarias 1.mp4',
+            'Canarias 5.mp4',
+            'Canarias 4.mp4',
+            'Canarias 3.mp4',
+        ];
+        await Promise.all(names.map((name) => (
+            writeFile(join(test.inputs, name), Buffer.from(`video:${name}`))
+        )));
+        await symlink(
+            join(test.inputs, 'Canarias 1.mp4'),
+            join(test.inputs, 'Canarias 0.mp4'),
+        );
+        const service = new ManagedMediaToolService(test.adapter, test.probes, {
+            importMedia: async () => {
+                throw new Error('not used');
+            },
+        });
+
+        const probed = await service.probe({
+            operationId: 'probe-directory',
+            sessionId: test.scope.sessionId,
+            sessionEpoch: test.scope.sessionEpoch,
+            grantId: test.grant.grantId,
+            selection: {
+                kind: 'granted-directory',
+                maximumResults: 5,
+                maximumCandidates: 10,
+                requireVideo: true,
+            },
+        });
+
+        expect(probed.media.map((media) => media.displayName)).toEqual([
+            'Canarias 1.mp4',
+            'Canarias 2.mp4',
+            'Canarias 3.mp4',
+            'Canarias 4.mp4',
+            'Canarias 5.mp4',
+        ]);
+        expect(probed.handles).toHaveLength(5);
+        expect(JSON.stringify(probed)).not.toContain(test.root);
+    });
+
+    it('rejects ambiguous and undersized directory probe selections', async () => {
+        const test = await fixture();
+        const video = join(test.inputs, 'source.mp4');
+        await writeFile(video, Buffer.from('source'));
+        const service = new ManagedMediaToolService(test.adapter, test.probes, {
+            importMedia: async () => {
+                throw new Error('not used');
+            },
+        });
+
+        await expect(service.probe({
+            operationId: 'probe-ambiguous',
+            sessionId: test.scope.sessionId,
+            sessionEpoch: test.scope.sessionEpoch,
+            grantId: test.grant.grantId,
+            paths: [video],
+            selection: {
+                kind: 'granted-directory',
+                maximumResults: 1,
+            },
+        })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+
+        await expect(service.probe({
+            operationId: 'probe-too-few',
+            sessionId: test.scope.sessionId,
+            sessionEpoch: test.scope.sessionEpoch,
+            grantId: test.grant.grantId,
+            selection: {
+                kind: 'granted-directory',
+                maximumResults: 2,
+                maximumCandidates: 2,
+            },
+        })).rejects.toMatchObject({
+            code: 'NOT_ENOUGH_VIDEO_SOURCES',
+            details: { requested: 2, discovered: 1 },
+        });
+    });
+
     it('probes synchronously without jobs and imports mixed media in canonical natural order', async () => {
         const test = await fixture();
         const video = join(test.inputs, 'clip-10.mp4');

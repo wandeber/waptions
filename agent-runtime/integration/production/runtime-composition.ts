@@ -557,7 +557,8 @@ function createDelegatedTools(
                 sessionId: project.envelope.sessionId,
                 sessionEpoch: project.state.sessionEpoch,
                 grantId: requiredString(call.request, 'grantId'),
-                paths: requiredStringArray(call.request, 'paths'),
+                paths: optionalStringArray(call.request, 'paths'),
+                selection: optionalGrantedDirectorySelection(call.request),
                 hashPolicy: optionalString(call.request, 'hashPolicy') as
                     | 'always'
                     | 'if-needed'
@@ -813,6 +814,50 @@ function requiredStringArray(
         throw managedError('INVALID_REQUEST', `${key} must be a string array.`);
     }
     return [...candidate] as string[];
+}
+
+function optionalStringArray(
+    value: Readonly<Record<string, unknown>>,
+    key: string,
+): string[] | undefined {
+    if (value[key] === undefined) return undefined;
+    return requiredStringArray(value, key);
+}
+
+function optionalGrantedDirectorySelection(
+    value: Readonly<Record<string, unknown>>,
+): {
+    kind: 'granted-directory';
+    maximumResults: number;
+    maximumCandidates?: number;
+    requireVideo?: boolean;
+} | undefined {
+    const candidate = value.selection;
+    if (candidate === undefined) return undefined;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        throw managedError('INVALID_REQUEST', 'selection must be an object.');
+    }
+    const selection = candidate as Readonly<Record<string, unknown>>;
+    if (
+        selection.kind !== 'granted-directory'
+        || !Number.isSafeInteger(selection.maximumResults)
+        || (selection.maximumCandidates !== undefined
+            && !Number.isSafeInteger(selection.maximumCandidates))
+        || (selection.requireVideo !== undefined
+            && typeof selection.requireVideo !== 'boolean')
+    ) {
+        throw managedError('INVALID_REQUEST', 'selection is invalid.');
+    }
+    return {
+        kind: 'granted-directory',
+        maximumResults: selection.maximumResults as number,
+        ...(selection.maximumCandidates === undefined
+            ? {}
+            : { maximumCandidates: selection.maximumCandidates as number }),
+        ...(selection.requireVideo === undefined
+            ? {}
+            : { requireVideo: selection.requireVideo }),
+    };
 }
 
 function requireServices(

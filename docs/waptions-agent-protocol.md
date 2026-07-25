@@ -139,7 +139,7 @@ where P2 already supplies the underlying engine primitive.
 | `waptions_project_get` | Read a bounded project summary, revisions, render settings, counts, active jobs, and paged graph references. |
 | `waptions_project_import` | Start bounded import of a V1-V4 bundle or a descriptor-only managed manifest. |
 | `waptions_project_validate` | Validate structure, hydration, source identity, history/recovery state, transcript pins, and renderability; deep validation may become a job. |
-| `waptions_media_probe` | Probe authorized filesystem sources without editing the project; large work becomes a job. |
+| `waptions_media_probe` | Probe explicit authorized files or a bounded, naturally ordered selection from an authorized directory without editing the project. |
 | `waptions_media_import` | Register immutable source references and optionally place initial video/audio clips atomically. |
 | `waptions_media_review` | Start contact-sheet, thumbnail, waveform, audio/silence, scene, transcript-assisted, or proxy review work. |
 | `waptions_media_release` | Dry-run or apply runtime release and reachability-safe durable source garbage collection. |

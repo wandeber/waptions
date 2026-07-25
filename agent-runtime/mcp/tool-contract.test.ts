@@ -117,6 +117,40 @@ describe("semantic MCP tool catalog", () => {
 });
 
 describe("tool dispatcher", () => {
+  it("accepts exactly one explicit-path or granted-directory media probe selection", () => {
+    const validator = new ToolSchemaValidator();
+    validator.register(
+      "waptions_media_probe",
+      semanticSchemas.toolSchemas.waptions_media_probe.inputSchema,
+    );
+    const selected = validator.validateInput(
+      "waptions_media_probe",
+      projectReadRequest({
+        grantId: "grant-1",
+        selection: {
+          kind: "granted-directory",
+          maximumResults: 5,
+          maximumCandidates: 256,
+          requireVideo: true,
+        },
+      }),
+    );
+    const ambiguous = validator.validateInput(
+      "waptions_media_probe",
+      projectReadRequest({
+        grantId: "grant-1",
+        paths: ["/tmp/media.mp4"],
+        selection: {
+          kind: "granted-directory",
+          maximumResults: 1,
+        },
+      }),
+    );
+
+    expect(selected).toMatchObject({ valid: true });
+    expect(ambiguous).toMatchObject({ valid: false, code: "INVALID_REQUEST" });
+  });
+
   it("rejects unknown fields and returns a Core-valid failure", async () => {
     const coordinator = new FakeCoordinatorAdapter();
     const dispatcher = new WaptionsToolDispatcher(catalog, coordinator);

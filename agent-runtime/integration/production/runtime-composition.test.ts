@@ -106,7 +106,12 @@ describe('production managed runtime composition', () => {
             apiVersion: '2026-07-25',
             sessionId: state.sessionId,
             grantId,
-            paths: [mediaPath],
+            selection: {
+                kind: 'granted-directory',
+                maximumResults: 1,
+                maximumCandidates: 8,
+                requireVideo: true,
+            },
             hashPolicy: 'always',
         });
         assertUsable(probed);
