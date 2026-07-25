@@ -3,7 +3,12 @@ import { ManagedCoordinator } from '../coordinator/managed-coordinator';
 import { fakeEditorPortFactory, fakeSnapshot } from '../testing/fake-editor-port';
 import { mutationRequest, temporaryRuntime } from '../testing/runtime-test-helpers';
 import { attachManagedCoordinator, ManagedCoordinatorService } from './managed-coordinator-service';
-import { access } from 'node:fs/promises';
+import {
+    access,
+    chmod,
+    readFile,
+    writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -34,7 +39,7 @@ describe('ManagedCoordinatorService', () => {
         );
 
         const firstAttachment = await attachManagedCoordinator(runtime.path);
-        expect(firstAttachment.discovery.controlEndpoint.kind).toBe('socket');
+        expect(firstAttachment.discovery.controlEndpoint.kind).toBe('unix-socket');
         expect(firstAttachment.discovery.httpBridgeEndpoint).toBeUndefined();
         const mutation = await firstAttachment.client.request(
             'mutate',
@@ -116,6 +121,131 @@ describe('ManagedCoordinatorService', () => {
         await request;
         await waitForMissing(join(runtime.path, 'coordinator', 'service.json'));
         await service.close();
+    });
+
+    it('rejects discovery files whose owner-only permissions were widened', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(
+            runtime.path,
+            fakeEditorPortFactory,
+        );
+        const service = await ManagedCoordinatorService.start(
+            runtime.path,
+            coordinator,
+            async () => coordinator.getProject('missing-project'),
+        );
+        const path = join(runtime.path, 'coordinator', 'service.json');
+        await chmod(path, 0o644);
+        await expect(attachManagedCoordinator(runtime.path)).rejects.toThrow(
+            'identity',
+        );
+        await chmod(path, 0o600);
+        await service.close();
+    });
+
+    it('replaces stale discovery even when its PID has been reused', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const firstCoordinator = await ManagedCoordinator.start(
+            runtime.path,
+            fakeEditorPortFactory,
+        );
+        const firstService = await ManagedCoordinatorService.start(
+            runtime.path,
+            firstCoordinator,
+            async () => ({ first: true }),
+        );
+        const path = join(runtime.path, 'coordinator', 'service.json');
+        const staleDiscovery = await readFile(path);
+        await firstService.close();
+        await writeFile(path, staleDiscovery, { mode: 0o600 });
+
+        const secondCoordinator = await ManagedCoordinator.start(
+            runtime.path,
+            fakeEditorPortFactory,
+        );
+        const secondService = await ManagedCoordinatorService.start(
+            runtime.path,
+            secondCoordinator,
+            async () => ({ second: true }),
+        );
+        const attachment = await attachManagedCoordinator(runtime.path);
+        await expect(attachment.client.request('probe')).resolves.toEqual({
+            second: true,
+        });
+        attachment.client.close();
+        await secondService.close();
+    });
+
+    it('does not classify a live service at its connection cap as stale', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const coordinator = await ManagedCoordinator.start(
+            runtime.path,
+            fakeEditorPortFactory,
+        );
+        const service = await ManagedCoordinatorService.start(
+            runtime.path,
+            coordinator,
+            async () => ({ live: true }),
+            { transport: { maxConnections: 1 } },
+        );
+        const path = join(runtime.path, 'coordinator', 'service.json');
+        const first = await attachManagedCoordinator(runtime.path);
+        const published = await readFile(path);
+
+        await expect(ManagedCoordinatorService.start(
+            runtime.path,
+            {
+                epoch: 'competing-epoch',
+                canGracefullyShutdown: () => true,
+                close: async () => undefined,
+            },
+            async () => ({ competing: true }),
+        )).rejects.toThrow('connection closed');
+        await expect(readFile(path)).resolves.toEqual(published);
+        await expect(first.client.request('probe')).resolves.toEqual({ live: true });
+
+        first.client.close();
+        await service.close();
+    });
+
+    it('serializes concurrent service publication and preserves the winner', async () => {
+        const runtime = await temporaryRuntime();
+        cleanups.push(runtime.cleanup);
+        const services = ['publisher-a', 'publisher-b'].map((epoch) => (
+            ManagedCoordinatorService.start(
+                runtime.path,
+                {
+                    epoch,
+                    canGracefullyShutdown: () => true,
+                    close: async () => undefined,
+                },
+                async () => ({ epoch }),
+            )
+        ));
+
+        const results = await Promise.allSettled(services);
+        const fulfilled = results.filter(
+            (result): result is PromiseFulfilledResult<ManagedCoordinatorService> => (
+                result.status === 'fulfilled'
+            ),
+        );
+        const rejected = results.filter(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0]?.reason).toMatchObject({
+            code: 'COORDINATOR_UNAVAILABLE',
+        });
+
+        const attachment = await attachManagedCoordinator(runtime.path);
+        const reply = await attachment.client.request('probe') as { epoch: string };
+        expect(reply.epoch).toBe(attachment.discovery.epoch);
+        attachment.client.close();
+        await fulfilled[0]!.value.close();
     });
 });
 

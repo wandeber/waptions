@@ -151,4 +151,38 @@ describe("MCP protocol server", () => {
       await connected.runtime.close();
     }
   });
+
+  it("serializes concurrent replacements for the same event subscription", async () => {
+    const connected = await connectClient({ withApps: true });
+    const closes: Array<ReturnType<typeof vi.fn>> = [];
+    let active = 0;
+    let maximumActive = 0;
+    vi.spyOn(
+      connected.coordinator,
+      "subscribeToEvents",
+    ).mockImplementation(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      const close = vi.fn(async () => undefined);
+      closes.push(close);
+      return { close };
+    });
+    const uri = "waptions://sessions/session-1/events";
+    try {
+      await Promise.all([
+        connected.client.subscribeResource({ uri }),
+        connected.client.subscribeResource({ uri }),
+      ]);
+      expect(maximumActive).toBe(1);
+      expect(closes).toHaveLength(2);
+      expect(closes[0]).toHaveBeenCalledOnce();
+      expect(closes[1]).not.toHaveBeenCalled();
+    } finally {
+      await connected.client.close();
+      await connected.runtime.close();
+    }
+    expect(closes[1]).toHaveBeenCalledOnce();
+  });
 });

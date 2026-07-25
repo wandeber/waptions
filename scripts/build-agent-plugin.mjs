@@ -27,6 +27,8 @@ const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const RESOURCE_URI_TOKEN = "{{WAPTIONS_RESOURCE_URI}}";
 const FULL_GIT_OID = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const NODE_ENTRY = "agent-runtime/runtime/plugin-server.ts";
+const NODE_FIRST_PARTY_ALLOWLIST =
+  "agent-runtime/runtime/node-first-party-allowlist.json";
 const APP_ENTRY = "agent-runtime/app/index.tsx";
 const APP_PAYLOAD_NAMES = ["app.css", "app.js"];
 const SCHEMA_DIRECTORY = "agent-runtime/schemas/2026-07-25";
@@ -47,16 +49,17 @@ validateSourceDateEpoch(process.env.SOURCE_DATE_EPOCH);
 
 await assertEmptyOutputRoot(outputRoot);
 await assertBuildInputsExist();
+const nodeFirstPartyAllowlist = await loadNodeFirstPartyAllowlist();
 
 const [nodeBundle, appBundle, cssBundle] = await Promise.all([
   buildNodeBundle(),
   buildAppBundle(),
   buildAppCss(),
 ]);
-assertNodeBundleGraph(nodeBundle.metafile);
+assertNodeBundleGraph(nodeBundle.metafile, nodeFirstPartyAllowlist);
 assertBrowserBundleGraph(appBundle.metafile);
 
-const serverBytes = singleOutput(nodeBundle, ".js");
+const serverBytes = singleOutput(nodeBundle, ".mjs");
 assertStaticNodeRuntime(serverBytes);
 const appJavaScript = escapeInlineElement(
   singleOutput(appBundle, ".js").toString("utf8"),
@@ -196,6 +199,7 @@ async function assertBuildInputsExist() {
   }
   for (const path of [
     NODE_ENTRY,
+    NODE_FIRST_PARTY_ALLOWLIST,
     APP_ENTRY,
     `${SCHEMA_DIRECTORY}/common.schema.json`,
     `${SCHEMA_DIRECTORY}/operations.schema.json`,
@@ -212,6 +216,7 @@ async function buildNodeBundle() {
   return build({
     absWorkingDir: SOURCE_ROOT,
     entryPoints: [NODE_ENTRY],
+    outfile: "mcp/server.mjs",
     bundle: true,
     platform: "node",
     format: "esm",
@@ -235,6 +240,7 @@ async function buildAppBundle() {
   return build({
     absWorkingDir: SOURCE_ROOT,
     entryPoints: [APP_ENTRY],
+    outfile: "app.js",
     bundle: true,
     platform: "browser",
     format: "iife",
@@ -310,27 +316,59 @@ function singleOutput(result, suffix) {
   return Buffer.from(outputs[0].contents);
 }
 
-function assertNodeBundleGraph(metafile) {
-  const forbiddenSources = [
-    /^agent-runtime\/app\//,
-    /^src\/app\//,
-    /^src\/components\//,
-    /^src\/stores\//,
-  ];
-  const forbiddenPackages = [
-    "/node_modules/react/",
-    "/node_modules/react-dom/",
-    "/node_modules/next/",
-    "/node_modules/zustand/",
-  ];
+async function loadNodeFirstPartyAllowlist() {
+  const value = JSON.parse(
+    await readFile(resolve(SOURCE_ROOT, NODE_FIRST_PARTY_ALLOWLIST), "utf8"),
+  );
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some(
+      (path) =>
+        typeof path !== "string" ||
+        !/^(?:agent-runtime|src)\/[A-Za-z0-9_./-]+\.(?:ts|tsx|json)$/u.test(path),
+    ) ||
+    new Set(value).size !== value.length ||
+    JSON.stringify(value) !== JSON.stringify([...value].sort())
+  ) {
+    throw new Error(
+      "The Node first-party module allowlist must be a sorted unique path array.",
+    );
+  }
+  return new Set(value);
+}
+
+function assertNodeBundleGraph(metafile, allowedFirstParty) {
+  const actualFirstParty = new Set();
   for (const input of Object.keys(metafile.inputs)) {
-    const normalized = input.replaceAll("\\", "/");
+    const normalized = normalizeMetafileInput(input);
     if (
-      forbiddenSources.some((pattern) => pattern.test(normalized)) ||
-      forbiddenPackages.some((fragment) => normalized.includes(fragment))
+      normalized.startsWith("<") ||
+      normalized.startsWith("node_modules/") ||
+      normalized.includes("/node_modules/")
     ) {
-      throw new Error(`The Node runtime bundle includes browser input ${input}.`);
+      continue;
     }
+    actualFirstParty.add(normalized);
+  }
+  const unexpected = [...actualFirstParty]
+    .filter((path) => !allowedFirstParty.has(path))
+    .sort();
+  const missing = [...allowedFirstParty]
+    .filter((path) => !actualFirstParty.has(path))
+    .sort();
+  if (unexpected.length > 0 || missing.length > 0) {
+    throw new Error(
+      [
+        "The Node runtime first-party module graph differs from its explicit allowlist.",
+        ...(unexpected.length > 0
+          ? [`Unexpected: ${unexpected.join(", ")}`]
+          : []),
+        ...(missing.length > 0
+          ? [`Missing: ${missing.join(", ")}`]
+          : []),
+      ].join(" "),
+    );
   }
   assertOnlyExpectedExternals(metafile, (path) => path.startsWith("node:"));
 }
@@ -385,6 +423,8 @@ function assertStaticNodeRuntime(serverBytes) {
   for (const forbidden of [
     "WAPTIONS_RUNTIME_ADAPTER_MODULE",
     "agent-runtime/server/stdio.ts",
+    "CONTRACT_APP_RESOURCE",
+    "The Waptions editor UI package is not integrated",
   ]) {
     if (source.includes(forbidden)) {
       throw new Error(
@@ -535,6 +575,7 @@ async function collectBuildInputPaths(
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "agent-runtime/package.json",
+    NODE_FIRST_PARTY_ALLOWLIST,
     "scripts/build-agent-plugin.mjs",
     "src/app/globals.css",
     ...schemaPaths,
@@ -728,9 +769,16 @@ async function findPackageRoot(inputPath) {
   }
   while (isPathInside(SOURCE_ROOT, current) || current === SOURCE_ROOT) {
     try {
-      const metadata = await stat(resolve(current, "package.json"));
+      const packagePath = resolve(current, "package.json");
+      const metadata = await stat(packagePath);
       if (metadata.isFile()) {
-        return current;
+        const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+        if (
+          typeof packageJson.name === "string" &&
+          typeof packageJson.version === "string"
+        ) {
+          return current;
+        }
       }
     } catch {
       // Continue walking to the owning package.

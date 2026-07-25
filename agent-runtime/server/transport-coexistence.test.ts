@@ -107,5 +107,12 @@ describe("coordinator transport ownership", () => {
         path: "http://localhost:59941",
       }),
     ).toThrow("Unix socket");
+    expect(() =>
+      assertPrivateControlEndpoint({
+        kind: "tcp",
+        host: "localhost",
+        port: 59941,
+      } as never),
+    ).toThrow("control endpoint");
   });
 });

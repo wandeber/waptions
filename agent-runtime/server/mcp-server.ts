@@ -11,7 +11,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { getUiCapability } from "@modelcontextprotocol/ext-apps/server";
+import {
+  EXTENSION_ID as MCP_APPS_EXTENSION_ID,
+  getUiCapability,
+} from "@modelcontextprotocol/ext-apps/server";
 
 import {
   EVENT_RESOURCE_URI_TEMPLATE,
@@ -19,11 +22,7 @@ import {
   MCP_SERVER_VERSION,
   WAPTIONS_API_VERSION,
 } from "../mcp/constants.js";
-import {
-  CONTRACT_APP_RESOURCE,
-  MCP_APPS_EXTENSION_ID,
-  type McpAppResource,
-} from "../mcp/app-resource.js";
+import type { McpAppResource } from "../mcp/app-resource.js";
 import { WaptionsToolDispatcher } from "../mcp/dispatcher.js";
 import type { CoreSemanticSchemaBundle } from "../mcp/semantic-schema-adapter.js";
 import {
@@ -66,7 +65,7 @@ function publicToolDefinition(contract: ToolContract, includeUi: boolean) {
 export interface WaptionsMcpServerOptions {
   coordinator: ManagedCoordinatorAdapter;
   semanticSchemas: CoreSemanticSchemaBundle;
-  appResource?: McpAppResource;
+  appResource: McpAppResource;
 }
 
 export class WaptionsMcpServer {
@@ -79,10 +78,11 @@ export class WaptionsMcpServer {
     string,
     CoordinatorEventSubscription
   >();
+  private readonly subscriptionUpdates = new Map<string, Promise<void>>();
   private closed = false;
 
   constructor(private readonly options: WaptionsMcpServerOptions) {
-    this.appResource = options.appResource ?? CONTRACT_APP_RESOURCE;
+    this.appResource = options.appResource;
     this.catalog = createToolCatalog(
       this.appResource.uri,
       options.semanticSchemas,
@@ -215,30 +215,36 @@ export class WaptionsMcpServer {
         );
       }
 
-      const previous = this.subscriptions.get(uri);
-      if (previous) {
-        await previous.close();
-      }
-      const subscription = await this.options.coordinator.subscribeToEvents(
-        sessionId,
-        () => {
-          void this.server.sendResourceUpdated({ uri }).catch(() => {
-            // Subscription invalidations racing transport shutdown are safe to
-            // drop; clients recover ordered bodies through events_read.
-          });
-        },
-        { signal: extra.signal },
-      );
-      this.subscriptions.set(uri, subscription);
+      await this.updateSubscription(uri, async () => {
+        const previous = this.subscriptions.get(uri);
+        this.subscriptions.delete(uri);
+        await previous?.close();
+        const subscription =
+          await this.options.coordinator.subscribeToEvents!(
+            sessionId,
+            () => {
+              void this.server.sendResourceUpdated({ uri }).catch(() => {
+                // Subscription invalidations racing transport shutdown are safe to
+                // drop; clients recover ordered bodies through events_read.
+              });
+            },
+            { signal: extra.signal },
+          );
+        if (this.closed) {
+          await subscription.close();
+          return;
+        }
+        this.subscriptions.set(uri, subscription);
+      });
       return {};
     });
 
     this.server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
-      const subscription = this.subscriptions.get(request.params.uri);
-      if (subscription) {
+      await this.updateSubscription(request.params.uri, async () => {
+        const subscription = this.subscriptions.get(request.params.uri);
         this.subscriptions.delete(request.params.uri);
-        await subscription.close();
-      }
+        await subscription?.close();
+      });
       return {};
     });
   }
@@ -258,8 +264,31 @@ export class WaptionsMcpServer {
     await Promise.allSettled(
       subscriptions.map((subscription) => subscription.close()),
     );
+    await Promise.allSettled(
+      Array.from(this.subscriptionUpdates.values()),
+    );
+    this.subscriptionUpdates.clear();
     await this.server.close();
     await this.options.coordinator.close?.();
+  }
+
+  private async updateSubscription(
+    uri: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.subscriptionUpdates.get(uri)
+      ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(operation);
+    this.subscriptionUpdates.set(uri, current);
+    try {
+      await current;
+    } finally {
+      if (this.subscriptionUpdates.get(uri) === current) {
+        this.subscriptionUpdates.delete(uri);
+      }
+    }
   }
 }
 

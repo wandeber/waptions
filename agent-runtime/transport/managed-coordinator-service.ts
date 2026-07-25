@@ -1,16 +1,22 @@
-import { chmod, readFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { managedError } from '../coordinator/errors';
-import { atomicWriteJson, readJsonFile } from '../persistence/fs-durable';
+import { SingleInstanceLock } from '../coordinator/single-instance-lock';
+import { atomicWriteJson } from '../persistence/fs-durable';
 import {
     LocalJsonTransportClient,
     LocalJsonTransportServer,
     type LocalTransportRequest,
-    type LocalTransportEndpoint,
     type LocalTransportOptions,
     type LocalTransportRequestContext,
 } from './local-json-transport';
 import type { RuntimeDiagnostics } from '../diagnostics/runtime-diagnostics';
+import {
+    assertPrivateControlEndpoint,
+    type CoordinatorControlEndpoint,
+    type WindowsNamedPipeSecurityPort,
+} from '../server/control-endpoint';
 
 export interface ManagedCoordinatorServiceAuthority {
     readonly epoch: string;
@@ -23,7 +29,7 @@ export interface CoordinatorServiceDiscovery {
     schemaVersion: 1;
     pid: number;
     epoch: string;
-    controlEndpoint: LocalTransportEndpoint;
+    controlEndpoint: CoordinatorControlEndpoint;
     httpBridgeEndpoint?: { host: 'localhost'; port: 59941 };
     startedAt: string;
 }
@@ -52,18 +58,18 @@ export class ManagedCoordinatorService {
     private inFlightCount = 0;
     private queuedBytes = 0;
     private closed = false;
+    private closePromise: Promise<void> | null = null;
 
     private constructor(
         private readonly dataRoot: string,
         private readonly authority: ManagedCoordinatorServiceAuthority,
-        secret: string,
         handler: (
             request: LocalTransportRequest,
             context: LocalTransportRequestContext,
         ) => Promise<unknown>,
         private readonly options: ManagedCoordinatorServiceOptions,
     ) {
-        this.transport = new LocalJsonTransportServer(dataRoot, secret, handler, {
+        this.transport = new LocalJsonTransportServer(dataRoot, handler, {
             ...options.transport,
             onConnectionCountChanged: (count) => this.onConnectionCountChanged(count),
             onResourceStateChanged: (state) => {
@@ -95,21 +101,28 @@ export class ManagedCoordinatorService {
         ) => Promise<unknown>,
         options: ManagedCoordinatorServiceOptions = {},
     ): Promise<ManagedCoordinatorService> {
-        await assertNoLiveService(dataRoot);
-        const secret = await readServiceSecret(dataRoot);
-        const service = new ManagedCoordinatorService(dataRoot, authority, secret, handler, options);
+        const service = new ManagedCoordinatorService(dataRoot, authority, handler, options);
         try {
-            await service.transport.start();
-            const discovery: CoordinatorServiceDiscovery = {
-                schemaVersion: 1,
-                pid: process.pid,
-                epoch: authority.epoch,
-                controlEndpoint: service.transport.endpoint,
-                startedAt: new Date().toISOString(),
-            };
-            const path = discoveryPath(dataRoot);
-            await atomicWriteJson(path, discovery, { mode: 0o600, faultPrefix: 'service-discovery' });
-            await chmod(path, 0o600);
+            await withControlEndpointTransition(dataRoot, async () => {
+                await assertNoLiveService(
+                    dataRoot,
+                    options.transport?.windowsNamedPipeSecurity,
+                );
+                await service.transport.start();
+                const discovery: CoordinatorServiceDiscovery = {
+                    schemaVersion: 1,
+                    pid: process.pid,
+                    epoch: authority.epoch,
+                    controlEndpoint: service.transport.endpoint,
+                    startedAt: new Date().toISOString(),
+                };
+                const path = discoveryPath(dataRoot);
+                await atomicWriteJson(path, discovery, {
+                    mode: 0o600,
+                    faultPrefix: 'service-discovery',
+                });
+                await chmod(path, 0o600);
+            });
             return service;
         } catch (error) {
             await service.close().catch(() => undefined);
@@ -131,19 +144,32 @@ export class ManagedCoordinatorService {
         return true;
     }
 
-    async close(): Promise<void> {
-        if (this.closed) return;
+    close(): Promise<void> {
+        if (this.closePromise) return this.closePromise;
         this.closed = true;
         if (this.idleTimer) clearTimeout(this.idleTimer);
         this.idleTimer = null;
+        this.closePromise = this.closeResources();
+        return this.closePromise;
+    }
+
+    private async closeResources(): Promise<void> {
+        let authorityCloseAttempted = false;
         try {
-            await this.transport.close();
-        } finally {
-            try {
+            await withControlEndpointTransition(this.dataRoot, async () => {
+                await this.transport.close();
+                let authorityCloseError: unknown;
+                try {
+                    authorityCloseAttempted = true;
+                    await this.authority.close();
+                } catch (error) {
+                    authorityCloseError = error;
+                }
                 await removeOwnedDiscovery(this.dataRoot, this.authority.epoch);
-            } finally {
-                await this.authority.close();
-            }
+                if (authorityCloseError) throw authorityCloseError;
+            });
+        } finally {
+            if (!authorityCloseAttempted) await this.authority.close();
         }
     }
 
@@ -201,33 +227,20 @@ export async function runManagedCoordinatorService(
     });
 }
 
-export async function attachManagedCoordinator(dataRoot: string): Promise<{
+export async function attachManagedCoordinator(
+    dataRoot: string,
+    options: {
+        windowsNamedPipeSecurity?: WindowsNamedPipeSecurityPort;
+    } = {},
+): Promise<{
     discovery: CoordinatorServiceDiscovery;
     client: LocalJsonTransportClient;
 }> {
-    const discovery = await readJsonFile<CoordinatorServiceDiscovery>(discoveryPath(dataRoot), 64 * 1024);
-    if (!discovery || discovery.schemaVersion !== 1 || !Number.isSafeInteger(discovery.pid)) {
+    const record = await readPrivateDiscovery(discoveryPath(dataRoot));
+    if (!record) {
         throw managedError('COORDINATOR_UNAVAILABLE', 'No managed coordinator service is discoverable.', true);
     }
-    if (
-        !discovery.controlEndpoint
-        || (
-            discovery.controlEndpoint.kind === 'tcp'
-            && (
-                discovery.controlEndpoint.host !== 'localhost'
-                || !Number.isSafeInteger(discovery.controlEndpoint.port)
-                || discovery.controlEndpoint.port <= 0
-                || discovery.controlEndpoint.port > 65_535
-                || discovery.controlEndpoint.port === 59_941
-            )
-        )
-        || (
-            discovery.controlEndpoint.kind !== 'tcp'
-            && discovery.controlEndpoint.kind !== 'socket'
-        )
-    ) {
-        throw managedError('COORDINATOR_UNAVAILABLE', 'The coordinator discovery endpoint is invalid.');
-    }
+    const discovery = record.discovery;
     try {
         process.kill(discovery.pid, 0);
     } catch (error) {
@@ -238,7 +251,9 @@ export async function attachManagedCoordinator(dataRoot: string): Promise<{
     }
     const client = new LocalJsonTransportClient(
         discovery.controlEndpoint,
-        await readServiceSecret(dataRoot),
+        {
+            windowsNamedPipeSecurity: options.windowsNamedPipeSecurity,
+        },
     );
     try {
         await client.connect();
@@ -255,35 +270,238 @@ function discoveryPath(dataRoot: string): string {
 
 async function removeOwnedDiscovery(dataRoot: string, epoch: string): Promise<void> {
     const path = discoveryPath(dataRoot);
-    const discovery = await readJsonFile<CoordinatorServiceDiscovery>(path, 64 * 1024);
+    const record = await readPrivateDiscovery(path);
+    const discovery = record?.discovery;
     if (
         discovery
         && discovery.schemaVersion === 1
         && discovery.pid === process.pid
         && discovery.epoch === epoch
     ) {
-        await rm(path, { force: true });
+        await removeDiscoveryRecord(path, record);
     }
 }
 
-async function readServiceSecret(dataRoot: string): Promise<string> {
-    const bytes = await readFile(join(dataRoot, 'coordinator', 'secret'));
-    if (bytes.byteLength !== 32) throw new Error('Coordinator secret has an invalid length.');
-    return bytes.toString('base64url');
-}
-
-async function assertNoLiveService(dataRoot: string): Promise<void> {
-    const discovery = await readJsonFile<CoordinatorServiceDiscovery>(discoveryPath(dataRoot), 64 * 1024);
-    if (!discovery) return;
+async function assertNoLiveService(
+    dataRoot: string,
+    windowsNamedPipeSecurity?: WindowsNamedPipeSecurityPort,
+): Promise<void> {
+    const path = discoveryPath(dataRoot);
+    const record = await readPrivateDiscovery(path);
+    if (!record) return;
+    const client = new LocalJsonTransportClient(
+        record.discovery.controlEndpoint,
+        { windowsNamedPipeSecurity },
+    );
+    let connected = false;
     try {
-        process.kill(discovery.pid, 0);
+        await client.connect();
+        connected = true;
+    } catch (error) {
+        if (!isStaleEndpointFailure(error)) throw error;
+    } finally {
+        client.close();
+    }
+    if (connected) {
         throw managedError(
             'COORDINATOR_UNAVAILABLE',
             'A managed coordinator service is already published for this data root.',
             true,
         );
+    }
+    await removeDiscoveryRecord(path, record);
+}
+
+interface PrivateDiscoveryRecord {
+    discovery: CoordinatorServiceDiscovery;
+    identity: { dev: number; ino: number };
+}
+
+async function readPrivateDiscovery(
+    path: string,
+): Promise<PrivateDiscoveryRecord | null> {
+    let handle;
+    try {
+        handle = await open(
+            path,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        );
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-        await rm(discoveryPath(dataRoot), { force: true });
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return null;
+        }
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The coordinator discovery file could not be opened safely.',
+        );
+    }
+    try {
+        const before = await handle.stat();
+        const uid = process.getuid?.();
+        if (
+            !before.isFile()
+            || before.size < 2
+            || before.size > 64 * 1024
+            || (
+                process.platform !== 'win32'
+                && (
+                    (uid !== undefined && before.uid !== uid)
+                    || (before.mode & 0o777) !== 0o600
+                )
+            )
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The coordinator discovery file identity is invalid.',
+            );
+        }
+        const bytes = await handle.readFile();
+        const after = await handle.stat();
+        if (
+            before.dev !== after.dev
+            || before.ino !== after.ino
+            || before.size !== after.size
+            || bytes.byteLength !== before.size
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The coordinator discovery file changed while it was read.',
+                true,
+            );
+        }
+        let value: unknown;
+        try {
+            value = JSON.parse(bytes.toString('utf8'));
+        } catch {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The coordinator discovery file is malformed.',
+            );
+        }
+        return {
+            discovery: validateDiscovery(value),
+            identity: { dev: before.dev, ino: before.ino },
+        };
+    } finally {
+        await handle.close();
+    }
+}
+
+async function removeDiscoveryRecord(
+    path: string,
+    record: PrivateDiscoveryRecord,
+): Promise<void> {
+    const current = await open(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+        const metadata = await current.stat();
+        if (
+            !metadata.isFile()
+            || metadata.dev !== record.identity.dev
+            || metadata.ino !== record.identity.ino
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The coordinator discovery identity changed before cleanup.',
+                true,
+            );
+        }
+        await rm(path);
+    } finally {
+        await current.close();
+    }
+}
+
+function isStaleEndpointFailure(error: unknown): boolean {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return code === 'ECONNREFUSED' || code === 'ENOENT';
+}
+
+async function withControlEndpointTransition<T>(
+    dataRoot: string,
+    operation: () => Promise<T>,
+): Promise<T> {
+    // The authority lock is held for the coordinator lifetime. This second,
+    // short-lived lock serializes discovery and socket path transitions so a
+    // retiring service cannot unlink the successor it just observed.
+    const lock = await SingleInstanceLock.acquire(
+        join(dataRoot, 'coordinator', 'control-transition'),
+    );
+    try {
+        return await operation();
+    } finally {
+        await lock.release();
+    }
+}
+
+function validateDiscovery(value: unknown): CoordinatorServiceDiscovery {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The coordinator discovery record is invalid.',
+        );
+    }
+    const discovery = value as Partial<CoordinatorServiceDiscovery>;
+    const keys = Object.keys(discovery).sort();
+    const expected = [
+        'controlEndpoint',
+        'epoch',
+        ...(discovery.httpBridgeEndpoint === undefined
+            ? []
+            : ['httpBridgeEndpoint']),
+        'pid',
+        'schemaVersion',
+        'startedAt',
+    ].sort();
+    if (
+        keys.length !== expected.length
+        || keys.some((key, index) => key !== expected[index])
+        || discovery.schemaVersion !== 1
+        || !Number.isSafeInteger(discovery.pid)
+        || Number(discovery.pid) <= 0
+        || typeof discovery.epoch !== 'string'
+        || discovery.epoch.length === 0
+        || discovery.epoch.length > 128
+        || typeof discovery.startedAt !== 'string'
+        || !isCanonicalIsoTimestamp(discovery.startedAt)
+        || !discovery.controlEndpoint
+    ) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The coordinator discovery record is invalid.',
+        );
+    }
+    try {
+        assertPrivateControlEndpoint(discovery.controlEndpoint);
+    } catch {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The coordinator discovery endpoint is invalid.',
+        );
+    }
+    if (
+        discovery.httpBridgeEndpoint !== undefined
+        && (
+            discovery.httpBridgeEndpoint.host !== 'localhost'
+            || discovery.httpBridgeEndpoint.port !== 59941
+            || Object.keys(discovery.httpBridgeEndpoint).sort().join(',')
+                !== 'host,port'
+        )
+    ) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The coordinator HTTP bridge discovery is invalid.',
+        );
+    }
+    return discovery as CoordinatorServiceDiscovery;
+}
+
+function isCanonicalIsoTimestamp(value: string): boolean {
+    try {
+        return new Date(value).toISOString() === value;
+    } catch {
+        return false;
     }
 }

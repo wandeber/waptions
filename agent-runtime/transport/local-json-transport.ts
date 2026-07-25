@@ -1,9 +1,13 @@
-import { createHash } from 'node:crypto';
-import { lstat, chmod, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmod, lstat, rm } from 'node:fs/promises';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { asManagedRuntimeError, managedError } from '../coordinator/errors';
-import { constantTimeStringEqual } from '../persistence/canonical-json';
+import {
+    assertPrivateControlEndpoint,
+    type CoordinatorControlEndpoint,
+    type WindowsNamedPipeSecurityPort,
+} from '../server/control-endpoint';
 
 export interface LocalTransportRequest {
     id: string;
@@ -28,6 +32,7 @@ export interface LocalTransportOptions {
     maxGlobalQueuedBytes?: number;
     authenticationDeadlineMilliseconds?: number;
     requestDeadlineMilliseconds?: number;
+    windowsNamedPipeSecurity?: WindowsNamedPipeSecurityPort;
     onConnectionCountChanged?(count: number): void;
     onResourceStateChanged?(state: {
         connections: number;
@@ -35,7 +40,6 @@ export interface LocalTransportOptions {
         queuedBytes: number;
     }): void;
     onDiagnostic?(kind: 'aborted' | 'deadline' | 'limit'): void;
-    localhostPort?: number;
 }
 
 export interface LocalTransportRequestContext {
@@ -43,9 +47,7 @@ export interface LocalTransportRequestContext {
     deadlineAt: number;
 }
 
-export type LocalTransportEndpoint =
-    | { kind: 'socket'; path: string }
-    | { kind: 'tcp'; host: 'localhost'; port: number };
+export type LocalTransportEndpoint = CoordinatorControlEndpoint;
 
 const DEFAULT_INPUT_LIMIT = 512 * 1024;
 const DEFAULT_OUTPUT_LIMIT = 1024 * 1024;
@@ -56,28 +58,41 @@ const DEFAULT_MAX_QUEUED_BYTES_PER_CONNECTION = 2 * 1024 * 1024;
 const DEFAULT_MAX_GLOBAL_QUEUED_BYTES = 8 * 1024 * 1024;
 const DEFAULT_AUTHENTICATION_DEADLINE_MILLISECONDS = 5_000;
 const DEFAULT_REQUEST_DEADLINE_MILLISECONDS = 30_000;
+const CONTROL_PROTOCOL = 'waptions-control-v1';
+const AUTHENTICATION_NONCE_BYTES = 32;
 
 export class LocalJsonTransportServer {
-    private endpointValue: LocalTransportEndpoint;
+    private readonly endpointValue: LocalTransportEndpoint;
     private server: Server | null = null;
     private readonly sockets = new Set<Socket>();
     private readonly inputLimit: number;
     private readonly outputLimit: number;
     private globalInFlight = 0;
     private globalQueuedBytes = 0;
+    private acceptingConnections = false;
+    private ownedUnixSocket:
+        | { dev: number; ino: number }
+        | undefined;
 
     constructor(
         dataRoot: string,
-        private readonly secret: string,
         private readonly handler: (
             request: LocalTransportRequest,
             context: LocalTransportRequestContext,
         ) => Promise<unknown>,
         private readonly options: LocalTransportOptions = {},
     ) {
-        this.endpointValue = options.localhostPort === undefined
-            ? localEndpoint(dataRoot)
-            : { kind: 'tcp', host: 'localhost', port: options.localhostPort };
+        this.endpointValue = localEndpoint(dataRoot);
+        assertPrivateControlEndpoint(this.endpointValue);
+        if (
+            this.endpointValue.kind === 'windows-named-pipe'
+            && !options.windowsNamedPipeSecurity
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'Windows named-pipe security verification is unavailable.',
+            );
+        }
         this.inputLimit = options.inputLimitBytes ?? DEFAULT_INPUT_LIMIT;
         this.outputLimit = options.outputLimitBytes ?? DEFAULT_OUTPUT_LIMIT;
         for (const [name, value] of Object.entries({
@@ -109,7 +124,8 @@ export class LocalJsonTransportServer {
 
     async start(): Promise<void> {
         if (this.server) return;
-        if (this.endpointValue.kind === 'socket' && process.platform !== 'win32') {
+        if (this.endpointValue.kind === 'unix-socket') {
+            await assertPrivateUnixDirectory(dirname(this.endpointValue.path));
             await removeStaleSocket(this.endpointValue.path);
         }
         const server = createServer((socket) => this.accept(socket));
@@ -125,23 +141,32 @@ export class LocalJsonTransportServer {
             };
             server.once('error', onError);
             server.once('listening', onListening);
-            if (this.endpointValue.kind === 'tcp') {
-                server.listen(this.endpointValue.port, this.endpointValue.host);
-            } else {
-                server.listen(this.endpointValue.path);
-            }
+            server.listen(this.endpointValue.path);
         });
-        if (this.endpointValue.kind === 'tcp' && this.endpointValue.port === 0) {
-            const address = server.address();
-            if (!address || typeof address === 'string') throw new Error('Could not resolve local TCP port.');
-            this.endpointValue = { ...this.endpointValue, port: address.port };
-        }
-        if (this.endpointValue.kind === 'socket' && process.platform !== 'win32') {
+        if (this.endpointValue.kind === 'unix-socket') {
+            const owned = await lstat(this.endpointValue.path);
+            if (!owned.isSocket() || owned.isSymbolicLink()) {
+                throw managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'The bound local transport endpoint is not a Unix socket.',
+                );
+            }
+            assertCurrentUserOwns(
+                owned,
+                'The bound local transport socket has an unexpected owner.',
+            );
+            this.ownedUnixSocket = { dev: owned.dev, ino: owned.ino };
             await chmod(this.endpointValue.path, 0o600);
+            await assertPrivateUnixSocket(this.endpointValue.path);
+        } else {
+            await this.options.windowsNamedPipeSecurity!
+                .secureAndVerifyServer(server, this.endpointValue.path);
         }
+        this.acceptingConnections = true;
     }
 
     async close(): Promise<void> {
+        this.acceptingConnections = false;
         const server = this.server;
         this.server = null;
         for (const socket of Array.from(this.sockets)) socket.destroy();
@@ -149,12 +174,24 @@ export class LocalJsonTransportServer {
         if (server) {
             await new Promise<void>((resolve) => server.close(() => resolve()));
         }
-        if (this.endpointValue.kind === 'socket' && process.platform !== 'win32') {
-            await rm(this.endpointValue.path, { force: true });
+        const ownedUnixSocket = this.ownedUnixSocket;
+        this.ownedUnixSocket = undefined;
+        if (
+            this.endpointValue.kind === 'unix-socket'
+            && ownedUnixSocket
+        ) {
+            await removeOwnedUnixSocket(
+                this.endpointValue.path,
+                ownedUnixSocket,
+            );
         }
     }
 
     private accept(socket: Socket): void {
+        if (!this.acceptingConnections) {
+            socket.destroy();
+            return;
+        }
         if (this.sockets.size >= (this.options.maxConnections ?? DEFAULT_MAX_CONNECTIONS)) {
             this.options.onDiagnostic?.('limit');
             socket.destroy();
@@ -168,6 +205,7 @@ export class LocalJsonTransportServer {
         const inFlight = new Map<string, AbortController>();
         let queuedBytes = 0;
         let closed = false;
+        const nonce = randomBytes(AUTHENTICATION_NONCE_BYTES).toString('base64url');
         const authenticationTimer = setTimeout(() => {
             if (authenticated || closed) return;
             this.options.onDiagnostic?.('deadline');
@@ -214,15 +252,20 @@ export class LocalJsonTransportServer {
                 const hello = parseRecord(payload);
                 if (
                     hello.type !== 'hello'
-                    || typeof hello.secret !== 'string'
-                    || !constantTimeStringEqual(hello.secret, this.secret)
+                    || hello.protocol !== CONTROL_PROTOCOL
+                    || typeof hello.proof !== 'string'
+                    || !hasExactKeys(hello, ['type', 'protocol', 'proof'])
+                    || hello.proof !== ownershipBoundProof(
+                        this.endpointValue,
+                        nonce,
+                    )
                 ) {
                     socket.destroy();
                     return;
                 }
                 authenticated = true;
                 clearTimeout(authenticationTimer);
-                await write({ type: 'ready' });
+                await write({ type: 'ready', protocol: CONTROL_PROTOCOL });
                 return;
             }
             const parsed = parseRecord(payload);
@@ -319,6 +362,11 @@ export class LocalJsonTransportServer {
             this.notifyResources();
         });
         socket.once('error', () => socket.destroy());
+        void write({
+            type: 'challenge',
+            protocol: CONTROL_PROTOCOL,
+            nonce,
+        }).catch(() => socket.destroy());
     }
 
     private notifyResources(): void {
@@ -345,20 +393,44 @@ export class LocalJsonTransportClient {
     private readyPromise: Promise<void> | null = null;
     private readyResolve: (() => void) | null = null;
     private readyReject: ((error: unknown) => void) | null = null;
+    private challengeReceived = false;
 
     constructor(
         readonly endpoint: LocalTransportEndpoint,
-        private readonly secret: string,
         private readonly limits: LocalTransportOptions = {},
     ) {}
 
     async connect(): Promise<void> {
         if (this.socket) return;
-        const socket = this.endpoint.kind === 'tcp'
-            ? createConnection({ host: this.endpoint.host, port: this.endpoint.port })
-            : createConnection(this.endpoint.path);
+        assertPrivateControlEndpoint(this.endpoint);
+        let socket: Socket;
+        let alreadyConnected = false;
+        if (this.endpoint.kind === 'unix-socket') {
+            await assertPrivateUnixDirectory(dirname(this.endpoint.path));
+            await assertPrivateUnixSocket(this.endpoint.path);
+            socket = createConnection(this.endpoint.path);
+        } else {
+            if (!this.limits.windowsNamedPipeSecurity) {
+                throw managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'Windows named-pipe security verification is unavailable.',
+                );
+            }
+            socket = await this.limits.windowsNamedPipeSecurity.connectTrustedClient(
+                this.endpoint.path,
+            );
+            if (socket.destroyed || socket.connecting || !socket.isPaused()) {
+                socket.destroy();
+                throw managedError(
+                    'COORDINATOR_UNAVAILABLE',
+                    'The verified Windows named-pipe connection is invalid.',
+                );
+            }
+            alreadyConnected = true;
+        }
         this.socket = socket;
         this.ready = false;
+        this.challengeReceived = false;
         this.readyPromise = new Promise<void>((resolve, reject) => {
             this.readyResolve = resolve;
             this.readyReject = reject;
@@ -373,8 +445,13 @@ export class LocalJsonTransportClient {
         socket.on('data', (chunk) => {
             reader.push(chunk).catch((error) => this.fail(error));
         });
-        socket.once('close', () => this.fail(new Error('The local coordinator connection closed.')));
+        socket.once('close', () => this.fail(managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The local coordinator connection closed.',
+            true,
+        )));
         socket.once('error', (error) => this.fail(error));
+        socket.resume();
         const timeout = this.limits.authenticationDeadlineMilliseconds
             ?? DEFAULT_AUTHENTICATION_DEADLINE_MILLISECONDS;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -388,17 +465,14 @@ export class LocalJsonTransportClient {
         });
         try {
             await Promise.race([
-                new Promise<void>((resolve, reject) => {
-                    socket.once('connect', resolve);
-                    socket.once('error', reject);
-                }),
+                alreadyConnected
+                    ? Promise.resolve()
+                    : new Promise<void>((resolve, reject) => {
+                        socket.once('connect', resolve);
+                        socket.once('error', reject);
+                    }),
                 deadline,
             ]);
-            await writeFrame(
-                socket,
-                { type: 'hello', secret: this.secret },
-                this.limits.inputLimitBytes ?? DEFAULT_INPUT_LIMIT,
-            );
             await Promise.race([this.readyPromise, deadline]);
         } catch (error) {
             this.fail(error);
@@ -411,9 +485,20 @@ export class LocalJsonTransportClient {
     async request(
         method: string,
         params?: unknown,
-        options: { signal?: AbortSignal; timeoutMilliseconds?: number } = {},
+        options: {
+            signal?: AbortSignal;
+            timeoutMilliseconds?: number;
+            requestId?: string;
+            exactRequestJson?: string;
+        } = {},
     ): Promise<unknown> {
-        if (!this.socket || !this.ready) throw new Error('Local transport client is not connected.');
+        if (!this.socket || !this.ready) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The local transport client is not connected.',
+                true,
+            );
+        }
         if (
             this.pending.size
             >= (this.limits.maxInFlightPerConnection ?? DEFAULT_MAX_IN_FLIGHT_PER_CONNECTION)
@@ -424,10 +509,32 @@ export class LocalJsonTransportClient {
                 true,
             );
         }
-        const id = `${process.pid}-${++this.requestSequence}`;
+        const id = options.requestId ?? `${process.pid}-${++this.requestSequence}`;
+        if (
+            id.length === 0
+            || id.length > 128
+            || !/^[A-Za-z0-9._:-]+$/.test(id)
+        ) {
+            throw managedError('INVALID_REQUEST', 'The local transport request identifier is invalid.');
+        }
         if (this.pending.has(id)) throw new Error('Duplicate local transport request identifier.');
         if (options.signal?.aborted) {
             throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
+        }
+        const requestValue = {
+            id,
+            method,
+            ...(params === undefined ? {} : { params }),
+        };
+        const requestJson = JSON.stringify(requestValue);
+        if (
+            options.exactRequestJson !== undefined
+            && options.exactRequestJson !== requestJson
+        ) {
+            throw managedError(
+                'INVALID_REQUEST',
+                'The exact local transport request bytes do not match the request.',
+            );
         }
         const timeout = options.timeoutMilliseconds ?? 30_000;
         if (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 300_000) {
@@ -457,9 +564,9 @@ export class LocalJsonTransportClient {
             else options.signal?.addEventListener('abort', abort, { once: true });
         });
         try {
-            await writeFrame(
+            await writeJsonFrame(
                 this.socket,
-                { id, method, ...(params === undefined ? {} : { params }) },
+                options.exactRequestJson ?? requestJson,
                 this.limits.inputLimitBytes ?? DEFAULT_INPUT_LIMIT,
             );
         } catch (error) {
@@ -472,12 +579,52 @@ export class LocalJsonTransportClient {
         this.fail(new Error('The local coordinator client closed.'));
     }
 
-    private deliver(value: unknown): void {
+    private async deliver(value: unknown): Promise<void> {
         if (!this.ready) {
+            if (!this.challengeReceived) {
+                if (
+                    !value
+                    || typeof value !== 'object'
+                    || Array.isArray(value)
+                    || (value as { type?: unknown }).type !== 'challenge'
+                    || (value as { protocol?: unknown }).protocol !== CONTROL_PROTOCOL
+                    || typeof (value as { nonce?: unknown }).nonce !== 'string'
+                    || !/^[A-Za-z0-9_-]{43}$/.test(
+                        (value as { nonce: string }).nonce,
+                    )
+                    || !hasExactKeys(
+                        value as Record<string, unknown>,
+                        ['type', 'protocol', 'nonce'],
+                    )
+                ) {
+                    this.fail(new Error('Local coordinator authentication challenge failed.'));
+                    return;
+                }
+                this.challengeReceived = true;
+                await writeFrame(
+                    this.socket!,
+                    {
+                        type: 'hello',
+                        protocol: CONTROL_PROTOCOL,
+                        proof: ownershipBoundProof(
+                            this.endpoint,
+                            (value as { nonce: string }).nonce,
+                        ),
+                    },
+                    this.limits.inputLimitBytes ?? DEFAULT_INPUT_LIMIT,
+                );
+                return;
+            }
             if (
                 !value
                 || typeof value !== 'object'
+                || Array.isArray(value)
                 || (value as { type?: unknown }).type !== 'ready'
+                || (value as { protocol?: unknown }).protocol !== CONTROL_PROTOCOL
+                || !hasExactKeys(
+                    value as Record<string, unknown>,
+                    ['type', 'protocol'],
+                )
             ) {
                 this.fail(new Error('Local coordinator authentication failed.'));
                 return;
@@ -526,6 +673,7 @@ export class LocalJsonTransportClient {
         const socket = this.socket;
         this.socket = null;
         this.ready = false;
+        this.challengeReceived = false;
         socket?.destroy();
         this.readyReject?.(error);
         this.readyResolve = null;
@@ -566,6 +714,20 @@ class FrameReader {
 
 async function writeFrame(socket: Socket, value: unknown, maximumBytes: number): Promise<void> {
     await writeEncodedFrame(socket, encodeFrame(value, maximumBytes));
+}
+
+async function writeJsonFrame(
+    socket: Socket,
+    json: string,
+    maximumBytes: number,
+): Promise<void> {
+    const body = Buffer.from(json);
+    if (body.byteLength > maximumBytes) {
+        throw managedError('PAYLOAD_TOO_LARGE', 'The local transport frame is oversized.');
+    }
+    const header = Buffer.allocUnsafe(4);
+    header.writeUInt32BE(body.byteLength);
+    await writeEncodedFrame(socket, Buffer.concat([header, body]));
 }
 
 function encodeFrame(value: unknown, maximumBytes: number): Buffer {
@@ -614,6 +776,12 @@ function validateRequest(value: Record<string, unknown>): LocalTransportRequest 
         || typeof value.method !== 'string'
         || value.method.length === 0
         || value.method.length > 128
+        || !hasExactKeys(
+            value,
+            value.params === undefined
+                ? ['id', 'method']
+                : ['id', 'method', 'params'],
+        )
     ) {
         throw managedError('INVALID_REQUEST', 'The local transport request is invalid.');
     }
@@ -627,9 +795,15 @@ function validateRequest(value: Record<string, unknown>): LocalTransportRequest 
 function localEndpoint(dataRoot: string): LocalTransportEndpoint {
     if (process.platform === 'win32') {
         const digest = createHash('sha256').update(dataRoot).digest('hex').slice(0, 24);
-        return { kind: 'socket', path: `\\\\.\\pipe\\waptions-${digest}` };
+        return {
+            kind: 'windows-named-pipe',
+            path: `\\\\.\\pipe\\waptions-${digest}`,
+        };
     }
-    return { kind: 'socket', path: join(dataRoot, 'coordinator.sock') };
+    return {
+        kind: 'unix-socket',
+        path: join(dataRoot, 'coordinator.sock'),
+    };
 }
 
 async function removeStaleSocket(path: string): Promise<void> {
@@ -641,8 +815,164 @@ async function removeStaleSocket(path: string): Promise<void> {
                 'The local transport path is occupied by a non-socket object.',
             );
         }
+        assertCurrentUserOwns(metadata, 'The local transport socket has an unexpected owner.');
+        if ((metadata.mode & 0o077) !== 0) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The local transport socket permissions are not private.',
+            );
+        }
+        if (await socketAcceptsConnections(path)) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'A live coordinator already owns the local transport socket.',
+                true,
+            );
+        }
+        const current = await lstat(path);
+        if (
+            !current.isSocket()
+            || current.isSymbolicLink()
+            || current.dev !== metadata.dev
+            || current.ino !== metadata.ino
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The stale local transport socket changed during cleanup.',
+                true,
+            );
+        }
         await rm(path);
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
+}
+
+async function removeOwnedUnixSocket(
+    path: string,
+    identity: { dev: number; ino: number },
+): Promise<void> {
+    try {
+        const current = await lstat(path);
+        if (
+            !current.isSocket()
+            || current.isSymbolicLink()
+            || current.dev !== identity.dev
+            || current.ino !== identity.ino
+        ) {
+            throw managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'The owned local transport socket identity changed before cleanup.',
+            );
+        }
+        await rm(path);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+}
+
+/**
+ * The endpoint's OS owner-only ACL is the authentication boundary. This proof
+ * binds the handshake to the exact endpoint and nonce without introducing a
+ * bearer secret that would need to be persisted, logged, or returned by a
+ * process launcher.
+ */
+function ownershipBoundProof(
+    endpoint: LocalTransportEndpoint,
+    nonce: string,
+): string {
+    return createHash('sha256')
+        .update(`${CONTROL_PROTOCOL}\0${endpoint.kind}\0${endpoint.path}\0${nonce}`, 'utf8')
+        .digest('base64url');
+}
+
+function hasExactKeys(
+    value: Record<string, unknown>,
+    keys: readonly string[],
+): boolean {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return (
+        actual.length === expected.length
+        && actual.every((key, index) => key === expected[index])
+    );
+}
+
+async function assertPrivateUnixDirectory(path: string): Promise<void> {
+    const metadata = await lstat(path);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The local transport directory is invalid.',
+        );
+    }
+    assertCurrentUserOwns(
+        metadata,
+        'The local transport directory has an unexpected owner.',
+    );
+    if ((metadata.mode & 0o077) !== 0) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The local transport directory permissions are not private.',
+        );
+    }
+}
+
+async function assertPrivateUnixSocket(path: string): Promise<void> {
+    const metadata = await lstat(path);
+    if (!metadata.isSocket() || metadata.isSymbolicLink()) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The local transport endpoint is not a Unix socket.',
+        );
+    }
+    assertCurrentUserOwns(
+        metadata,
+        'The local transport socket has an unexpected owner.',
+    );
+    if ((metadata.mode & 0o077) !== 0) {
+        throw managedError(
+            'COORDINATOR_UNAVAILABLE',
+            'The local transport socket permissions are not private.',
+        );
+    }
+}
+
+function assertCurrentUserOwns(
+    metadata: { uid: number },
+    message: string,
+): void {
+    const uid = process.getuid?.();
+    if (uid !== undefined && metadata.uid !== uid) {
+        throw managedError('COORDINATOR_UNAVAILABLE', message);
+    }
+}
+
+async function socketAcceptsConnections(path: string): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
+        const socket = createConnection(path);
+        const timer = setTimeout(() => {
+            socket.destroy();
+            reject(managedError(
+                'COORDINATOR_UNAVAILABLE',
+                'Timed out while checking the local transport socket owner.',
+                true,
+            ));
+        }, 250);
+        timer.unref?.();
+        socket.once('connect', () => {
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once('error', (error: NodeJS.ErrnoException) => {
+            clearTimeout(timer);
+            socket.destroy();
+            if (error.code === 'ECONNREFUSED' || error.code === 'ENOENT') {
+                resolve(false);
+            } else {
+                reject(error);
+            }
+        });
+    });
 }
