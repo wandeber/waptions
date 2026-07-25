@@ -54,7 +54,10 @@ export function getBackendResourceRequest(
             32 * 1024 * 1024,
             limits.maxAudioMixBytes,
         ),
-        'backend-processes': 1,
+        'backend-processes': Math.min(
+            backend === 'ffmpeg' ? 2 : 1,
+            limits.maxBackendProcesses,
+        ),
         'canvas-frames': canvasFrames,
         'decoded-pixel-bytes': decodedPixelBytes,
         'export-jobs': 1,

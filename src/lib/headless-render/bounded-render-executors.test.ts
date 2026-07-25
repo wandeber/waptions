@@ -18,6 +18,23 @@ import {
     createHeadlessRenderSnapshotFixture,
 } from './headless-render.test-fixtures';
 
+vi.mock('../editor-document-v4', async (importOriginal) => {
+    const original = await importOriginal<typeof import('../editor-document-v4')>();
+    return {
+        ...original,
+        validateEditorManifestV4(value: unknown) {
+            if (!value || typeof value !== 'object'
+                || Object.prototype.hasOwnProperty.call(value, 'renderBackgroundColor')) {
+                return original.validateEditorManifestV4(value);
+            }
+            return original.validateEditorManifestV4({
+                ...value,
+                renderBackgroundColor: '#000000',
+            });
+        },
+    };
+});
+
 const OUTPUT_CAPABILITY = {
     version: 1 as const,
     kind: 'create-only-staged-output' as const,

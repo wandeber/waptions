@@ -60,6 +60,13 @@ export interface HeadlessMp4Inspection {
     container: 'mp4' | string;
     videoCodec: 'h264' | string;
     audioCodec: 'aac' | string | null;
+    pixelFormat: 'yuv420p' | string | null;
+    audioSampleRate: number | null;
+    audioChannels: number | null;
+    audioChannelLayout: 'stereo' | string | null;
+    videoFrameCount: number | null;
+    videoDurationSeconds: number | null;
+    audioDurationSeconds: number | null;
     durationSeconds: number;
 }
 

@@ -185,6 +185,27 @@ export function validateDiagnostics(
         [diagnostics.peakVideoDecoderSessions, request.limits.maxVideoDecoderSessions, 'video decoders'],
         [diagnostics.canvasFrames, request.limits.maxCanvasFrames, 'canvas frames'],
     ];
+    if (diagnostics.peakBackendResidentBytes !== undefined) {
+        checks.push([
+            diagnostics.peakBackendResidentBytes,
+            request.limits.maxBackendResidentBytes ?? Number.MAX_SAFE_INTEGER,
+            'backend resident memory',
+        ]);
+    }
+    if (diagnostics.peakScratchBytes !== undefined) {
+        checks.push([
+            diagnostics.peakScratchBytes,
+            request.limits.maxScratchBytes ?? Number.MAX_SAFE_INTEGER,
+            'backend scratch',
+        ]);
+    }
+    if (diagnostics.peakBackendProcesses !== undefined) {
+        checks.push([
+            diagnostics.peakBackendProcesses,
+            request.limits.maxBackendProcesses,
+            'backend processes',
+        ]);
+    }
     checks.forEach(([value, maximum, label]) => {
         if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
             throw new HeadlessRenderError(

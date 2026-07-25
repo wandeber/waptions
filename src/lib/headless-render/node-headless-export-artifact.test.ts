@@ -25,6 +25,7 @@ function createHandle(
     return {
         outputCapability,
         displayPath: '/authorized-display-only/result.mp4',
+        assertCurrent: vi.fn().mockResolvedValue(undefined),
         reset: vi.fn().mockResolvedValue(undefined),
         sync: vi.fn().mockResolvedValue(undefined),
         inspect: vi.fn((verifier, signal) => verifier.inspect(outputCapability, signal)),
@@ -68,6 +69,7 @@ describe('descriptor-bound headless export artifact publication', () => {
 
         expect(handle.reset).toHaveBeenCalledOnce();
         expect(handle.sync).toHaveBeenCalledOnce();
+        expect(handle.assertCurrent).toHaveBeenCalledOnce();
         expect(handle.publishCreateOnly).toHaveBeenCalledOnce();
         expect(await lease.size()).toBe(12);
         expect(await lease.hashSha256()).toBe(`sha256:${'a'.repeat(64)}`);

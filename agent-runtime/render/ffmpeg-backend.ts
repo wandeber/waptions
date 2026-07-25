@@ -26,6 +26,7 @@ import {
 
 export interface FfmpegCapabilityProbe {
     ffmpegAvailable: boolean;
+    ffprobeAvailable?: boolean;
     resolvedPlanVersion: 1;
     h264Encoder: boolean;
     aacEncoder: boolean;
@@ -63,6 +64,13 @@ export interface FfmpegResolvedPlanExecutorPort {
         maximumDecoderSessions: number;
         maximumDecodedPixelBytes: number;
         maximumAudioMixBytes: number;
+        maximumBackendProcesses?: number;
+        maximumScratchBytes?: number;
+        maximumBackendResidentBytes?: number;
+        maximumStderrBytes?: number;
+        maximumProgressBytes?: number;
+        processTimeoutMs?: number;
+        processKillGraceMs?: number;
         signal?: AbortSignal;
         onProgress?: (progress: HeadlessRenderBackendProgress) => void;
     }): Promise<FfmpegResolvedPlanResult>;
@@ -82,13 +90,25 @@ export class FfmpegResolvedPlanRenderBackend implements HeadlessRenderBackendPor
     }
 
     async probe(
-        _plan: ResolvedRenderPlanV1,
+        plan: ResolvedRenderPlanV1,
         signal?: AbortSignal,
     ): Promise<HeadlessRenderBackendCapability> {
         throwIfAborted(signal);
+        if (plan.subtitleTracks.length > 0) {
+            return {
+                supported: false,
+                backend: this.name,
+                resolvedPlanVersion: 1,
+                container: 'mp4',
+                videoCodec: 'h264',
+                audioCodec: 'aac',
+                reason: 'This FFmpeg backend cannot render subtitles without verified font bytes and libass support.',
+            };
+        }
         const capability = await this.executor.probe(signal);
         throwIfAborted(signal);
         const supported = capability.ffmpegAvailable
+            && capability.ffprobeAvailable !== false
             && capability.resolvedPlanVersion === 1
             && capability.h264Encoder
             && capability.aacEncoder
@@ -106,6 +126,12 @@ export class FfmpegResolvedPlanRenderBackend implements HeadlessRenderBackendPor
 
     async render(request: HeadlessRenderBackendRequest): Promise<HeadlessRenderBackendResult> {
         throwIfAborted(request.signal);
+        if (request.plan.subtitleTracks.length > 0) {
+            throw new HeadlessRenderError(
+                'CODEC_UNAVAILABLE',
+                'This FFmpeg backend cannot render subtitles without verified font bytes and libass support.',
+            );
+        }
         const resourceRequest = getBackendResourceRequest(
             request.plan,
             this.name,
@@ -142,6 +168,13 @@ export class FfmpegResolvedPlanRenderBackend implements HeadlessRenderBackendPor
                 maximumDecoderSessions: resourceRequest['video-decoder-sessions'] ?? 0,
                 maximumDecodedPixelBytes: resourceRequest['decoded-pixel-bytes'] ?? 0,
                 maximumAudioMixBytes: resourceRequest['audio-mix-bytes'] ?? 0,
+                maximumBackendProcesses: resourceRequest['backend-processes'] ?? 0,
+                maximumScratchBytes: request.limits.maxScratchBytes,
+                maximumBackendResidentBytes: request.limits.maxBackendResidentBytes,
+                maximumStderrBytes: request.limits.maxBackendStderrBytes,
+                maximumProgressBytes: request.limits.maxBackendProgressBytes,
+                processTimeoutMs: request.limits.backendProcessTimeoutMs,
+                processKillGraceMs: request.limits.backendKillGraceMs,
                 signal: request.signal,
                 onProgress: (progress) => request.onProgress?.({
                     ...progress,

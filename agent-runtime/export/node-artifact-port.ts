@@ -22,6 +22,7 @@ import type {
 export interface NodeStagedDestinationHandle {
     readonly outputCapability: HeadlessStagedOutputCapability;
     readonly displayPath: string;
+    assertCurrent(signal?: AbortSignal): Promise<void>;
     reset(signal?: AbortSignal): Promise<void>;
     sync(signal?: AbortSignal): Promise<void>;
     inspect(
@@ -103,6 +104,8 @@ export class NodeHeadlessExportArtifactPort implements HeadlessExportArtifactPor
             },
             commit: async (commitSignal) => {
                 assertLeaseOpen(committed, aborted);
+                throwIfAborted(commitSignal);
+                await handle.assertCurrent(commitSignal);
                 throwIfAborted(commitSignal);
                 await handle.publishCreateOnly(commitSignal);
                 committed = true;

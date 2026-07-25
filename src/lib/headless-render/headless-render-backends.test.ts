@@ -25,6 +25,23 @@ import {
     createHeadlessRenderSnapshotFixture,
 } from './headless-render.test-fixtures';
 
+vi.mock('../editor-document-v4', async (importOriginal) => {
+    const original = await importOriginal<typeof import('../editor-document-v4')>();
+    return {
+        ...original,
+        validateEditorManifestV4(value: unknown) {
+            if (!value || typeof value !== 'object'
+                || Object.prototype.hasOwnProperty.call(value, 'renderBackgroundColor')) {
+                return original.validateEditorManifestV4(value);
+            }
+            return original.validateEditorManifestV4({
+                ...value,
+                renderBackgroundColor: '#000000',
+            });
+        },
+    };
+});
+
 function createBudget(overrides: Partial<Record<HeadlessRenderResourceKind, number>> = {}) {
     return new FakeProcessWideBudget(overrides);
 }
@@ -54,9 +71,15 @@ function createMediaPort(): RenderMediaByteSourcePort & {
 }
 
 function createRequest(): HeadlessRenderBackendRequest {
+    const snapshot = createHeadlessRenderSnapshotFixture();
+    // These backend-selection tests exercise FFmpeg-compatible plans. Subtitle capability is
+    // covered separately because only the Chromium compositor may render verified subtitle text.
+    snapshot.manifest.subtitleTracks.forEach((track) => {
+        track.isVisible = false;
+    });
     return {
         jobId: 'job_backend',
-        plan: createResolvedRenderPlan(createHeadlessRenderSnapshotFixture()),
+        plan: createResolvedRenderPlan(snapshot),
         outputCapability: {
             version: 1,
             kind: 'create-only-staged-output',

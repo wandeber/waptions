@@ -16,6 +16,26 @@ import {
     createHeadlessRenderSnapshotFixture,
 } from './headless-render.test-fixtures';
 
+// This branch still contains the legacy render-plan compatibility shim that removes Core's
+// coordinated background field before validation. Keep this export test focused on publication
+// ordering by supplying the legacy validator view until that separate Core integration is merged.
+vi.mock('../editor-document-v4', async (importOriginal) => {
+    const original = await importOriginal<typeof import('../editor-document-v4')>();
+    return {
+        ...original,
+        validateEditorManifestV4(value: unknown) {
+            if (!value || typeof value !== 'object'
+                || Object.prototype.hasOwnProperty.call(value, 'renderBackgroundColor')) {
+                return original.validateEditorManifestV4(value);
+            }
+            return original.validateEditorManifestV4({
+                ...value,
+                renderBackgroundColor: '#000000',
+            });
+        },
+    };
+});
+
 const TARGET = {
     version: 1 as const,
     capabilityId: 'capability:export-test',
@@ -106,6 +126,13 @@ function createVerifier(
             container: 'mp4',
             videoCodec: 'h264',
             audioCodec: 'aac',
+            pixelFormat: 'yuv420p',
+            audioSampleRate: 48_000,
+            audioChannels: 2,
+            audioChannelLayout: 'stereo',
+            videoFrameCount: 120,
+            videoDurationSeconds: 4,
+            audioDurationSeconds: 4,
             durationSeconds: 4,
             ...overrides,
         }),
@@ -186,6 +213,11 @@ describe('headless export service', () => {
     it.each([
         [{ videoCodec: 'vp9' }, 'INVALID_OUTPUT'],
         [{ audioCodec: null }, 'INVALID_OUTPUT'],
+        [{ pixelFormat: 'yuv444p' }, 'INVALID_OUTPUT'],
+        [{ audioSampleRate: 44_100 }, 'INVALID_OUTPUT'],
+        [{ audioChannels: 1 }, 'INVALID_OUTPUT'],
+        [{ videoFrameCount: 119 }, 'INVALID_OUTPUT'],
+        [{ audioDurationSeconds: 4.2 }, 'INVALID_OUTPUT'],
         [{ durationSeconds: 4.2 }, 'INVALID_OUTPUT'],
     ])('rejects invalid MP4 verification %# and removes the partial', async (inspection, code) => {
         const artifacts = createArtifactPort();

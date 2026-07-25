@@ -157,19 +157,32 @@ function validateInspection(
 ): void {
     if (inspection.container !== 'mp4'
         || !['h264', 'avc', 'avc1'].includes(inspection.videoCodec.toLowerCase())
-        || inspection.audioCodec?.toLowerCase() !== 'aac') {
+        || inspection.audioCodec?.toLowerCase() !== 'aac'
+        || inspection.pixelFormat?.toLowerCase() !== 'yuv420p'
+        || inspection.audioSampleRate !== 48_000
+        || inspection.audioChannels !== 2
+        || inspection.audioChannelLayout?.toLowerCase() !== 'stereo'
+        || inspection.videoFrameCount !== plan.contentEndFrame) {
         throw new HeadlessRenderError(
             'INVALID_OUTPUT',
-            'The rendered artifact is not H.264/AAC MP4.',
+            'The rendered artifact is not exact-frame H.264/yuv420p and AAC/48 kHz/stereo MP4.',
         );
     }
     const expectedDuration = plan.contentEndFrame / framesPerSecond(plan.renderProfile.fps);
     const tolerance = 1 / framesPerSecond(plan.renderProfile.fps);
     if (!Number.isFinite(inspection.durationSeconds)
-        || Math.abs(inspection.durationSeconds - expectedDuration) > tolerance + Number.EPSILON) {
+        || !Number.isFinite(inspection.videoDurationSeconds)
+        || !Number.isFinite(inspection.audioDurationSeconds)
+        || [
+            inspection.durationSeconds,
+            inspection.videoDurationSeconds!,
+            inspection.audioDurationSeconds!,
+        ].some((duration) => (
+            Math.abs(duration - expectedDuration) > tolerance + Number.EPSILON
+        ))) {
         throw new HeadlessRenderError(
             'INVALID_OUTPUT',
-            'The MP4 duration differs from the resolved render boundary by more than one frame.',
+            'An MP4 stream duration differs from the resolved render boundary by more than one frame.',
         );
     }
 }

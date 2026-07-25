@@ -37,6 +37,18 @@ export interface HeadlessRenderLimitsV1 {
     maxAudioMixBytes: number;
     maxConcurrentExports: number;
     maxBackendProcesses: number;
+    /** Maximum logical bytes retained by backend-owned private scratch files. */
+    maxScratchBytes?: number;
+    /** Maximum combined resident bytes of active backend child processes. */
+    maxBackendResidentBytes?: number;
+    /** Maximum stderr bytes accepted from one backend child process. */
+    maxBackendStderrBytes?: number;
+    /** Maximum FFmpeg progress-protocol bytes accepted from one process. */
+    maxBackendProgressBytes?: number;
+    /** Maximum lifetime of one backend child process. */
+    backendProcessTimeoutMs?: number;
+    /** Grace period between SIGTERM and SIGKILL. */
+    backendKillGraceMs?: number;
 }
 
 export const DEFAULT_HEADLESS_RENDER_LIMITS: HeadlessRenderLimitsV1 = Object.freeze({
@@ -47,7 +59,14 @@ export const DEFAULT_HEADLESS_RENDER_LIMITS: HeadlessRenderLimitsV1 = Object.fre
     maxCanvasFrames: 2,
     maxAudioMixBytes: 32 * 1024 * 1024,
     maxConcurrentExports: 1,
-    maxBackendProcesses: 1,
+    // One encoder and at most one sequential source decoder may overlap.
+    maxBackendProcesses: 2,
+    maxScratchBytes: 4 * 1024 * 1024 * 1024,
+    maxBackendResidentBytes: 1024 * 1024 * 1024,
+    maxBackendStderrBytes: 1024 * 1024,
+    maxBackendProgressBytes: 4 * 1024 * 1024,
+    backendProcessTimeoutMs: 2 * 60 * 60_000,
+    backendKillGraceMs: 1_000,
 });
 
 export type HeadlessRenderResourceKind =
@@ -125,6 +144,9 @@ export interface HeadlessRenderBackendDiagnostics {
     peakAudioMixBytes: number;
     peakVideoDecoderSessions: number;
     canvasFrames: number;
+    peakBackendResidentBytes?: number;
+    peakScratchBytes?: number;
+    peakBackendProcesses?: number;
 }
 
 export interface HeadlessRenderBackendResult {

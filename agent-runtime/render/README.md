@@ -11,9 +11,10 @@ timeline interpretation from codec and process integration:
 3. Chromium is the primary H.264/AAC MP4 backend. `CanonicalResolvedRenderStreamProducer` resolves
    every frame and bounded DSP window; `BoundedChromiumWebCodecsWorker` feeds only raw RGBA/PCM to
    the isolated encoder worker and owns cancellation plus forced termination.
-4. FFmpeg is a fixed codec/mux fallback. `BoundedFfmpegResolvedPlanExecutor` sends FFmpeg only raw
-   composed RGBA frames and canonical 48 kHz stereo PCM; the FFmpeg process never receives a
-   manifest or render plan.
+4. FFmpeg is a fixed codec/mux fallback. `NodeFfmpegResolvedPlanExecutor` materializes canonical
+   48 kHz stereo PCM to private bounded scratch first, then sends the encoder only raw RGBA plus
+   seekable PCM/output descriptors. Source decoders receive one immutable seekable descriptor at
+   a time; no process receives a manifest, path, subtitle text, or render plan.
 5. `HeadlessExportService` verifies H.264/AAC MP4 duration, syncs, publishes create-only, and hashes
    the exact committed bytes through an owned staged-destination handle.
 
@@ -91,14 +92,24 @@ those runtime components are not present at this baseline:
   `CanonicalResolvedRenderStreamProducer` to `renderResolvedPlanFrame`, load deterministic fonts by
   verified identity, and launch the fixed raw H.264/AAC encoder worker behind
   `BoundedChromiumWorkerHostPort`.
-- FFmpeg host: bind `BoundedFfmpegProcessHostPort` to the packaged/versioned FFmpeg binary. Supply
-  the platform frame renderer and contributor decoder to `CanonicalResolvedRenderStreamProducer`;
-  it owns frame order, shared audio DSP, bounded PCM windows, and explicit silence tails. Licensing
-  and platform packaging remain coordinator/release concerns.
-- Verifier: implement `HeadlessMp4VerifierPort` with the packaged/versioned FFprobe integration.
+- Coordinator handles: bind `ImmutableSourceHandleResolverPort` and
+  `NodeStagedOutputHandleResolverPort` to already-validated source/staged-output capabilities.
+  These bindings issue fresh seekable descriptors and implement `assertCurrent`; they never expose
+  paths to the backend.
+- FFmpeg packaging: select packaged/versioned FFmpeg and FFprobe executables. The concrete Node
+  runner fixes H.264/AAC arguments, bounds processes/RSS/stderr/progress, escalates TERM to KILL,
+  and removes 0600 audio scratch on every terminal path. Licensing and platform packaging remain
+  coordinator/release concerns.
+- Verifier: use `NodeFfprobeMp4Verifier` with the same staged-output resolver. It reads the exact
+  owned descriptor and reports H.264/AAC, yuv420p, 48 kHz stereo, frame count, and durations before
+  create-only publication.
 - Standalone P3A: adapt browser media to `RenderMediaByteSourcePort` and route standalone export
   through the same resolved plan and frame/audio producer instead of maintaining dual semantics.
 
 No package or lockfile change is required for these contracts. Runtime executable selection,
 font assets, coordinator grants, the shared media registry, and the global budget must be supplied
 by their owning packages rather than recreated here.
+
+The Node FFmpeg backend deliberately reports `CODEC_UNAVAILABLE` for any nonempty subtitle plan.
+The current toolchain has no verified font bytes or libass compositor; Chromium remains the
+canonical subtitle backend and FFmpeg never approximates subtitle layout.
