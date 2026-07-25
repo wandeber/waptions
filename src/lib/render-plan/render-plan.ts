@@ -126,11 +126,7 @@ export function createResolvedRenderPlan(
     }
 
     const snapshot = cloneAndFreeze(input) as HeadlessRenderSnapshotV1;
-    // This isolated baseline predates Core's canonical field. Omit only that coordinated field
-    // from the legacy validator, then validate its exact lowercase value at the read boundary.
-    const manifestGraph = { ...snapshot.manifest } as Record<string, unknown>;
-    delete manifestGraph.renderBackgroundColor;
-    const validation = validateEditorManifestV4(manifestGraph);
+    const validation = validateEditorManifestV4(snapshot.manifest);
     if (!validation.valid) {
         const detail = validation.issues
             .map((issue) => `${issue.path}: ${issue.message}`)
