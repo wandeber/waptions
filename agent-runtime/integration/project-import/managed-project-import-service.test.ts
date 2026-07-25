@@ -81,6 +81,16 @@ describe('managed project import service', () => {
         )).rejects.toThrow(/duplicate or Unicode-conflicting/i);
     });
 
+    it('rejects a central-directory CRC that disagrees with the streamed descriptor CRC', async () => {
+        const corrupt = Uint8Array.from(await bundleBytes());
+        const central = indexOf(corrupt, Uint8Array.of(0x50, 0x4b, 0x01, 0x02));
+        const view = new DataView(corrupt.buffer, corrupt.byteOffset, corrupt.byteLength);
+        view.setUint32(central + 16, view.getUint32(central + 16, true) ^ 0x0000_0001, true);
+
+        const archive = await ManagedProjectImportZip.open(memoryLease(corrupt), importLimits());
+        await expect(archive.digest('metadata.json')).rejects.toThrow(/checksum is corrupt/i);
+    });
+
     it('does not reopen a stale grant and replays a receipt before source access', async () => {
         const bundle = await bundleBytes();
         const stale = memoryLease(bundle, { stale: true });
@@ -152,6 +162,102 @@ describe('managed project import service', () => {
             await expect(service.handler(scopedCall('bundle-path'), { signal: new AbortController().signal }))
                 .rejects.toThrow(expected);
             expect(published).not.toHaveBeenCalled();
+        }
+    });
+
+    it('rejects range chunks that do not reproduce their declared transcript', async () => {
+        const fixture = await rangeSidecarFixture();
+        const alternateChunk = await createRangeTranscriptChunkRecord({
+            sourceFingerprint: fixture.coverage.sourceFingerprint,
+            acquisitionProfileDigest: fixture.coverage.acquisitionProfileDigest,
+            window: fixture.coverage.acquisitionWindows[0]!,
+            localWords: [{
+                text: 'contradictory range evidence',
+                startSample: 0,
+                endSample: 16_000,
+                probability: 0.99,
+                speaker: null,
+            }],
+        });
+        const coverage = await createTranscriptionCoverageRecordV2({
+            sourceFingerprint: fixture.coverage.sourceFingerprint,
+            sourceSampleRate: fixture.coverage.sourceSampleRate,
+            sourceSampleCount: fixture.coverage.sourceSampleCount,
+            acquisitionProfileDigest: fixture.coverage.acquisitionProfileDigest,
+            endpointIdentityDigest: fixture.coverage.endpointIdentityDigest,
+            contextSamples: fixture.coverage.contextSamples,
+            requestedModel: fixture.coverage.requestedModel,
+            responseSchema: fixture.coverage.responseSchema,
+            pcmAlgorithmVersion: fixture.coverage.pcmAlgorithmVersion,
+            providerProfileVersion: fixture.coverage.providerProfileVersion,
+            language: fixture.coverage.language,
+            speakerMode: fixture.coverage.speakerMode,
+            coreCoverage: fixture.coverage.coreCoverage,
+            acquisitionWindows: fixture.coverage.acquisitionWindows.map((window) => ({
+                ...window,
+                chunkRecordIds: [alternateChunk.recordId],
+            })),
+            mergedTranscriptRecordId: fixture.transcript.recordId,
+        });
+        const manifest = structuredClone(fixture.manifest);
+        const descriptor = manifest.editorialTranscriptDescriptors[0]!;
+        if (descriptor.version !== 2) throw new Error('range fixture requires a V2 descriptor');
+        manifest.editorialTranscriptDescriptors = [{
+            ...descriptor,
+            coverageRecordId: coverage.recordId,
+        }];
+        const service = new ManagedProjectImportService(dependencies(
+            memoryLease(await bundleBytes(rangeBundleEntries(fixture, { coverage, chunk: alternateChunk, manifest }))),
+            async () => success(),
+        ));
+
+        await expect(service.handler(scopedCall('bundle-path'), { signal: new AbortController().signal }))
+            .rejects.toThrow(/do not reproduce the declared transcript/i);
+    });
+
+    it('rejects aliased V4 entries, control-file reuse, and unsupported custom presets', async () => {
+        const fixture = await rangeSidecarFixture();
+        const duplicateManifest = structuredClone(fixture.manifest);
+        duplicateManifest.videoSourceDescriptors.push({
+            ...fixture.source,
+            id: 'range-source-alias',
+            fingerprint: 'range-source-alias-fingerprint',
+        });
+        const cases = [
+            {
+                entries: rangeBundleEntries(fixture, {
+                    sourceFiles: { video: { [fixture.source.id]: 'metadata.json' }, audio: {} },
+                }),
+                expected: /sources\/video\//i,
+            },
+            {
+                entries: rangeBundleEntries(fixture, {
+                    manifest: duplicateManifest,
+                    sourceFiles: {
+                        video: {
+                            [fixture.source.id]: 'sources/video/range.mp4',
+                            'range-source-alias': 'sources/video/range.mp4',
+                        },
+                        audio: {},
+                    },
+                }),
+                expected: /reuses a declared archive entry/i,
+            },
+            {
+                entries: [bytesEntry('metadata.json', JSON.stringify({
+                    ...metadata(),
+                    presets: [{ name: 'Custom preset' }],
+                }))],
+                expected: /custom style presets/i,
+            },
+        ];
+        for (const { entries, expected } of cases) {
+            const service = new ManagedProjectImportService(dependencies(
+                memoryLease(await bundleBytes(entries)),
+                async () => success(),
+            ));
+            await expect(service.handler(scopedCall('bundle-path'), { signal: new AbortController().signal }))
+                .rejects.toThrow(expected);
         }
     });
 
@@ -304,24 +410,36 @@ async function rangeSidecarFixture() {
     return { source, transcript, coverage, chunk, manifest };
 }
 
+type RangeSidecarFixture = Awaited<ReturnType<typeof rangeSidecarFixture>>;
+
 function rangeBundleEntries(
-    fixture: Awaited<ReturnType<typeof rangeSidecarFixture>>,
-    overrides: { coverage?: object; chunk?: object } = {},
+    fixture: RangeSidecarFixture,
+    overrides: {
+        coverage?: RangeSidecarFixture['coverage'];
+        chunk?: RangeSidecarFixture['chunk'];
+        manifest?: RangeSidecarFixture['manifest'];
+        sourceFiles?: { video: Record<string, string>; audio: Record<string, string> };
+    } = {},
 ): ManagedStreamingEntry[] {
     const coverage = overrides.coverage ?? fixture.coverage;
     const chunk = overrides.chunk ?? fixture.chunk;
+    const manifest = overrides.manifest ?? fixture.manifest;
+    const sourceFiles = overrides.sourceFiles ?? {
+        video: { [fixture.source.id]: 'sources/video/range.mp4' },
+        audio: {},
+    };
     return [
         bytesEntry('metadata.json', JSON.stringify({
             version: '4.0',
             project: { id: 'range-project', name: 'Range import' },
-            editorManifest: fixture.manifest,
-            sourceFiles: { video: { [fixture.source.id]: 'media/range.mp4' }, audio: {} },
+            editorManifest: manifest,
+            sourceFiles,
             editorialTranscriptFiles: { [fixture.transcript.recordId]: 'editorial/transcript.json' },
-            editorialCoverageFiles: { [fixture.coverage.recordId]: 'editorial/coverage.json' },
-            editorialChunkFiles: { [fixture.chunk.recordId]: 'editorial/chunk.json' },
+            editorialCoverageFiles: { [coverage.recordId]: 'editorial/coverage.json' },
+            editorialChunkFiles: { [chunk.recordId]: 'editorial/chunk.json' },
             presets: [],
         })),
-        bytesEntry('media/range.mp4', new Uint8Array([1])),
+        bytesEntry('sources/video/range.mp4', new Uint8Array([1])),
         bytesEntry('editorial/transcript.json', fixture.transcript.canonicalJson),
         bytesEntry('editorial/coverage.json', canonicalizeJson(coverage)),
         bytesEntry('editorial/chunk.json', canonicalizeJson(chunk)),

@@ -324,7 +324,9 @@ async function locateAndValidateEntries(
 
 function verifyDescriptor(bytes: Uint8Array, entry: InternalEntry, crc32: number): void {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (view.getUint32(0, true) !== DATA_DESCRIPTOR_SIGNATURE || view.getUint32(4, true) !== crc32) {
+    if (view.getUint32(0, true) !== DATA_DESCRIPTOR_SIGNATURE
+        || view.getUint32(4, true) !== crc32
+        || entry.crc32 !== crc32) {
         throw new Error('Managed project bundle entry checksum is corrupt.');
     }
     if (entry.descriptorBytes === 24) {

@@ -3,7 +3,10 @@ import {
     createEditorialTranscriptRequestKey,
 } from '../../../src/lib/editorial-transcription/identity';
 import { sha256CanonicalJson } from '../../../src/lib/editorial-transcription/canonical-json';
+import { createCanonicalMergedRangeRecord } from '../../../src/lib/editorial-transcription/orchestrator';
+import { mergeRangeTranscriptChunks } from '../../../src/lib/editorial-transcription/range-merge';
 import { verifyTranscriptionCoverageRecordV2 } from '../../../src/lib/editorial-transcription/range-coverage';
+import type { RangeTranscriptChunkRecordV2 } from '../../../src/lib/editorial-transcription/range-orchestrator';
 import { verifyCanonicalEditorialTranscriptRecord } from '../../../src/lib/editorial-transcription/transcript-body';
 import { validateEditorManifestV4 } from '../../../src/lib/editor-document-v4';
 import { migrateEditorManifestV3ToV4 } from '../../../src/lib/editor-document-v4-migration';
@@ -157,17 +160,18 @@ export class ManagedProjectImportService {
         const sourceDigests = metadata.sourceDigests === undefined
             ? undefined
             : typedDigestMaps(metadata.sourceDigests, 'V4 source digests');
+        assertSupportedPresets(metadata.presets, 'V4 project bundle metadata');
         const media = await collectTypedMedia(zip, manifest, sourceFiles, sourceDigests, this.limits, signal);
         const transcripts = await collectTranscripts(zip, metadata, manifest, this.limits, signal);
-        const rangeRecords = await collectRangeRecords(zip, metadata, manifest, this.limits, signal);
-        assertDeclaredEntries(zip, new Set([
+        const rangeRecords = await collectRangeRecords(zip, metadata, manifest, transcripts, this.limits, signal);
+        assertDeclaredEntries(zip, [
             'metadata.json',
             ...Object.values(sourceFiles.video),
             ...Object.values(sourceFiles.audio),
             ...objectValues(object(metadata.editorialTranscriptFiles, 'V4 transcript declarations')),
             ...optionalObjectValues(metadata.editorialCoverageFiles, 'V4 coverage declarations'),
             ...optionalObjectValues(metadata.editorialChunkFiles, 'V4 chunk declarations'),
-        ]));
+        ]);
         return Object.freeze({
             formatVersion: 4,
             project: structuredClone(project),
@@ -185,6 +189,7 @@ export class ManagedProjectImportService {
     ): Promise<PreparedManagedProjectImport> {
         assertExactKeys(metadata, V3_KEYS, 'V3 project bundle metadata');
         const project = projectMetadata(metadata.project, 'V3 bundle project');
+        assertSupportedPresets(metadata.presets, 'V3 project bundle metadata');
         const sourceFiles = typedSourceMaps(metadata.sourceFiles, 'V3 source files');
         let manifest: EditorManifestV4;
         try {
@@ -195,9 +200,9 @@ export class ManagedProjectImportService {
             throw new Error('V3 project bundle manifest is invalid.');
         }
         const media = await collectTypedMedia(zip, manifest, sourceFiles, undefined, this.limits, signal);
-        assertDeclaredEntries(zip, new Set([
+        assertDeclaredEntries(zip, [
             'metadata.json', ...Object.values(sourceFiles.video), ...Object.values(sourceFiles.audio),
-        ]));
+        ]);
         return Object.freeze({
             formatVersion: 3,
             project: structuredClone(project),
@@ -215,13 +220,14 @@ export class ManagedProjectImportService {
         signal?: AbortSignal,
     ): Promise<PreparedManagedProjectImport> {
         assertExactKeys(metadata, formatVersion === 2 ? V2_KEYS : V1_KEYS, 'legacy project bundle metadata');
+        assertSupportedPresets(metadata.presets, 'legacy project bundle metadata');
         if (!this.dependencies.legacy) {
             throw new Error('Legacy project bundle conversion is not configured.');
         }
         const media = formatVersion === 2
             ? await collectV2Media(zip, object(metadata.sourceFiles, 'V2 source files'), this.limits, signal)
             : await collectV1Media(zip, this.limits, signal);
-        const declared = new Set(['metadata.json', ...media.map((media) => mediaEntryName(media))]);
+        const declared = ['metadata.json', ...media.map((media) => mediaEntryName(media))];
         assertDeclaredEntries(zip, declared);
         const manifest = await this.dependencies.legacy.convert({
             formatVersion,
@@ -284,7 +290,7 @@ async function collectTypedMedia(
         if (digests) assertSameIds(digests, descriptors.map((descriptor) => descriptor.id), `${kind} source digest declarations`);
         for (const descriptor of descriptors) {
             const entryName = paths[descriptor.id]!;
-            assertCanonicalEntryName(entryName, `${kind} source declaration`);
+            assertTypedSourceEntryName(entryName, kind, `${kind} source declaration`);
             const entryBytes = zip.entrySize(entryName);
             if (entryBytes > limits.maximumEntryBytes) throw new Error('Project media entry exceeds its byte limit.');
             const digest = await zip.digest(entryName, signal);
@@ -380,6 +386,7 @@ async function collectRangeRecords(
     zip: ManagedProjectImportZip,
     metadata: JsonObject,
     manifest: EditorManifestV4,
+    transcripts: readonly ManagedProjectImportDetachedTranscript[],
     limits: ManagedProjectImportLimits,
     signal?: AbortSignal,
 ): Promise<JsonObject[]> {
@@ -388,10 +395,20 @@ async function collectRangeRecords(
     const chunkDeclarations = metadata.editorialChunkFiles === undefined
         ? {} : stringRecord(metadata.editorialChunkFiles, 'V4 chunk declarations');
     const descriptors = manifest.editorialTranscriptDescriptors.filter((descriptor) => descriptor.version === 2);
-    const descriptorsByCoverage = new Map(descriptors.map((descriptor) => [descriptor.coverageRecordId, descriptor]));
+    const descriptorsByCoverage = new Map<string, (typeof descriptors)[number]>();
+    for (const descriptor of descriptors) {
+        if (descriptorsByCoverage.has(descriptor.coverageRecordId)) {
+            throw new Error('V4 transcript descriptors reuse a coverage record.');
+        }
+        descriptorsByCoverage.set(descriptor.coverageRecordId, descriptor);
+    }
     assertSameIds(coverageDeclarations, Array.from(descriptorsByCoverage.keys()), 'V4 coverage declarations');
     let aggregate = 0;
     const records: JsonObject[] = [];
+    const coverageRecords: Array<{
+        coverage: TranscriptionCoverageRecordV2;
+        descriptor: (typeof descriptors)[number];
+    }> = [];
     const expectedChunks = new Map<string, { sourceFingerprint: string; acquisitionProfileDigest: string }>();
     for (const [coverageId, entryName] of Object.entries(coverageDeclarations).sort(([left], [right]) => left.localeCompare(right))) {
         if (!SHA256.test(coverageId)) throw new Error('V4 coverage declaration has an invalid record ID.');
@@ -410,6 +427,10 @@ async function collectRangeRecords(
             || string(coverage.endpointIdentityDigest, 'coverage endpoint identity digest') !== descriptor.endpointIdentityDigest) {
             throw new Error('Editorial coverage sidecar provenance does not match its descriptor.');
         }
+        coverageRecords.push({
+            coverage: coverage as unknown as TranscriptionCoverageRecordV2,
+            descriptor,
+        });
         const windows = coverage.acquisitionWindows;
         if (!Array.isArray(windows)) throw new Error('Editorial coverage sidecar has invalid acquisition windows.');
         for (const window of windows) {
@@ -432,6 +453,7 @@ async function collectRangeRecords(
         records.push(coverage);
     }
     assertSameIds(chunkDeclarations, Array.from(expectedChunks.keys()), 'V4 chunk declarations');
+    const chunksById = new Map<string, RangeTranscriptChunkRecordV2>();
     for (const [chunkId, entryName] of Object.entries(chunkDeclarations).sort(([left], [right]) => left.localeCompare(right))) {
         assertCanonicalEntryName(entryName, 'V4 range declaration');
         const raw = await zip.readBytes(entryName, limits.maximumDetachedBodyBytes, signal);
@@ -444,9 +466,56 @@ async function collectRangeRecords(
             || string(chunk.acquisitionProfileDigest, 'chunk acquisition profile digest') !== expected.acquisitionProfileDigest) {
             throw new Error('Editorial range chunk provenance does not match its coverage record.');
         }
+        chunksById.set(chunkId, chunk as unknown as RangeTranscriptChunkRecordV2);
         records.push(chunk);
     }
+    await assertRangeRecordsReproduceTranscripts({
+        coverageRecords,
+        chunksById,
+        transcriptsById: new Map(transcripts.map(({ record }) => [record.recordId, record])),
+    });
     return records;
+}
+
+async function assertRangeRecordsReproduceTranscripts(input: {
+    readonly coverageRecords: ReadonlyArray<{
+        coverage: TranscriptionCoverageRecordV2;
+        descriptor: EditorManifestV4['editorialTranscriptDescriptors'][number];
+    }>;
+    readonly chunksById: ReadonlyMap<string, RangeTranscriptChunkRecordV2>;
+    readonly transcriptsById: ReadonlyMap<string, ManagedProjectImportDetachedTranscript['record']>;
+}): Promise<void> {
+    for (const { coverage, descriptor } of input.coverageRecords) {
+        const transcript = input.transcriptsById.get(coverage.mergedTranscriptRecordId);
+        if (!transcript || transcript.recordId !== descriptor.recordId) {
+            throw new Error('Editorial coverage sidecar is missing its declared transcript.');
+        }
+        const referencedChunks = coverage.acquisitionWindows.flatMap((window) => (
+            window.chunkRecordIds.map((recordId) => {
+                const chunk = input.chunksById.get(recordId);
+                if (!chunk) throw new Error('Editorial coverage sidecar is missing a declared range chunk.');
+                return chunk;
+            })
+        ));
+        if (descriptor.acquisition === 'local-no-audio') {
+            if (!transcript.body.noAudioStream || referencedChunks.some((chunk) => chunk.words.length > 0)) {
+                throw new Error('Editorial coverage sidecar contradicts its no-audio transcript.');
+            }
+            continue;
+        }
+        const merged = mergeRangeTranscriptChunks(referencedChunks, coverage.coreCoverage);
+        const rebuilt = await createCanonicalMergedRangeRecord({
+            sourceFingerprint: coverage.sourceFingerprint,
+            sampleCount: coverage.sourceSampleCount,
+            language: descriptor.language,
+            speakerMode: descriptor.speakerMode,
+            canonicalModel: descriptor.canonicalModel,
+            words: merged.words,
+        });
+        if (rebuilt.recordId !== transcript.recordId || rebuilt.canonicalJson !== transcript.canonicalJson) {
+            throw new Error('Editorial coverage sidecar chunks do not reproduce the declared transcript.');
+        }
+    }
 }
 
 async function verifyRangeTranscriptChunkRecordV2(
@@ -558,7 +627,11 @@ function createMedia(
     return media;
 }
 
-function assertDeclaredEntries(zip: ManagedProjectImportZip, expected: ReadonlySet<string>): void {
+function assertDeclaredEntries(zip: ManagedProjectImportZip, declared: readonly string[]): void {
+    const expected = new Set(declared);
+    if (expected.size !== declared.length) {
+        throw new Error('Project bundle reuses a declared archive entry.');
+    }
     const actual = zip.entries().map((entry) => entry.name);
     if (actual.length !== expected.size || actual.some((entry) => !expected.has(entry))) {
         throw new Error('Project bundle contains undeclared or missing entries.');
@@ -656,6 +729,25 @@ function assertSameIds(record: Record<string, unknown>, ids: readonly string[], 
 function assertCanonicalEntryName(name: string, label: string): void {
     if (!name || name !== name.normalize('NFC') || name.normalize('NFKC').toLocaleLowerCase('und') !== name.toLocaleLowerCase('und')) {
         throw new Error(`${label} contains a Unicode-conflicting path.`);
+    }
+}
+
+function assertTypedSourceEntryName(
+    name: string,
+    kind: 'video' | 'audio',
+    label: string,
+): void {
+    assertCanonicalEntryName(name, label);
+    const prefix = `sources/${kind}/`;
+    if (!name.startsWith(prefix) || name.length === prefix.length) {
+        throw new Error(`${label} must use the ${prefix} archive namespace.`);
+    }
+}
+
+function assertSupportedPresets(value: unknown, label: string): void {
+    if (!Array.isArray(value)) throw new Error(`${label} presets must be an array.`);
+    if (value.length > 0) {
+        throw new Error(`${label} contains custom style presets, which managed import does not support.`);
     }
 }
 
